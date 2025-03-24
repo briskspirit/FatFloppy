@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QTreeWidget, QTreeWidgetItem,
     QLabel, QGraphicsScene, QGraphicsView, QGraphicsPolygonItem,
     QGraphicsLineItem, QGraphicsEllipseItem, QDockWidget, QFileDialog,
-    QVBoxLayout, QWidget, QPushButton, QMessageBox, QInputDialog
+    QMessageBox, QInputDialog, QToolBar
 )
 from PyQt6.QtGui import QPolygonF, QBrush, QPen, QPainter, QFont, QAction
 from PyQt6.QtCore import Qt, QPointF
@@ -158,11 +158,40 @@ class FileBrowserApp(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        # Toolbar
-        toolbar = self.addToolBar("Head Selection")
-        self.head_action = QAction("Switch to Head 1", self)
+        # Main Toolbar
+        self.toolbar = QToolBar("Main Toolbar", self)
+        self.addToolBar(self.toolbar)
+
+        # Head selection action
+        self.head_action = QAction("Switch to head 1", self)
+        self.head_action.setToolTip("Switch between disk heads (sides)")
         self.head_action.triggered.connect(self.toggle_head)
-        toolbar.addAction(self.head_action)
+        self.toolbar.addAction(self.head_action)
+        self.toolbar.addSeparator()
+
+        # Extract file action
+        extract_action = QAction("Extract", self)
+        extract_action.setToolTip("Extract selected file to local filesystem")
+        extract_action.triggered.connect(self.extract_selected_file)
+        self.toolbar.addAction(extract_action)
+
+        # Delete item action
+        delete_action = QAction("Delete", self)
+        delete_action.setToolTip("Delete selected file or directory")
+        delete_action.triggered.connect(self.delete_selected_item)
+        self.toolbar.addAction(delete_action)
+
+        # Create directory action
+        create_dir_action = QAction("New Folder", self)
+        create_dir_action.setToolTip("Create a new directory in current location")
+        create_dir_action.triggered.connect(self.create_directory)
+        self.toolbar.addAction(create_dir_action)
+
+        # Add file action
+        add_file_action = QAction("Add File", self)
+        add_file_action.setToolTip("Add a file to current directory")
+        add_file_action.triggered.connect(self.add_file)
+        self.toolbar.addAction(add_file_action)
 
         # Directory Tree Dock
         self.tree_dock = QDockWidget("Directory Tree", self)
@@ -189,30 +218,6 @@ class FileBrowserApp(QMainWindow):
         self.update_file_list()
         self.file_list_dock.setWidget(self.file_list)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_list_dock)
-
-        # Action buttons
-        action_dock = QDockWidget("Actions", self)
-        action_widget = QWidget()
-        action_layout = QVBoxLayout(action_widget)
-
-        extract_button = QPushButton("Extract Selected File")
-        extract_button.clicked.connect(self.extract_selected_file)
-        action_layout.addWidget(extract_button)
-
-        delete_button = QPushButton("Delete Selected Item")
-        delete_button.clicked.connect(self.delete_selected_item)
-        action_layout.addWidget(delete_button)
-
-        create_dir_button = QPushButton("Create Directory")
-        create_dir_button.clicked.connect(self.create_directory)
-        action_layout.addWidget(create_dir_button)
-
-        add_file_button = QPushButton("Add File")
-        add_file_button.clicked.connect(self.add_file)
-        action_layout.addWidget(add_file_button)
-
-        action_dock.setWidget(action_widget)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, action_dock)
 
         # Disk Map Dock
         self.disk_map_dock = QDockWidget("Disk Map", self)
