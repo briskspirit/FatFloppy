@@ -219,6 +219,68 @@ class FloppyDiskManager(DiskManager):
 
         return wflux_list
 
+    def convert_to_flux(self, cyl, head, drive_ticks_per_rev):
+        """Convert track data to flux list for writing, adjusted for drive RPM."""
+        # Get the track definition from the disk format
+        track_def = self.fmt_cls.track_map.get((cyl, head))
+        if track_def is None:
+            raise ValueError(f"No track definition found for cylinder {cyl}, head {head}")
+
+        track = track_def.mk_track(cyl, head)
+        track_data = self.track_data[(cyl, head)]
+
+        # Handle different track types
+        if isinstance(track, ibm.IBMTrack_Scan):
+            # For IBMTrack_Scan, get the actual track instance
+            if hasattr(track, 'track') and not isinstance(track.track, ibm.IBMTrack_Empty):
+                track = track.track
+            else:
+                # If no actual track data is available yet, force a read
+                flux, dat = read.read_with_retry(self.usb, SimpleNamespace(
+                    revs=2, raw=False, fmt_cls=self.fmt_cls,
+                    tracks=util.TrackSet(f'c={cyl}:h={head}'),
+                    retries=3, seek_retries=0, reverse=False,
+                    adjust_speed=None, fake_index=None, hard_sectors=False,
+                    drive=self.drive_obj, ticks=0, drive_ticks_per_rev=None
+                ), util.TrackSet.TrackIter(util.TrackSet(f'c={cyl}:h={head}')))
+
+                if dat is not None and not isinstance(dat, ibm.IBMTrack_Empty):
+                    track = dat
+                else:
+                    # If we still don't have track data, create a basic format
+                    from greaseweazle.codec.ibm.ibm import IBMTrack_FixedDef
+                    basic_def = IBMTrack_FixedDef('ibm.mfm')
+                    basic_def.secs = self.sectors_per_track
+                    basic_def.sz = [2]  # 512 bytes per sector
+                    basic_def.finalise()
+                    track = basic_def.mk_track(cyl, head)
+
+        # Set sector data from stored track_data
+        for s in track.sectors:
+            if s.idam.r in track_data:
+                s.dam.data = bytearray(track_data[s.idam.r])
+
+        # Generate MasterTrack
+        master_track = track.master_track()
+
+        # Set time_per_rev to match the drive's measured RPM
+        master_track.time_per_rev = drive_ticks_per_rev / self.usb.sample_freq
+
+        # Generate flux for writeout
+        wflux = master_track.flux_for_writeout(cue_at_index=True)
+
+        # Scale flux list to match drive_ticks_per_rev and convert to integers
+        factor = drive_ticks_per_rev / wflux.ticks_to_index
+        rem = 0.0
+        wflux_list = []
+        for x in wflux.list:
+            y = x * factor + rem
+            val = round(y)
+            rem = y - val
+            wflux_list.append(val)
+
+        return wflux_list
+
     def calculate_track_and_offset(self, byte_offset):
         """Map byte offset to cylinder, head, and track offset."""
         if not all([self.sectors_per_track, self.num_heads, self.sector_size]):
