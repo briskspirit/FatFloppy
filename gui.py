@@ -3,12 +3,14 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTreeWidget, QTreeWidgetItem,
     QLabel, QGraphicsScene, QGraphicsView, QGraphicsPolygonItem,
     QGraphicsLineItem, QGraphicsEllipseItem, QDockWidget, QFileDialog,
-    QVBoxLayout, QWidget, QPushButton, QMessageBox
+    QVBoxLayout, QWidget, QPushButton, QMessageBox, QInputDialog
 )
 from PyQt6.QtGui import QPolygonF, QBrush, QPen, QPainter, QFont, QAction
 from PyQt6.QtCore import Qt, QPointF
 import math
 import struct
+import datetime
+import os
 from fat import FAT12FileSystem
 from diskmanager import ImageFileManager, FloppyDiskManager, MemoryDiskManager
 from floppybpb import FloppyBPB
@@ -193,6 +195,12 @@ class FileBrowserApp(QMainWindow):
             # Create FAT12 filesystem instance
             self.fs = FAT12FileSystem(disk_manager, fat_params)
 
+            # Set disk geometry based on BPB
+            disk_manager.sectors_per_track = bpb.sectors_per_track
+            disk_manager.num_heads = bpb.num_heads
+            disk_manager.sector_size = bpb.bytes_per_sector
+            disk_manager.total_sectors = bpb.total_sectors
+
             # Update UI components
             self.root_node = self.build_fs_tree()
             self.current_node = self.root_node
@@ -209,11 +217,19 @@ class FileBrowserApp(QMainWindow):
     def open_physical_floppy(self):
         try:
             # Ask for device name
-            # In a full implementation, we'd use a dialog box here
-            device_name = None  # Could be COM3, etc.
+            device_name, ok = QInputDialog.getText(self, "Device Selection", 
+                                                  "Enter device name (e.g., COM3):")
+            if not ok or not device_name:
+                device_name = None
+
+            format_name, ok = QInputDialog.getText(self, "Format Selection", 
+                                                  "Enter format name (e.g., ibm.1440, ibm.scan):",
+                                                  text="ibm.scan")
+            if not ok or not format_name:
+                format_name = "ibm.scan"
 
             # Create a FloppyDiskManager for the physical floppy
-            disk_manager = FloppyDiskManager(device_name, format_name='ibm.scan')
+            disk_manager = FloppyDiskManager(device_name, format_name=format_name)
 
             # Create BPB instance to parse boot sector
             bpb = FloppyBPB(disk_manager)
@@ -233,7 +249,7 @@ class FileBrowserApp(QMainWindow):
             self.get_busy_clusters()
             self.draw_disk_map()
 
-            self.statusBar().showMessage("Loaded physical floppy")
+            self.statusBar().showMessage(f"Loaded physical floppy using {format_name}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open physical floppy: {str(e)}")
 
@@ -267,6 +283,15 @@ class FileBrowserApp(QMainWindow):
         )
         self.bpb_info.setText(info)
 
+    def get_current_path(self):
+        """Build the full path to the current directory."""
+        path_parts = []
+        curr = self.current_node
+        while curr and curr.parent:  # Don't include "Root" in the path
+            path_parts.insert(0, curr.name)
+            curr = curr.parent
+        return "/" + "/".join(path_parts) if path_parts else "/"
+
     def populate_tree(self):
         self.tree_widget.clear()
         if not hasattr(self, 'root_node'):
@@ -286,7 +311,8 @@ class FileBrowserApp(QMainWindow):
     def select_directory(self, item):
         self.current_node = item.node
         self.update_file_list()
-        self.statusBar().showMessage(f"Viewing: {self.current_node.name}")
+        current_path = self.get_current_path()
+        self.statusBar().showMessage(f"Viewing: {current_path}")
 
     def update_file_list(self):
         self.file_list.clear()
@@ -376,20 +402,16 @@ class FileBrowserApp(QMainWindow):
         if not hasattr(self, 'fs') or not self.current_node:
             return
 
-        # Build current path
-        path_parts = []
-        curr = self.current_node
-        while curr.parent:
-            path_parts.insert(0, curr.name)
-            curr = curr.parent
+        # Get current path
+        current_path = self.get_current_path()
 
-        current_path = "/" + "/".join(path_parts) if path_parts else "/"
+        # Get new directory name from user
+        dir_name, ok = QInputDialog.getText(self, "Create New Directory", 
+                                          "Enter directory name (8.3 format):")
+        if not ok or not dir_name:
+            return
 
-        # Get new directory name
-        # In a full implementation, we'd use a dialog box
-        import datetime
         try:
-            dir_name = "NEWDIR"  # Example, would be from dialog
             self.fs.create_directory(current_path, dir_name, datetime.datetime.now())
 
             # Update UI
@@ -399,7 +421,7 @@ class FileBrowserApp(QMainWindow):
             self.get_busy_clusters()
             self.draw_disk_map()
 
-            self.statusBar().showMessage(f"Created directory {dir_name}")
+            self.statusBar().showMessage(f"Created directory {dir_name} in {current_path}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create directory: {str(e)}")
 
@@ -407,18 +429,28 @@ class FileBrowserApp(QMainWindow):
         if not hasattr(self, 'fs') or not self.current_node:
             return
 
-        # Build current path
-        path_parts = []
-        curr = self.current_node
-        while curr.parent:
-            path_parts.insert(0, curr.name)
-            curr = curr.parent
-
-        current_path = "/" + "/".join(path_parts) if path_parts else "/"
+        # Get current path
+        current_path = self.get_current_path()
 
         # Get file to add
         file_path, _ = QFileDialog.getOpenFileName(self, "Select File to Add")
         if not file_path:
+            return
+
+        # Get destination filename (8.3 format)
+        base_name = os.path.basename(file_path)
+        # Trim to 8.3 format if needed
+        if len(base_name) > 12 or base_name.count('.') > 1:
+            parts = base_name.split('.')
+            if len(parts) > 1:
+                base_name = parts[0][:8] + '.' + parts[-1][:3]
+            else:
+                base_name = parts[0][:8]
+
+        new_name, ok = QInputDialog.getText(self, "File Name", 
+                                          "Enter file name (8.3 format):", 
+                                          text=base_name)
+        if not ok or not new_name:
             return
 
         try:
@@ -426,17 +458,8 @@ class FileBrowserApp(QMainWindow):
             with open(file_path, 'rb') as f:
                 file_data = f.read()
 
-            # Get base filename
-            import os
-            base_name = os.path.basename(file_path)
-            # Ensure it's an 8.3 filename
-            if len(base_name) > 12 or base_name.count('.') > 1:
-                # In a full implementation, we'd prompt for a valid 8.3 name
-                base_name = "FILE.TXT"  # Example
-
             # Add file to disk
-            import datetime
-            self.fs.insert_file(current_path, base_name, file_data, datetime.datetime.now())
+            self.fs.insert_file(current_path, new_name, file_data, datetime.datetime.now())
 
             # Update UI
             self.root_node = self.build_fs_tree()
@@ -445,7 +468,7 @@ class FileBrowserApp(QMainWindow):
             self.get_busy_clusters()
             self.draw_disk_map()
 
-            self.statusBar().showMessage(f"Added file {base_name}")
+            self.statusBar().showMessage(f"Added file {new_name} to {current_path}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to add file: {str(e)}")
 
@@ -499,9 +522,18 @@ class FileBrowserApp(QMainWindow):
             r_max = min(view_width, view_height) * 0.45
 
             # Get disk geometry from filesystem
-            sectors_per_track = self.fs.disk_manager.sectors_per_track
-            total_sectors = self.fs.disk_manager.total_sectors
-            num_heads = self.fs.disk_manager.num_heads
+            disk_manager = self.fs.disk_manager
+            if not hasattr(disk_manager, 'sectors_per_track') or disk_manager.sectors_per_track is None:
+                self.disk_map_scene.addText("Disk geometry not available").setPos(10, 10)
+                return
+
+            sectors_per_track = disk_manager.sectors_per_track
+            total_sectors = disk_manager.total_sectors
+            num_heads = disk_manager.num_heads
+
+            if sectors_per_track == 0 or total_sectors == 0 or num_heads == 0:
+                self.disk_map_scene.addText("Invalid disk geometry").setPos(10, 10)
+                return
 
             num_cylinders = total_sectors // (sectors_per_track * num_heads)
             angle_per_sector = 360 / sectors_per_track

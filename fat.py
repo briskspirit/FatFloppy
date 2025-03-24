@@ -290,7 +290,7 @@ class FAT12FileSystem:
         if new_cluster is None:
             raise ValueError("No free clusters")
         self.set_fat_entry(new_cluster, 0xFFF)
-        cluster_size = self.params['sectors_per_cluster'] * self.sector_size
+        cluster_size = self.params['sectors_per_cluster'] * self.params['bytes_per_sector']
         cluster_offset = self.data_area_start + (new_cluster - 2) * cluster_size
         if dt is None:
             dt = datetime.datetime.now()
@@ -303,6 +303,8 @@ class FAT12FileSystem:
         self.disk_manager.write_bytes(cluster_offset + 64, b'\x00' * (cluster_size - 64))
         # Write the new directory entry in the parent directory
         self.disk_manager.write_bytes(free_offset, self.create_dir_entry(new_dir_name, True, new_cluster, 0, dt))
+        # Flush changes to disk
+        self.disk_manager.flush()
 
     def free_cluster_chain(self, start_cluster):
         cluster = start_cluster
@@ -330,6 +332,8 @@ class FAT12FileSystem:
         current_entry = self.disk_manager.read_bytes(offset, 32)
         self.disk_manager.write_bytes(offset, b'\xE5' + current_entry[1:])
         self.free_cluster_chain(entry['starting_cluster'])
+        # Flush changes to disk
+        self.disk_manager.flush()
 
     def insert_file(self, parent_path, file_name, file_data, dt=None):
         if not self.is_valid_83_name(file_name):
@@ -342,7 +346,7 @@ class FAT12FileSystem:
         free_offset = self.find_free_entry_offset(parent_cluster)
         if free_offset is None:
             raise ValueError("No space in parent directory")
-        cluster_size = self.params['sectors_per_cluster'] * self.sector_size
+        cluster_size = self.params['sectors_per_cluster'] * self.params['bytes_per_sector']
         num_needed = math.ceil(len(file_data) / cluster_size)
         clusters = []
         for _ in range(num_needed):
@@ -366,3 +370,5 @@ class FAT12FileSystem:
         if dt is None:
             dt = datetime.datetime.now()
         self.disk_manager.write_bytes(free_offset, self.create_dir_entry(file_name, False, clusters[0], len(file_data), dt))
+        # Flush changes to disk
+        self.disk_manager.flush()

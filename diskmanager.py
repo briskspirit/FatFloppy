@@ -1,3 +1,4 @@
+import struct
 from types import SimpleNamespace
 from abc import ABC, abstractmethod
 from greaseweazle.codec import codec
@@ -381,6 +382,66 @@ class ImageFileManager(DiskManager):
             with open(file_path, 'rb') as f:
                 self.image_data = bytearray(f.read())
             self.dirty = False
+
+        # Initialize geometry attributes (will be set properly later)
+        self.sectors_per_track = None
+        self.num_heads = None
+        self.sector_size = None
+        self.total_sectors = None
+
+        # Try to infer geometry from image size and BPB if available
+        self._infer_geometry()
+
+    def _infer_geometry(self):
+        """Infer disk geometry from image size and boot sector if available."""
+        # Common floppy formats by size
+        formats = {
+            163840: (8, 1, 40, 512),    # 160K - 8 sectors, 1 head, 40 tracks
+            184320: (9, 1, 40, 512),    # 180K - 9 sectors, 1 head, 40 tracks
+            327680: (8, 2, 40, 512),    # 320K - 8 sectors, 2 heads, 40 tracks
+            368640: (9, 2, 40, 512),    # 360K - 9 sectors, 2 heads, 40 tracks
+            737280: (9, 2, 80, 512),    # 720K - 9 sectors, 2 heads, 80 tracks
+            1228800: (15, 2, 80, 512),  # 1.2M - 15 sectors, 2 heads, 80 tracks
+            1474560: (18, 2, 80, 512),  # 1.44M - 18 sectors, 2 heads, 80 tracks
+            1720320: (21, 2, 80, 512),  # 1.68M - 21 sectors, 2 heads, 80 tracks
+            2949120: (36, 2, 80, 512),  # 2.88M - 36 sectors, 2 heads, 80 tracks
+        }
+
+        # First try to read from BPB
+        try:
+            boot_sector = self.read_bytes(0, 512)
+            sector_size = struct.unpack_from('<H', boot_sector, 0x0B)[0]
+            sectors_per_track = struct.unpack_from('<H', boot_sector, 0x18)[0]
+            num_heads = struct.unpack_from('<H', boot_sector, 0x1A)[0]
+            total_sectors = struct.unpack_from('<H', boot_sector, 0x13)[0]
+            if total_sectors == 0:
+                total_sectors = struct.unpack_from('<I', boot_sector, 0x20)[0]
+
+            # Check if the values look reasonable
+            if (sector_size in [128, 256, 512, 1024] and
+                sectors_per_track > 0 and sectors_per_track <= 36 and
+                num_heads > 0 and num_heads <= 2 and
+                total_sectors > 0):
+                self.sector_size = sector_size
+                self.sectors_per_track = sectors_per_track
+                self.num_heads = num_heads
+                self.total_sectors = total_sectors
+                return
+        except:
+            pass
+
+        # If BPB failed, try to infer from image size
+        image_size = len(self.image_data)
+        if image_size in formats:
+            self.sectors_per_track, self.num_heads, num_cylinders, self.sector_size = formats[image_size]
+            self.total_sectors = self.sectors_per_track * self.num_heads * num_cylinders
+        else:
+            # Default to 1.44MB floppy format
+            self.sectors_per_track = 18
+            self.num_heads = 2
+            self.sector_size = 512
+            num_cylinders = image_size // (self.sectors_per_track * self.num_heads * self.sector_size)
+            self.total_sectors = self.sectors_per_track * self.num_heads * num_cylinders
 
     def read_bytes(self, offset, length):
         """Read byte range from the image."""
