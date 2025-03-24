@@ -2,6 +2,34 @@ import math
 import struct
 
 
+# Floppy disk format definitions based on standard geometries
+FLOPPY_FORMATS = [
+    {"size": "8\"",    "type": "SD", "heads": 1, "tracks": 77, "sectors": 26, "sector_size": 128, "capacity": "250.25kB", "rpm": 360, "encoding": "FM",  "codec": None},
+    {"size": "8\"",    "type": "SD", "heads": 2, "tracks": 77, "sectors": 26, "sector_size": 128, "capacity": "500.5kB",  "rpm": 360, "encoding": "FM",  "codec": None},
+    {"size": "8\"",    "type": "DD", "heads": 1, "tracks": 77, "sectors": 8,  "sector_size": 1024, "capacity": "616kB",   "rpm": 360, "encoding": "MFM", "codec": None},
+    {"size": "8\"",    "type": "DD", "heads": 2, "tracks": 77, "sectors": 8,  "sector_size": 1024, "capacity": "1232kB",  "rpm": 360, "encoding": "MFM", "codec": None},
+    {"size": "5.25\"", "type": "DD", "heads": 1, "tracks": 40, "sectors": 8,  "sector_size": 512, "capacity": "160kB",   "rpm": 300, "encoding": "MFM", "codec": "ibm.160"},
+    {"size": "5.25\"", "type": "DD", "heads": 2, "tracks": 40, "sectors": 8,  "sector_size": 512, "capacity": "320kB",   "rpm": 300, "encoding": "MFM", "codec": "ibm.320"},
+    {"size": "5.25\"", "type": "DD", "heads": 1, "tracks": 40, "sectors": 9,  "sector_size": 512, "capacity": "180kB",   "rpm": 300, "encoding": "MFM", "codec": "ibm.180"},
+    {"size": "5.25\"", "type": "DD", "heads": 2, "tracks": 40, "sectors": 9,  "sector_size": 512, "capacity": "360kB",   "rpm": 300, "encoding": "MFM", "codec": "ibm.360"},
+    {"size": "5.25\"", "type": "QD", "heads": 1, "tracks": 80, "sectors": 8,  "sector_size": 512, "capacity": "320kB",   "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "5.25\"", "type": "QD", "heads": 2, "tracks": 80, "sectors": 8,  "sector_size": 512, "capacity": "640kB",   "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "5.25\"", "type": "HD", "heads": 2, "tracks": 80, "sectors": 15, "sector_size": 512, "capacity": "1200kB",  "rpm": 360, "encoding": "MFM", "codec": "ibm.1200"},
+    {"size": "3.5\"",  "type": "DD", "heads": 1, "tracks": 80, "sectors": 8,  "sector_size": 512, "capacity": "320kB",   "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "3.5\"",  "type": "DD", "heads": 1, "tracks": 80, "sectors": 9,  "sector_size": 512, "capacity": "360kB",   "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "3.5\"",  "type": "DD", "heads": 2, "tracks": 80, "sectors": 8,  "sector_size": 512, "capacity": "640kB",   "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "3.5\"",  "type": "DD", "heads": 2, "tracks": 80, "sectors": 9,  "sector_size": 512, "capacity": "720kB",   "rpm": 300, "encoding": "MFM", "codec": "ibm.720"},
+    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 80, "sectors": 18, "sector_size": 512, "capacity": "1440kB",  "rpm": 300, "encoding": "MFM", "codec": "ibm.1440"},
+    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 80, "sectors": 21, "sector_size": 512, "capacity": "1680kB",  "rpm": 300, "encoding": "MFM", "codec": "ibm.1680"},
+    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 82, "sectors": 21, "sector_size": 512, "capacity": "1720kB",  "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "3.5\"",  "type": "ED", "heads": 2, "tracks": 80, "sectors": 36, "sector_size": 512, "capacity": "2880kB",  "rpm": 300, "encoding": "MFM", "codec": "ibm.2880"},
+]
+
+# Precalculate total sectors for each format
+for fmt in FLOPPY_FORMATS:
+    fmt["total_sectors"] = fmt["tracks"] * fmt["heads"] * fmt["sectors"]
+
+
 class FloppyBPB:
     def __init__(self, disk_manager):
         """
@@ -156,3 +184,12 @@ class FloppyBPB:
             'sectors_per_fat': self.sectors_per_fat,
             'media_descriptor': self.media_descriptor
         }
+
+    def get_disk_type(self):
+        """Return disk type based on media descriptor."""
+        disk_types = {
+            0xF0: "3.5\" HD 1.44 MB", 0xF9: "3.5\" DD 720 KB", 0xFD: "5.25\" DD 360 KB",
+            0xFE: "5.25\" DD 160 KB", 0xFF: "5.25\" DD 320 KB", 0xFC: "5.25\" DD 180 KB",
+            0xFB: "3.5\" DD 640 KB", 0xFA: "5.25\" DD 120 KB", 0xF8: "Fixed disk"
+        }
+        return disk_types.get(self.media_descriptor, "Unknown")
