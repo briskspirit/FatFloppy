@@ -1,6 +1,6 @@
-import sys
+# gui.py (updated version)
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QTreeWidget, QTreeWidgetItem,
+    QMainWindow, QTreeWidget, QTreeWidgetItem,
     QLabel, QGraphicsScene, QGraphicsView, QGraphicsPolygonItem,
     QGraphicsLineItem, QGraphicsEllipseItem, QDockWidget, QFileDialog,
     QVBoxLayout, QWidget, QPushButton, QMessageBox, QInputDialog
@@ -44,6 +44,7 @@ class FileBrowserApp(QMainWindow):
         super().__init__()
         self.root_node = self.create_dummy_fs()
         self.current_node = self.root_node
+        self.current_path = "/"
         self.current_head = 0
         self.busy_clusters = []
         self.initUI()
@@ -64,27 +65,77 @@ class FileBrowserApp(QMainWindow):
         if not hasattr(self, 'fs') or self.fs is None:
             return self.create_dummy_fs()
 
+        # Create the root node
         root_node = FileSystemNode("Root", is_dir=True, attributes="-")
+
+        # Get all files and directories from the filesystem
         files = self.fs.list_files()
+
+        # Create a dictionary to store all nodes by path
         node_dict = {"/": root_node}
 
-        for file in files:
+        # First add all directories to ensure parent directories exist
+        all_dirs = [f for f in files if f['is_dir']]
+        all_dirs.sort(key=lambda x: len(x['name'].split('/')))  # Sort by path depth
+
+        for file in all_dirs:
             path = file['name']
             parts = path.strip("/").split("/")
             parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
             name = parts[-1]
-            parent = node_dict.get(parent_path, root_node)
+
+            # Skip if this is a duplicate entry
+            full_path = (parent_path + "/" + name).replace("//", "/")
+            if full_path in node_dict:
+                continue
+
+            # Get the parent node
+            parent = node_dict.get(parent_path)
+            if not parent:
+                continue  # Skip if parent not found
+
+            # Create the directory node
             node = FileSystemNode(
                 name=name,
-                size=file['size'],
-                is_dir=file['is_dir'],
+                size=0,
+                is_dir=True,
                 modified=file['datetime'].strftime("%Y-%m-%d %H:%M:%S"),
                 attributes=file['attributes'],
                 parent=parent
             )
+
+            # Add to parent's children
             parent.appendChild(node)
-            if file['is_dir']:
-                node_dict[file['name']] = node
+
+            # Add to node dictionary
+            node_dict[full_path] = node
+
+        # Then add all files
+        all_files = [f for f in files if not f['is_dir']]
+        for file in all_files:
+            path = file['name']
+            parts = path.strip("/").split("/")
+            parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+            name = parts[-1]
+
+            # Get the parent node
+            parent = node_dict.get(parent_path)
+            if not parent:
+                continue  # Skip if parent not found
+
+            # Create the file node
+            node = FileSystemNode(
+                name=name,
+                size=file['size'],
+                is_dir=False,
+                modified=file['datetime'].strftime("%Y-%m-%d %H:%M:%S"),
+                attributes=file['attributes'],
+                parent=parent
+            )
+
+            # Add to parent's children
+            parent.appendChild(node)
+
         return root_node
 
     def initUI(self):
@@ -204,6 +255,7 @@ class FileBrowserApp(QMainWindow):
             # Update UI components
             self.root_node = self.build_fs_tree()
             self.current_node = self.root_node
+            self.current_path = "/"
             self.update_bpb_info(bpb)
             self.populate_tree()
             self.update_file_list()
@@ -243,6 +295,7 @@ class FileBrowserApp(QMainWindow):
             # Update UI components
             self.root_node = self.build_fs_tree()
             self.current_node = self.root_node
+            self.current_path = "/"
             self.update_bpb_info(bpb)
             self.populate_tree()
             self.update_file_list()
@@ -285,6 +338,9 @@ class FileBrowserApp(QMainWindow):
 
     def get_current_path(self):
         """Build the full path to the current directory."""
+        if hasattr(self, 'current_path'):
+            return self.current_path
+
         path_parts = []
         curr = self.current_node
         while curr and curr.parent:  # Don't include "Root" in the path
@@ -310,9 +366,17 @@ class FileBrowserApp(QMainWindow):
 
     def select_directory(self, item):
         self.current_node = item.node
+
+        # Update current_path
+        path_parts = []
+        curr = self.current_node
+        while curr and curr.parent:  # Don't include "Root" in the path
+            path_parts.insert(0, curr.name)
+            curr = curr.parent
+        self.current_path = "/" + "/".join(path_parts) if path_parts else "/"
+
         self.update_file_list()
-        current_path = self.get_current_path()
-        self.statusBar().showMessage(f"Viewing: {current_path}")
+        self.statusBar().showMessage(f"Viewing: {self.current_path}")
 
     def update_file_list(self):
         self.file_list.clear()
@@ -341,13 +405,10 @@ class FileBrowserApp(QMainWindow):
 
         try:
             # Build the full path to the file
-            path_parts = []
-            curr = node
-            while curr.parent:
-                path_parts.insert(0, curr.name)
-                curr = curr.parent
-
-            file_path = "/" + "/".join(path_parts)
+            file_path = self.current_path
+            if file_path != "/":
+                file_path += "/"
+            file_path += node.name
 
             # Extract the file
             file_data = self.fs.extract_file(file_path)
@@ -371,13 +432,10 @@ class FileBrowserApp(QMainWindow):
 
         try:
             # Build the full path to the file/directory
-            path_parts = []
-            curr = node
-            while curr.parent:
-                path_parts.insert(0, curr.name)
-                curr = curr.parent
-
-            item_path = "/" + "/".join(path_parts)
+            item_path = self.current_path
+            if item_path != "/":
+                item_path += "/"
+            item_path += node.name
 
             # Confirm deletion
             msg_type = "directory" if node.is_dir else "file"
@@ -387,10 +445,17 @@ class FileBrowserApp(QMainWindow):
                 # Delete the item
                 self.fs.delete_item(item_path)
 
+                # Remember the current path
+                current_path = self.current_path
+
                 # Update UI
                 self.root_node = self.build_fs_tree()
                 self.populate_tree()
-                self.update_file_list()
+
+                # Restore the current directory selection
+                self.navigate_to_path(current_path)
+
+                # Update busy clusters and disk map
                 self.get_busy_clusters()
                 self.draw_disk_map()
 
@@ -398,12 +463,69 @@ class FileBrowserApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to delete item: {str(e)}")
 
+    def navigate_to_path(self, path):
+        """Navigate to the specified path and update the current node."""
+        if path == "/":
+            self.current_node = self.root_node
+            self.current_path = "/"
+            self.update_file_list()
+            return True
+
+        parts = path.strip("/").split("/")
+        current = self.root_node
+
+        for part in parts:
+            found = False
+            for child in current.children:
+                if child.is_dir and child.name == part:
+                    current = child
+                    found = True
+                    break
+            if not found:
+                # Path no longer exists, stay at the root
+                self.current_node = self.root_node
+                self.current_path = "/"
+                self.update_file_list()
+                return False
+
+        self.current_node = current
+        self.current_path = path
+        self.update_file_list()
+
+        # Also select the corresponding item in the tree widget
+        self.select_tree_item_by_path(path)
+
+        return True
+
+    def select_tree_item_by_path(self, path):
+        """Select the tree item corresponding to the given path."""
+        if path == "/":
+            # Select the root item
+            self.tree_widget.setCurrentItem(self.tree_widget.topLevelItem(0))
+            return
+
+        parts = path.strip("/").split("/")
+        item = self.tree_widget.topLevelItem(0)  # Root item
+
+        for part in parts:
+            found = False
+            for i in range(item.childCount()):
+                child = item.child(i)
+                if child.text(0) == part:
+                    item = child
+                    found = True
+                    break
+            if not found:
+                return
+
+        self.tree_widget.setCurrentItem(item)
+
     def create_directory(self):
         if not hasattr(self, 'fs') or not self.current_node:
             return
 
         # Get current path
-        current_path = self.get_current_path()
+        current_path = self.current_path
 
         # Get new directory name from user
         dir_name, ok = QInputDialog.getText(self, "Create New Directory", 
@@ -417,7 +539,11 @@ class FileBrowserApp(QMainWindow):
             # Update UI
             self.root_node = self.build_fs_tree()
             self.populate_tree()
-            self.update_file_list()
+
+            # Restore the current directory selection
+            self.navigate_to_path(current_path)
+
+            # Update busy clusters and disk map
             self.get_busy_clusters()
             self.draw_disk_map()
 
@@ -430,7 +556,7 @@ class FileBrowserApp(QMainWindow):
             return
 
         # Get current path
-        current_path = self.get_current_path()
+        current_path = self.current_path
 
         # Get file to add
         file_path, _ = QFileDialog.getOpenFileName(self, "Select File to Add")
@@ -464,7 +590,11 @@ class FileBrowserApp(QMainWindow):
             # Update UI
             self.root_node = self.build_fs_tree()
             self.populate_tree()
-            self.update_file_list()
+
+            # Restore the current directory selection
+            self.navigate_to_path(current_path)
+
+            # Update busy clusters and disk map
             self.get_busy_clusters()
             self.draw_disk_map()
 
@@ -499,7 +629,7 @@ class FileBrowserApp(QMainWindow):
                 value_bytes = self.fs.disk_manager.read_bytes(offset, 2)
                 value = struct.unpack('<H', value_bytes)[0]
                 cluster_value = value & 0x0FFF if cluster % 2 == 0 else (value >> 4) & 0x0FFF
-                if cluster_value not in [0x000, 0xFFF]:
+                if cluster_value != 0x000:  # Cluster is not free
                     busy_clusters.append(cluster)
             self.busy_clusters = busy_clusters
         except Exception as e:
@@ -547,8 +677,8 @@ class FileBrowserApp(QMainWindow):
                 ("FAT1", Qt.GlobalColor.green),
                 ("FAT2", Qt.GlobalColor.blue),
                 ("Root Directory", Qt.GlobalColor.yellow),
-                ("Busy Data", Qt.GlobalColor.magenta),
-                ("Free Data", Qt.GlobalColor.gray),
+                ("Busy Cluster", Qt.GlobalColor.magenta),
+                ("Free Cluster", Qt.GlobalColor.gray),
             ]
             for i, (label, color) in enumerate(colors):
                 rect = QGraphicsPolygonItem(QPolygonF([
@@ -626,7 +756,7 @@ class FileBrowserApp(QMainWindow):
                 return Qt.GlobalColor.yellow  # Root directory
             else:
                 # Data area
-                cluster = (s - (reserved + 2 * fat_size + root_size)) // self.fs.sectors_per_cluster + 2
+                cluster = (s - (reserved + 2 * fat_size + root_size)) // self.fs.params['sectors_per_cluster'] + 2
                 return Qt.GlobalColor.magenta if cluster in self.busy_clusters else Qt.GlobalColor.gray
         except Exception:
             return Qt.GlobalColor.lightGray  # Default for any errors
