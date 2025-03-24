@@ -4,30 +4,26 @@ import struct
 
 # Floppy disk format definitions based on standard geometries
 FLOPPY_FORMATS = [
-    {"size": "8\"",    "type": "SD", "heads": 1, "tracks": 77, "sectors": 26, "sector_size": 128, "capacity": "250.25kB", "rpm": 360, "encoding": "FM",  "codec": None},
-    {"size": "8\"",    "type": "SD", "heads": 2, "tracks": 77, "sectors": 26, "sector_size": 128, "capacity": "500.5kB",  "rpm": 360, "encoding": "FM",  "codec": None},
-    {"size": "8\"",    "type": "DD", "heads": 1, "tracks": 77, "sectors": 8,  "sector_size": 1024, "capacity": "616kB",   "rpm": 360, "encoding": "MFM", "codec": None},
-    {"size": "8\"",    "type": "DD", "heads": 2, "tracks": 77, "sectors": 8,  "sector_size": 1024, "capacity": "1232kB",  "rpm": 360, "encoding": "MFM", "codec": None},
-    {"size": "5.25\"", "type": "DD", "heads": 1, "tracks": 40, "sectors": 8,  "sector_size": 512, "capacity": "160kB",   "rpm": 300, "encoding": "MFM", "codec": "ibm.160"},
-    {"size": "5.25\"", "type": "DD", "heads": 2, "tracks": 40, "sectors": 8,  "sector_size": 512, "capacity": "320kB",   "rpm": 300, "encoding": "MFM", "codec": "ibm.320"},
-    {"size": "5.25\"", "type": "DD", "heads": 1, "tracks": 40, "sectors": 9,  "sector_size": 512, "capacity": "180kB",   "rpm": 300, "encoding": "MFM", "codec": "ibm.180"},
-    {"size": "5.25\"", "type": "DD", "heads": 2, "tracks": 40, "sectors": 9,  "sector_size": 512, "capacity": "360kB",   "rpm": 300, "encoding": "MFM", "codec": "ibm.360"},
-    {"size": "5.25\"", "type": "QD", "heads": 1, "tracks": 80, "sectors": 8,  "sector_size": 512, "capacity": "320kB",   "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "5.25\"", "type": "QD", "heads": 2, "tracks": 80, "sectors": 8,  "sector_size": 512, "capacity": "640kB",   "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "5.25\"", "type": "HD", "heads": 2, "tracks": 80, "sectors": 15, "sector_size": 512, "capacity": "1200kB",  "rpm": 360, "encoding": "MFM", "codec": "ibm.1200"},
-    {"size": "3.5\"",  "type": "DD", "heads": 1, "tracks": 80, "sectors": 8,  "sector_size": 512, "capacity": "320kB",   "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "3.5\"",  "type": "DD", "heads": 1, "tracks": 80, "sectors": 9,  "sector_size": 512, "capacity": "360kB",   "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "3.5\"",  "type": "DD", "heads": 2, "tracks": 80, "sectors": 8,  "sector_size": 512, "capacity": "640kB",   "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "3.5\"",  "type": "DD", "heads": 2, "tracks": 80, "sectors": 9,  "sector_size": 512, "capacity": "720kB",   "rpm": 300, "encoding": "MFM", "codec": "ibm.720"},
-    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 80, "sectors": 18, "sector_size": 512, "capacity": "1440kB",  "rpm": 300, "encoding": "MFM", "codec": "ibm.1440"},
-    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 80, "sectors": 21, "sector_size": 512, "capacity": "1680kB",  "rpm": 300, "encoding": "MFM", "codec": "ibm.1680"},
-    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 82, "sectors": 21, "sector_size": 512, "capacity": "1720kB",  "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "3.5\"",  "type": "ED", "heads": 2, "tracks": 80, "sectors": 36, "sector_size": 512, "capacity": "2880kB",  "rpm": 300, "encoding": "MFM", "codec": "ibm.2880"},
+    {"size": "8\"",    "type": "SD", "heads": 1, "tracks": 77, "sectors": 26, "sector_size": 128, "total_sectors": 2002, "capacity": 256256,     "rpm": 360, "encoding": "FM",  "codec": None},
+    {"size": "8\"",    "type": "SD", "heads": 2, "tracks": 77, "sectors": 26, "sector_size": 128, "total_sectors": 4004, "capacity": 512512,     "rpm": 360, "encoding": "FM",  "codec": None},
+    {"size": "8\"",    "type": "DD", "heads": 1, "tracks": 77, "sectors": 8,  "sector_size": 1024, "total_sectors": 616, "capacity": 630784,     "rpm": 360, "encoding": "MFM", "codec": None},
+    {"size": "8\"",    "type": "DD", "heads": 2, "tracks": 77, "sectors": 8,  "sector_size": 1024, "total_sectors": 1232, "capacity": 1261568,    "rpm": 360, "encoding": "MFM", "codec": None},
+    {"size": "5.25\"", "type": "DD", "heads": 1, "tracks": 40, "sectors": 8,  "sector_size": 512, "total_sectors": 320, "capacity": 163840,     "rpm": 300, "encoding": "MFM", "codec": "ibm.160"},
+    {"size": "5.25\"", "type": "DD", "heads": 2, "tracks": 40, "sectors": 8,  "sector_size": 512, "total_sectors": 640, "capacity": 327680,     "rpm": 300, "encoding": "MFM", "codec": "ibm.320"},
+    {"size": "5.25\"", "type": "DD", "heads": 1, "tracks": 40, "sectors": 9,  "sector_size": 512, "total_sectors": 360, "capacity": 184320,     "rpm": 300, "encoding": "MFM", "codec": "ibm.180"},
+    {"size": "5.25\"", "type": "DD", "heads": 2, "tracks": 40, "sectors": 9,  "sector_size": 512, "total_sectors": 720, "capacity": 368640,     "rpm": 300, "encoding": "MFM", "codec": "ibm.360"},
+    {"size": "5.25\"", "type": "QD", "heads": 1, "tracks": 80, "sectors": 8,  "sector_size": 512, "total_sectors": 640, "capacity": 327680,     "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "5.25\"", "type": "QD", "heads": 2, "tracks": 80, "sectors": 8,  "sector_size": 512, "total_sectors": 1280, "capacity": 655360,     "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "5.25\"", "type": "HD", "heads": 2, "tracks": 80, "sectors": 15, "sector_size": 512, "total_sectors": 2400, "capacity": 1228800,    "rpm": 360, "encoding": "MFM", "codec": "ibm.1200"},
+    {"size": "3.5\"",  "type": "DD", "heads": 1, "tracks": 80, "sectors": 8,  "sector_size": 512, "total_sectors": 640, "capacity": 327680,     "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "3.5\"",  "type": "DD", "heads": 1, "tracks": 80, "sectors": 9,  "sector_size": 512, "total_sectors": 720, "capacity": 368640,     "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "3.5\"",  "type": "DD", "heads": 2, "tracks": 80, "sectors": 8,  "sector_size": 512, "total_sectors": 1280, "capacity": 655360,     "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "3.5\"",  "type": "DD", "heads": 2, "tracks": 80, "sectors": 9,  "sector_size": 512, "total_sectors": 1440, "capacity": 737280,     "rpm": 300, "encoding": "MFM", "codec": "ibm.720"},
+    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 80, "sectors": 18, "sector_size": 512, "total_sectors": 2880, "capacity": 1474560,    "rpm": 300, "encoding": "MFM", "codec": "ibm.1440"},
+    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 80, "sectors": 21, "sector_size": 512, "total_sectors": 3360, "capacity": 1720320,    "rpm": 300, "encoding": "MFM", "codec": "ibm.1680"},
+    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 82, "sectors": 21, "sector_size": 512, "total_sectors": 3444, "capacity": 1763328,    "rpm": 300, "encoding": "MFM", "codec": None},
+    {"size": "3.5\"",  "type": "ED", "heads": 2, "tracks": 80, "sectors": 36, "sector_size": 512, "total_sectors": 5760, "capacity": 2949120,    "rpm": 300, "encoding": "MFM", "codec": "ibm.2880"},
 ]
-
-# Precalculate total sectors for each format
-for fmt in FLOPPY_FORMATS:
-    fmt["total_sectors"] = fmt["tracks"] * fmt["heads"] * fmt["sectors"]
 
 
 class FloppyBPB:
@@ -186,10 +182,35 @@ class FloppyBPB:
         }
 
     def get_disk_type(self):
-        """Return disk type based on media descriptor."""
-        disk_types = {
-            0xF0: "3.5\" HD 1.44 MB", 0xF9: "3.5\" DD 720 KB", 0xFD: "5.25\" DD 360 KB",
-            0xFE: "5.25\" DD 160 KB", 0xFF: "5.25\" DD 320 KB", 0xFC: "5.25\" DD 180 KB",
-            0xFB: "3.5\" DD 640 KB", 0xFA: "5.25\" DD 120 KB", 0xF8: "Fixed disk"
+        """
+        Return disk type based on media descriptor and geometry.
+        First tries to match by media descriptor, then by geometry if that fails.
+        """
+        # Media descriptor mapping for quick identification
+        media_descriptor_map = {
+            0xF0: "3.5\" HD 1.44 MB",
+            0xF9: "3.5\" DD 720 KB",
+            0xFD: "5.25\" DD 360 KB",
+            0xFE: "5.25\" DD 160 KB",
+            0xFF: "5.25\" DD 320 KB",
+            0xFC: "5.25\" DD 180 KB",
+            0xFB: "3.5\" DD 640 KB",
+            0xFA: "5.25\" DD 120 KB",
+            0xF8: "Fixed disk"
         }
-        return disk_types.get(self.media_descriptor, "Unknown")
+
+        # First try to identify by media descriptor
+        if self.media_descriptor in media_descriptor_map:
+            return media_descriptor_map[self.media_descriptor]
+
+        # If media descriptor doesn't match, try to identify by geometry
+        for fmt in FLOPPY_FORMATS:
+            if (self.total_sectors == fmt["total_sectors"] and 
+                self.sectors_per_track == fmt["sectors"] and 
+                self.num_heads == fmt["heads"] and
+                self.bytes_per_sector == fmt["sector_size"]):
+                capacity_mb = fmt['capacity'] / (1024 * 1024)
+                return f"{fmt['size']} {fmt['type']} {capacity_mb:.2f} MB"
+
+        # If no match found
+        return f"Unknown (Media Descriptor: 0x{self.media_descriptor:02X}, Sectors: {self.total_sectors})"
