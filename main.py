@@ -7,7 +7,7 @@ import sys
 import argparse
 from PyQt6.QtWidgets import QApplication
 from gui import FileBrowserApp
-from test_cui import run_cui
+from cli import run_cui
 
 def main():
     parser = argparse.ArgumentParser(description="FatFloppy - Floppy Disk Browser")

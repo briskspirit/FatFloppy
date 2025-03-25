@@ -1,7 +1,6 @@
 import math
 import struct
 
-
 # Floppy disk format definitions based on standard geometries
 FLOPPY_FORMATS = [
     {"size": "8\"",    "type": "SD", "heads": 1, "tracks": 77, "sectors": 26, "sector_size": 128, "total_sectors": 2002, "capacity": 256256,     "rpm": 360, "encoding": "FM",  "codec": None},
@@ -78,7 +77,7 @@ class FloppyBPB:
             # self.disk_manager.set_geometry(self.sectors_per_track, self.num_heads, num_cylinders, self.bytes_per_sector)
 
     @staticmethod
-    def calculate_sectors_per_fat(total_sectors, reserved_sectors, num_fats, root_dir_sectors, 
+    def calculate_sectors_per_fat(total_sectors, reserved_sectors, num_fats, root_dir_sectors,
                                  sectors_per_cluster, sector_size):
         """
         Calculate the number of sectors per FAT for FAT12.
@@ -122,7 +121,7 @@ class FloppyBPB:
         total_sectors = num_tracks * sectors_per_track * num_heads
         root_dir_sectors = (root_entries * 32 + sector_size - 1) // sector_size
         # This assumes a helper method to calculate sectors per FAT; adjust as needed
-        sectors_per_fat = cls.calculate_sectors_per_fat(total_sectors, reserved_sectors, num_fats, 
+        sectors_per_fat = cls.calculate_sectors_per_fat(total_sectors, reserved_sectors, num_fats,
                                                         root_dir_sectors, sectors_per_cluster, sector_size)
 
         # Create the boot sector
@@ -205,8 +204,8 @@ class FloppyBPB:
 
         # If media descriptor doesn't match, try to identify by geometry
         for fmt in FLOPPY_FORMATS:
-            if (self.total_sectors == fmt["total_sectors"] and 
-                self.sectors_per_track == fmt["sectors"] and 
+            if (self.total_sectors == fmt["total_sectors"] and
+                self.sectors_per_track == fmt["sectors"] and
                 self.num_heads == fmt["heads"] and
                 self.bytes_per_sector == fmt["sector_size"]):
                 capacity_mb = fmt['capacity'] / (1024 * 1024)

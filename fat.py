@@ -1,6 +1,6 @@
+import datetime
 import math
 import struct
-import datetime
 
 
 class FAT12FileSystem:
@@ -157,8 +157,8 @@ class FAT12FileSystem:
                 ext = entry[8:11].decode('cp437').strip()
                 full_name = f"{name}.{ext}" if ext else name
                 offset = dir_start + i
-                entries.append(({'name': full_name, 'is_dir': bool(entry[11] & 0x10), 
-                                'starting_cluster': struct.unpack('<H', entry[26:28])[0], 
+                entries.append(({'name': full_name, 'is_dir': bool(entry[11] & 0x10),
+                                'starting_cluster': struct.unpack('<H', entry[26:28])[0],
                                 'size': struct.unpack('<I', entry[28:32])[0]}, offset))
         else:
             chain = self.get_cluster_chain(cluster)
@@ -175,8 +175,8 @@ class FAT12FileSystem:
                     ext = entry[8:11].decode('cp437').strip()
                     full_name = f"{name}.{ext}" if ext else name
                     entry_offset = offset + i
-                    entries.append(({'name': full_name, 'is_dir': bool(entry[11] & 0x10), 
-                                    'starting_cluster': struct.unpack('<H', entry[26:28])[0], 
+                    entries.append(({'name': full_name, 'is_dir': bool(entry[11] & 0x10),
+                                    'starting_cluster': struct.unpack('<H', entry[26:28])[0],
                                     'size': struct.unpack('<I', entry[28:32])[0]}, entry_offset))
         return entries
 

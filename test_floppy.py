@@ -1,7 +1,6 @@
 from diskmanager import FloppyDiskManager
 from floppybpb import FloppyBPB
 
-
 format_params = {
     'cyls': 80,            # Number of cylinders
     'heads': 2,            # Number of heads

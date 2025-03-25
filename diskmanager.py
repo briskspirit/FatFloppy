@@ -1,9 +1,10 @@
 import struct
-from types import SimpleNamespace
 from abc import ABC, abstractmethod
+from types import SimpleNamespace
+
 from greaseweazle.codec import codec
-from greaseweazle.tools import util, read
 from greaseweazle.codec.ibm import ibm
+from greaseweazle.tools import read, util
 
 
 class DiskManager(ABC):
@@ -34,25 +35,253 @@ class FloppyDiskManager(DiskManager):
         self.tracks = tracks if tracks else util.TrackSet('c=0-79:h=0-1')
         self.usb = util.usb_open(device_name)
         self.drive_obj = util.Drive()(drive)
+        self.format_name = format_name
 
         if format_params:
             self.fmt_cls = self.create_custom_diskdef(format_params)
         else:
             self.fmt_cls = codec.get_diskdef(format_name)
-            print(dir(self.fmt_cls))
-            print(self.fmt_cls.cyls)
-            print(self.fmt_cls.heads)
-            print(self.fmt_cls.track_map[(0, 0)].rpm)
-            print(self.fmt_cls.track_map[(0, 0)].rate)
-            print(dir(self.fmt_cls.track_map[(0, 0)]))
-        # if self.fmt_cls is None:
-            # raise ValueError(f"Format '{format_name}' not recognized.")
-        self.track_data = {}
-        self.dirty_tracks = set()
+
+        # Initialize geometry attributes with default values
         self.sectors_per_track = None
         self.num_heads = None
         self.num_cylinders = None
         self.sector_size = None
+        self.total_sectors = None
+
+        # Initialize track data storage
+        self.track_data = {}
+        self.dirty_tracks = set()
+
+        # Initialize geometry based on format class if available
+        self.init_geometry_from_format()
+
+    def init_geometry_from_format(self):
+        """Initialize disk geometry from format class or read from disk."""
+        try:
+            if self.format_name == 'ibm.scan':
+                # For ibm.scan, we need to be more aggressive about detecting format
+                self.read_and_detect_format()
+
+                # Always try to read the BPB as well
+                self.read_bpb_geometry()
+
+                # If we still don't have complete geometry, get from disk
+                if not all([self.sectors_per_track, self.num_heads, self.num_cylinders, self.sector_size]):
+                    self.detect_geometry_from_disk()
+            else:
+                # For specific format, get geometry from format definition
+                self.init_geometry_from_fmt_cls()
+
+                # For completeness, also try to read BPB
+                if not all([self.sectors_per_track, self.num_heads, self.num_cylinders, self.sector_size]):
+                    self.read_bpb_geometry()
+        except Exception as e:
+            print(f"Warning: Could not initialize geometry from format: {e}")
+
+        # Ensure we have values for all geometry properties
+        if not self.sectors_per_track or self.sectors_per_track <= 0:
+            self.sectors_per_track = 18  # Default for 1.44MB floppy
+        if not self.num_heads or self.num_heads <= 0:
+            self.num_heads = 2  # Default for 1.44MB floppy
+        if not self.num_cylinders or self.num_cylinders <= 0:
+            self.num_cylinders = 80  # Default for 1.44MB floppy
+        if not self.sector_size or self.sector_size <= 0:
+            self.sector_size = 512  # Default for most floppies
+
+        # Calculate total sectors if not set
+        if not self.total_sectors or self.total_sectors <= 0:
+            self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+
+    def read_and_detect_format(self):
+        """Read track 0 and detect format, then set geometry accordingly."""
+        try:
+            # Create temporary args for reading track 0
+            args = SimpleNamespace(
+                revs=2, raw=False, fmt_cls=self.fmt_cls,
+                tracks=util.TrackSet('c=0:h=0'),
+                retries=3, seek_retries=0, reverse=False,
+                adjust_speed=None, fake_index=None, hard_sectors=False,
+                drive=self.drive_obj, ticks=0, drive_ticks_per_rev=None
+            )
+
+            # Function to read track 0
+            def read_track_zero():
+                for t in args.tracks:
+                    _, dat = read.read_with_retry(self.usb, args, t)
+                    if dat is not None:
+                        # Try to get track information
+                        track = None
+                        if hasattr(dat, 'track'):
+                            track = dat.track
+                        else:
+                            track = dat
+
+                        # Extract sector information if available
+                        if hasattr(track, 'sectors') and track.sectors:
+                            sectors = track.sectors
+                            if sectors:
+                                # Get sector details
+                                self.sector_size = len(sectors[0].dam.data) if hasattr(sectors[0].dam, 'data') else 512
+                                self.sectors_per_track = len(sectors)
+                                self.num_heads = 2  # Assume double-sided
+                                self.num_cylinders = 80  # Assume 80 tracks
+                                print(f"Detected from track 0: {self.sectors_per_track} sectors, {self.sector_size} bytes per sector")
+
+                        # Try to extract more info from track properties
+                        if hasattr(track, 'mode'):
+                            if track.mode.name == 'MFM':
+                                print("Detected MFM encoding")
+                                if not self.sectors_per_track:
+                                    # MFM typical values
+                                    if self.sector_size == 512:
+                                        # High-density
+                                        self.sectors_per_track = 18
+                                        self.num_cylinders = 80
+                                        self.num_heads = 2
+                            elif track.mode.name == 'FM':
+                                print("Detected FM encoding")
+                                if not self.sectors_per_track:
+                                    # FM typical values
+                                    self.sectors_per_track = 9
+                                    self.num_cylinders = 40
+                                    self.num_heads = 2
+
+            # Read track 0 to get format information
+            util.with_drive_selected(read_track_zero, self.usb, self.drive_obj)
+
+        except Exception as e:
+            print(f"Warning: Error detecting format from track 0: {e}")
+
+    def detect_geometry_from_disk(self):
+        """Attempt to detect disk geometry by reading multiple tracks."""
+        print("Attempting to detect disk geometry from disk...")
+        try:
+            # First, try to detect sectors per track by reading track 0 on both heads
+            max_sectors = 0
+            for head in [0, 1]:
+                args = SimpleNamespace(
+                    revs=2, raw=False, fmt_cls=self.fmt_cls,
+                    tracks=util.TrackSet(f'c=0:h={head}'),
+                    retries=1, seek_retries=0, reverse=False,
+                    adjust_speed=None, fake_index=None, hard_sectors=False,
+                    drive=self.drive_obj, ticks=0, drive_ticks_per_rev=None
+                )
+
+                def read_track():
+                    for t in args.tracks:
+                        _, dat = read.read_with_retry(self.usb, args, t)
+                        if dat is not None:
+                            track = getattr(dat, 'track', dat)
+                            if hasattr(track, 'sectors'):
+                                nonlocal max_sectors
+                                max_sectors = max(max_sectors, len(track.sectors))
+
+                try:
+                    util.with_drive_selected(read_track, self.usb, self.drive_obj)
+                except Exception:
+                    # Continue with next head if this one fails
+                    pass
+
+            if max_sectors > 0:
+                self.sectors_per_track = max_sectors
+                print(f"Detected {max_sectors} sectors per track")
+
+            # Then try to detect number of cylinders by seeking until we hit a limit
+            if not self.num_cylinders:
+                max_cylinder = 40  # Start with a safe default
+
+                def test_seek():
+                    nonlocal max_cylinder
+                    for test_cyl in [40, 80]:
+                        try:
+                            self.usb.seek(test_cyl, 0)
+                            max_cylinder = test_cyl
+                        except Exception:
+                            break
+
+                try:
+                    util.with_drive_selected(test_seek, self.usb, self.drive_obj)
+                    self.num_cylinders = max_cylinder + 1
+                    print(f"Detected {self.num_cylinders} cylinders")
+                except Exception as e:
+                    print(f"Error detecting cylinders: {e}")
+
+            # Detect number of heads
+            if not self.num_heads:
+                has_head1 = False
+
+                def test_head1():
+                    nonlocal has_head1
+                    try:
+                        self.usb.seek(0, 1)
+                        has_head1 = True
+                    except Exception:
+                        pass
+
+                try:
+                    util.with_drive_selected(test_head1, self.usb, self.drive_obj)
+                    self.num_heads = 2 if has_head1 else 1
+                    print(f"Detected {self.num_heads} heads")
+                except Exception as e:
+                    print(f"Error detecting heads: {e}")
+
+        except Exception as e:
+            print(f"Error detecting geometry from disk: {e}")
+
+    def read_bpb_geometry(self):
+        """Read BPB to get disk geometry."""
+        try:
+            # Read boot sector
+            boot_sector = self.read_bytes(0, 512)
+
+            # Parse BPB fields
+            self.sector_size = struct.unpack_from('<H', boot_sector, 0x0B)[0]
+            self.sectors_per_track = struct.unpack_from('<H', boot_sector, 0x18)[0]
+            self.num_heads = struct.unpack_from('<H', boot_sector, 0x1A)[0]
+
+            # Get total sectors
+            total_sectors = struct.unpack_from('<H', boot_sector, 0x13)[0]
+            if total_sectors == 0:
+                total_sectors = struct.unpack_from('<I', boot_sector, 0x20)[0]
+
+            self.total_sectors = total_sectors
+
+            # Calculate number of cylinders
+            if self.sectors_per_track and self.num_heads and self.total_sectors:
+                self.num_cylinders = self.total_sectors // (self.sectors_per_track * self.num_heads)
+
+            print(f"BPB geometry: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
+            return True
+        except Exception as e:
+            print(f"Warning: Error reading BPB geometry: {e}")
+            return False
+
+    def init_geometry_from_fmt_cls(self):
+        """Initialize geometry from format class."""
+        if not self.fmt_cls or not hasattr(self.fmt_cls, 'tracks'):
+            return
+
+        try:
+            # Get cylinder and head counts
+            self.num_cylinders = self.fmt_cls.cyls
+            self.num_heads = self.fmt_cls.heads
+
+            # Get first track definition to determine sector size and count
+            for track_coord, track_def in self.fmt_cls.track_map.items():
+                if hasattr(track_def, 'secs'):
+                    self.sectors_per_track = track_def.secs
+                if hasattr(track_def, 'sz') and track_def.sz:
+                    # Convert sector size code to bytes (128 << n)
+                    n = track_def.sz[0] if isinstance(track_def.sz, list) else track_def.sz
+                    self.sector_size = 128 << n
+                break
+
+            # Calculate total sectors
+            if self.sectors_per_track and self.num_heads and self.num_cylinders:
+                self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+        except Exception as e:
+            print(f"Warning: Error initializing geometry from format: {e}")
 
     def create_custom_diskdef(self, params):
         """
@@ -90,6 +319,22 @@ class FloppyDiskManager(DiskManager):
 
         # Finalize DiskDef
         disk_def.finalise()
+
+        # Set geometry attributes based on params
+        self.num_cylinders = params['cyls']
+        self.num_heads = params['heads']
+        if 'sector_size' in params:
+            self.sector_size = params['sector_size']
+        elif 'track_params' in params and 'bps' in params['track_params']:
+            self.sector_size = params['track_params']['bps']
+
+        if 'track_params' in params and 'secs' in params['track_params']:
+            self.sectors_per_track = params['track_params']['secs']
+
+        # Calculate total sectors
+        if self.sectors_per_track and self.num_heads and self.num_cylinders:
+            self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+
         return disk_def
 
     def set_geometry(self, sectors_per_track, num_heads, num_cylinders, sector_size):
@@ -98,6 +343,7 @@ class FloppyDiskManager(DiskManager):
         self.num_heads = num_heads
         self.num_cylinders = num_cylinders
         self.sector_size = sector_size
+        self.total_sectors = sectors_per_track * num_heads * num_cylinders
 
     def read_track(self, cyl, head):
         """Read a track from the disk if not cached."""
@@ -111,26 +357,35 @@ class FloppyDiskManager(DiskManager):
                 drive=self.drive_obj, ticks=0, drive_ticks_per_rev=None
             )
             def read_track_wrapper():
-                for t in args.tracks:
-                    flux, dat = read.read_with_retry(self.usb, args, t)
-                    sectors = dat.track.sectors if hasattr(dat, 'track') else dat.sectors
-                    # print(dir(dat))
-                    # print(dir(dat.track))
-                    # print(dat.track.iams)
-                    # print(dat.nsec)
-                    # print(dat.track.mode)
-                    # print(dat.track.gapbyte)
-                    # print(dat.track.gap_presync)
-                    # print(dat.track.head)
-                    # print(len(dat.track.sectors[0].dam.data))
-                    if dat is not None:
-                        # Store sector data with their IDs
-                        sector_data = {s.idam.r: bytes(s.dam.data) for s in sectors if s.dam.data}
-                        self.track_data[track_id] = sector_data
-                        break
-                    else:
-                        raise ValueError(f"Failed to read track {cyl}.{head}")
+                track_iterator = util.TrackSet.TrackIter(args.tracks)
+                next(track_iterator)  # Initialize the iterator
+                flux, dat = read.read_with_retry(self.usb, args, track_iterator)
+
+                sectors = None
+                if hasattr(dat, 'track') and hasattr(dat.track, 'sectors'):
+                    sectors = dat.track.sectors
+                elif hasattr(dat, 'sectors'):
+                    sectors = dat.sectors
+
+                if dat is not None and sectors:
+                    # Store sector data with their IDs
+                    sector_data = {s.idam.r: bytes(s.dam.data) for s in sectors if hasattr(s, 'dam') and hasattr(s.dam, 'data')}
+                    self.track_data[track_id] = sector_data
+
+                    # Update geometry information if not set
+                    if not self.sectors_per_track or self.sectors_per_track < len(sectors):
+                        self.sectors_per_track = len(sectors)
+                        # If we found more sectors, recalculate total_sectors
+                        if self.num_heads and self.num_cylinders:
+                            self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+
+                    if not self.sector_size and sectors:
+                        self.sector_size = len(sectors[0].dam.data) if hasattr(sectors[0], 'dam') and hasattr(sectors[0].dam, 'data') else 512
+                else:
+                    raise ValueError(f"Failed to read track {cyl}.{head}")
+
             util.with_drive_selected(read_track_wrapper, self.usb, self.drive_obj)
+
         return self.track_data[track_id]
 
     def write_track(self, cyl, head, data):
@@ -144,6 +399,11 @@ class FloppyDiskManager(DiskManager):
         if not self.dirty_tracks:
             print("No dirty tracks to write.")
             return
+
+        # Check if writing is supported for the current codec
+        if self.format_name == 'ibm.scan':
+            print("Warning: Writing with ibm.scan codec may be unreliable.")
+            # Consider switching to a fixed format for writing
 
         # Measure drive RPM once if not already set, with drive selected
         if not hasattr(self, 'drive_ticks_per_rev'):
@@ -185,81 +445,38 @@ class FloppyDiskManager(DiskManager):
     def convert_to_flux(self, cyl, head, drive_ticks_per_rev):
         """Convert track data to flux list for writing, adjusted for drive RPM."""
         # Get the track definition from the disk format
-        track_def = self.fmt_cls.track_map[(cyl, head)]
-        track = track_def.mk_track(cyl, head)  # Creates an IBMTrack_Fixed instance
-        track_data = self.track_data[(cyl, head)]
-
-        # Set sector data from stored track_data
-        # TODO: fix for IBMTrack_Scan when using ibm.scan instead of ibm.1440
-        for s in track.sectors:
-            if s.idam.r in track_data:
-                s.dam.data = bytearray(track_data[s.idam.r])
-
-        # Generate MasterTrack
-        master_track = track.master_track()
-
-        # Set time_per_rev to match the drive's measured RPM
-        master_track.time_per_rev = drive_ticks_per_rev / self.usb.sample_freq
-
-        # Generate flux for writeout
-        wflux = master_track.flux_for_writeout(cue_at_index=True)
-
-        # Scale flux list to match drive_ticks_per_rev and convert to integers
-        factor = drive_ticks_per_rev / wflux.ticks_to_index
-        rem = 0.0
-        wflux_list = []
-        for x in wflux.list:
-            y = x * factor + rem
-            val = round(y)
-            rem = y - val
-            wflux_list.append(val)
-
-        # Debug: Verify total duration
-        total_time = sum(wflux_list) / self.usb.sample_freq
-        print(f"Flux for C{cyl}H{head}: {total_time:.3f}s (target: {drive_ticks_per_rev / self.usb.sample_freq:.3f}s)")
-
-        return wflux_list
-
-    def convert_to_flux(self, cyl, head, drive_ticks_per_rev):
-        """Convert track data to flux list for writing, adjusted for drive RPM."""
-        # Get the track definition from the disk format
         track_def = self.fmt_cls.track_map.get((cyl, head))
         if track_def is None:
-            raise ValueError(f"No track definition found for cylinder {cyl}, head {head}")
+            # Try to find a default track definition
+            for key, value in self.fmt_cls.track_map.items():
+                track_def = value
+                break
+            if track_def is None:
+                raise ValueError(f"No track definition found for cylinder {cyl}, head {head}")
 
-        track = track_def.mk_track(cyl, head)
+        # Create a track object from the definition
+        track = None
+
+        # For ibm.scan tracks, we need special handling
+        if isinstance(track_def, ibm.IBMTrack_ScanDef):
+            # Try to use a fixed format instead for writing
+            fixed_def = ibm.IBMTrack_FixedDef('ibm.mfm')
+            fixed_def.secs = self.sectors_per_track or 18
+            fixed_def.sz = [2]  # 512 bytes per sector
+            fixed_def.finalise()
+            track = fixed_def.mk_track(cyl, head)
+        else:
+            track = track_def.mk_track(cyl, head)
+
+        # Get the track data to write
         track_data = self.track_data[(cyl, head)]
 
-        # Handle different track types
-        if isinstance(track, ibm.IBMTrack_Scan):
-            # For IBMTrack_Scan, get the actual track instance
-            if hasattr(track, 'track') and not isinstance(track.track, ibm.IBMTrack_Empty):
-                track = track.track
-            else:
-                # If no actual track data is available yet, force a read
-                flux, dat = read.read_with_retry(self.usb, SimpleNamespace(
-                    revs=2, raw=False, fmt_cls=self.fmt_cls,
-                    tracks=util.TrackSet(f'c={cyl}:h={head}'),
-                    retries=3, seek_retries=0, reverse=False,
-                    adjust_speed=None, fake_index=None, hard_sectors=False,
-                    drive=self.drive_obj, ticks=0, drive_ticks_per_rev=None
-                ), util.TrackSet.TrackIter(util.TrackSet(f'c={cyl}:h={head}')))
-
-                if dat is not None and not isinstance(dat, ibm.IBMTrack_Empty):
-                    track = dat
-                else:
-                    # If we still don't have track data, create a basic format
-                    from greaseweazle.codec.ibm.ibm import IBMTrack_FixedDef
-                    basic_def = IBMTrack_FixedDef('ibm.mfm')
-                    basic_def.secs = self.sectors_per_track
-                    basic_def.sz = [2]  # 512 bytes per sector
-                    basic_def.finalise()
-                    track = basic_def.mk_track(cyl, head)
-
-        # Set sector data from stored track_data
+        # Set sector data in the track
         for s in track.sectors:
             if s.idam.r in track_data:
                 s.dam.data = bytearray(track_data[s.idam.r])
+                # Clear CRC error flags
+                s.crc = s.idam.crc = s.dam.crc = 0
 
         # Generate MasterTrack
         master_track = track.master_track()
@@ -288,7 +505,7 @@ class FloppyDiskManager(DiskManager):
             self.sectors_per_track = 18
             self.num_heads = 2
             self.sector_size = 512
-            # raise ValueError("Disk geometry not set.")
+
         bytes_per_track = self.sectors_per_track * self.sector_size
         track_num = byte_offset // bytes_per_track
         cyl = track_num // self.num_heads
@@ -299,9 +516,15 @@ class FloppyDiskManager(DiskManager):
     def read_bytes(self, offset, length):
         """Read arbitrary byte range from the disk."""
         if not all([self.sectors_per_track, self.num_heads, self.sector_size]):
-            self.sectors_per_track = 18
-            self.num_heads = 2
-            self.sector_size = 512
+            # Try to initialize geometry
+            self.init_geometry_from_format()
+
+            # If still not set, use defaults
+            if not all([self.sectors_per_track, self.num_heads, self.sector_size]):
+                self.sectors_per_track = 18
+                self.num_heads = 2
+                self.sector_size = 512
+
         bytes_per_track = self.sectors_per_track * self.sector_size
         track_num = offset // bytes_per_track
         cyl = track_num // self.num_heads
@@ -314,11 +537,25 @@ class FloppyDiskManager(DiskManager):
         while length > 0:
             track_id = (cyl, head)
             if track_id not in self.track_data:
-                self.read_track(cyl, head)
-            sector_data = self.track_data[track_id].get(sector_num, b'\x00' * self.sector_size)
+                try:
+                    self.read_track(cyl, head)
+                except Exception as e:
+                    print(f"Error reading track {cyl}.{head}: {e}")
+                    # Return zeros if track read failed
+                    return b'\x00' * length
+
+            # Get sector data or zeros if sector not found
+            if track_id in self.track_data and sector_num in self.track_data[track_id]:
+                sector_data = self.track_data[track_id][sector_num]
+            else:
+                sector_data = b'\x00' * self.sector_size
+
+            # Extract portion of sector
             chunk = sector_data[offset_in_sector:offset_in_sector + length]
             data += chunk
             length -= len(chunk)
+
+            # Move to next sector/track
             offset_in_sector = 0
             sector_num += 1
             if sector_num > self.sectors_per_track:
@@ -326,14 +563,21 @@ class FloppyDiskManager(DiskManager):
                 track_num += 1
                 cyl = track_num // self.num_heads
                 head = track_num % self.num_heads
+
         return data
 
     def write_bytes(self, offset, data):
         """Write arbitrary byte range to the disk."""
         if not all([self.sectors_per_track, self.num_heads, self.sector_size]):
-            self.sectors_per_track = 18
-            self.num_heads = 2
-            self.sector_size = 512
+            # Try to initialize geometry
+            self.init_geometry_from_format()
+
+            # If still not set, use defaults
+            if not all([self.sectors_per_track, self.num_heads, self.sector_size]):
+                self.sectors_per_track = 18
+                self.num_heads = 2
+                self.sector_size = 512
+
         bytes_per_track = self.sectors_per_track * self.sector_size
         track_num = offset // bytes_per_track
         cyl = track_num // self.num_heads
@@ -346,16 +590,28 @@ class FloppyDiskManager(DiskManager):
         while data:
             track_id = (cyl, head)
             if track_id not in self.track_data:
-                self.read_track(cyl, head)
+                try:
+                    self.read_track(cyl, head)
+                except Exception as e:
+                    print(f"Error reading track {cyl}.{head}: {e}")
+                    # Initialize track data with empty sectors if read failed
+                    self.track_data[track_id] = {}
+
+            # Ensure track_data exists for this track
+            if track_id not in self.track_data:
+                self.track_data[track_id] = {}
+
             # Ensure sector_data is a bytearray
             if sector_num in self.track_data[track_id]:
                 sector_data = bytearray(self.track_data[track_id][sector_num])
             else:
                 sector_data = bytearray(b'\x00' * self.sector_size)
+
             write_length = min(len(data), self.sector_size - offset_in_sector)
             sector_data[offset_in_sector:offset_in_sector + write_length] = data[:write_length]
             self.track_data[track_id][sector_num] = sector_data
             self.write_track(cyl, head, self.track_data[track_id])  # Mark as dirty
+
             data = data[write_length:]
             offset_in_sector = 0
             sector_num += 1

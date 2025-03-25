@@ -1,19 +1,19 @@
-# gui.py (updated version)
-from PyQt6.QtWidgets import (
-    QMainWindow, QTreeWidget, QTreeWidgetItem,
-    QLabel, QGraphicsScene, QGraphicsView, QGraphicsPolygonItem,
-    QGraphicsLineItem, QGraphicsEllipseItem, QDockWidget, QFileDialog,
-    QMessageBox, QInputDialog, QToolBar
-)
-from PyQt6.QtGui import QPolygonF, QBrush, QPen, QPainter, QFont, QAction
-from PyQt6.QtCore import Qt, QPointF
-import math
-import struct
 import datetime
+import math
 import os
+
+from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtGui import QAction, QBrush, QFont, QPainter, QPen, QPolygonF
+from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QGraphicsEllipseItem,
+                             QGraphicsLineItem, QGraphicsPolygonItem,
+                             QGraphicsScene, QGraphicsView, QInputDialog,
+                             QLabel, QMainWindow, QMessageBox, QToolBar,
+                             QTreeWidget, QTreeWidgetItem)
+
+from diskmanager import FloppyDiskManager, ImageFileManager
 from fat import FAT12FileSystem
-from diskmanager import ImageFileManager, FloppyDiskManager, MemoryDiskManager
 from floppybpb import FloppyBPB
+
 
 class ResizableGraphicsView(QGraphicsView):
     def __init__(self, scene, app, parent=None):
@@ -274,12 +274,12 @@ class FileBrowserApp(QMainWindow):
     def open_physical_floppy(self):
         try:
             # Ask for device name
-            device_name, ok = QInputDialog.getText(self, "Device Selection", 
+            device_name, ok = QInputDialog.getText(self, "Device Selection",
                                                   "Enter device name (e.g., COM3):")
             if not ok or not device_name:
                 device_name = None
 
-            format_name, ok = QInputDialog.getText(self, "Format Selection", 
+            format_name, ok = QInputDialog.getText(self, "Format Selection",
                                                   "Enter format name (e.g., ibm.1440, ibm.scan):",
                                                   text="ibm.scan")
             if not ok or not format_name:
@@ -444,7 +444,7 @@ class FileBrowserApp(QMainWindow):
 
             # Confirm deletion
             msg_type = "directory" if node.is_dir else "file"
-            if QMessageBox.question(self, "Confirm Deletion", 
+            if QMessageBox.question(self, "Confirm Deletion",
                                   f"Are you sure you want to delete the {msg_type} {node.name}?",
                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 # Delete the item
@@ -533,7 +533,7 @@ class FileBrowserApp(QMainWindow):
         current_path = self.current_path
 
         # Get new directory name from user
-        dir_name, ok = QInputDialog.getText(self, "Create New Directory", 
+        dir_name, ok = QInputDialog.getText(self, "Create New Directory",
                                           "Enter directory name (8.3 format):")
         if not ok or not dir_name:
             return
@@ -578,8 +578,8 @@ class FileBrowserApp(QMainWindow):
             else:
                 base_name = parts[0][:8]
 
-        new_name, ok = QInputDialog.getText(self, "File Name", 
-                                          "Enter file name (8.3 format):", 
+        new_name, ok = QInputDialog.getText(self, "File Name",
+                                          "Enter file name (8.3 format):",
                                           text=base_name)
         if not ok or not new_name:
             return
@@ -629,17 +629,52 @@ class FileBrowserApp(QMainWindow):
 
         try:
             busy_clusters = []
+            free_clusters = 0
+            total_clusters = 0
+
+            # Get important parameters
+            if not hasattr(self.fs, 'fat_start') or not hasattr(self.fs, 'num_clusters'):
+                print("Warning: Missing filesystem parameters for cluster detection")
+                self.busy_clusters = []
+                return
+
+            # Read the entire first FAT
+            fat_size_bytes = int(self.fs.num_clusters * 1.5) + 3  # Add a buffer for the first entries
+            fat_data = self.fs.disk_manager.read_bytes(self.fs.fat_start, fat_size_bytes)
+
+            # First two entries are special
+            # Start checking from cluster 2 (first data cluster)
             for cluster in range(2, self.fs.num_clusters + 2):
-                offset = self.fs.fat_start + int(cluster * 1.5)
-                value_bytes = self.fs.disk_manager.read_bytes(offset, 2)
-                value = struct.unpack('<H', value_bytes)[0]
-                cluster_value = value & 0x0FFF if cluster % 2 == 0 else (value >> 4) & 0x0FFF
-                if cluster_value != 0x000:  # Cluster is not free
+                total_clusters += 1
+
+                # Calculate offset and extract value
+                fat_offset = int(cluster * 1.5)
+                if cluster % 2 == 0:
+                    # Even cluster: uses the low 12 bits
+                    if fat_offset + 1 < len(fat_data):
+                        value = fat_data[fat_offset] | ((fat_data[fat_offset + 1] & 0x0F) << 8)
+                    else:
+                        value = 0  # Default if we can't read
+                else:
+                    # Odd cluster: uses the high 12 bits
+                    if fat_offset < len(fat_data):
+                        value = (fat_data[fat_offset] >> 4) | (fat_data[fat_offset - 1] << 4)
+                    else:
+                        value = 0  # Default if we can't read
+
+                if value == 0:
+                    free_clusters += 1
+                else:
                     busy_clusters.append(cluster)
+
             self.busy_clusters = busy_clusters
+            print(f"Found {len(busy_clusters)} busy clusters, {free_clusters} free clusters out of {total_clusters} total")
+
         except Exception as e:
             self.busy_clusters = []
             print(f"Error getting busy clusters: {e}")
+            import traceback
+            traceback.print_exc()
 
     def draw_disk_map(self):
         self.disk_map_scene.clear()
@@ -658,17 +693,17 @@ class FileBrowserApp(QMainWindow):
 
             # Get disk geometry from filesystem
             disk_manager = self.fs.disk_manager
-            if not hasattr(disk_manager, 'sectors_per_track') or disk_manager.sectors_per_track is None:
-                self.disk_map_scene.addText("Disk geometry not available").setPos(10, 10)
-                return
+            sectors_per_track = getattr(disk_manager, 'sectors_per_track', None)
+            total_sectors = getattr(disk_manager, 'total_sectors', None)
+            num_heads = getattr(disk_manager, 'num_heads', None)
 
-            sectors_per_track = disk_manager.sectors_per_track
-            total_sectors = disk_manager.total_sectors
-            num_heads = disk_manager.num_heads
-
-            if sectors_per_track == 0 or total_sectors == 0 or num_heads == 0:
-                self.disk_map_scene.addText("Invalid disk geometry").setPos(10, 10)
-                return
+            # Check if geometry info is available
+            if not sectors_per_track or not total_sectors or not num_heads or sectors_per_track <= 0 or total_sectors <= 0 or num_heads <= 0:
+                self.disk_map_scene.addText("Disk geometry not available (using default values)").setPos(10, 10)
+                # Use default values for 1.44MB floppy if geometry is missing
+                sectors_per_track = 18
+                total_sectors = 2880
+                num_heads = 2
 
             num_cylinders = total_sectors // (sectors_per_track * num_heads)
             angle_per_sector = 360 / sectors_per_track
@@ -739,6 +774,8 @@ class FileBrowserApp(QMainWindow):
 
         except Exception as e:
             self.disk_map_scene.addText(f"Error drawing disk map: {str(e)}").setPos(10, 10)
+            import traceback
+            traceback.print_exc()  # Print full stack trace for debugging
 
     def get_sector_color(self, s):
         """Determine the color for a sector based on its role in FAT12 filesystem."""
@@ -746,9 +783,17 @@ class FileBrowserApp(QMainWindow):
             return Qt.GlobalColor.gray
 
         try:
-            reserved = self.fs.reserved_sectors
-            fat_size = self.fs.sectors_per_fat
-            root_size = self.fs.root_dir_sectors
+            # Get parameters with fallbacks
+            reserved = getattr(self.fs, 'reserved_sectors', 1)
+            fat_size = getattr(self.fs, 'sectors_per_fat', 9)
+            root_size = getattr(self.fs, 'root_dir_sectors', 14)
+            sectors_per_cluster = getattr(self.fs.params, 'sectors_per_cluster', 1) if hasattr(self.fs, 'params') else 1
+
+            # Ensure we have valid values
+            if reserved is None or reserved <= 0: reserved = 1
+            if fat_size is None or fat_size <= 0: fat_size = 9
+            if root_size is None or root_size <= 0: root_size = 14
+            if sectors_per_cluster is None or sectors_per_cluster <= 0: sectors_per_cluster = 1
 
             # Determine sector type based on sector number
             if s < reserved:
@@ -761,7 +806,20 @@ class FileBrowserApp(QMainWindow):
                 return Qt.GlobalColor.yellow  # Root directory
             else:
                 # Data area
-                cluster = (s - (reserved + 2 * fat_size + root_size)) // self.fs.params['sectors_per_cluster'] + 2
-                return Qt.GlobalColor.magenta if cluster in self.busy_clusters else Qt.GlobalColor.gray
-        except Exception:
+                try:
+                    # Calculate cluster number from sector
+                    first_data_sector = reserved + 2 * fat_size + root_size
+                    data_sector = s - first_data_sector
+                    cluster = (data_sector // sectors_per_cluster) + 2  # First data cluster is 2
+
+                    # Check if this cluster is in the busy list
+                    if self.busy_clusters and cluster in self.busy_clusters:
+                        return Qt.GlobalColor.magenta  # Busy cluster
+                    else:
+                        return Qt.GlobalColor.gray  # Free cluster
+                except Exception as e:
+                    print(f"Error determining cluster for sector {s}: {e}")
+                    return Qt.GlobalColor.lightGray
+        except Exception as e:
+            print(f"Error determining sector color: {e}")
             return Qt.GlobalColor.lightGray  # Default for any errors
