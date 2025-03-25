@@ -49,6 +49,48 @@ class FileBrowserApp(QMainWindow):
         self.busy_clusters = []
         self.initUI()
 
+        # Set up application-wide monospaced font
+        self.setup_fonts()
+
+    def setup_fonts(self):
+        """Setup application-wide monospaced font with fallbacks."""
+        # List of monospaced fonts in order of preference
+        # These fonts are commonly available across different platforms
+        monospace_fonts = [
+            "monospace",          # Generic fallback
+            "Courier New",        # All platforms
+            "DejaVu Sans Mono",   # Linux
+            "Consolas",           # Windows
+            "Menlo",              # macOS
+            "Liberation Mono",    # Linux
+            "Monaco",             # macOS
+        ]
+
+        # Create font with the first available font in the list
+        app_font = QFont()
+        app_font.setFamily(monospace_fonts[0])  # Start with first preference
+        app_font.setStyleHint(QFont.StyleHint.Monospace)  # Hint to use monospace if first choice unavailable
+        app_font.setFixedPitch(True)  # Ensure fixed pitch
+        app_font.setPointSize(10)     # Set reasonable size
+
+        # Set font for the entire application
+        self.setFont(app_font)
+
+        # Apply the font to specific widgets that might need explicit setting
+        self.tree_widget.setFont(app_font)
+        self.file_list.setFont(app_font)
+        self.bpb_info.setFont(app_font)
+
+        # Create a slightly larger font for headings and labels
+        header_font = QFont(app_font)
+        header_font.setPointSize(11)
+        header_font.setBold(True)
+
+        # Apply to headers
+        self.tree_widget.headerItem().setFont(0, header_font)
+        for i in range(self.file_list.columnCount()):
+            self.file_list.headerItem().setFont(i, header_font)
+
     def create_dummy_fs(self):
         root_node = FileSystemNode("Root", is_dir=True, modified="N/A", attributes="-")
         dir1 = FileSystemNode("DIR1", is_dir=True, modified="2023-01-01", attributes="-", parent=root_node)
@@ -674,7 +716,7 @@ class FileBrowserApp(QMainWindow):
             self.busy_clusters = []
             print(f"Error getting busy clusters: {e}")
             import traceback
-            traceback.print_exc()
+            traceback.print_exc()  # Print full stack trace for debugging
 
     def draw_disk_map(self):
         self.disk_map_scene.clear()
@@ -717,8 +759,8 @@ class FileBrowserApp(QMainWindow):
                 ("FAT1", Qt.GlobalColor.green),
                 ("FAT2", Qt.GlobalColor.blue),
                 ("Root Directory", Qt.GlobalColor.yellow),
-                ("Busy Cluster", Qt.GlobalColor.magenta),
-                ("Free Cluster", Qt.GlobalColor.gray),
+                ("Busy Sector", Qt.GlobalColor.magenta),
+                ("Free Sector", Qt.GlobalColor.gray),
             ]
             for i, (label, color) in enumerate(colors):
                 rect = QGraphicsPolygonItem(QPolygonF([
