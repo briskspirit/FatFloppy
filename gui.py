@@ -3,7 +3,7 @@ import math
 import os
 
 from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QAction, QBrush, QFont, QPainter, QPen, QPolygonF
+from PyQt6.QtGui import QAction, QBrush, QFont, QPainter, QPen, QPolygonF, QIcon
 from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QGraphicsEllipseItem,
                              QGraphicsLineItem, QGraphicsPolygonItem,
                              QGraphicsScene, QGraphicsView, QInputDialog,
@@ -183,6 +183,11 @@ class FileBrowserApp(QMainWindow):
     def initUI(self):
         self.setWindowTitle("FAT12 File Browser")
         self.setGeometry(100, 100, 1200, 800)
+
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'icons', 'floppy_icon.png')
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         # Menu Bar
         menu_bar = self.menuBar()
