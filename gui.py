@@ -181,7 +181,7 @@ class FileBrowserApp(QMainWindow):
         return root_node
 
     def initUI(self):
-        self.setWindowTitle("FAT12 File Browser")
+        self.setWindowTitle("FatFloppy - FAT12 Disk Browser")
         self.setGeometry(100, 100, 1200, 800)
 
         # Set window icon
@@ -189,9 +189,11 @@ class FileBrowserApp(QMainWindow):
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
-        # Menu Bar
+        # Menu Bar - with style adjustments
         menu_bar = self.menuBar()
+        menu_bar.setStyleSheet("QMenuBar { min-height: 20px; max-height: 25px; }")
         file_menu = menu_bar.addMenu("File")
+        file_menu.setStyleSheet("QMenu { padding: 5px; }")
 
         open_image_action = QAction("Open Disk Image File", self)
         open_image_action.triggered.connect(self.open_disk_image_file)
@@ -207,6 +209,7 @@ class FileBrowserApp(QMainWindow):
 
         # Main Toolbar
         self.toolbar = QToolBar("Main Toolbar", self)
+        self.toolbar.setStyleSheet("QToolBar { spacing: 5px; min-height: 25px; max-height: 30px; }")
         self.addToolBar(self.toolbar)
 
         # Head selection action
