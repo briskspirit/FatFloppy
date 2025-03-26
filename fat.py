@@ -273,7 +273,7 @@ class FAT12FileSystem:
         if dt is None:
             dt = datetime.datetime.now()
 
-        parts = name.split('.')
+        parts = name.upper().split('.')
         name_part = (name if is_dir and name in [".", ".."] else parts[0]).ljust(8)
         ext = '   ' if len(parts) == 1 or name in [".", ".."] else parts[1].ljust(3)
         attr = 0x10 if is_dir else 0x00
@@ -315,7 +315,7 @@ class FAT12FileSystem:
 
     def split_path(self, path):
         """Split a path into parent path and name components."""
-        path = self.normalize_path(path)
+        path = self.normalize_path(path.upper())
         if path == "/":
             return "/", ""
 
@@ -496,7 +496,7 @@ class FAT12FileSystem:
             return self.data_area_start + (new_cluster - 2) * self.cluster_size
 
     # File system modification operations
-    def create_directory(self, parent_path, new_dir_name, dt=None):
+    def create_directory(self, parent_path, new_dir_name, dt=None, progress_callback=None):
         """Create a new directory."""
         if not self.is_valid_83_name(new_dir_name):
             raise ValueError("Invalid 8.3 name")
@@ -506,7 +506,7 @@ class FAT12FileSystem:
             raise ValueError("Parent directory not found")
 
         # Check if name already exists
-        if any(e['name'].lower() == new_dir_name.lower()
+        if any(e['name'].upper() == new_dir_name.upper()
                for e, _ in self.scan_directory(parent_cluster, parent_cluster == 0)):
             raise ValueError("Name already exists")
 
@@ -537,12 +537,12 @@ class FAT12FileSystem:
 
         # Write the new directory entry in the parent directory
         self.disk_manager.write_bytes(free_offset,
-                                     self.create_dir_entry(new_dir_name, True, new_cluster, 0, dt))
+                                     self.create_dir_entry(new_dir_name.upper(), True, new_cluster, 0, dt))
 
         # Flush changes to disk
-        self.disk_manager.flush()
+        self.disk_manager.flush(progress_callback=progress_callback)
 
-    def delete_item(self, path):
+    def delete_item(self, path, progress_callback=None):
         """Delete a file or directory."""
         entry_info = self.find_entry(path)
         if entry_info is None:
@@ -562,7 +562,7 @@ class FAT12FileSystem:
         self.free_cluster_chain(entry['starting_cluster'])
 
         # Flush changes to disk
-        self.disk_manager.flush()
+        self.disk_manager.flush(progress_callback=progress_callback)
 
     # File operations
     def extract_file(self, path):
@@ -583,7 +583,7 @@ class FAT12FileSystem:
         # Trim to actual file size
         return file_data[:entry['size']]
 
-    def insert_file(self, parent_path, file_name, file_data, dt=None):
+    def insert_file(self, parent_path, file_name, file_data, dt=None, progress_callback=None):
         """Insert a file into the filesystem."""
         if not self.is_valid_83_name(file_name):
             raise ValueError("Invalid 8.3 name")
@@ -593,7 +593,7 @@ class FAT12FileSystem:
             raise ValueError("Parent directory not found")
 
         # Check if name already exists
-        if any(e['name'].lower() == file_name.lower()
+        if any(e['name'].upper() == file_name.upper()
                for e, _ in self.scan_directory(parent_cluster, parent_cluster == 0)):
             raise ValueError("Name already exists")
 
@@ -619,10 +619,10 @@ class FAT12FileSystem:
             dt = datetime.datetime.now()
 
         self.disk_manager.write_bytes(free_offset,
-                                     self.create_dir_entry(file_name, False, clusters[0], len(file_data), dt))
+                                     self.create_dir_entry(file_name.upper(), False, clusters[0], len(file_data), dt))
 
         # Flush changes to disk
-        self.disk_manager.flush()
+        self.disk_manager.flush(progress_callback=progress_callback)
 
     # Validation functions
     def is_valid_83_name(self, name):

@@ -135,7 +135,7 @@ class FloppyBPB:
                 continue  # Skip fields not in params
 
             if fmt == 'str':
-                field_data = value.encode('cp437').ljust(size)
+                field_data = value.encode('cp437').ljust(size).upper()
                 boot_sector[offset:offset+size] = field_data
             elif fmt is None and isinstance(value, bytes):
                 boot_sector[offset:offset+len(value)] = value

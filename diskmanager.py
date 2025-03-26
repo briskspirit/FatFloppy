@@ -17,8 +17,12 @@ class DiskManager(ABC):
         self.sector_size = None
         self.total_sectors = None
 
+    @property
+    def is_dirty(self):
+        return False
+
     @abstractmethod
-    def read_bytes(self, offset, length):
+    def read_bytes(self, offset, length, progress_callback=None):
         pass
 
     @abstractmethod
@@ -26,7 +30,7 @@ class DiskManager(ABC):
         pass
 
     @abstractmethod
-    def flush(self):
+    def flush(self, progress_callback=None):
         pass
 
     def ensure_geometry(self):
@@ -83,7 +87,6 @@ class DiskManager(ABC):
         offset_in_track = byte_offset % bytes_per_track
         return cyl, head, offset_in_track
 
-
 class FloppyDiskManager(DiskManager):
     def __init__(self, device_name=None, drive='A', format_name='ibm.scan', format_params=None, tracks=None):
         """
@@ -112,6 +115,10 @@ class FloppyDiskManager(DiskManager):
 
         # Initialize geometry based on format class if available
         self.init_geometry_from_format()
+
+    @property
+    def is_dirty(self):
+        return len(self.dirty_tracks) > 0
 
     def init_geometry_from_format(self):
         """Initialize disk geometry from format class or read from disk."""
@@ -416,7 +423,7 @@ class FloppyDiskManager(DiskManager):
         self.track_data[track_id] = data  # Data is a dict of {sector_id: bytes}
         self.dirty_tracks.add(track_id)
 
-    def flush(self):
+    def flush(self, progress_callback=None):
         """Write all dirty tracks back to the disk using Greaseweazle."""
         if not self.dirty_tracks:
             print("No dirty tracks to write.")
@@ -441,7 +448,11 @@ class FloppyDiskManager(DiskManager):
                 print("Failed to measure RPM:", e)
                 raise
 
+        total_tracks = len(self.dirty_tracks)
+        tracks_written = 0
+
         def write_tracks():
+            nonlocal tracks_written
             for cyl, head in sorted(self.dirty_tracks):
                 print(f"Writing track {cyl}.{head}")
                 # Seek to the track
@@ -454,6 +465,9 @@ class FloppyDiskManager(DiskManager):
                     cue_at_index=True,
                     terminate_at_index=True
                 )
+                tracks_written += 1
+                if progress_callback:
+                    progress_callback(tracks_written / total_tracks)
             # Clear dirty tracks after successful write
             self.dirty_tracks.clear()
 
@@ -521,48 +535,58 @@ class FloppyDiskManager(DiskManager):
 
         return wflux_list
 
-    def read_bytes(self, offset, length):
+    def read_bytes(self, offset, length, progress_callback=None):
         """Read arbitrary byte range from the disk."""
         self.ensure_geometry()
 
         bytes_per_track = self.sectors_per_track * self.sector_size
-        track_num = offset // bytes_per_track
-        cyl = track_num // self.num_heads
-        head = track_num % self.num_heads
-        offset_in_track = offset % bytes_per_track
-        sector_num = offset_in_track // self.sector_size + 1  # Sector IDs start from 1
-        offset_in_sector = offset_in_track % self.sector_size
+        start_track_num = offset // bytes_per_track
+        end_track_num = (offset + length - 1) // bytes_per_track
+        tracks_to_read = set()
 
-        data = b''
-        while length > 0:
-            track_id = (cyl, head)
+        # Identify all unique tracks needed
+        for track_num in range(start_track_num, end_track_num + 1):
+            cyl = track_num // self.num_heads
+            head = track_num % self.num_heads
+            tracks_to_read.add((cyl, head))
+
+        total_tracks = len(tracks_to_read)
+        tracks_read = 0
+
+        # Read all necessary tracks first, reporting progress
+        for track_id in tracks_to_read:
             if track_id not in self.track_data:
                 try:
-                    self.read_track(cyl, head)
+                    self.read_track(*track_id)
+                    tracks_read += 1
+                    if progress_callback:
+                        progress_callback(tracks_read / total_tracks)
                 except Exception as e:
-                    print(f"Error reading track {cyl}.{head}: {e}")
-                    # Return zeros if track read failed
-                    return b'\x00' * length
+                    print(f"Error reading track {track_id}: {e}")
+                    # Fill with zeros if track read fails during assembly
 
-            # Get sector data or zeros if sector not found
+        # Assemble the bytes
+        data = b''
+        current_offset = offset
+        remaining_length = length
+        while remaining_length > 0:
+            track_num = current_offset // bytes_per_track
+            cyl = track_num // self.num_heads
+            head = track_num % self.num_heads
+            offset_in_track = current_offset % bytes_per_track
+            sector_num = offset_in_track // self.sector_size + 1  # Sector IDs start from 1
+            offset_in_sector = offset_in_track % self.sector_size
+
+            track_id = (cyl, head)
             if track_id in self.track_data and sector_num in self.track_data[track_id]:
                 sector_data = self.track_data[track_id][sector_num]
             else:
-                sector_data = b'\x00' * self.sector_size
+                sector_data = b'\x00' * self.sector_size  # Use zeros if sector unavailable
 
-            # Extract portion of sector
-            chunk = sector_data[offset_in_sector:offset_in_sector + length]
-            data += chunk
-            length -= len(chunk)
-
-            # Move to next sector/track
-            offset_in_sector = 0
-            sector_num += 1
-            if sector_num > self.sectors_per_track:
-                sector_num = 1
-                track_num += 1
-                cyl = track_num // self.num_heads
-                head = track_num % self.num_heads
+            chunk_size = min(remaining_length, self.sector_size - offset_in_sector)
+            data += sector_data[offset_in_sector:offset_in_sector + chunk_size]
+            remaining_length -= chunk_size
+            current_offset += chunk_size
 
         return data
 
@@ -636,6 +660,10 @@ class ImageFileManager(DiskManager):
         # Try to infer geometry from image size and BPB if available
         self._infer_geometry()
 
+    @property
+    def is_dirty(self):
+        return self.dirty
+
     def _infer_geometry(self):
         """Infer disk geometry from image size and boot sector if available."""
         # Common floppy formats by size
@@ -666,20 +694,29 @@ class ImageFileManager(DiskManager):
                 self.num_cylinders = image_size // (self.sectors_per_track * self.num_heads * self.sector_size)
                 self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
 
-    def read_bytes(self, offset, length):
+    def read_bytes(self, offset, length, progress_callback=None):
         """Read byte range from the image."""
-        return self.image_data[offset:offset + length]
+        data = self.image_data[offset:offset + length]
+        if progress_callback:
+            progress_callback(1.0)  # Operation is instantaneous
+        return data
 
     def write_bytes(self, offset, data):
         """Write byte range to the image and mark as dirty."""
         self.image_data[offset:offset + len(data)] = data
         self.dirty = True
 
-    def flush(self):
+    def flush(self, progress_callback=None):
         """Write the image back to the file if modified."""
         if self.dirty:
+            total_bytes = len(self.image_data)
+            chunk_size = 1024 * 1024  # 1MB chunks
             with open(self.file_path, 'wb') as f:
-                f.write(self.image_data)
+                for i in range(0, total_bytes, chunk_size):
+                    chunk = self.image_data[i:i + chunk_size]
+                    f.write(chunk)
+                    if progress_callback:
+                        progress_callback(min(i + len(chunk), total_bytes) / total_bytes)
             self.dirty = False
 
 
@@ -694,6 +731,10 @@ class MemoryDiskManager(DiskManager):
         """
         super().__init__()
         self.image_data = image_data
+
+    @property
+    def is_dirty(self):
+        return self.dirty
 
     def read_bytes(self, offset, length):
         """

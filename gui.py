@@ -3,13 +3,15 @@ import math
 import os
 import tempfile
 
-from PyQt6.QtCore import QPointF, Qt, QMimeData, QUrl, QTimer
-from PyQt6.QtGui import QAction, QBrush, QFont, QPainter, QPen, QPolygonF, QIcon, QDrag
-from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QGraphicsEllipseItem,
-                             QGraphicsLineItem, QGraphicsPolygonItem,
-                             QGraphicsScene, QGraphicsView, QInputDialog,
-                             QLabel, QMainWindow, QMessageBox, QToolBar,
-                             QTreeWidget, QTreeWidgetItem, QAbstractItemView)
+from PyQt6.QtCore import QMimeData, QPointF, Qt, QTimer, QUrl
+from PyQt6.QtGui import (QAction, QBrush, QDrag, QFont, QIcon, QPainter, QPen,
+                         QPolygonF)
+from PyQt6.QtWidgets import (QAbstractItemView, QDockWidget, QFileDialog,
+                             QGraphicsEllipseItem, QGraphicsLineItem,
+                             QGraphicsPolygonItem, QGraphicsScene,
+                             QGraphicsView, QInputDialog, QLabel, QMainWindow,
+                             QMessageBox, QProgressDialog, QToolBar,
+                             QTreeWidget, QTreeWidgetItem)
 
 from diskmanager import FloppyDiskManager, ImageFileManager
 from fat import FAT12FileSystem
@@ -59,102 +61,89 @@ class DragDropTreeWidget(QTreeWidget):
             super().dropEvent(event)
 
     def process_dropped_files(self, file_paths):
-        """Process the files dropped onto the widget"""
         if not hasattr(self.parent, 'fs') or not self.parent.current_node:
             QMessageBox.warning(self.parent, "Warning", "No disk image loaded")
             return
 
-        # Get current path
         current_path = self.parent.current_path
+        total_files = len(file_paths)
 
-        for file_path in file_paths:
-            # Skip directories for now - we could handle them recursively in the future
-            if os.path.isdir(file_path):
-                QMessageBox.information(self.parent, "Info",
-                                       f"Directory dropping is not yet supported: {os.path.basename(file_path)}")
-                continue
+        def import_files(callback):
+            for idx, file_path in enumerate(file_paths):
+                if os.path.isdir(file_path):
+                    QMessageBox.information(self.parent, "Info", 
+                                        f"Directory dropping is not yet supported: {os.path.basename(file_path)}")
+                    continue
 
-            # Get destination filename (8.3 format)
-            base_name = os.path.basename(file_path)
-            base_name = self.parent.format_83_filename(base_name)
+                base_name = os.path.basename(file_path)
+                base_name = self.parent.format_83_filename(base_name)
 
-            # Ask user to confirm or modify filename
-            new_name, ok = QInputDialog.getText(self.parent, "File Name",
-                                              f"Enter file name for {base_name} (8.3 format):",
-                                              text=base_name)
-            if not ok or not new_name:
-                continue
+                new_name, ok = QInputDialog.getText(self.parent, "File Name",
+                                                f"Enter file name for {base_name} (8.3 format):",
+                                                text=base_name)
+                if not ok or not new_name:
+                    continue
 
-            try:
-                self.parent.add_file_to_disk(file_path, new_name, current_path)
-            except Exception as e:
-                QMessageBox.critical(self.parent, "Error", f"Failed to add file: {str(e)}")
+                try:
+                    self.parent.add_file_to_disk(file_path, new_name, current_path)
+                    callback((idx + 1) / total_files)  # Update progress
+                except Exception as e:
+                    QMessageBox.critical(self.parent, "Error", f"Failed to add file: {str(e)}")
+
+        # Execute with progress dialog
+        self.parent.perform_with_progress(lambda cb: import_files(cb))
 
     def mouseMoveEvent(self, event):
-        """Handle dragging files out of the application"""
         if not (event.buttons() & Qt.MouseButton.LeftButton):
             return
 
-        # Get selected items
         items = self.selectedItems()
         if not items:
             return
 
-        # Only allow dragging files, not directories
         files_to_drag = [item for item in items if not item.node.is_dir]
         if not files_to_drag:
             return
 
-        # Create drag object
-        drag = QDrag(self)
-        mime_data = QMimeData()
-
-        # Create temporary directory for storing files
-        import tempfile
+        total_files = len(files_to_drag)
         temp_dir = tempfile.mkdtemp()
         urls = []
 
-        for item in files_to_drag:
-            node = item.node
+        def prepare_files(callback):
+            for idx, item in enumerate(files_to_drag):
+                node = item.node
+                try:
+                    file_path = self.parent.build_full_path(node.name)
+                    file_data = self.parent.fs.extract_file(file_path)
+                    temp_path = os.path.join(temp_dir, node.name)
+                    with open(temp_path, 'wb') as f:
+                        f.write(file_data)
+                    urls.append(QUrl.fromLocalFile(temp_path))
+                    callback((idx + 1) / total_files)  # Update progress
+                except Exception as e:
+                    QMessageBox.critical(self.parent, "Error", f"Failed to prepare file for dragging: {str(e)}")
+            return urls
 
-            try:
-                # Build the full path to the file
-                file_path = self.parent.build_full_path(node.name)
+        # Execute with progress dialog
+        result_urls = self.parent.perform_with_progress(lambda cb: prepare_files(cb))
+        if result_urls:
+            urls = result_urls
 
-                # Extract the file data
-                file_data = self.parent.fs.extract_file(file_path)
-
-                # Create a temporary file with the original filename
-                temp_path = os.path.join(temp_dir, node.name)
-
-                # Write data to temp file
-                with open(temp_path, 'wb') as f:
-                    f.write(file_data)
-
-                # Add URL for drag operation
-                urls.append(QUrl.fromLocalFile(temp_path))
-
-            except Exception as e:
-                QMessageBox.critical(self.parent, "Error", f"Failed to prepare file for dragging: {str(e)}")
-
-        # Set URLs for dragging
         if urls:
+            drag = QDrag(self)
+            mime_data = QMimeData()
             mime_data.setUrls(urls)
             drag.setMimeData(mime_data)
+            drag.exec(Qt.DropAction.CopyAction)
 
-            # Execute drag operation
-            result = drag.exec(Qt.DropAction.CopyAction)
-
-            # Clean up temp directory after a delay to allow the target application to read the files
+            # Cleanup temporary files after a delay
             def cleanup_temp_files():
                 try:
                     import shutil
                     shutil.rmtree(temp_dir, ignore_errors=True)
                 except:
                     pass
-
-            # Use QTimer to delay cleanup
-            QTimer.singleShot(10000, cleanup_temp_files)  # 10-second delay
+            QTimer.singleShot(10000, cleanup_temp_files)
 
         super().mouseMoveEvent(event)
 
@@ -227,6 +216,26 @@ class FileBrowserApp(QMainWindow):
         for i in range(self.file_list.columnCount()):
             self.file_list.headerItem().setFont(i, header_font)
 
+    def perform_with_progress(self, operation):
+        progress_dialog = QProgressDialog("Operation in progress...", None, 0, 100, self)
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setCancelButton(None)  # Non-cancelable
+
+        def callback(progress):
+            progress_dialog.setValue(int(progress * 100))
+
+        try:
+            # Execute the operation and capture its result
+            result = operation(callback)
+            progress_dialog.setValue(100)
+            return result  # Return the result to the caller
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+            return None  # Return None or handle the error as needed
+        finally:
+            progress_dialog.close()
+
     def build_fs_tree(self):
         """Builds a tree representation of the filesystem."""
         if not hasattr(self, 'fs') or self.fs is None:
@@ -237,6 +246,7 @@ class FileBrowserApp(QMainWindow):
 
         # Get all files and directories from the filesystem
         files = self.fs.list_files()
+        # files = self.perform_with_progress(lambda cb: self.fs.list_files(progress_callback=cb))
 
         # Create a dictionary to store all nodes by path
         node_dict = {"/": root_node}
@@ -648,7 +658,8 @@ class FileBrowserApp(QMainWindow):
             file_path = self.build_full_path(node.name)
 
             # Extract the file
-            file_data = self.fs.extract_file(file_path)
+            # file_data = self.fs.extract_file(file_path)
+            file_data = self.perform_with_progress(lambda cb: self.fs.extract_file(file_path, progress_callback=cb))
 
             # Save to local filesystem
             save_path, _ = QFileDialog.getSaveFileName(self, "Save File", node.name)
@@ -678,7 +689,9 @@ class FileBrowserApp(QMainWindow):
                                   f"Are you sure you want to delete the {msg_type} {node.name}?",
                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 # Delete the item
-                self.fs.delete_item(item_path)
+                # self.fs.delete_item(item_path)
+                self.perform_with_progress(lambda cb: self.fs.delete_item(item_path, progress_callback=cb))
+
 
                 # Remember the current path
                 current_path = self.current_path
@@ -767,7 +780,8 @@ class FileBrowserApp(QMainWindow):
             return
 
         try:
-            self.fs.create_directory(current_path, dir_name, datetime.datetime.now())
+            # self.fs.create_directory(current_path, dir_name, datetime.datetime.now())
+            self.perform_with_progress(lambda cb: self.fs.create_directory(current_path, dir_name, datetime.datetime.now(), progress_callback=cb))
 
             # Update UI
             self.refresh_filesystem_ui(current_path)
@@ -785,7 +799,7 @@ class FileBrowserApp(QMainWindow):
                 return parts[0][:8] + '.' + parts[-1][:3]
             else:
                 return parts[0][:8]
-        return filename
+        return filename.upper()
 
     def build_full_path(self, name):
         """Build a full path by combining current_path with a name"""
@@ -827,7 +841,7 @@ class FileBrowserApp(QMainWindow):
             file_data = f.read()
 
         # Add file to disk
-        self.fs.insert_file(dest_path, dest_name, file_data, datetime.datetime.now())
+        self.perform_with_progress(lambda cb: self.fs.insert_file(dest_path, dest_name, file_data, datetime.datetime.now(), progress_callback=cb))
 
         # Update UI
         self.refresh_filesystem_ui(dest_path)
@@ -874,7 +888,7 @@ class FileBrowserApp(QMainWindow):
 
             # Read the entire first FAT
             fat_size_bytes = self.fs.sectors_per_fat * self.fs.sector_size
-            fat_data = self.fs.disk_manager.read_bytes(self.fs.fat_start, fat_size_bytes)
+            fat_data = self.perform_with_progress(lambda cb: self.fs.disk_manager.read_bytes(self.fs.fat_start, fat_size_bytes, progress_callback=cb))
 
             # Process each cluster entry
             # Skip first two entries which are reserved
