@@ -1147,56 +1147,67 @@ class FileBrowserApp(QMainWindow):
             free_clusters = 0
             total_clusters = 0
 
+            # Get important parameters
             if not hasattr(self.fs, 'fat_start') or not hasattr(self.fs, 'num_clusters'):
                 print("Warning: Missing filesystem parameters for cluster detection")
                 self.busy_clusters = []
                 return
 
-            fat_size_bytes = int(self.fs.num_clusters * 1.5) + 3
+            # Read the entire first FAT
+            fat_size_bytes = int(self.fs.num_clusters * 1.5) + 3  # Add a buffer for the first entries
             fat_data = self.fs.disk_manager.read_bytes(self.fs.fat_start, fat_size_bytes)
 
+            # First two entries are special
+            # Start checking from cluster 2 (first data cluster)
             for cluster in range(2, self.fs.num_clusters + 2):
                 total_clusters += 1
+
+                # Calculate offset and extract value
                 fat_offset = int(cluster * 1.5)
                 if cluster % 2 == 0:
+                    # Even cluster: uses the low 12 bits
                     if fat_offset + 1 < len(fat_data):
                         value = fat_data[fat_offset] | ((fat_data[fat_offset + 1] & 0x0F) << 8)
                     else:
-                        value = 0
+                        value = 0  # Default if we can't read
                 else:
+                    # Odd cluster: uses the high 12 bits
                     if fat_offset < len(fat_data):
                         value = (fat_data[fat_offset] >> 4) | (fat_data[fat_offset - 1] << 4)
                     else:
-                        value = 0
+                        value = 0  # Default if we can't read
 
                 if value == 0:
                     free_clusters += 1
                 else:
                     busy_clusters.append(cluster)
 
-            # Convert to set for O(1) lookup
-            self.busy_clusters = set(busy_clusters)
+            self.busy_clusters = busy_clusters
             print(f"Found {len(busy_clusters)} busy clusters, {free_clusters} free clusters out of {total_clusters} total")
 
         except Exception as e:
-            self.busy_clusters = set()  # Use empty set on error
+            self.busy_clusters = []
             print(f"Error getting busy clusters: {e}")
             import traceback
-            traceback.print_exc()
+            traceback.print_exc()  # Print full stack trace for debugging
 
     def prepare_disk_map_data(self, progress_callback=None):
+        """Prepare disk map data in the worker thread without touching the UI."""
         if not hasattr(self, 'fs'):
             return None
 
         try:
+            # Report progress immediately to show activity
             if progress_callback:
                 progress_callback(10, "Preparing basic parameters...")
 
+            # Get disk geometry from filesystem - avoid any disk access methods
             disk_manager = self.fs.disk_manager
             sectors_per_track = getattr(disk_manager, 'sectors_per_track', 18)
             total_sectors = getattr(disk_manager, 'total_sectors', 2880)
             num_heads = getattr(disk_manager, 'num_heads', 2)
 
+            # Use default values if parameters aren't available
             if not sectors_per_track or sectors_per_track <= 0:
                 sectors_per_track = 18
             if not total_sectors or total_sectors <= 0:
@@ -1204,62 +1215,66 @@ class FileBrowserApp(QMainWindow):
             if not num_heads or num_heads <= 0:
                 num_heads = 2
 
+            # Calculate basic geometry
             num_cylinders = total_sectors // (sectors_per_track * num_heads)
             angle_per_sector = 360 / sectors_per_track
 
             if progress_callback:
                 progress_callback(30, "Calculating region boundaries...")
 
+            # Get FAT parameters from memory - avoid any disk access
             reserved = getattr(self.fs, 'reserved_sectors', 1) or 1
             fat_size = getattr(self.fs, 'sectors_per_fat', 9) or 9
             root_size = getattr(self.fs, 'root_dir_sectors', 14) or 14
             sectors_per_cluster = getattr(self.fs.params, 'sectors_per_cluster', 1) or 1
 
+            if progress_callback:
+                progress_callback(50, "Creating sector color map...")
+
+            # Pre-compute region boundaries to avoid repeated calculations
             fat1_start = reserved
             fat1_end = fat1_start + fat_size
             fat2_end = fat1_end + fat_size
             root_end = fat2_end + root_size
             first_data_sector = root_end
 
-            if progress_callback:
-                progress_callback(50, "Creating sector color map...")
-
+            # Process all sectors in one go - don't try to batch this
             sector_colors = []
             sectors_to_process = min(num_cylinders * sectors_per_track,
-                                    total_sectors - (self.current_head * sectors_per_track * num_cylinders))
+                                total_sectors - (self.current_head * sectors_per_track * num_cylinders))
 
             if progress_callback:
                 progress_callback(60, "Mapping sectors...")
 
+            # Create a local reference to busy_clusters to avoid attribute access in the loop
             busy_clusters = self.busy_clusters if hasattr(self, 'busy_clusters') else []
 
+            # Quick color assignment without accessing disk
             for idx in range(sectors_to_process):
                 c = idx // sectors_per_track
                 i = idx % sectors_per_track
                 s = (c * num_heads * sectors_per_track) + (self.current_head * sectors_per_track) + i
 
+                # Simple color mapping logic without calls to self.get_sector_color
                 if s < reserved:
-                    color = Qt.GlobalColor.red
+                    color = Qt.GlobalColor.red  # Boot sector
                 elif s < fat1_end:
-                    color = Qt.GlobalColor.green
+                    color = Qt.GlobalColor.green  # FAT1
                 elif s < fat2_end:
-                    color = Qt.GlobalColor.blue
+                    color = Qt.GlobalColor.blue  # FAT2
                 elif s < root_end:
-                    color = Qt.GlobalColor.yellow
+                    color = Qt.GlobalColor.yellow  # Root directory
                 else:
+                    # Data area
                     cluster = ((s - first_data_sector) // sectors_per_cluster) + 2
                     color = Qt.GlobalColor.magenta if cluster in busy_clusters else Qt.GlobalColor.gray
 
                 sector_colors.append((c, i, color))
 
-                # Add progress update every 100 sectors
-                if idx % 100 == 0 and progress_callback:
-                    progress_percentage = 60 + int(30 * idx / sectors_to_process)
-                    progress_callback(progress_percentage, f"Mapping sector {idx} of {sectors_to_process}")
-
             if progress_callback:
                 progress_callback(90, "Finalizing disk map data...")
 
+            # Return all the data needed to draw the map
             return {
                 'sectors_per_track': sectors_per_track,
                 'num_cylinders': num_cylinders,
@@ -1275,10 +1290,6 @@ class FileBrowserApp(QMainWindow):
 
     def update_disk_map_from_data(self, disk_map_data):
         """Update the disk map UI with the prepared data."""
-        print("Starting to update disk map - Entering function")
-        # Add a timestamp for clarity
-        from datetime import datetime
-        print(f"Time: {datetime.now()}")
         self.disk_map_scene.clear()
 
         if not disk_map_data:
@@ -1360,28 +1371,29 @@ class FileBrowserApp(QMainWindow):
             head_text.setPos(10, 10)
             head_text.setFont(QFont("Arial", 12))
 
-            print("Finished updating disk map - Exiting function")
-
         except Exception as e:
             self.disk_map_scene.addText(f"Error drawing disk map: {str(e)}").setPos(10, 10)
             import traceback
             traceback.print_exc()
 
     def draw_disk_map(self):
+        """Wrapper for the disk map drawing that uses the worker thread."""
         if not hasattr(self, 'fs'):
             self.disk_map_scene.clear()
             self.disk_map_scene.addText("No disk image loaded").setPos(10, 10)
             return
 
+        # Create a progress dialog
         progress = ProgressDialog("Drawing Disk Map", "Preparing disk map...", self)
         progress.show()
 
+        # Define the worker function
         def draw_map_worker(progress_callback):
             try:
                 progress_callback(10, "Initializing disk map...")
+                # Pass the progress_callback to prepare_disk_map_data
                 disk_map_data = self.prepare_disk_map_data(progress_callback)
-                progress_callback(100, "Disk map preparation complete")  # Changed from 95% to 100%
-                print("Worker finished preparing disk map data")
+                progress_callback(95, "Finishing disk map preparation...")
                 return {'disk_map_data': disk_map_data}
             except Exception as e:
                 import traceback
@@ -1389,15 +1401,15 @@ class FileBrowserApp(QMainWindow):
                 print(f"Error in draw_map_worker: {e}")
                 return {'error': str(e)}
 
+        # Create and configure the worker
         worker = self.worker_manager.create_worker('draw_disk_map', draw_map_worker)
-        # Disconnect any existing connections to the finished signal
-        try:
-            worker.finished.disconnect()
-        except TypeError:
-            pass  # No connection existed, safe to proceed
+
+        # Connect signals
         worker.progress.connect(progress.update_progress)
         worker.error.connect(lambda error_msg: QMessageBox.critical(self, "Error", f"Failed to draw disk map: {error_msg}"))
         worker.finished.connect(lambda result_dict: self.update_disk_map_from_data(result_dict.get('result', {}).get('disk_map_data')))
+
+        # Start the worker
         self.worker_manager.start('draw_disk_map')
 
     def get_sector_color(self, s, use_cache=False):
