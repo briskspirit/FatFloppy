@@ -394,16 +394,9 @@ class FloppyDiskManager(DiskManager):
         self.track_data[track_id] = data  # Data is a dict of {sector_id: bytes}
         self.dirty_tracks.add(track_id)
 
-    def flush(self, progress_callback=None):
-        """
-        Write all dirty tracks back to the disk using Greaseweazle.
-
-        Args:
-            progress_callback: Optional callback function that takes (percentage, message)
-        """
+    def flush(self):
+        """Write all dirty tracks back to the disk using Greaseweazle."""
         if not self.dirty_tracks:
-            if progress_callback:
-                progress_callback(100, "No dirty tracks to write.")
             print("No dirty tracks to write.")
             return
 
@@ -415,8 +408,6 @@ class FloppyDiskManager(DiskManager):
         # Measure drive RPM once if not already set, with drive selected
         if not hasattr(self, 'drive_ticks_per_rev'):
             def measure_rpm():
-                if progress_callback:
-                    progress_callback(10, "Measuring drive RPM...")
                 flux = self.usb.read_track(2)
                 self.drive_ticks_per_rev = flux.ticks_per_rev
                 print(f"Measured drive RPM: {60 / (self.drive_ticks_per_rev / self.usb.sample_freq):.1f}")
@@ -429,12 +420,7 @@ class FloppyDiskManager(DiskManager):
                 raise
 
         def write_tracks():
-            total_tracks = len(self.dirty_tracks)
-            for i, (cyl, head) in enumerate(sorted(self.dirty_tracks)):
-                if progress_callback:
-                    percent = 20 + int(70 * i / total_tracks)
-                    progress_callback(percent, f"Writing track {cyl}.{head} ({i+1}/{total_tracks})")
-
+            for cyl, head in sorted(self.dirty_tracks):
                 print(f"Writing track {cyl}.{head}")
                 # Seek to the track
                 self.usb.seek(cyl, head)
@@ -449,12 +435,7 @@ class FloppyDiskManager(DiskManager):
             # Clear dirty tracks after successful write
             self.dirty_tracks.clear()
 
-            if progress_callback:
-                progress_callback(100, "Write operation completed successfully.")
-
         try:
-            if progress_callback:
-                progress_callback(15, "Selecting drive...")
             util.with_drive_selected(write_tracks, self.usb, self.drive_obj)
             print("Write operation completed successfully.")
         except Exception as e:

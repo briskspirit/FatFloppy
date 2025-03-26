@@ -3,39 +3,17 @@ import math
 import os
 import tempfile
 
-from PyQt6.QtCore import QMimeData, QPointF, Qt, QTimer, QUrl
-from PyQt6.QtGui import (QAction, QBrush, QDrag, QFont, QIcon, QPainter, QPen,
-                         QPolygonF)
-from PyQt6.QtWidgets import (QAbstractItemView, QDockWidget, QFileDialog,
-                             QGraphicsEllipseItem, QGraphicsLineItem,
-                             QGraphicsPolygonItem, QGraphicsScene,
-                             QGraphicsView, QInputDialog, QLabel, QMainWindow,
-                             QMessageBox, QProgressDialog, QToolBar,
-                             QTreeWidget, QTreeWidgetItem)
+from PyQt6.QtCore import QPointF, Qt, QMimeData, QUrl, QTimer
+from PyQt6.QtGui import QAction, QBrush, QFont, QPainter, QPen, QPolygonF, QIcon, QDrag
+from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QGraphicsEllipseItem,
+                             QGraphicsLineItem, QGraphicsPolygonItem,
+                             QGraphicsScene, QGraphicsView, QInputDialog,
+                             QLabel, QMainWindow, QMessageBox, QToolBar,
+                             QTreeWidget, QTreeWidgetItem, QAbstractItemView)
 
 from diskmanager import FloppyDiskManager, ImageFileManager
 from fat import FAT12FileSystem
 from floppybpb import FloppyBPB
-from worker import WorkerManager
-
-
-class ProgressDialog(QProgressDialog):
-    """Custom progress dialog with enhanced functionality."""
-
-    def __init__(self, title, label, parent=None):
-        super().__init__(label, "Cancel", 0, 100, parent)
-        self.setWindowTitle(title)
-        self.setWindowModality(Qt.WindowModality.WindowModal)
-        self.setMinimumDuration(0)  # Show immediately
-        self.setAutoClose(True)
-        self.setAutoReset(True)
-        self.setCancelButton(None)  # Disable cancel button for now
-
-    def update_progress(self, percentage, message=None):
-        """Update progress bar value and optionally the message."""
-        self.setValue(percentage)
-        if message:
-            self.setLabelText(message)
 
 
 class ResizableGraphicsView(QGraphicsView):
@@ -89,20 +67,12 @@ class DragDropTreeWidget(QTreeWidget):
         # Get current path
         current_path = self.parent.current_path
 
-        # Process files sequentially using workers
-        def process_next_file(index=0):
-            if index >= len(file_paths):
-                # All files processed
-                return
-
-            file_path = file_paths[index]
-
-            # Skip directories for now
+        for file_path in file_paths:
+            # Skip directories for now - we could handle them recursively in the future
             if os.path.isdir(file_path):
                 QMessageBox.information(self.parent, "Info",
-                                        f"Directory dropping is not yet supported: {os.path.basename(file_path)}")
-                process_next_file(index + 1)
-                return
+                                       f"Directory dropping is not yet supported: {os.path.basename(file_path)}")
+                continue
 
             # Get destination filename (8.3 format)
             base_name = os.path.basename(file_path)
@@ -116,70 +86,33 @@ class DragDropTreeWidget(QTreeWidget):
 
             # Ask user to confirm or modify filename
             new_name, ok = QInputDialog.getText(self.parent, "File Name",
-                                            f"Enter file name for {base_name} (8.3 format):",
-                                            text=base_name)
+                                              f"Enter file name for {base_name} (8.3 format):",
+                                              text=base_name)
             if not ok or not new_name:
-                process_next_file(index + 1)
-                return
+                continue
 
-            # Create a progress dialog
-            progress = ProgressDialog("Adding File", f"Reading {file_path}...", self.parent)
-            progress.show()
-
-            # Define the worker function
-            def add_file_worker(progress_callback):
+            try:
                 # Read file data
-                progress_callback(10, f"Reading file {file_path}...")
                 with open(file_path, 'rb') as f:
                     file_data = f.read()
 
-                progress_callback(40, f"Adding file {new_name} to disk...")
                 # Add file to disk
                 self.parent.fs.insert_file(current_path, new_name, file_data, datetime.datetime.now())
 
-                progress_callback(70, "Updating file system...")
-                return {'current_path': current_path, 'next_index': index + 1}
+                # Update UI
+                self.parent.root_node = self.parent.build_fs_tree()
+                self.parent.populate_tree()
 
-            # Create and configure the worker
-            worker = self.parent.worker_manager.create_worker(f'drop_file_{index}', add_file_worker)
+                # Restore the current directory selection
+                self.parent.navigate_to_path(current_path)
 
-            # Connect signals
-            worker.progress.connect(progress.update_progress)
-            worker.error.connect(lambda error_msg: QMessageBox.critical(self.parent, "Error", f"Failed to add file: {error_msg}"))
+                # Update busy clusters and disk map
+                self.parent.get_busy_clusters()
+                self.parent.draw_disk_map()
 
-            # Create a handler for when the file is added
-            def on_file_added(result_dict):
-                try:
-                    result = result_dict.get('result', {})
-                    next_index = result.get('next_index', index + 1)
-
-                    # Update UI
-                    self.parent.root_node = self.parent.build_fs_tree()
-                    self.parent.populate_tree()
-
-                    # Restore the current directory selection
-                    self.parent.navigate_to_path(current_path)
-
-                    # Update disk state
-                    self.parent.get_busy_clusters()
-                    self.parent.draw_disk_map()
-
-                    self.parent.statusBar().showMessage(f"Added file {new_name}")
-
-                    # Process next file
-                    process_next_file(next_index)
-
-                except Exception as e:
-                    QMessageBox.critical(self.parent, "Error", f"Error updating after adding file: {str(e)}")
-                    process_next_file(index + 1)
-
-            worker.finished.connect(on_file_added)
-
-            # Start the worker
-            self.parent.worker_manager.start(f'drop_file_{index}')
-
-        # Start processing the first file
-        process_next_file()
+                self.parent.statusBar().showMessage(f"Added file {new_name} to {current_path}")
+            except Exception as e:
+                QMessageBox.critical(self.parent, "Error", f"Failed to add file: {str(e)}")
 
     def mouseMoveEvent(self, event):
         """Handle dragging files out of the application"""
@@ -274,10 +207,6 @@ class FileBrowserApp(QMainWindow):
         self.current_path = "/"
         self.current_head = 0
         self.busy_clusters = []
-
-        # Initialize worker manager
-        self.worker_manager = WorkerManager()
-
         self.initUI()
 
         # Set up application-wide monospaced font
@@ -559,117 +488,41 @@ class FileBrowserApp(QMainWindow):
         try:
             # Ask for device name
             device_name, ok = QInputDialog.getText(self, "Device Selection",
-                                                "Enter device name (e.g., COM3):")
+                                                  "Enter device name (e.g., COM3):")
             if not ok or not device_name:
                 device_name = None
 
             format_name, ok = QInputDialog.getText(self, "Format Selection",
-                                                "Enter format name (e.g., ibm.1440, ibm.scan):",
-                                                text="ibm.scan")
+                                                  "Enter format name (e.g., ibm.1440, ibm.scan):",
+                                                  text="ibm.scan")
             if not ok or not format_name:
                 format_name = "ibm.scan"
 
-            # Create a progress dialog
-            progress = ProgressDialog("Loading Floppy Disk", "Initializing...", self)
-            progress.show()
+            # Create a FloppyDiskManager for the physical floppy
+            disk_manager = FloppyDiskManager(device_name, format_name=format_name)
 
-            # Define the worker function
-            def load_floppy(progress_callback):
-                # Update progress
-                progress_callback(10, "Creating disk manager...")
+            # Create BPB instance to parse boot sector
+            bpb = FloppyBPB(disk_manager)
 
-                # Create a FloppyDiskManager for the physical floppy
-                disk_manager = FloppyDiskManager(device_name, format_name=format_name)
+            # Get FAT12 parameters
+            fat_params = bpb.get_fat12_params()
 
-                progress_callback(30, "Reading boot sector...")
-                # Create BPB instance to parse boot sector
-                bpb = FloppyBPB(disk_manager)
-
-                progress_callback(50, "Getting FAT parameters...")
-                # Get FAT12 parameters
-                fat_params = bpb.get_fat12_params()
-
-                progress_callback(70, "Creating filesystem...")
-                # Create FAT12 filesystem instance
-                fs = FAT12FileSystem(disk_manager, fat_params)
-
-                progress_callback(90, "Loading file system tree...")
-
-                return {
-                    'disk_manager': disk_manager,
-                    'bpb': bpb,
-                    'fat_params': fat_params,
-                    'fs': fs
-                }
-
-            # Create and configure the worker
-            worker = self.worker_manager.create_worker('load_floppy', load_floppy)
-
-            # Connect signals
-            worker.progress.connect(progress.update_progress)
-            worker.error.connect(lambda error_msg: QMessageBox.critical(self, "Error", f"Failed to open physical floppy: {error_msg}"))
-            worker.finished.connect(self.on_floppy_loaded)
-
-            # Start the worker
-            self.worker_manager.start('load_floppy')
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to open physical floppy: {str(e)}")
-
-    def on_floppy_loaded(self, result_dict):
-        """Handle when the floppy disk has been loaded."""
-        try:
-            result = result_dict.get('result', {})
-            self.fs = result.get('fs')
-
-            if not self.fs:
-                QMessageBox.critical(self, "Error", "Failed to load filesystem")
-                return
+            # Create FAT12 filesystem instance
+            self.fs = FAT12FileSystem(disk_manager, fat_params)
 
             # Update UI components
             self.root_node = self.build_fs_tree()
             self.current_node = self.root_node
             self.current_path = "/"
-            self.update_bpb_info(result.get('bpb'))
+            self.update_bpb_info(bpb)
             self.populate_tree()
             self.update_file_list()
+            self.get_busy_clusters()
+            self.draw_disk_map()
 
-            # Start another worker for getting busy clusters and drawing disk map
-            progress = ProgressDialog("Analyzing Disk", "Scanning clusters...", self)
-            progress.show()
-
-            def analyze_disk(progress_callback):
-                progress_callback(20, "Getting busy clusters...")
-                self.get_busy_clusters()
-
-                progress_callback(60, "Drawing disk map...")
-                # This critical step needs to be done by the worker
-                # Create a copy of the disk map data but don't update the UI directly
-                disk_map_data = self.prepare_disk_map_data()
-
-                progress_callback(95, "Finishing analysis...")
-                return {'disk_map_data': disk_map_data}
-
-            worker = self.worker_manager.create_worker('analyze_disk', analyze_disk)
-            worker.progress.connect(progress.update_progress)
-            worker.finished.connect(self.on_disk_analysis_complete)
-            self.worker_manager.start('analyze_disk')
-
-            self.statusBar().showMessage(f"Loaded physical floppy using {result.get('bpb').get_disk_type()}")
+            self.statusBar().showMessage(f"Loaded physical floppy using {format_name}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error processing loaded floppy: {str(e)}")
-
-    def on_disk_analysis_complete(self, result_dict):
-        """Handle completion of disk analysis."""
-        try:
-            result = result_dict.get('result', {})
-            disk_map_data = result.get('disk_map_data')
-
-            # Now we can update the UI with the prepared data
-            self.update_disk_map_from_data(disk_map_data)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error updating disk map: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to open physical floppy: {str(e)}")
 
     def update_bpb_info(self, bpb=None):
         if bpb is None and not hasattr(self, 'fs'):
@@ -775,50 +628,17 @@ class FileBrowserApp(QMainWindow):
                 file_path += "/"
             file_path += node.name
 
-            # Create a progress dialog
-            progress = ProgressDialog("Extracting File", f"Extracting {node.name}...", self)
-            progress.show()
-
-            # Define the worker function
-            def extract_file(progress_callback):
-                progress_callback(20, f"Reading file {node.name}...")
-                # Extract the file
-                file_data = self.fs.extract_file(file_path)
-                progress_callback(80, "File extracted successfully")
-                return {'file_data': file_data, 'node_name': node.name}
-
-            # Create and configure the worker
-            worker = self.worker_manager.create_worker('extract_file', extract_file)
-
-            # Connect signals
-            worker.progress.connect(progress.update_progress)
-            worker.error.connect(lambda error_msg: QMessageBox.critical(self, "Error", f"Failed to extract file: {error_msg}"))
-            worker.finished.connect(self.on_file_extracted)
-
-            # Start the worker
-            self.worker_manager.start('extract_file')
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to extract file: {str(e)}")
-
-    def on_file_extracted(self, result_dict):
-        """Handle when a file has been extracted."""
-        try:
-            result = result_dict.get('result', {})
-            file_data = result.get('file_data')
-            node_name = result.get('node_name')
-
-            if not file_data:
-                return
+            # Extract the file
+            file_data = self.fs.extract_file(file_path)
 
             # Save to local filesystem
-            save_path, _ = QFileDialog.getSaveFileName(self, "Save File", node_name)
+            save_path, _ = QFileDialog.getSaveFileName(self, "Save File", node.name)
             if save_path:
                 with open(save_path, 'wb') as f:
                     f.write(file_data)
-                self.statusBar().showMessage(f"Extracted {node_name} to {save_path}")
+                self.statusBar().showMessage(f"Extracted {node.name} to {save_path}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error saving extracted file: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to extract file: {str(e)}")
 
     def delete_selected_item(self):
         selected_items = self.file_list.selectedItems()
@@ -838,68 +658,28 @@ class FileBrowserApp(QMainWindow):
             # Confirm deletion
             msg_type = "directory" if node.is_dir else "file"
             if QMessageBox.question(self, "Confirm Deletion",
-                                f"Are you sure you want to delete the {msg_type} {node.name}?",
-                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
-
-                # Create a progress dialog
-                progress = ProgressDialog("Deleting Item", f"Deleting {node.name}...", self)
-                progress.show()
+                                  f"Are you sure you want to delete the {msg_type} {node.name}?",
+                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+                # Delete the item
+                self.fs.delete_item(item_path)
 
                 # Remember the current path
                 current_path = self.current_path
 
-                # Define the worker function
-                def delete_item(progress_callback):
-                    progress_callback(20, f"Deleting {node.name}...")
-                    # Delete the item
-                    self.fs.delete_item(item_path)
-                    progress_callback(60, "Updating file system...")
-                    return {'current_path': current_path}
+                # Update UI
+                self.root_node = self.build_fs_tree()
+                self.populate_tree()
 
-                # Create and configure the worker
-                worker = self.worker_manager.create_worker('delete_item', delete_item)
+                # Restore the current directory selection
+                self.navigate_to_path(current_path)
 
-                # Connect signals
-                worker.progress.connect(progress.update_progress)
-                worker.error.connect(lambda error_msg: QMessageBox.critical(self, "Error", f"Failed to delete item: {error_msg}"))
-                worker.finished.connect(self.on_item_deleted)
+                # Update busy clusters and disk map
+                self.get_busy_clusters()
+                self.draw_disk_map()
 
-                # Start the worker
-                self.worker_manager.start('delete_item')
+                self.statusBar().showMessage(f"Deleted {node.name}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to delete item: {str(e)}")
-
-    def on_item_deleted(self, result_dict):
-        """Handle when an item has been deleted."""
-        try:
-            result = result_dict.get('result', {})
-            current_path = result.get('current_path', '/')
-
-            # Update UI
-            self.root_node = self.build_fs_tree()
-            self.populate_tree()
-
-            # Restore the current directory selection
-            self.navigate_to_path(current_path)
-
-            # Create another worker for updating disk state
-            progress = ProgressDialog("Updating Disk Map", "Analyzing disk...", self)
-            progress.show()
-
-            def update_disk_state(progress_callback):
-                progress_callback(30, "Getting busy clusters...")
-                self.get_busy_clusters()
-                progress_callback(70, "Updating disk map...")
-                return {}
-
-            worker = self.worker_manager.create_worker('update_disk_state', update_disk_state)
-            worker.progress.connect(progress.update_progress)
-            worker.finished.connect(lambda _: self.draw_disk_map())
-            worker.finished.connect(lambda _: self.statusBar().showMessage(f"Item deleted successfully"))
-            self.worker_manager.start('update_disk_state')
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error updating after deletion: {str(e)}")
 
     def navigate_to_path(self, path):
         """Navigate to the specified path and update the current node."""
@@ -967,41 +747,12 @@ class FileBrowserApp(QMainWindow):
 
         # Get new directory name from user
         dir_name, ok = QInputDialog.getText(self, "Create New Directory",
-                                        "Enter directory name (8.3 format):")
+                                          "Enter directory name (8.3 format):")
         if not ok or not dir_name:
             return
 
         try:
-            # Create a progress dialog
-            progress = ProgressDialog("Creating Directory", f"Creating directory {dir_name}...", self)
-            progress.show()
-
-            # Define the worker function
-            def create_dir(progress_callback):
-                progress_callback(20, f"Creating directory {dir_name}...")
-                self.fs.create_directory(current_path, dir_name, datetime.datetime.now())
-                progress_callback(60, "Updating file system...")
-                return {'current_path': current_path}
-
-            # Create and configure the worker
-            worker = self.worker_manager.create_worker('create_dir', create_dir)
-
-            # Connect signals
-            worker.progress.connect(progress.update_progress)
-            worker.error.connect(lambda error_msg: QMessageBox.critical(self, "Error", f"Failed to create directory: {error_msg}"))
-            worker.finished.connect(self.on_directory_created)
-
-            # Start the worker
-            self.worker_manager.start('create_dir')
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create directory: {str(e)}")
-
-    def on_directory_created(self, result_dict):
-        """Handle when a directory has been created."""
-        try:
-            result = result_dict.get('result', {})
-            current_path = result.get('current_path', '/')
+            self.fs.create_directory(current_path, dir_name, datetime.datetime.now())
 
             # Update UI
             self.root_node = self.build_fs_tree()
@@ -1010,24 +761,13 @@ class FileBrowserApp(QMainWindow):
             # Restore the current directory selection
             self.navigate_to_path(current_path)
 
-            # Create another worker for updating disk state
-            progress = ProgressDialog("Updating Disk Map", "Analyzing disk...", self)
-            progress.show()
+            # Update busy clusters and disk map
+            self.get_busy_clusters()
+            self.draw_disk_map()
 
-            def update_disk_state(progress_callback):
-                progress_callback(30, "Getting busy clusters...")
-                self.get_busy_clusters()
-                progress_callback(70, "Updating disk map...")
-                return {}
-
-            worker = self.worker_manager.create_worker('update_disk_state', update_disk_state)
-            worker.progress.connect(progress.update_progress)
-            worker.finished.connect(lambda _: self.draw_disk_map())
-            worker.finished.connect(lambda _: self.statusBar().showMessage(f"Directory created successfully"))
-            self.worker_manager.start('update_disk_state')
-
+            self.statusBar().showMessage(f"Created directory {dir_name} in {current_path}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error updating after directory creation: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to create directory: {str(e)}")
 
     def add_file(self):
         if not hasattr(self, 'fs') or not self.current_node:
@@ -1052,49 +792,18 @@ class FileBrowserApp(QMainWindow):
                 base_name = parts[0][:8]
 
         new_name, ok = QInputDialog.getText(self, "File Name",
-                                        "Enter file name (8.3 format):",
-                                        text=base_name)
+                                          "Enter file name (8.3 format):",
+                                          text=base_name)
         if not ok or not new_name:
             return
 
         try:
-            # Create a progress dialog
-            progress = ProgressDialog("Adding File", f"Reading {file_path}...", self)
-            progress.show()
+            # Read file data
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
 
-            # Define the worker function
-            def add_file_worker(progress_callback):
-                # Read file data
-                progress_callback(10, f"Reading file {file_path}...")
-                with open(file_path, 'rb') as f:
-                    file_data = f.read()
-
-                progress_callback(40, f"Adding file {new_name} to disk...")
-                # Add file to disk
-                self.fs.insert_file(current_path, new_name, file_data, datetime.datetime.now())
-
-                progress_callback(70, "Updating file system...")
-                return {'current_path': current_path}
-
-            # Create and configure the worker
-            worker = self.worker_manager.create_worker('add_file', add_file_worker)
-
-            # Connect signals
-            worker.progress.connect(progress.update_progress)
-            worker.error.connect(lambda error_msg: QMessageBox.critical(self, "Error", f"Failed to add file: {error_msg}"))
-            worker.finished.connect(self.on_file_added)
-
-            # Start the worker
-            self.worker_manager.start('add_file')
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to add file: {str(e)}")
-
-    def on_file_added(self, result_dict):
-        """Handle when a file has been added."""
-        try:
-            result = result_dict.get('result', {})
-            current_path = result.get('current_path', '/')
+            # Add file to disk
+            self.fs.insert_file(current_path, new_name, file_data, datetime.datetime.now())
 
             # Update UI
             self.root_node = self.build_fs_tree()
@@ -1103,24 +812,13 @@ class FileBrowserApp(QMainWindow):
             # Restore the current directory selection
             self.navigate_to_path(current_path)
 
-            # Create another worker for updating disk state
-            progress = ProgressDialog("Updating Disk Map", "Analyzing disk...", self)
-            progress.show()
+            # Update busy clusters and disk map
+            self.get_busy_clusters()
+            self.draw_disk_map()
 
-            def update_disk_state(progress_callback):
-                progress_callback(30, "Getting busy clusters...")
-                self.get_busy_clusters()
-                progress_callback(70, "Updating disk map...")
-                return {}
-
-            worker = self.worker_manager.create_worker('update_disk_state', update_disk_state)
-            worker.progress.connect(progress.update_progress)
-            worker.finished.connect(lambda _: self.draw_disk_map())
-            worker.finished.connect(lambda _: self.statusBar().showMessage(f"File added successfully"))
-            self.worker_manager.start('update_disk_state')
-
+            self.statusBar().showMessage(f"Added file {new_name} to {current_path}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error updating after adding file: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to add file: {str(e)}")
 
     def generate_arc_points(self, x0, y0, radius, theta_start, theta_end, num_points):
         points = []
@@ -1191,108 +889,10 @@ class FileBrowserApp(QMainWindow):
             import traceback
             traceback.print_exc()  # Print full stack trace for debugging
 
-    def prepare_disk_map_data(self, progress_callback=None):
-        """Prepare disk map data in the worker thread without touching the UI."""
-        if not hasattr(self, 'fs'):
-            return None
-
-        try:
-            # Report progress immediately to show activity
-            if progress_callback:
-                progress_callback(10, "Preparing basic parameters...")
-
-            # Get disk geometry from filesystem - avoid any disk access methods
-            disk_manager = self.fs.disk_manager
-            sectors_per_track = getattr(disk_manager, 'sectors_per_track', 18)
-            total_sectors = getattr(disk_manager, 'total_sectors', 2880)
-            num_heads = getattr(disk_manager, 'num_heads', 2)
-
-            # Use default values if parameters aren't available
-            if not sectors_per_track or sectors_per_track <= 0:
-                sectors_per_track = 18
-            if not total_sectors or total_sectors <= 0:
-                total_sectors = 2880
-            if not num_heads or num_heads <= 0:
-                num_heads = 2
-
-            # Calculate basic geometry
-            num_cylinders = total_sectors // (sectors_per_track * num_heads)
-            angle_per_sector = 360 / sectors_per_track
-
-            if progress_callback:
-                progress_callback(30, "Calculating region boundaries...")
-
-            # Get FAT parameters from memory - avoid any disk access
-            reserved = getattr(self.fs, 'reserved_sectors', 1) or 1
-            fat_size = getattr(self.fs, 'sectors_per_fat', 9) or 9
-            root_size = getattr(self.fs, 'root_dir_sectors', 14) or 14
-            sectors_per_cluster = getattr(self.fs.params, 'sectors_per_cluster', 1) or 1
-
-            if progress_callback:
-                progress_callback(50, "Creating sector color map...")
-
-            # Pre-compute region boundaries to avoid repeated calculations
-            fat1_start = reserved
-            fat1_end = fat1_start + fat_size
-            fat2_end = fat1_end + fat_size
-            root_end = fat2_end + root_size
-            first_data_sector = root_end
-
-            # Process all sectors in one go - don't try to batch this
-            sector_colors = []
-            sectors_to_process = min(num_cylinders * sectors_per_track,
-                                total_sectors - (self.current_head * sectors_per_track * num_cylinders))
-
-            if progress_callback:
-                progress_callback(60, "Mapping sectors...")
-
-            # Create a local reference to busy_clusters to avoid attribute access in the loop
-            busy_clusters = self.busy_clusters if hasattr(self, 'busy_clusters') else []
-
-            # Quick color assignment without accessing disk
-            for idx in range(sectors_to_process):
-                c = idx // sectors_per_track
-                i = idx % sectors_per_track
-                s = (c * num_heads * sectors_per_track) + (self.current_head * sectors_per_track) + i
-
-                # Simple color mapping logic without calls to self.get_sector_color
-                if s < reserved:
-                    color = Qt.GlobalColor.red  # Boot sector
-                elif s < fat1_end:
-                    color = Qt.GlobalColor.green  # FAT1
-                elif s < fat2_end:
-                    color = Qt.GlobalColor.blue  # FAT2
-                elif s < root_end:
-                    color = Qt.GlobalColor.yellow  # Root directory
-                else:
-                    # Data area
-                    cluster = ((s - first_data_sector) // sectors_per_cluster) + 2
-                    color = Qt.GlobalColor.magenta if cluster in busy_clusters else Qt.GlobalColor.gray
-
-                sector_colors.append((c, i, color))
-
-            if progress_callback:
-                progress_callback(90, "Finalizing disk map data...")
-
-            # Return all the data needed to draw the map
-            return {
-                'sectors_per_track': sectors_per_track,
-                'num_cylinders': num_cylinders,
-                'angle_per_sector': angle_per_sector,
-                'sector_colors': sector_colors,
-                'current_head': self.current_head
-            }
-        except Exception as e:
-            print(f"Error preparing disk map data: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def update_disk_map_from_data(self, disk_map_data):
-        """Update the disk map UI with the prepared data."""
+    def draw_disk_map(self):
         self.disk_map_scene.clear()
 
-        if not disk_map_data:
+        if not hasattr(self, 'fs'):
             self.disk_map_scene.addText("No disk image loaded").setPos(10, 10)
             return
 
@@ -1304,12 +904,22 @@ class FileBrowserApp(QMainWindow):
             r_min = min(view_width, view_height) * 0.1
             r_max = min(view_width, view_height) * 0.45
 
-            sectors_per_track = disk_map_data['sectors_per_track']
-            num_cylinders = disk_map_data['num_cylinders']
-            angle_per_sector = disk_map_data['angle_per_sector']
-            sector_colors = disk_map_data['sector_colors']
-            current_head = disk_map_data['current_head']
+            # Get disk geometry from filesystem
+            disk_manager = self.fs.disk_manager
+            sectors_per_track = getattr(disk_manager, 'sectors_per_track', None)
+            total_sectors = getattr(disk_manager, 'total_sectors', None)
+            num_heads = getattr(disk_manager, 'num_heads', None)
 
+            # Check if geometry info is available
+            if not sectors_per_track or not total_sectors or not num_heads or sectors_per_track <= 0 or total_sectors <= 0 or num_heads <= 0:
+                self.disk_map_scene.addText("Disk geometry not available (using default values)").setPos(10, 10)
+                # Use default values for 1.44MB floppy if geometry is missing
+                sectors_per_track = 18
+                total_sectors = 2880
+                num_heads = 2
+
+            num_cylinders = total_sectors // (sectors_per_track * num_heads)
+            angle_per_sector = 360 / sectors_per_track
             num_points = 20
 
             # Draw legend
@@ -1337,17 +947,21 @@ class FileBrowserApp(QMainWindow):
                 text.setFont(QFont("Arial", 12))
 
             # Draw sectors
-            for c, i, color in sector_colors:
-                theta_start = math.radians(i * angle_per_sector)
-                theta_end = math.radians((i + 1) * angle_per_sector)
-                r_outer = r_max - (r_max - r_min) * c / num_cylinders
-                r_inner = r_max - (r_max - r_min) * (c + 1) / num_cylinders
-                inner_points = self.generate_arc_points(x0, y0, r_inner, theta_start, theta_end, num_points)
-                outer_points = self.generate_arc_points(x0, y0, r_outer, theta_end, theta_start, num_points)
-                points = inner_points + outer_points
-                polygon = QGraphicsPolygonItem(QPolygonF(points))
-                polygon.setBrush(QBrush(color))
-                self.disk_map_scene.addItem(polygon)
+            for c in range(num_cylinders):
+                for i in range(sectors_per_track):
+                    s = (c * num_heads * sectors_per_track) + (self.current_head * sectors_per_track) + i
+                    if s < total_sectors:
+                        color = self.get_sector_color(s)
+                        theta_start = math.radians(i * angle_per_sector)
+                        theta_end = math.radians((i + 1) * angle_per_sector)
+                        r_outer = r_max - (r_max - r_min) * c / num_cylinders
+                        r_inner = r_max - (r_max - r_min) * (c + 1) / num_cylinders
+                        inner_points = self.generate_arc_points(x0, y0, r_inner, theta_start, theta_end, num_points)
+                        outer_points = self.generate_arc_points(x0, y0, r_outer, theta_end, theta_start, num_points)
+                        points = inner_points + outer_points
+                        polygon = QGraphicsPolygonItem(QPolygonF(points))
+                        polygon.setBrush(QBrush(color))
+                        self.disk_map_scene.addItem(polygon)
 
             # Draw radial lines (sector boundaries)
             for sector in range(sectors_per_track):
@@ -1367,59 +981,19 @@ class FileBrowserApp(QMainWindow):
                 self.disk_map_scene.addItem(ellipse)
 
             # Add head indicator
-            head_text = self.disk_map_scene.addText(f"Head {current_head}")
+            head_text = self.disk_map_scene.addText(f"Head {self.current_head}")
             head_text.setPos(10, 10)
             head_text.setFont(QFont("Arial", 12))
 
         except Exception as e:
             self.disk_map_scene.addText(f"Error drawing disk map: {str(e)}").setPos(10, 10)
             import traceback
-            traceback.print_exc()
+            traceback.print_exc()  # Print full stack trace for debugging
 
-    def draw_disk_map(self):
-        """Wrapper for the disk map drawing that uses the worker thread."""
-        if not hasattr(self, 'fs'):
-            self.disk_map_scene.clear()
-            self.disk_map_scene.addText("No disk image loaded").setPos(10, 10)
-            return
-
-        # Create a progress dialog
-        progress = ProgressDialog("Drawing Disk Map", "Preparing disk map...", self)
-        progress.show()
-
-        # Define the worker function
-        def draw_map_worker(progress_callback):
-            try:
-                progress_callback(10, "Initializing disk map...")
-                # Pass the progress_callback to prepare_disk_map_data
-                disk_map_data = self.prepare_disk_map_data(progress_callback)
-                progress_callback(95, "Finishing disk map preparation...")
-                return {'disk_map_data': disk_map_data}
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                print(f"Error in draw_map_worker: {e}")
-                return {'error': str(e)}
-
-        # Create and configure the worker
-        worker = self.worker_manager.create_worker('draw_disk_map', draw_map_worker)
-
-        # Connect signals
-        worker.progress.connect(progress.update_progress)
-        worker.error.connect(lambda error_msg: QMessageBox.critical(self, "Error", f"Failed to draw disk map: {error_msg}"))
-        worker.finished.connect(lambda result_dict: self.update_disk_map_from_data(result_dict.get('result', {}).get('disk_map_data')))
-
-        # Start the worker
-        self.worker_manager.start('draw_disk_map')
-
-    def get_sector_color(self, s, use_cache=False):
+    def get_sector_color(self, s):
         """Determine the color for a sector based on its role in FAT12 filesystem."""
         if not hasattr(self, 'fs'):
             return Qt.GlobalColor.gray
-
-        # Use a cached sector color mapping if available
-        if hasattr(self, '_sector_color_cache') and use_cache and s in self._sector_color_cache:
-            return self._sector_color_cache[s]
 
         try:
             # Get parameters with fallbacks
@@ -1436,13 +1010,13 @@ class FileBrowserApp(QMainWindow):
 
             # Determine sector type based on sector number
             if s < reserved:
-                color = Qt.GlobalColor.red  # Boot sector and reserved
+                return Qt.GlobalColor.red  # Boot sector and reserved
             elif reserved <= s < reserved + fat_size:
-                color = Qt.GlobalColor.green  # FAT1
+                return Qt.GlobalColor.green  # FAT1
             elif reserved + fat_size <= s < reserved + 2 * fat_size:
-                color = Qt.GlobalColor.blue  # FAT2
+                return Qt.GlobalColor.blue  # FAT2
             elif reserved + 2 * fat_size <= s < reserved + 2 * fat_size + root_size:
-                color = Qt.GlobalColor.yellow  # Root directory
+                return Qt.GlobalColor.yellow  # Root directory
             else:
                 # Data area
                 try:
@@ -1453,20 +1027,12 @@ class FileBrowserApp(QMainWindow):
 
                     # Check if this cluster is in the busy list
                     if self.busy_clusters and cluster in self.busy_clusters:
-                        color = Qt.GlobalColor.magenta  # Busy cluster
+                        return Qt.GlobalColor.magenta  # Busy cluster
                     else:
-                        color = Qt.GlobalColor.gray  # Free cluster
+                        return Qt.GlobalColor.gray  # Free cluster
                 except Exception as e:
                     print(f"Error determining cluster for sector {s}: {e}")
-                    color = Qt.GlobalColor.lightGray
-
-            # Cache the result if we're using caching
-            if use_cache:
-                if not hasattr(self, '_sector_color_cache'):
-                    self._sector_color_cache = {}
-                self._sector_color_cache[s] = color
-
-            return color
+                    return Qt.GlobalColor.lightGray
         except Exception as e:
             print(f"Error determining sector color: {e}")
             return Qt.GlobalColor.lightGray  # Default for any errors
