@@ -217,7 +217,6 @@ class FileBrowserApp(QMainWindow):
         # List of monospaced fonts in order of preference
         # These fonts are commonly available across different platforms
         monospace_fonts = [
-            "monospace",          # Generic fallback
             "Courier New",        # All platforms
             "DejaVu Sans Mono",   # Linux
             "Consolas",           # Windows
