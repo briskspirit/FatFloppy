@@ -1,14 +1,15 @@
 import datetime
 import math
 import os
+import tempfile
 
-from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QAction, QBrush, QFont, QPainter, QPen, QPolygonF, QIcon
+from PyQt6.QtCore import QPointF, Qt, QMimeData, QUrl, QTimer
+from PyQt6.QtGui import QAction, QBrush, QFont, QPainter, QPen, QPolygonF, QIcon, QDrag
 from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QGraphicsEllipseItem,
                              QGraphicsLineItem, QGraphicsPolygonItem,
                              QGraphicsScene, QGraphicsView, QInputDialog,
                              QLabel, QMainWindow, QMessageBox, QToolBar,
-                             QTreeWidget, QTreeWidgetItem)
+                             QTreeWidget, QTreeWidgetItem, QAbstractItemView)
 
 from diskmanager import FloppyDiskManager, ImageFileManager
 from fat import FAT12FileSystem
@@ -25,6 +26,165 @@ class ResizableGraphicsView(QGraphicsView):
         super().resizeEvent(event)
         self.setSceneRect(0, 0, self.width(), self.height())
         self.app.draw_disk_map()
+
+
+class DragDropTreeWidget(QTreeWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.parent = parent
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            links = []
+            for url in event.mimeData().urls():
+                links.append(str(url.toLocalFile()))
+            self.process_dropped_files(links)
+        else:
+            super().dropEvent(event)
+
+    def process_dropped_files(self, file_paths):
+        """Process the files dropped onto the widget"""
+        if not hasattr(self.parent, 'fs') or not self.parent.current_node:
+            QMessageBox.warning(self.parent, "Warning", "No disk image loaded")
+            return
+
+        # Get current path
+        current_path = self.parent.current_path
+
+        for file_path in file_paths:
+            # Skip directories for now - we could handle them recursively in the future
+            if os.path.isdir(file_path):
+                QMessageBox.information(self.parent, "Info",
+                                       f"Directory dropping is not yet supported: {os.path.basename(file_path)}")
+                continue
+
+            # Get destination filename (8.3 format)
+            base_name = os.path.basename(file_path)
+            # Trim to 8.3 format if needed
+            if len(base_name) > 12 or base_name.count('.') > 1:
+                parts = base_name.split('.')
+                if len(parts) > 1:
+                    base_name = parts[0][:8] + '.' + parts[-1][:3]
+                else:
+                    base_name = parts[0][:8]
+
+            # Ask user to confirm or modify filename
+            new_name, ok = QInputDialog.getText(self.parent, "File Name",
+                                              f"Enter file name for {base_name} (8.3 format):",
+                                              text=base_name)
+            if not ok or not new_name:
+                continue
+
+            try:
+                # Read file data
+                with open(file_path, 'rb') as f:
+                    file_data = f.read()
+
+                # Add file to disk
+                self.parent.fs.insert_file(current_path, new_name, file_data, datetime.datetime.now())
+
+                # Update UI
+                self.parent.root_node = self.parent.build_fs_tree()
+                self.parent.populate_tree()
+
+                # Restore the current directory selection
+                self.parent.navigate_to_path(current_path)
+
+                # Update busy clusters and disk map
+                self.parent.get_busy_clusters()
+                self.parent.draw_disk_map()
+
+                self.parent.statusBar().showMessage(f"Added file {new_name} to {current_path}")
+            except Exception as e:
+                QMessageBox.critical(self.parent, "Error", f"Failed to add file: {str(e)}")
+
+    def mouseMoveEvent(self, event):
+        """Handle dragging files out of the application"""
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+
+        # Get selected items
+        items = self.selectedItems()
+        if not items:
+            return
+
+        # Only allow dragging files, not directories
+        files_to_drag = [item for item in items if not item.node.is_dir]
+        if not files_to_drag:
+            return
+
+        # Create drag object
+        drag = QDrag(self)
+        mime_data = QMimeData()
+
+        # Create temporary directory for storing files
+        import tempfile
+        temp_dir = tempfile.mkdtemp()
+        urls = []
+
+        for item in files_to_drag:
+            node = item.node
+
+            try:
+                # Build the full path to the file
+                file_path = self.parent.current_path
+                if file_path != "/":
+                    file_path += "/"
+                file_path += node.name
+
+                # Extract the file data
+                file_data = self.parent.fs.extract_file(file_path)
+
+                # Create a temporary file with the original filename
+                temp_path = os.path.join(temp_dir, node.name)
+
+                # Write data to temp file
+                with open(temp_path, 'wb') as f:
+                    f.write(file_data)
+
+                # Add URL for drag operation
+                urls.append(QUrl.fromLocalFile(temp_path))
+
+            except Exception as e:
+                QMessageBox.critical(self.parent, "Error", f"Failed to prepare file for dragging: {str(e)}")
+
+        # Set URLs for dragging
+        if urls:
+            mime_data.setUrls(urls)
+            drag.setMimeData(mime_data)
+
+            # Execute drag operation
+            result = drag.exec(Qt.DropAction.CopyAction)
+
+            # Clean up temp directory after a delay to allow the target application to read the files
+            def cleanup_temp_files():
+                try:
+                    import shutil
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except:
+                    pass
+
+            # Use QTimer to delay cleanup
+            QTimer.singleShot(10000, cleanup_temp_files)  # 10-second delay
+
+        super().mouseMoveEvent(event)
+
 
 class FileSystemNode:
     def __init__(self, name, size=0, is_dir=False, modified="N/A", attributes="-", parent=None):
@@ -263,8 +423,12 @@ class FileBrowserApp(QMainWindow):
 
         # File List Dock
         self.file_list_dock = QDockWidget("Files in Current Directory", self)
-        self.file_list = QTreeWidget()
+        self.file_list = DragDropTreeWidget(self)
         self.file_list.setHeaderLabels(["Name", "Size", "Date/Time", "Attributes"])
+        self.file_list.setDragEnabled(True)
+        self.file_list.setAcceptDrops(True)
+        self.file_list.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.update_file_list()
         self.file_list_dock.setWidget(self.file_list)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_list_dock)
