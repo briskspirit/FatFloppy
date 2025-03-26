@@ -24,6 +24,46 @@ FLOPPY_FORMATS = [
     {"size": "3.5\"",  "type": "ED", "heads": 2, "tracks": 80, "sectors": 36, "sector_size": 512, "total_sectors": 5760, "capacity": 2949120,    "rpm": 300, "encoding": "MFM", "codec": "ibm.2880"},
 ]
 
+# Media descriptor mapping for quick identification
+MEDIA_DESCRIPTOR_MAP = {
+    0xF0: "3.5\" HD 1.44 MB",
+    0xF9: "3.5\" DD 720 KB",
+    0xFD: "5.25\" DD 360 KB",
+    0xFE: "5.25\" DD 160 KB",
+    0xFF: "5.25\" DD 320 KB",
+    0xFC: "5.25\" DD 180 KB",
+    0xFB: "3.5\" DD 640 KB",
+    0xFA: "5.25\" DD 120 KB",
+    0xF8: "Fixed disk"
+}
+
+# Boot sector field definitions for FAT12/16
+BOOT_SECTOR_FIELDS = [
+    # (name, offset, format, size)
+    ('jump_code',          0x000, None, 3),
+    ('oem_id',             0x003, 'str', 8),
+    ('bytes_per_sector',   0x00B, '<H', 2),
+    ('sectors_per_cluster',0x00D, '<B', 1),
+    ('reserved_sectors',   0x00E, '<H', 2),
+    ('num_fats',           0x010, '<B', 1),
+    ('root_entries',       0x011, '<H', 2),
+    ('total_sectors',      0x013, '<H', 2),
+    ('media_descriptor',   0x015, '<B', 1),
+    ('sectors_per_fat',    0x016, '<H', 2),
+    ('sectors_per_track',  0x018, '<H', 2),
+    ('num_heads',          0x01A, '<H', 2),
+    ('hidden_sectors',     0x01C, '<I', 4),
+    ('total_sectors_large',0x020, '<I', 4),
+    ('drive_number',       0x024, '<B', 1),
+    ('flags',              0x025, '<B', 1),
+    ('signature_ext',      0x026, '<B', 1),
+    ('volume_serial',      0x027, '<I', 4),
+    ('volume_label',       0x02B, 'str', 11),
+    ('fs_type',            0x036, 'str', 8),
+    ('bootstrap_code',     0x03E, None, 448),
+    ('signature',          0x1FE, '<H', 2),
+]
+
 
 class FloppyBPB:
     def __init__(self, disk_manager):
@@ -45,42 +85,90 @@ class FloppyBPB:
         Stores fields as instance attributes.
         """
         boot_sector = self.disk_manager.read_bytes(0, 512)
-        self.jump_code = boot_sector[0x000:0x003]
-        self.oem_id = boot_sector[0x003:0x00B].decode('cp437').strip()
-        self.bytes_per_sector = struct.unpack_from('<H', boot_sector, 0x00B)[0]
-        self.sectors_per_cluster = struct.unpack_from('<B', boot_sector, 0x00D)[0]
-        self.reserved_sectors = struct.unpack_from('<H', boot_sector, 0x00E)[0]
-        self.num_fats = struct.unpack_from('<B', boot_sector, 0x010)[0]
-        self.root_entries = struct.unpack_from('<H', boot_sector, 0x011)[0]
-        self.total_sectors = struct.unpack_from('<H', boot_sector, 0x013)[0]
-        self.media_descriptor = struct.unpack_from('<B', boot_sector, 0x015)[0]
-        self.sectors_per_fat = struct.unpack_from('<H', boot_sector, 0x016)[0]
-        self.sectors_per_track = struct.unpack_from('<H', boot_sector, 0x018)[0]
-        self.num_heads = struct.unpack_from('<H', boot_sector, 0x01A)[0]
-        self.hidden_sectors = struct.unpack_from('<I', boot_sector, 0x01C)[0]
-        self.total_sectors_large = struct.unpack_from('<I', boot_sector, 0x020)[0]
-        self.drive_number = struct.unpack_from('<B', boot_sector, 0x024)[0]
-        self.flags = struct.unpack_from('<B', boot_sector, 0x025)[0]
-        self.signature_ext = struct.unpack_from('<B', boot_sector, 0x026)[0]
-        self.volume_serial = struct.unpack_from('<I', boot_sector, 0x027)[0]
-        self.volume_label = boot_sector[0x02B:0x036].decode('cp437').strip()
-        self.fs_type = boot_sector[0x036:0x03E].decode('cp437').strip()
+
+        # Parse each field according to its definition
+        for name, offset, fmt, size in BOOT_SECTOR_FIELDS:
+            if fmt == 'str':
+                value = boot_sector[offset:offset+size].decode('cp437').strip()
+            elif fmt is None:
+                value = boot_sector[offset:offset+size]
+            else:
+                value = struct.unpack_from(fmt, boot_sector, offset)[0]
+
+            setattr(self, name, value)
+
+        # Handle total sectors if the small field is 0
         if self.total_sectors == 0:
             self.total_sectors = self.total_sectors_large
-        self.bootstrap_code = boot_sector[0x03E:0x1FE]
-        self.signature = struct.unpack_from('<H', boot_sector, 0x1FE)[0]
+
         if self.signature != 0xAA55:
             raise ValueError("Invalid boot sector signature")
-        # Set geometry for FloppyDiskManager
-        # if isinstance(self.disk_manager, FloppyDiskManager):
-            # num_cylinders = (self.total_sectors // self.sectors_per_track) // self.num_heads
-            # self.disk_manager.set_geometry(self.sectors_per_track, self.num_heads, num_cylinders, self.bytes_per_sector)
 
-    @staticmethod
-    def calculate_sectors_per_fat(total_sectors, reserved_sectors, num_fats, root_dir_sectors,
+    @classmethod
+    def create_boot_sector(cls, params):
+        """
+        Creates a boot sector from BPB parameters.
+
+        Args:
+            params (dict): Dictionary of BPB parameters
+
+        Returns:
+            bytearray: A 512-byte boot sector
+        """
+        boot_sector = bytearray(512)
+
+        # Basic boot sector structure - jump instruction
+        boot_sector[0:3] = b'\xEB\xFE\x90'
+
+        # Set each field according to its definition
+        for name, offset, fmt, size in BOOT_SECTOR_FIELDS:
+            if name == 'jump_code':
+                continue  # Already set
+
+            if name == 'signature':
+                value = 0xAA55  # Always set to valid signature
+            elif name in params:
+                value = params[name]
+            elif name == 'bootstrap_code':
+                value = bytes(size)  # Empty bootstrap code
+            else:
+                continue  # Skip fields not in params
+
+            if fmt == 'str':
+                field_data = value.encode('cp437').ljust(size)
+                boot_sector[offset:offset+size] = field_data
+            elif fmt is None and isinstance(value, bytes):
+                boot_sector[offset:offset+len(value)] = value
+            elif fmt is not None:
+                struct.pack_into(fmt, boot_sector, offset, value)
+
+        # Special handling for total sectors fields
+        total_sectors = params.get('total_sectors', 0)
+        if total_sectors < 65536:
+            struct.pack_into('<H', boot_sector, 0x013, total_sectors)
+            struct.pack_into('<I', boot_sector, 0x020, 0)
+        else:
+            struct.pack_into('<H', boot_sector, 0x013, 0)
+            struct.pack_into('<I', boot_sector, 0x020, total_sectors)
+
+        return boot_sector
+
+    @classmethod
+    def calculate_sectors_per_fat(cls, total_sectors, reserved_sectors, num_fats, root_dir_sectors,
                                  sectors_per_cluster, sector_size):
         """
         Calculate the number of sectors per FAT for FAT12.
+
+        Args:
+            total_sectors (int): Total sectors on the disk
+            reserved_sectors (int): Reserved sectors before FAT
+            num_fats (int): Number of FATs
+            root_dir_sectors (int): Sectors used by root directory
+            sectors_per_cluster (int): Sectors per cluster
+            sector_size (int): Bytes per sector
+
+        Returns:
+            int: Calculated sectors per FAT
         """
         sectors_per_fat = 1
         while True:
@@ -93,6 +181,27 @@ class FloppyBPB:
             if required_sectors <= sectors_per_fat:
                 return sectors_per_fat
             sectors_per_fat += 1
+
+    @classmethod
+    def match_disk_by_geometry(cls, geometry):
+        """
+        Match disk type based on geometry parameters.
+
+        Args:
+            geometry (dict): Dictionary containing disk geometry parameters
+
+        Returns:
+            str: Description of matched disk type, or "Unknown" if no match
+        """
+        for fmt in FLOPPY_FORMATS:
+            if (geometry['total_sectors'] == fmt["total_sectors"] and
+                geometry['sectors_per_track'] == fmt["sectors"] and
+                geometry['num_heads'] == fmt["heads"] and
+                geometry['bytes_per_sector'] == fmt["sector_size"]):
+                capacity_mb = fmt['capacity'] / (1024 * 1024)
+                return f"{fmt['size']} {fmt['type']} {capacity_mb:.2f} MB"
+
+        return f"Unknown (Sectors: {geometry['total_sectors']})"
 
     @classmethod
     def from_parameters(cls, sector_size, sectors_per_track, num_tracks, num_heads, num_fats,
@@ -112,57 +221,50 @@ class FloppyBPB:
             media_descriptor (int): Media descriptor byte (default 0xF0).
             reserved_sectors (int): Reserved sectors (default 1).
             oem_id (str): OEM identifier (default "MSDOS5.0").
-            disk_manager (DiskManager, optional): An instance of DiskManager to use. If None, a MemoryDiskManager will be created.
+            disk_manager (DiskManager, optional): An instance of DiskManager to use.
 
         Returns:
-            FloppyBPB: A new instance with the disk image managed by the provided or default disk manager.
+            FloppyBPB: A new instance with the disk image managed by the provided disk manager.
+
+        Raises:
+            ValueError: If no disk_manager is provided.
         """
+        # A disk manager is required
+        if disk_manager is None:
+            raise ValueError("A disk_manager is required when creating from parameters")
+
         # Calculate total sectors and other derived parameters
         total_sectors = num_tracks * sectors_per_track * num_heads
         root_dir_sectors = (root_entries * 32 + sector_size - 1) // sector_size
-        # This assumes a helper method to calculate sectors per FAT; adjust as needed
-        sectors_per_fat = cls.calculate_sectors_per_fat(total_sectors, reserved_sectors, num_fats,
-                                                        root_dir_sectors, sectors_per_cluster, sector_size)
 
-        # Create the boot sector
-        boot_sector = bytearray(512)
-        boot_sector[0:3] = b'\xEB\xFE\x90'  # Jump instruction
-        boot_sector[3:11] = oem_id.encode('cp437').ljust(8)  # OEM ID
-        struct.pack_into('<H', boot_sector, 0x00B, sector_size)
-        struct.pack_into('<B', boot_sector, 0x00D, sectors_per_cluster)
-        struct.pack_into('<H', boot_sector, 0x00E, reserved_sectors)
-        struct.pack_into('<B', boot_sector, 0x010, num_fats)
-        struct.pack_into('<H', boot_sector, 0x011, root_entries)
-        if total_sectors < 65536:
-            struct.pack_into('<H', boot_sector, 0x013, total_sectors)
-            struct.pack_into('<I', boot_sector, 0x020, 0)
-        else:
-            struct.pack_into('<H', boot_sector, 0x013, 0)
-            struct.pack_into('<I', boot_sector, 0x020, total_sectors)
-        struct.pack_into('<B', boot_sector, 0x015, media_descriptor)
-        struct.pack_into('<H', boot_sector, 0x016, sectors_per_fat)
-        struct.pack_into('<H', boot_sector, 0x018, sectors_per_track)
-        struct.pack_into('<H', boot_sector, 0x01A, num_heads)
-        struct.pack_into('<I', boot_sector, 0x01C, 0)  # Hidden sectors
-        struct.pack_into('<B', boot_sector, 0x024, 0)  # Drive number
-        struct.pack_into('<B', boot_sector, 0x025, 0)  # Flags
-        struct.pack_into('<B', boot_sector, 0x026, 0x29)  # Extended boot signature
-        struct.pack_into('<I', boot_sector, 0x027, 0)  # Volume serial number
-        boot_sector[0x02B:0x036] = 'NO NAME    '.encode('cp437')  # Volume label
-        boot_sector[0x036:0x03E] = 'FAT12   '.encode('cp437')    # Filesystem type
-        struct.pack_into('<H', boot_sector, 0x1FE, 0xAA55)  # Boot signature
+        # Calculate sectors per FAT using the class method
+        sectors_per_fat = cls.calculate_sectors_per_fat(
+            total_sectors, reserved_sectors, num_fats,
+            root_dir_sectors, sectors_per_cluster, sector_size
+        )
 
-        # Handle the disk manager
-        if disk_manager is None:
-            # Default to MemoryDiskManager if none provided
-            image_size = total_sectors * sector_size
-            image_data = bytearray(image_size)
-            image_data[0:512] = boot_sector
-            # TODO: fix this, do we need default manager?
-            # disk_manager = MemoryDiskManager(image_data)
-        else:
-            # Use the provided disk manager and write the boot sector
-            disk_manager.write_bytes(0, boot_sector)
+        # Prepare parameters for boot sector creation
+        params = {
+            'bytes_per_sector': sector_size,
+            'sectors_per_cluster': sectors_per_cluster,
+            'reserved_sectors': reserved_sectors,
+            'num_fats': num_fats,
+            'root_entries': root_entries,
+            'total_sectors': total_sectors,
+            'media_descriptor': media_descriptor,
+            'sectors_per_fat': sectors_per_fat,
+            'sectors_per_track': sectors_per_track,
+            'num_heads': num_heads,
+            'oem_id': oem_id,
+            'volume_label': 'NO NAME',
+            'fs_type': 'FAT12'
+        }
+
+        # Create the boot sector using the class method
+        boot_sector = cls.create_boot_sector(params)
+
+        # Write the boot sector to disk
+        disk_manager.write_bytes(0, boot_sector)
 
         # Return the FloppyBPB instance with the disk manager
         return cls(disk_manager)
@@ -185,31 +287,22 @@ class FloppyBPB:
         Return disk type based on media descriptor and geometry.
         First tries to match by media descriptor, then by geometry if that fails.
         """
-        # Media descriptor mapping for quick identification
-        media_descriptor_map = {
-            0xF0: "3.5\" HD 1.44 MB",
-            0xF9: "3.5\" DD 720 KB",
-            0xFD: "5.25\" DD 360 KB",
-            0xFE: "5.25\" DD 160 KB",
-            0xFF: "5.25\" DD 320 KB",
-            0xFC: "5.25\" DD 180 KB",
-            0xFB: "3.5\" DD 640 KB",
-            0xFA: "5.25\" DD 120 KB",
-            0xF8: "Fixed disk"
-        }
-
         # First try to identify by media descriptor
-        if self.media_descriptor in media_descriptor_map:
-            return media_descriptor_map[self.media_descriptor]
+        if self.media_descriptor in MEDIA_DESCRIPTOR_MAP:
+            return MEDIA_DESCRIPTOR_MAP[self.media_descriptor]
 
         # If media descriptor doesn't match, try to identify by geometry
-        for fmt in FLOPPY_FORMATS:
-            if (self.total_sectors == fmt["total_sectors"] and
-                self.sectors_per_track == fmt["sectors"] and
-                self.num_heads == fmt["heads"] and
-                self.bytes_per_sector == fmt["sector_size"]):
-                capacity_mb = fmt['capacity'] / (1024 * 1024)
-                return f"{fmt['size']} {fmt['type']} {capacity_mb:.2f} MB"
+        geometry = {
+            'total_sectors': self.total_sectors,
+            'sectors_per_track': self.sectors_per_track,
+            'num_heads': self.num_heads,
+            'bytes_per_sector': self.bytes_per_sector
+        }
 
-        # If no match found
-        return f"Unknown (Media Descriptor: 0x{self.media_descriptor:02X}, Sectors: {self.total_sectors})"
+        # Use the class method for matching by geometry
+        disk_type = self.match_disk_by_geometry(geometry)
+
+        if disk_type.startswith("Unknown"):
+            return f"Unknown (Media Descriptor: 0x{self.media_descriptor:02X}, Sectors: {self.total_sectors})"
+
+        return disk_type

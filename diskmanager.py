@@ -9,6 +9,14 @@ from greaseweazle.tools import read, util
 
 class DiskManager(ABC):
     """Abstract base class for disk management."""
+    def __init__(self):
+        # Initialize geometry attributes with default values
+        self.sectors_per_track = None
+        self.num_heads = None
+        self.num_cylinders = None
+        self.sector_size = None
+        self.total_sectors = None
+
     @abstractmethod
     def read_bytes(self, offset, length):
         pass
@@ -21,6 +29,61 @@ class DiskManager(ABC):
     def flush(self):
         pass
 
+    def ensure_geometry(self):
+        """Ensure geometry parameters are set with at least default values."""
+        if not self.sectors_per_track or self.sectors_per_track <= 0:
+            self.sectors_per_track = 18  # Default for 1.44MB floppy
+        if not self.num_heads or self.num_heads <= 0:
+            self.num_heads = 2  # Default for 1.44MB floppy
+        if not self.num_cylinders or self.num_cylinders <= 0:
+            self.num_cylinders = 80  # Default for 1.44MB floppy
+        if not self.sector_size or self.sector_size <= 0:
+            self.sector_size = 512  # Default for most floppies
+
+        # Calculate total sectors if not set
+        if not self.total_sectors or self.total_sectors <= 0:
+            self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+
+    def read_bpb_geometry(self):
+        """Read BPB to get disk geometry."""
+        try:
+            # Read boot sector
+            boot_sector = self.read_bytes(0, 512)
+
+            # Parse BPB fields
+            self.sector_size = struct.unpack_from('<H', boot_sector, 0x0B)[0]
+            self.sectors_per_track = struct.unpack_from('<H', boot_sector, 0x18)[0]
+            self.num_heads = struct.unpack_from('<H', boot_sector, 0x1A)[0]
+
+            # Get total sectors
+            total_sectors = struct.unpack_from('<H', boot_sector, 0x13)[0]
+            if total_sectors == 0:
+                total_sectors = struct.unpack_from('<I', boot_sector, 0x20)[0]
+
+            self.total_sectors = total_sectors
+
+            # Calculate number of cylinders
+            if self.sectors_per_track and self.num_heads and self.total_sectors:
+                self.num_cylinders = self.total_sectors // (self.sectors_per_track * self.num_heads)
+
+            print(f"BPB geometry: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
+            return True
+        except Exception as e:
+            print(f"Warning: Error reading BPB geometry: {e}")
+            return False
+
+    def calculate_track_and_offset(self, byte_offset):
+        """Map byte offset to cylinder, head, and track offset."""
+        self.ensure_geometry()
+
+        bytes_per_track = self.sectors_per_track * self.sector_size
+        track_num = byte_offset // bytes_per_track
+        cyl = track_num // self.num_heads
+        head = track_num % self.num_heads
+        offset_in_track = byte_offset % bytes_per_track
+        return cyl, head, offset_in_track
+
+
 class FloppyDiskManager(DiskManager):
     def __init__(self, device_name=None, drive='A', format_name='ibm.scan', format_params=None, tracks=None):
         """
@@ -32,6 +95,7 @@ class FloppyDiskManager(DiskManager):
             format_name (str): Disk format (e.g., 'ibm.1440').
             tracks (TrackSet, optional): Tracks to manage; defaults to 80 cyl, 2 heads.
         """
+        super().__init__()
         self.tracks = tracks if tracks else util.TrackSet('c=0-79:h=0-1')
         self.usb = util.usb_open(device_name)
         self.drive_obj = util.Drive()(drive)
@@ -41,13 +105,6 @@ class FloppyDiskManager(DiskManager):
             self.fmt_cls = self.create_custom_diskdef(format_params)
         else:
             self.fmt_cls = codec.get_diskdef(format_name)
-
-        # Initialize geometry attributes with default values
-        self.sectors_per_track = None
-        self.num_heads = None
-        self.num_cylinders = None
-        self.sector_size = None
-        self.total_sectors = None
 
         # Initialize track data storage
         self.track_data = {}
@@ -67,31 +124,25 @@ class FloppyDiskManager(DiskManager):
                 self.read_bpb_geometry()
 
                 # If we still don't have complete geometry, get from disk
-                if not all([self.sectors_per_track, self.num_heads, self.num_cylinders, self.sector_size]):
+                if not self.has_complete_geometry():
                     self.detect_geometry_from_disk()
             else:
                 # For specific format, get geometry from format definition
                 self.init_geometry_from_fmt_cls()
 
                 # For completeness, also try to read BPB
-                if not all([self.sectors_per_track, self.num_heads, self.num_cylinders, self.sector_size]):
+                if not self.has_complete_geometry():
                     self.read_bpb_geometry()
         except Exception as e:
             print(f"Warning: Could not initialize geometry from format: {e}")
 
         # Ensure we have values for all geometry properties
-        if not self.sectors_per_track or self.sectors_per_track <= 0:
-            self.sectors_per_track = 18  # Default for 1.44MB floppy
-        if not self.num_heads or self.num_heads <= 0:
-            self.num_heads = 2  # Default for 1.44MB floppy
-        if not self.num_cylinders or self.num_cylinders <= 0:
-            self.num_cylinders = 80  # Default for 1.44MB floppy
-        if not self.sector_size or self.sector_size <= 0:
-            self.sector_size = 512  # Default for most floppies
+        self.ensure_geometry()
 
-        # Calculate total sectors if not set
-        if not self.total_sectors or self.total_sectors <= 0:
-            self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+    def has_complete_geometry(self):
+        """Check if we have complete geometry information."""
+        return (self.sectors_per_track and self.num_heads and
+                self.num_cylinders and self.sector_size)
 
     def read_and_detect_format(self):
         """Read track 0 and detect format, then set geometry accordingly."""
@@ -229,34 +280,6 @@ class FloppyDiskManager(DiskManager):
         except Exception as e:
             print(f"Error detecting geometry from disk: {e}")
 
-    def read_bpb_geometry(self):
-        """Read BPB to get disk geometry."""
-        try:
-            # Read boot sector
-            boot_sector = self.read_bytes(0, 512)
-
-            # Parse BPB fields
-            self.sector_size = struct.unpack_from('<H', boot_sector, 0x0B)[0]
-            self.sectors_per_track = struct.unpack_from('<H', boot_sector, 0x18)[0]
-            self.num_heads = struct.unpack_from('<H', boot_sector, 0x1A)[0]
-
-            # Get total sectors
-            total_sectors = struct.unpack_from('<H', boot_sector, 0x13)[0]
-            if total_sectors == 0:
-                total_sectors = struct.unpack_from('<I', boot_sector, 0x20)[0]
-
-            self.total_sectors = total_sectors
-
-            # Calculate number of cylinders
-            if self.sectors_per_track and self.num_heads and self.total_sectors:
-                self.num_cylinders = self.total_sectors // (self.sectors_per_track * self.num_heads)
-
-            print(f"BPB geometry: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
-            return True
-        except Exception as e:
-            print(f"Warning: Error reading BPB geometry: {e}")
-            return False
-
     def init_geometry_from_fmt_cls(self):
         """Initialize geometry from format class."""
         if not self.fmt_cls or not hasattr(self.fmt_cls, 'tracks'):
@@ -332,8 +355,7 @@ class FloppyDiskManager(DiskManager):
             self.sectors_per_track = params['track_params']['secs']
 
         # Calculate total sectors
-        if self.sectors_per_track and self.num_heads and self.num_cylinders:
-            self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+        self.ensure_geometry()
 
         return disk_def
 
@@ -499,31 +521,9 @@ class FloppyDiskManager(DiskManager):
 
         return wflux_list
 
-    def calculate_track_and_offset(self, byte_offset):
-        """Map byte offset to cylinder, head, and track offset."""
-        if not all([self.sectors_per_track, self.num_heads, self.sector_size]):
-            self.sectors_per_track = 18
-            self.num_heads = 2
-            self.sector_size = 512
-
-        bytes_per_track = self.sectors_per_track * self.sector_size
-        track_num = byte_offset // bytes_per_track
-        cyl = track_num // self.num_heads
-        head = track_num % self.num_heads
-        offset_in_track = byte_offset % bytes_per_track
-        return cyl, head, offset_in_track
-
     def read_bytes(self, offset, length):
         """Read arbitrary byte range from the disk."""
-        if not all([self.sectors_per_track, self.num_heads, self.sector_size]):
-            # Try to initialize geometry
-            self.init_geometry_from_format()
-
-            # If still not set, use defaults
-            if not all([self.sectors_per_track, self.num_heads, self.sector_size]):
-                self.sectors_per_track = 18
-                self.num_heads = 2
-                self.sector_size = 512
+        self.ensure_geometry()
 
         bytes_per_track = self.sectors_per_track * self.sector_size
         track_num = offset // bytes_per_track
@@ -568,15 +568,7 @@ class FloppyDiskManager(DiskManager):
 
     def write_bytes(self, offset, data):
         """Write arbitrary byte range to the disk."""
-        if not all([self.sectors_per_track, self.num_heads, self.sector_size]):
-            # Try to initialize geometry
-            self.init_geometry_from_format()
-
-            # If still not set, use defaults
-            if not all([self.sectors_per_track, self.num_heads, self.sector_size]):
-                self.sectors_per_track = 18
-                self.num_heads = 2
-                self.sector_size = 512
+        self.ensure_geometry()
 
         bytes_per_track = self.sectors_per_track * self.sector_size
         track_num = offset // bytes_per_track
@@ -621,6 +613,7 @@ class FloppyDiskManager(DiskManager):
                 cyl = track_num // self.num_heads
                 head = track_num % self.num_heads
 
+
 class ImageFileManager(DiskManager):
     def __init__(self, file_path, image_data=None):
         """
@@ -630,6 +623,7 @@ class ImageFileManager(DiskManager):
             file_path (str): Path to the image file.
             image_data (bytearray, optional): Initial image data for new images.
         """
+        super().__init__()
         self.file_path = file_path
         if image_data is not None:
             self.image_data = bytearray(image_data)
@@ -638,12 +632,6 @@ class ImageFileManager(DiskManager):
             with open(file_path, 'rb') as f:
                 self.image_data = bytearray(f.read())
             self.dirty = False
-
-        # Initialize geometry attributes (will be set properly later)
-        self.sectors_per_track = None
-        self.num_heads = None
-        self.sector_size = None
-        self.total_sectors = None
 
         # Try to infer geometry from image size and BPB if available
         self._infer_geometry()
@@ -664,40 +652,19 @@ class ImageFileManager(DiskManager):
         }
 
         # First try to read from BPB
-        try:
-            boot_sector = self.read_bytes(0, 512)
-            sector_size = struct.unpack_from('<H', boot_sector, 0x0B)[0]
-            sectors_per_track = struct.unpack_from('<H', boot_sector, 0x18)[0]
-            num_heads = struct.unpack_from('<H', boot_sector, 0x1A)[0]
-            total_sectors = struct.unpack_from('<H', boot_sector, 0x13)[0]
-            if total_sectors == 0:
-                total_sectors = struct.unpack_from('<I', boot_sector, 0x20)[0]
-
-            # Check if the values look reasonable
-            if (sector_size in [128, 256, 512, 1024] and
-                sectors_per_track > 0 and sectors_per_track <= 36 and
-                num_heads > 0 and num_heads <= 2 and
-                total_sectors > 0):
-                self.sector_size = sector_size
-                self.sectors_per_track = sectors_per_track
-                self.num_heads = num_heads
-                self.total_sectors = total_sectors
-                return
-        except:
-            pass
-
-        # If BPB failed, try to infer from image size
-        image_size = len(self.image_data)
-        if image_size in formats:
-            self.sectors_per_track, self.num_heads, num_cylinders, self.sector_size = formats[image_size]
-            self.total_sectors = self.sectors_per_track * self.num_heads * num_cylinders
-        else:
-            # Default to 1.44MB floppy format
-            self.sectors_per_track = 18
-            self.num_heads = 2
-            self.sector_size = 512
-            num_cylinders = image_size // (self.sectors_per_track * self.num_heads * self.sector_size)
-            self.total_sectors = self.sectors_per_track * self.num_heads * num_cylinders
+        if not self.read_bpb_geometry():
+            # If BPB failed, try to infer from image size
+            image_size = len(self.image_data)
+            if image_size in formats:
+                self.sectors_per_track, self.num_heads, self.num_cylinders, self.sector_size = formats[image_size]
+                self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+            else:
+                # Default to 1.44MB floppy format
+                self.sectors_per_track = 18
+                self.num_heads = 2
+                self.sector_size = 512
+                self.num_cylinders = image_size // (self.sectors_per_track * self.num_heads * self.sector_size)
+                self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
 
     def read_bytes(self, offset, length):
         """Read byte range from the image."""
@@ -715,6 +682,7 @@ class ImageFileManager(DiskManager):
                 f.write(self.image_data)
             self.dirty = False
 
+
 class MemoryDiskManager(DiskManager):
     """A simple DiskManager implementation that operates on an in-memory bytearray."""
     def __init__(self, image_data):
@@ -724,6 +692,7 @@ class MemoryDiskManager(DiskManager):
         Args:
             image_data (bytearray): The disk image data.
         """
+        super().__init__()
         self.image_data = image_data
 
     def read_bytes(self, offset, length):
