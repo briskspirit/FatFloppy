@@ -434,6 +434,7 @@ class FileBrowserApp(QMainWindow):
         self.total_space = 0
         self.fs = None
         self.bpb = None
+        self.disk_manager = None  # Reset disk_manager
 
         # Clear all UI elements
         self.tree_widget.clear()
@@ -483,22 +484,27 @@ class FileBrowserApp(QMainWindow):
 
         try:
             # Create a disk manager for the image file
-            disk_manager = ImageFileManager(file_path)
+            self.disk_manager = ImageFileManager(file_path)
 
             # Create BPB instance to parse boot sector
-            self.bpb = FloppyBPB(disk_manager)
+            self.bpb = FloppyBPB(self.disk_manager)
 
             # Get FAT12 parameters
             fat_params = self.bpb.get_fat12_params()
 
-            # Create FAT12 filesystem instance
-            self.fs = FAT12FileSystem(disk_manager, fat_params)
+            # Create FAT12 filesystem instance with callbacks
+            self.fs = FAT12FileSystem(
+                read_bytes_func=self.disk_manager.read_bytes,
+                write_bytes_func=self.disk_manager.write_bytes,
+                flush_func=self.disk_manager.flush,
+                params=fat_params
+            )
 
             # Set disk geometry based on BPB
-            disk_manager.sectors_per_track = self.bpb.sectors_per_track
-            disk_manager.num_heads = self.bpb.num_heads
-            disk_manager.sector_size = self.bpb.bytes_per_sector
-            disk_manager.total_sectors = self.bpb.total_sectors
+            self.disk_manager.sectors_per_track = self.bpb.sectors_per_track
+            self.disk_manager.num_heads = self.bpb.num_heads
+            self.disk_manager.sector_size = self.bpb.bytes_per_sector
+            self.disk_manager.total_sectors = self.bpb.total_sectors
 
             # Update UI components
             self.root_node = self.build_fs_tree()
@@ -515,27 +521,32 @@ class FileBrowserApp(QMainWindow):
         try:
             # Ask for device name
             device_name, ok = QInputDialog.getText(self, "Device Selection",
-                                                  "Enter device name (e.g., COM3):")
+                                                "Enter device name (e.g., COM3):")
             if not ok or not device_name:
                 device_name = None
 
             format_name, ok = QInputDialog.getText(self, "Format Selection",
-                                                  "Enter format name (e.g., ibm.1440, ibm.scan):",
-                                                  text="ibm.scan")
+                                                "Enter format name (e.g., ibm.1440, ibm.scan):",
+                                                text="ibm.scan")
             if not ok or not format_name:
                 format_name = "ibm.scan"
 
             # Create a FloppyDiskManager for the physical floppy
-            disk_manager = FloppyDiskManager(device_name, format_name=format_name)
+            self.disk_manager = FloppyDiskManager(device_name, format_name=format_name)
 
             # Create BPB instance to parse boot sector
-            self.bpb = FloppyBPB(disk_manager)
+            self.bpb = FloppyBPB(self.disk_manager)
 
             # Get FAT12 parameters
             fat_params = self.bpb.get_fat12_params()
 
-            # Create FAT12 filesystem instance
-            self.fs = FAT12FileSystem(disk_manager, fat_params)
+            # Create FAT12 filesystem instance with callbacks
+            self.fs = FAT12FileSystem(
+                read_bytes_func=self.disk_manager.read_bytes,
+                write_bytes_func=self.disk_manager.write_bytes,
+                flush_func=self.disk_manager.flush,
+                params=fat_params
+            )
 
             # Update UI components
             self.root_node = self.build_fs_tree()
@@ -557,7 +568,7 @@ class FileBrowserApp(QMainWindow):
         if self.bpb is None:
             # Try to get BPB from the disk manager
             try:
-                self.bpb = FloppyBPB(self.fs.disk_manager)
+                self.bpb = FloppyBPB(self.disk_manager)
             except:
                 self.bpb_info.setText("Error reading boot sector")
                 return
@@ -887,9 +898,12 @@ class FileBrowserApp(QMainWindow):
                 self.total_space = 0
                 return
 
-            # Read the entire first FAT
+            # Read the entire first FAT using disk_manager
             fat_size_bytes = self.fs.sectors_per_fat * self.fs.sector_size
-            fat_data = self.perform_with_progress(lambda cb: self.fs.disk_manager.read_bytes(self.fs.fat_start, fat_size_bytes, progress_callback=cb), title="Reading FAT...")
+            fat_data = self.perform_with_progress(
+                lambda cb: self.disk_manager.read_bytes(self.fs.fat_start, fat_size_bytes, progress_callback=cb),
+                title="Reading FAT..."
+            )
 
             # Process each cluster entry
             # Skip first two entries which are reserved
@@ -908,7 +922,7 @@ class FileBrowserApp(QMainWindow):
                     value = fat_data[fat_offset] | ((fat_data[fat_offset + 1] & 0x0F) << 8)
                 else:
                     # Odd cluster: uses the high 12 bits
-                    value = ((fat_data[fat_offset] >> 4) | (fat_data[fat_offset - 1] << 4)) & 0xFFF
+                    value = ((fat_data[fat_offset] >> 4) | (fat_data[fat_offset + 1] << 4)) & 0xFFF
 
                 if value == 0:
                     free_clusters += 1
@@ -943,8 +957,8 @@ class FileBrowserApp(QMainWindow):
             r_min = min(view_width, view_height) * 0.1
             r_max = min(view_width, view_height) * 0.45
 
-            # Get disk geometry from filesystem
-            disk_manager = self.fs.disk_manager
+            # Get disk geometry from disk_manager
+            disk_manager = self.disk_manager
             sectors_per_track = getattr(disk_manager, 'sectors_per_track', None)
             total_sectors = getattr(disk_manager, 'total_sectors', None)
             num_heads = getattr(disk_manager, 'num_heads', None)

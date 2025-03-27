@@ -3,8 +3,10 @@ import math
 import struct
 
 class FAT12FileSystem:
-    def __init__(self, disk_manager, params):
-        self.disk_manager = disk_manager
+    def __init__(self, read_bytes_func, write_bytes_func, flush_func, params):
+        self.read_bytes = read_bytes_func
+        self.write_bytes = write_bytes_func
+        self.flush_func = flush_func
         self.params = params
         self.sector_size = params['bytes_per_sector']
         self.total_sectors = params['total_sectors']
@@ -25,7 +27,7 @@ class FAT12FileSystem:
         media_descriptor = self.params['media_descriptor']
         for fat in range(self.num_fats):
             offset = self.fat_start + (fat * self.sectors_per_fat * self.sector_size)
-            self.disk_manager.write_bytes(offset, bytes([media_descriptor, 0xFF, 0xFF]))
+            self.write_bytes(offset, bytes([media_descriptor, 0xFF, 0xFF]))
 
     @staticmethod
     def fat_time(dt):
@@ -65,7 +67,7 @@ class FAT12FileSystem:
 
     def read_fat_entry(self, cluster):
         offset = self.fat_start + int(cluster * 1.5)
-        value_bytes = self.disk_manager.read_bytes(offset, 2)
+        value_bytes = self.read_bytes(offset, 2)
         value = struct.unpack('<H', value_bytes)[0]
         if cluster % 2 == 0:
             return value & 0x0FFF
@@ -76,14 +78,14 @@ class FAT12FileSystem:
         value &= 0x0FFF
         for fat in range(self.num_fats):
             offset = self.fat_start + (fat * self.sectors_per_fat * self.sector_size) + int(cluster * 1.5)
-            current_bytes = self.disk_manager.read_bytes(offset, 2)
+            current_bytes = self.read_bytes(offset, 2)
             current = struct.unpack('<H', current_bytes)[0]
             if cluster % 2 == 0:
                 new_value = (current & 0xF000) | (value & 0x0FFF)
             else:
                 new_value = (current & 0x000F) | ((value & 0x0FFF) << 4)
             new_bytes = struct.pack('<H', new_value)
-            self.disk_manager.write_bytes(offset, new_bytes)
+            self.write_bytes(offset, new_bytes)
 
     def get_cluster_chain(self, start_cluster):
         chain = []
@@ -142,7 +144,7 @@ class FAT12FileSystem:
         result = bytearray()
         for cluster in cluster_chain:
             offset = self.data_area_start + (cluster - 2) * self.cluster_size
-            data = self.disk_manager.read_bytes(offset, self.cluster_size)
+            data = self.read_bytes(offset, self.cluster_size)
             result.extend(data)
         return bytes(result)
 
@@ -154,10 +156,10 @@ class FAT12FileSystem:
             offset = self.data_area_start + (cluster - 2) * self.cluster_size
             chunk_size = min(remaining, self.cluster_size)
             chunk = data[data_pos:data_pos + chunk_size]
-            self.disk_manager.write_bytes(offset, chunk)
+            self.write_bytes(offset, chunk)
             if chunk_size < self.cluster_size:
-                self.disk_manager.write_bytes(offset + chunk_size,
-                                           b'\x00' * (self.cluster_size - chunk_size))
+                self.write_bytes(offset + chunk_size,
+                               b'\x00' * (self.cluster_size - chunk_size))
             data_pos += chunk_size
             remaining -= chunk_size
             if remaining <= 0:
@@ -165,7 +167,7 @@ class FAT12FileSystem:
 
     def zero_cluster(self, cluster):
         offset = self.data_area_start + (cluster - 2) * self.cluster_size
-        self.disk_manager.write_bytes(offset, b'\x00' * self.cluster_size)
+        self.write_bytes(offset, b'\x00' * self.cluster_size)
 
     def parse_dir_entry(self, entry):
         if len(entry) < 32 or entry[0] == 0x00 or entry[0] == 0xE5 or entry[11] & 0x08:
@@ -216,7 +218,7 @@ class FAT12FileSystem:
 
     def read_directory_data(self, cluster, is_root=False):
         if is_root:
-            return self.disk_manager.read_bytes(self.root_dir_start, self.root_dir_sectors * self.sector_size)
+            return self.read_bytes(self.root_dir_start, self.root_dir_sectors * self.sector_size)
         else:
             chain = self.get_cluster_chain(cluster)
             return self.get_cluster_data(chain)
@@ -328,7 +330,7 @@ class FAT12FileSystem:
         if parent_cluster == 0:
             dir_start = self.root_dir_start
             dir_size = self.root_dir_sectors * self.sector_size
-            dir_data = self.disk_manager.read_bytes(dir_start, dir_size)
+            dir_data = self.read_bytes(dir_start, dir_size)
 
             for i in range(0, dir_size, 32):
                 entry = dir_data[i:i+32]
@@ -339,7 +341,7 @@ class FAT12FileSystem:
             chain = self.get_cluster_chain(parent_cluster)
             for cluster in chain:
                 offset = self.data_area_start + (cluster - 2) * self.cluster_size
-                dir_data = self.disk_manager.read_bytes(offset, self.cluster_size)
+                dir_data = self.read_bytes(offset, self.cluster_size)
 
                 for i in range(0, self.cluster_size, 32):
                     if i + 32 > len(dir_data):
@@ -390,13 +392,13 @@ class FAT12FileSystem:
         dotdot_entry = self.create_dir_entry("..", True, parent_cluster if parent_cluster != 0 else 0, 0, dt)
 
         cluster_offset = self.data_area_start + (new_cluster - 2) * self.cluster_size
-        self.disk_manager.write_bytes(cluster_offset, dot_entry)
-        self.disk_manager.write_bytes(cluster_offset + 32, dotdot_entry)
+        self.write_bytes(cluster_offset, dot_entry)
+        self.write_bytes(cluster_offset + 32, dotdot_entry)
 
-        self.disk_manager.write_bytes(free_offset,
-                                     self.create_dir_entry(new_dir_name.upper(), True, new_cluster, 0, dt))
+        self.write_bytes(free_offset,
+                        self.create_dir_entry(new_dir_name.upper(), True, new_cluster, 0, dt))
 
-        self.disk_manager.flush(progress_callback=progress_callback)
+        self.flush_func(progress_callback=progress_callback)
 
     def delete_item(self, path, progress_callback=None):
         entry_info = self.find_entry(path)
@@ -408,11 +410,11 @@ class FAT12FileSystem:
         if entry['is_dir'] and not self.is_directory_empty(entry['starting_cluster']):
             raise ValueError("Directory not empty")
 
-        current_entry = self.disk_manager.read_bytes(offset, 32)
-        self.disk_manager.write_bytes(offset, b'\xE5' + current_entry[1:])
+        current_entry = self.read_bytes(offset, 32)
+        self.write_bytes(offset, b'\xE5' + current_entry[1:])
 
         self.free_cluster_chain(entry['starting_cluster'])
-        self.disk_manager.flush(progress_callback=progress_callback)
+        self.flush_func(progress_callback=progress_callback)
 
     def extract_file(self, path, progress_callback=None):
         entry_info = self.find_entry(path)
@@ -458,10 +460,10 @@ class FAT12FileSystem:
         if dt is None:
             dt = datetime.datetime.now()
 
-        self.disk_manager.write_bytes(free_offset,
-                                     self.create_dir_entry(file_name.upper(), False, clusters[0], len(file_data), dt))
+        self.write_bytes(free_offset,
+                        self.create_dir_entry(file_name.upper(), False, clusters[0], len(file_data), dt))
 
-        self.disk_manager.flush(progress_callback=progress_callback)
+        self.flush_func(progress_callback=progress_callback)
 
     def check_filesystem_integrity(self):
         cluster_owners = {}
