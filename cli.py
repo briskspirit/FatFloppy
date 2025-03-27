@@ -3,10 +3,9 @@ import os
 import struct
 
 from fat import FAT12FileSystem
-
+from floppybpb import FloppyBPB
 
 def create_image_data(params):
-    """Create a new disk image from parameters."""
     sector_size = params['sector_size']
     sectors_per_track = params['sectors_per_track']
     num_tracks = params['num_tracks']
