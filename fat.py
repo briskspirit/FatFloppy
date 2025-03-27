@@ -19,6 +19,8 @@ class FAT12FileSystem:
         self.num_clusters = (self.total_sectors - (self.reserved_sectors + self.num_fats * self.sectors_per_fat + self.root_dir_sectors)) // params['sectors_per_cluster']
         self.cluster_size = self.params['sectors_per_cluster'] * self.sector_size
 
+        print(self.check_filesystem_integrity())
+
     def initialize_fats(self):
         media_descriptor = self.params['media_descriptor']
         for fat in range(self.num_fats):
@@ -71,6 +73,7 @@ class FAT12FileSystem:
             return (value >> 4) & 0x0FFF
 
     def set_fat_entry(self, cluster, value):
+        value &= 0x0FFF
         for fat in range(self.num_fats):
             offset = self.fat_start + (fat * self.sectors_per_fat * self.sector_size) + int(cluster * 1.5)
             current_bytes = self.disk_manager.read_bytes(offset, 2)
@@ -100,18 +103,26 @@ class FAT12FileSystem:
         return None
 
     def allocate_cluster_chain(self, num_clusters):
-        clusters = []
-        for _ in range(num_clusters):
+        if num_clusters <= 0:
+            return []
+
+        first_cluster = self.find_free_cluster()
+        if first_cluster is None:
+            return None
+
+        self.set_fat_entry(first_cluster, 0xFFF)
+        clusters = [first_cluster]
+        prev_cluster = first_cluster
+        for _ in range(1, num_clusters):
             cluster = self.find_free_cluster()
             if cluster is None:
-                for c in clusters:
-                    self.set_fat_entry(c, 0x000)
+                self.free_cluster_chain(first_cluster)
                 return None
-            clusters.append(cluster)
-            self.set_fat_entry(cluster, 0xFFF)
 
-        for i in range(len(clusters) - 1):
-            self.set_fat_entry(clusters[i], clusters[i + 1])
+            self.set_fat_entry(prev_cluster, cluster)
+            self.set_fat_entry(cluster, 0xFFF)
+            clusters.append(cluster)
+            prev_cluster = cluster
 
         return clusters
 
@@ -302,8 +313,9 @@ class FAT12FileSystem:
         if parent_cluster is None:
             return None
 
+        target_name_upper = target_name.upper()
         for entry, offset in self.scan_directory(parent_cluster, parent_cluster == 0):
-            if entry['name'].lower() == target_name.lower():
+            if entry['name'].upper() == target_name_upper:
                 return parent_cluster, offset, entry
 
         return None
@@ -451,10 +463,49 @@ class FAT12FileSystem:
 
         self.disk_manager.flush(progress_callback=progress_callback)
 
+    def check_filesystem_integrity(self):
+        cluster_owners = {}
+        errors = []
+
+        for file_info in self.list_files():
+            if not file_info['is_dir'] and file_info['starting_cluster'] >= 2:
+                chain = self.get_cluster_chain(file_info['starting_cluster'])
+                for cluster in chain:
+                    if cluster in cluster_owners:
+                        errors.append(f"Cross-linked cluster {cluster} used by both "
+                                    f"'{file_info['name']}' and '{cluster_owners[cluster]}'")
+                    else:
+                        cluster_owners[cluster] = file_info['name']
+
+        for start_cluster in range(2, self.num_clusters + 2):
+            value = self.read_fat_entry(start_cluster)
+            if 2 <= value < 0xFF0:
+                seen = {start_cluster}
+                next_cluster = value
+                while 2 <= next_cluster < 0xFF0:
+                    if next_cluster in seen:
+                        errors.append(f"Loop detected in cluster chain starting at {start_cluster}")
+                        break
+                    seen.add(next_cluster)
+                    next_cluster = self.read_fat_entry(next_cluster)
+
+        return errors
+
     def is_valid_83_name(self, name):
+        invalid_chars = '"*/:<>?\\|+,;=[]'
+        if any(c in invalid_chars for c in name):
+            return False
+
         parts = name.split('.')
         if len(parts) > 2 or not parts[0]:
             return False
         if len(parts[0]) > 8 or (len(parts) == 2 and len(parts[1]) > 3):
             return False
+
+        reserved_names = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3",
+                        "COM4", "LPT1", "LPT2", "LPT3", "LPT4"]
+        base_name = parts[0].upper()
+        if base_name in reserved_names:
+            return False
+
         return True
