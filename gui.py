@@ -68,7 +68,7 @@ class DragDropTreeWidget(QTreeWidget):
         current_path = self.parent.current_path
         total_files = len(file_paths)
 
-        def import_files(callback):
+        def import_files():
             for idx, file_path in enumerate(file_paths):
                 if os.path.isdir(file_path):
                     QMessageBox.information(self.parent, "Info", 
@@ -86,12 +86,13 @@ class DragDropTreeWidget(QTreeWidget):
 
                 try:
                     self.parent.add_file_to_disk(file_path, new_name, current_path)
-                    callback((idx + 1) / total_files)  # Update progress
+                    # callback((idx + 1) / total_files)  # Update progress
                 except Exception as e:
                     QMessageBox.critical(self.parent, "Error", f"Failed to add file: {str(e)}")
 
         # Execute with progress dialog
-        self.parent.perform_with_progress(lambda cb: import_files(cb))
+        # self.parent.perform_with_progress(lambda cb: import_files(cb))
+        import_files()
 
     def mouseMoveEvent(self, event):
         if not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -125,7 +126,7 @@ class DragDropTreeWidget(QTreeWidget):
             return urls
 
         # Execute with progress dialog
-        result_urls = self.parent.perform_with_progress(lambda cb: prepare_files(cb))
+        result_urls = self.parent.perform_with_progress(lambda cb: prepare_files(cb), title="Preparing Files...")
         if result_urls:
             urls = result_urls
 
@@ -216,8 +217,8 @@ class FileBrowserApp(QMainWindow):
         for i in range(self.file_list.columnCount()):
             self.file_list.headerItem().setFont(i, header_font)
 
-    def perform_with_progress(self, operation):
-        progress_dialog = QProgressDialog("Operation in progress...", None, 0, 100, self)
+    def perform_with_progress(self, operation, title="Operation in Progress..."):
+        progress_dialog = QProgressDialog(title, None, 0, 100, self)
         progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         progress_dialog.setMinimumDuration(0)
         progress_dialog.setCancelButton(None)  # Non-cancelable
@@ -659,7 +660,7 @@ class FileBrowserApp(QMainWindow):
 
             # Extract the file
             # file_data = self.fs.extract_file(file_path)
-            file_data = self.perform_with_progress(lambda cb: self.fs.extract_file(file_path, progress_callback=cb))
+            file_data = self.perform_with_progress(lambda cb: self.fs.extract_file(file_path, progress_callback=cb), title="Extracting File...")
 
             # Save to local filesystem
             save_path, _ = QFileDialog.getSaveFileName(self, "Save File", node.name)
@@ -690,7 +691,7 @@ class FileBrowserApp(QMainWindow):
                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 # Delete the item
                 # self.fs.delete_item(item_path)
-                self.perform_with_progress(lambda cb: self.fs.delete_item(item_path, progress_callback=cb))
+                self.perform_with_progress(lambda cb: self.fs.delete_item(item_path, progress_callback=cb), title="Deleting Item...")
 
 
                 # Remember the current path
@@ -781,7 +782,7 @@ class FileBrowserApp(QMainWindow):
 
         try:
             # self.fs.create_directory(current_path, dir_name, datetime.datetime.now())
-            self.perform_with_progress(lambda cb: self.fs.create_directory(current_path, dir_name, datetime.datetime.now(), progress_callback=cb))
+            self.perform_with_progress(lambda cb: self.fs.create_directory(current_path, dir_name, datetime.datetime.now(), progress_callback=cb), title="Creating Directory...")
 
             # Update UI
             self.refresh_filesystem_ui(current_path)
@@ -841,7 +842,7 @@ class FileBrowserApp(QMainWindow):
             file_data = f.read()
 
         # Add file to disk
-        self.perform_with_progress(lambda cb: self.fs.insert_file(dest_path, dest_name, file_data, datetime.datetime.now(), progress_callback=cb))
+        self.perform_with_progress(lambda cb: self.fs.insert_file(dest_path, dest_name, file_data, datetime.datetime.now(), progress_callback=cb), title="Adding File...")
 
         # Update UI
         self.refresh_filesystem_ui(dest_path)
@@ -888,7 +889,7 @@ class FileBrowserApp(QMainWindow):
 
             # Read the entire first FAT
             fat_size_bytes = self.fs.sectors_per_fat * self.fs.sector_size
-            fat_data = self.perform_with_progress(lambda cb: self.fs.disk_manager.read_bytes(self.fs.fat_start, fat_size_bytes, progress_callback=cb))
+            fat_data = self.perform_with_progress(lambda cb: self.fs.disk_manager.read_bytes(self.fs.fat_start, fat_size_bytes, progress_callback=cb), title="Reading FAT...")
 
             # Process each cluster entry
             # Skip first two entries which are reserved
