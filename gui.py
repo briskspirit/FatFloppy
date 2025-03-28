@@ -3,7 +3,8 @@ import math
 import os
 import tempfile
 
-from PyQt6.QtCore import QMimeData, QPointF, Qt, QTimer, QUrl
+from PyQt6.QtCore import (QCoreApplication, QMimeData, QPointF, Qt, QThread,
+                          QTimer, QUrl, pyqtSignal)
 from PyQt6.QtGui import (QAction, QBrush, QDrag, QFont, QIcon, QPainter, QPen,
                          QPolygonF)
 from PyQt6.QtWidgets import (QAbstractItemView, QDockWidget, QFileDialog,
@@ -163,6 +164,25 @@ class FileSystemNode:
         self.children.append(child)
 
 
+class OperationWorker(QThread):
+    progress_signal = pyqtSignal(float)
+    error_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(object)
+
+    def __init__(self, operation):
+        super().__init__()
+        self.operation = operation
+        self.result = None
+
+    def run(self):
+        try:
+            # Pass the progress signal emitter as the callback
+            self.result = self.operation(self.progress_signal.emit)
+            self.finished_signal.emit(self.result)
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
 class FileBrowserApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -218,24 +238,38 @@ class FileBrowserApp(QMainWindow):
             self.file_list.headerItem().setFont(i, header_font)
 
     def perform_with_progress(self, operation, title="Operation in Progress..."):
+        # Create a modal progress dialog
         progress_dialog = QProgressDialog(title, None, 0, 100, self)
         progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         progress_dialog.setMinimumDuration(0)
-        progress_dialog.setCancelButton(None)  # Non-cancelable
+        progress_dialog.setCancelButton(None)
+        progress_dialog.show()
 
-        def callback(progress):
-            progress_dialog.setValue(int(progress * 100))
+        # Initialize the worker with the operation
+        worker = OperationWorker(operation)
 
-        try:
-            # Execute the operation and capture its result
-            result = operation(callback)
-            progress_dialog.setValue(100)
-            return result  # Return the result to the caller
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
-            return None  # Return None or handle the error as needed
-        finally:
-            progress_dialog.close()
+        # Connect signals
+        worker.progress_signal.connect(lambda p: progress_dialog.setValue(int(p * 100)))
+        worker.error_signal.connect(
+            lambda e: (QMessageBox.critical(self, "Error", e), progress_dialog.close())
+        )
+        worker.finished_signal.connect(
+            lambda result: (setattr(self, '_operation_result', result), progress_dialog.close())
+        )
+
+        # Start the worker thread
+        worker.start()
+
+        # Run the event loop until the worker finishes
+        while worker.isRunning():
+            QCoreApplication.processEvents()
+
+        # Retrieve and return the result
+        if hasattr(self, '_operation_result'):
+            result = self._operation_result
+            del self._operation_result
+            return result
+        return None
 
     def build_fs_tree(self):
         """Builds a tree representation of the filesystem."""
@@ -247,7 +281,6 @@ class FileBrowserApp(QMainWindow):
 
         # Get all files and directories from the filesystem
         files = self.fs.list_files()
-        # files = self.perform_with_progress(lambda cb: self.fs.list_files(progress_callback=cb))
 
         # Create a dictionary to store all nodes by path
         node_dict = {"/": root_node}
@@ -653,7 +686,6 @@ class FileBrowserApp(QMainWindow):
             item.node = child
 
     def extract_selected_file(self):
-        """Extract selected file to local filesystem"""
         selected_items = self.file_list.selectedItems()
         if not selected_items or not self.fs:
             return
@@ -666,14 +698,11 @@ class FileBrowserApp(QMainWindow):
             return
 
         try:
-            # Build the full path to the file
             file_path = self.build_full_path(node.name)
-
-            # Extract the file
-            # file_data = self.fs.extract_file(file_path)
-            file_data = self.perform_with_progress(lambda cb: self.fs.extract_file(file_path, progress_callback=cb), title="Extracting File...")
-
-            # Save to local filesystem
+            file_data = self.perform_with_progress(
+                lambda cb: self.fs.extract_file(file_path, progress_callback=cb),
+                title="Extracting File..."
+            )
             save_path, _ = QFileDialog.getSaveFileName(self, "Save File", node.name)
             if save_path:
                 with open(save_path, 'wb') as f:

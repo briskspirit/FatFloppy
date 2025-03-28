@@ -83,8 +83,9 @@ class FloppyDiskManager(DiskManager):
         else:
             self.fmt_cls = codec.get_diskdef(format_name)
 
-        self.track_data = {}
-        self.dirty_tracks = set()
+        self.track_data = {}  # Holds read track data
+        self.dirty_sectors = {}  # Holds dirty sectors separately
+        self.dirty_tracks = set()  # Tracks with dirty sectors
         self.init_geometry_from_format()
 
     @property
@@ -289,6 +290,8 @@ class FloppyDiskManager(DiskManager):
 
     def read_track(self, cyl, head):
         track_id = (cyl, head)
+        if track_id in self.track_data:
+            print(f"Track {cyl}.{head} already in memory")
         if track_id not in self.track_data:
             args = SimpleNamespace(
                 revs=2, raw=False, fmt_cls=self.fmt_cls,
@@ -334,6 +337,8 @@ class FloppyDiskManager(DiskManager):
     def flush(self, progress_callback=None):
         if not self.dirty_tracks:
             print("No dirty tracks to write.")
+            if progress_callback:
+                progress_callback(1.0)  # Jump to 100% if nothing to flush
             return
 
         if self.format_name == 'ibm.scan':
@@ -343,7 +348,7 @@ class FloppyDiskManager(DiskManager):
             def measure_rpm():
                 flux = self.usb.read_track(2)
                 self.drive_ticks_per_rev = flux.ticks_per_rev
-                print(f"Measured drive RPM: {60 / (self.drive_ticks_per_rev / self.usb.sample_freq):.1f}")
+                print(f"FLUSH Measured drive RPM: {60 / (self.drive_ticks_per_rev / self.usb.sample_freq):.1f}")
 
             try:
                 util.with_drive_selected(measure_rpm, self.usb, self.drive_obj)
@@ -352,11 +357,46 @@ class FloppyDiskManager(DiskManager):
                 raise
 
         total_tracks = len(self.dirty_tracks)
-        tracks_written = 0
+        tracks_processed = 0
 
+        # Read phase: Only read tracks if not all sectors are dirty
+        for track_id in sorted(self.dirty_tracks):
+            cyl, head = track_id
+            try:
+                if len(self.dirty_sectors[track_id]) == self.sectors_per_track:
+                    # All sectors are dirty, use dirty_sectors directly
+                    full_track_data = self.dirty_sectors[track_id]
+                else:
+                    # Not all sectors are dirty, read the track and merge
+                    print(f"FLUSH_PREREAD Reading track {cyl}.{head}")
+                    try:
+                        full_track_data = self.read_track(cyl, head)
+                    except Exception as e:
+                        print(f"FLUSH_PREREAD Error reading track {cyl}.{head}: {e}")
+                        # If we can't read the track, initialize with empty sectors
+                        full_track_data = {sector: bytearray(self.sector_size) for sector in range(1, self.sectors_per_track + 1)}
+
+                    # Merge dirty sectors into the full track data
+                    for sector in self.dirty_sectors[track_id]:
+                        full_track_data[sector] = self.dirty_sectors[track_id][sector]
+
+                self.track_data[track_id] = full_track_data
+
+                if progress_callback:
+                    progress = (tracks_processed / total_tracks) * 0.5  # 0% to 50% for reads
+                    print(f"FLUSH_PREREAD  Read progress: {progress:.2f}")
+                    progress_callback(progress)
+            except Exception as e:
+                print(f"FLUSH_PREREAD Error processing track {cyl}.{head}: {e}")
+
+            tracks_processed += 1
+
+        # Write phase: Write all dirty tracks
+        tracks_written = 0
         def write_tracks():
             nonlocal tracks_written
-            for cyl, head in sorted(self.dirty_tracks):
+            for track_id in sorted(self.dirty_tracks):
+                cyl, head = track_id
                 print(f"Writing track {cyl}.{head}")
                 self.usb.seek(cyl, head)
                 flux_list = self.convert_to_flux(cyl, head, self.drive_ticks_per_rev)
@@ -367,15 +407,21 @@ class FloppyDiskManager(DiskManager):
                 )
                 tracks_written += 1
                 if progress_callback:
-                    progress_callback(tracks_written / total_tracks)
-            self.dirty_tracks.clear()
+                    progress = 0.5 + (tracks_written / total_tracks) * 0.5  # 50% to 100% for writes
+                    print(f"WRITE_TRACKS Write progress: {progress:.2f}")
+                    progress_callback(progress)
 
         try:
             util.with_drive_selected(write_tracks, self.usb, self.drive_obj)
-            print("Write operation completed successfully.")
+            self.dirty_tracks.clear()
+            self.dirty_sectors.clear()  # Clear dirty sectors after successful flush
+            print("FLUSH Flush operation completed successfully.")
         except Exception as e:
             print(f"Error writing to disk: {e}")
             raise
+        finally:
+            if progress_callback:
+                progress_callback(1.0)  # Ensure it reaches 100%
 
     def convert_to_flux(self, cyl, head, drive_ticks_per_rev):
         track_def = self.fmt_cls.track_map.get((cyl, head))
@@ -397,10 +443,14 @@ class FloppyDiskManager(DiskManager):
         else:
             track = track_def.mk_track(cyl, head)
 
-        track_data = self.track_data[(cyl, head)]
+        track_id = (cyl, head)
+        if track_id not in self.track_data:
+            raise ValueError(f"Track data not found for cylinder {cyl}, head {head}")
+
+        track_data = self.track_data[track_id]
 
         for s in track.sectors:
-            if s.idam.r in track_data:
+            if hasattr(s, 'idam') and hasattr(s.idam, 'r') and s.idam.r in track_data:
                 s.dam.data = bytearray(track_data[s.idam.r])
                 s.crc = s.idam.crc = s.dam.crc = 0
 
@@ -426,25 +476,26 @@ class FloppyDiskManager(DiskManager):
         start_track_num = offset // bytes_per_track
         end_track_num = (offset + length - 1) // bytes_per_track
         tracks_to_read = set()
-
         for track_num in range(start_track_num, end_track_num + 1):
             cyl = track_num // self.num_heads
             head = track_num % self.num_heads
             tracks_to_read.add((cyl, head))
 
-        total_tracks = len(tracks_to_read)
-        tracks_read = 0
+        # Load tracks not in memory
+        tracks_to_load = [track_id for track_id in tracks_to_read if track_id not in self.track_data]
+        total_tracks_to_load = len(tracks_to_load)
+        tracks_loaded = 0
 
-        for track_id in tracks_to_read:
-            if track_id not in self.track_data:
-                try:
-                    self.read_track(*track_id)
-                    tracks_read += 1
-                    if progress_callback:
-                        progress_callback(tracks_read / total_tracks)
-                except Exception as e:
-                    print(f"Error reading track {track_id}: {e}")
+        for track_id in tracks_to_load:
+            try:
+                self.read_track(*track_id)
+                tracks_loaded += 1
+                if progress_callback and total_tracks_to_load > 0:
+                    progress_callback(tracks_loaded / total_tracks_to_load)
+            except Exception as e:
+                print(f"Error reading track {track_id}: {e}")
 
+        # Assemble data, preferring dirty_sectors over track_data
         data = b''
         current_offset = offset
         remaining_length = length
@@ -457,7 +508,9 @@ class FloppyDiskManager(DiskManager):
             offset_in_sector = offset_in_track % self.sector_size
 
             track_id = (cyl, head)
-            if track_id in self.track_data and sector_num in self.track_data[track_id]:
+            if track_id in self.dirty_sectors and sector_num in self.dirty_sectors[track_id]:
+                sector_data = self.dirty_sectors[track_id][sector_num]
+            elif track_id in self.track_data and sector_num in self.track_data[track_id]:
                 sector_data = self.track_data[track_id][sector_num]
             else:
                 sector_data = b'\x00' * self.sector_size
@@ -469,7 +522,7 @@ class FloppyDiskManager(DiskManager):
 
         return data
 
-    def write_bytes(self, offset, data):
+    def write_bytes(self, offset, data, progress_callback=None):
         self.ensure_geometry()
 
         bytes_per_track = self.sectors_per_track * self.sector_size
@@ -480,28 +533,34 @@ class FloppyDiskManager(DiskManager):
         sector_num = offset_in_track // self.sector_size + 1
         offset_in_sector = offset_in_track % self.sector_size
 
-        data = bytearray(data)
+        print(f"Writing {len(data)} bytes to track {cyl}.{head}, sector {sector_num}, offset {offset_in_sector}")
+
+        data = bytearray(data)  # Ensure input is a bytearray
         while data:
             track_id = (cyl, head)
-            if track_id not in self.track_data:
-                try:
-                    self.read_track(cyl, head)
-                except Exception as e:
-                    print(f"Error reading track {cyl}.{head}: {e}")
-                    self.track_data[track_id] = {}
+            # # Ensure track data is read from disk if not already in memory
+            # if track_id not in self.track_data:
+            #     try:
+            #         self.read_track(cyl, head)
+            #     except Exception as e:
+            #         print(f"Error reading track {track_id} during write_bytes: {e}")
+            #         # Initialize empty track data if we can't read it
+            #         self.track_data[track_id] = {}
+            if track_id not in self.dirty_sectors:
+                self.dirty_sectors[track_id] = {}
 
-            if track_id not in self.track_data:
-                self.track_data[track_id] = {}
+            if sector_num not in self.dirty_sectors[track_id]:
+                # Copy the current sector data from track_data if it exists, otherwise create empty sector
+                if track_id in self.track_data and sector_num in self.track_data[track_id]:
+                    self.dirty_sectors[track_id][sector_num] = bytearray(self.track_data[track_id][sector_num])
+                else:
+                    self.dirty_sectors[track_id][sector_num] = bytearray(self.sector_size)
 
-            if sector_num in self.track_data[track_id]:
-                sector_data = bytearray(self.track_data[track_id][sector_num])
-            else:
-                sector_data = bytearray(b'\x00' * self.sector_size)
-
+            sector_data = self.dirty_sectors[track_id][sector_num]
             write_length = min(len(data), self.sector_size - offset_in_sector)
             sector_data[offset_in_sector:offset_in_sector + write_length] = data[:write_length]
-            self.track_data[track_id][sector_num] = sector_data
-            self.write_track(cyl, head, self.track_data[track_id])
+            self.dirty_sectors[track_id][sector_num] = sector_data
+            self.dirty_tracks.add(track_id)
 
             data = data[write_length:]
             offset_in_sector = 0
@@ -562,14 +621,16 @@ class ImageFileManager(DiskManager):
             progress_callback(1.0)
         return data
 
-    def write_bytes(self, offset, data):
+    def write_bytes(self, offset, data, progress_callback=None):
         self.image_data[offset:offset + len(data)] = data
         self.dirty = True
+        if progress_callback:
+            progress_callback(1.0)
 
     def flush(self, progress_callback=None):
         if self.dirty:
             total_bytes = len(self.image_data)
-            chunk_size = 1024 * 1024
+            chunk_size = self.sector_size
             with open(self.file_path, 'wb') as f:
                 for i in range(0, total_bytes, chunk_size):
                     chunk = self.image_data[i:i + chunk_size]

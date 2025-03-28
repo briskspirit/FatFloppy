@@ -140,11 +140,16 @@ class FAT12FileSystem:
             if next_cluster >= 0xFF8:
                 break
 
-    def get_cluster_data(self, cluster_chain):
+    def get_cluster_data(self, cluster_chain, progress_callback=None):
         result = bytearray()
-        for cluster in cluster_chain:
+        total_clusters = len(cluster_chain)
+        for i, cluster in enumerate(cluster_chain):
             offset = self.data_area_start + (cluster - 2) * self.cluster_size
-            data = self.read_bytes(offset, self.cluster_size)
+            # Adjust progress for each cluster read
+            def cluster_progress(p):
+                if progress_callback and total_clusters > 0:
+                    progress_callback((i + p) / total_clusters)
+            data = self.read_bytes(offset, self.cluster_size, progress_callback=cluster_progress)
             result.extend(data)
         return bytes(result)
 
@@ -371,7 +376,7 @@ class FAT12FileSystem:
             raise ValueError("Parent directory not found")
 
         if any(e['name'].upper() == new_dir_name.upper()
-               for e, _ in self.scan_directory(parent_cluster, parent_cluster == 0)):
+            for e, _ in self.scan_directory(parent_cluster, parent_cluster == 0)):
             raise ValueError("Name already exists")
 
         free_offset = self.find_free_entry_offset(parent_cluster)
@@ -427,7 +432,7 @@ class FAT12FileSystem:
             return b''
 
         cluster_chain = self.get_cluster_chain(entry['starting_cluster'])
-        file_data = self.get_cluster_data(cluster_chain)
+        file_data = self.get_cluster_data(cluster_chain, progress_callback=progress_callback)
 
         return file_data[:entry['size']]
 
@@ -440,7 +445,7 @@ class FAT12FileSystem:
             raise ValueError("Parent directory not found")
 
         if any(e['name'].upper() == file_name.upper()
-               for e, _ in self.scan_directory(parent_cluster, parent_cluster == 0)):
+            for e, _ in self.scan_directory(parent_cluster, parent_cluster == 0)):
             raise ValueError("Name already exists")
 
         free_offset = self.find_free_entry_offset(parent_cluster)
