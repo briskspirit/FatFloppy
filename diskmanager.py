@@ -2,6 +2,7 @@ import struct
 from abc import ABC, abstractmethod
 from types import SimpleNamespace
 
+from floppybpb import FloppyBPB
 from greaseweazle.codec import codec
 from greaseweazle.codec.ibm import ibm
 from greaseweazle.tools import read, util
@@ -45,14 +46,13 @@ class DiskManager(ABC):
 
     def read_bpb_geometry(self):
         try:
-            boot_sector = self.read_bytes(0, 512)
-            self.sector_size = struct.unpack_from('<H', boot_sector, 0x0B)[0]
-            self.sectors_per_track = struct.unpack_from('<H', boot_sector, 0x18)[0]
-            self.num_heads = struct.unpack_from('<H', boot_sector, 0x1A)[0]
-            total_sectors = struct.unpack_from('<H', boot_sector, 0x13)[0]
-            if total_sectors == 0:
-                total_sectors = struct.unpack_from('<I', boot_sector, 0x20)[0]
-            self.total_sectors = total_sectors
+            # Create a FloppyBPB instance using self as the disk_manager
+            bpb = FloppyBPB(self)
+            # Set geometry from BPB attributes
+            self.sector_size = bpb.bytes_per_sector
+            self.sectors_per_track = bpb.sectors_per_track
+            self.num_heads = bpb.num_heads
+            self.total_sectors = bpb.total_sectors
             if self.sectors_per_track and self.num_heads and self.total_sectors:
                 self.num_cylinders = self.total_sectors // (self.sectors_per_track * self.num_heads)
             print(f"BPB geometry: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
