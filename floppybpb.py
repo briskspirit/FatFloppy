@@ -58,6 +58,8 @@ BOOT_SECTOR_FIELDS = [
     ('signature',          0x1FE, '<H', 2),
 ]
 
+VALID_BOOT_SIGNATURE = 0xAA55
+
 class FloppyBPB:
     def __init__(self, disk_manager):
         self.disk_manager = disk_manager
@@ -79,9 +81,6 @@ class FloppyBPB:
         if self.total_sectors == 0:
             self.total_sectors = self.total_sectors_large
 
-        if self.signature != 0xAA55:
-            raise ValueError("Invalid boot sector signature")
-
     @classmethod
     def create_boot_sector(cls, params):
         boot_sector = bytearray(512)
@@ -92,7 +91,7 @@ class FloppyBPB:
                 continue
 
             if name == 'signature':
-                value = 0xAA55
+                value = VALID_BOOT_SIGNATURE
             elif name in params:
                 value = params[name]
             elif name == 'bootstrap_code':
@@ -180,6 +179,9 @@ class FloppyBPB:
         disk_manager.write_bytes(0, boot_sector)
 
         return cls(disk_manager)
+
+    def is_boot_signature_valid(self):
+        return self.signature == VALID_BOOT_SIGNATURE
 
     def get_fat12_params(self):
         return {
