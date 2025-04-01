@@ -10,8 +10,6 @@ FLOPPY_FORMATS = [
     {"size": "5.25\"", "type": "DD", "heads": 2, "tracks": 40, "sectors": 8,  "sector_size": 512, "total_sectors": 640, "capacity": 327680,     "rpm": 300, "encoding": "MFM", "codec": "ibm.320"},
     {"size": "5.25\"", "type": "DD", "heads": 1, "tracks": 40, "sectors": 9,  "sector_size": 512, "total_sectors": 360, "capacity": 184320,     "rpm": 300, "encoding": "MFM", "codec": "ibm.180"},
     {"size": "5.25\"", "type": "DD", "heads": 2, "tracks": 40, "sectors": 9,  "sector_size": 512, "total_sectors": 720, "capacity": 368640,     "rpm": 300, "encoding": "MFM", "codec": "ibm.360"},
-    {"size": "5.25\"", "type": "QD", "heads": 1, "tracks": 80, "sectors": 8,  "sector_size": 512, "total_sectors": 640, "capacity": 327680,     "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "5.25\"", "type": "QD", "heads": 2, "tracks": 80, "sectors": 8,  "sector_size": 512, "total_sectors": 1280, "capacity": 655360,     "rpm": 300, "encoding": "MFM", "codec": None},
     {"size": "5.25\"", "type": "HD", "heads": 2, "tracks": 80, "sectors": 15, "sector_size": 512, "total_sectors": 2400, "capacity": 1228800,    "rpm": 360, "encoding": "MFM", "codec": "ibm.1200"},
     {"size": "3.5\"",  "type": "DD", "heads": 1, "tracks": 80, "sectors": 8,  "sector_size": 512, "total_sectors": 640, "capacity": 327680,     "rpm": 300, "encoding": "MFM", "codec": None},
     {"size": "3.5\"",  "type": "DD", "heads": 1, "tracks": 80, "sectors": 9,  "sector_size": 512, "total_sectors": 720, "capacity": 368640,     "rpm": 300, "encoding": "MFM", "codec": None},
