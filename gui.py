@@ -626,7 +626,6 @@ class FileBrowserApp(QMainWindow):
             f"Sectors per Track: {self.bpb.sectors_per_track}\n"
             f"Number of Heads: {self.bpb.num_heads}\n"
             f"Hidden Sectors: {self.bpb.hidden_sectors}\n"
-            f"Total Size: {self.bpb.total_sectors * self.bpb.bytes_per_sector} bytes\n"
             f"Disk Type: {self.bpb.get_disk_type()}\n"
             f"Free Space: {free_kb:.1f} KB / {total_kb:.1f} KB ({percent_free:.1f}%)"
         )

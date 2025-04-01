@@ -4,18 +4,6 @@ import struct
 from floppy_formats import FLOPPY_FORMATS
 
 
-MEDIA_DESCRIPTOR_MAP = {
-    0xF0: "3.5\" HD 1.44 MB",
-    0xF9: "3.5\" DD 720 KB",
-    0xFD: "5.25\" DD 360 KB",
-    0xFE: "5.25\" DD 160 KB",
-    0xFF: "5.25\" DD 320 KB",
-    0xFC: "5.25\" DD 180 KB",
-    0xFB: "3.5\" DD 640 KB",
-    0xFA: "5.25\" DD 120 KB",
-    0xF8: "Fixed disk"
-}
-
 BOOT_SECTOR_FIELDS = [
     ('jump_code',          0x000, None, 3),
     ('oem_id',             0x003, 'str', 8),
@@ -125,8 +113,8 @@ class FloppyBPB:
                 geometry['sectors_per_track'] == fmt["sectors"] and
                 geometry['num_heads'] == fmt["heads"] and
                 geometry['bytes_per_sector'] == fmt["sector_size"]):
-                capacity_mb = fmt['capacity'] / (1024 * 1024)
-                return f"{fmt['size']} {fmt['type']} {capacity_mb:.2f} MB"
+                capacity_mb = fmt['capacity'] / 1024
+                return f"{fmt['size']} {fmt['type']} {capacity_mb:.2f} KB"
 
         return f"Unknown (Sectors: {geometry['total_sectors']})"
 
@@ -182,9 +170,6 @@ class FloppyBPB:
         }
 
     def get_disk_type(self):
-        if self.media_descriptor in MEDIA_DESCRIPTOR_MAP:
-            return MEDIA_DESCRIPTOR_MAP[self.media_descriptor]
-
         geometry = {
             'total_sectors': self.total_sectors,
             'sectors_per_track': self.sectors_per_track,
