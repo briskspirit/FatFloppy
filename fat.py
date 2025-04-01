@@ -2,6 +2,8 @@ import datetime
 import math
 import struct
 
+from floppy_formats import FLOPPY_FORMATS
+
 class FAT12FileSystem:
     def __init__(self, read_bytes_func, write_bytes_func, flush_func, params):
         self.read_bytes = read_bytes_func

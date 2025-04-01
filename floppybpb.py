@@ -1,25 +1,8 @@
 import math
 import struct
 
-FLOPPY_FORMATS = [
-    {"size": "8\"",    "type": "SD", "heads": 1, "tracks": 77, "sectors": 26, "sector_size": 128, "total_sectors": 2002, "capacity": 256256,     "rpm": 360, "encoding": "FM",  "codec": None},
-    {"size": "8\"",    "type": "SD", "heads": 2, "tracks": 77, "sectors": 26, "sector_size": 128, "total_sectors": 4004, "capacity": 512512,     "rpm": 360, "encoding": "FM",  "codec": None},
-    {"size": "8\"",    "type": "DD", "heads": 1, "tracks": 77, "sectors": 8,  "sector_size": 1024, "total_sectors": 616, "capacity": 630784,     "rpm": 360, "encoding": "MFM", "codec": None},
-    {"size": "8\"",    "type": "DD", "heads": 2, "tracks": 77, "sectors": 8,  "sector_size": 1024, "total_sectors": 1232, "capacity": 1261568,    "rpm": 360, "encoding": "MFM", "codec": None},
-    {"size": "5.25\"", "type": "DD", "heads": 1, "tracks": 40, "sectors": 8,  "sector_size": 512, "total_sectors": 320, "capacity": 163840,     "rpm": 300, "encoding": "MFM", "codec": "ibm.160"},
-    {"size": "5.25\"", "type": "DD", "heads": 2, "tracks": 40, "sectors": 8,  "sector_size": 512, "total_sectors": 640, "capacity": 327680,     "rpm": 300, "encoding": "MFM", "codec": "ibm.320"},
-    {"size": "5.25\"", "type": "DD", "heads": 1, "tracks": 40, "sectors": 9,  "sector_size": 512, "total_sectors": 360, "capacity": 184320,     "rpm": 300, "encoding": "MFM", "codec": "ibm.180"},
-    {"size": "5.25\"", "type": "DD", "heads": 2, "tracks": 40, "sectors": 9,  "sector_size": 512, "total_sectors": 720, "capacity": 368640,     "rpm": 300, "encoding": "MFM", "codec": "ibm.360"},
-    {"size": "5.25\"", "type": "HD", "heads": 2, "tracks": 80, "sectors": 15, "sector_size": 512, "total_sectors": 2400, "capacity": 1228800,    "rpm": 360, "encoding": "MFM", "codec": "ibm.1200"},
-    {"size": "3.5\"",  "type": "DD", "heads": 1, "tracks": 80, "sectors": 8,  "sector_size": 512, "total_sectors": 640, "capacity": 327680,     "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "3.5\"",  "type": "DD", "heads": 1, "tracks": 80, "sectors": 9,  "sector_size": 512, "total_sectors": 720, "capacity": 368640,     "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "3.5\"",  "type": "DD", "heads": 2, "tracks": 80, "sectors": 8,  "sector_size": 512, "total_sectors": 1280, "capacity": 655360,     "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "3.5\"",  "type": "DD", "heads": 2, "tracks": 80, "sectors": 9,  "sector_size": 512, "total_sectors": 1440, "capacity": 737280,     "rpm": 300, "encoding": "MFM", "codec": "ibm.720"},
-    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 80, "sectors": 18, "sector_size": 512, "total_sectors": 2880, "capacity": 1474560,    "rpm": 300, "encoding": "MFM", "codec": "ibm.1440"},
-    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 80, "sectors": 21, "sector_size": 512, "total_sectors": 3360, "capacity": 1720320,    "rpm": 300, "encoding": "MFM", "codec": "ibm.1680"},
-    {"size": "3.5\"",  "type": "HD", "heads": 2, "tracks": 82, "sectors": 21, "sector_size": 512, "total_sectors": 3444, "capacity": 1763328,    "rpm": 300, "encoding": "MFM", "codec": None},
-    {"size": "3.5\"",  "type": "ED", "heads": 2, "tracks": 80, "sectors": 36, "sector_size": 512, "total_sectors": 5760, "capacity": 2949120,    "rpm": 300, "encoding": "MFM", "codec": "ibm.2880"},
-]
+from floppy_formats import FLOPPY_FORMATS
+
 
 MEDIA_DESCRIPTOR_MAP = {
     0xF0: "3.5\" HD 1.44 MB",
@@ -36,6 +19,7 @@ MEDIA_DESCRIPTOR_MAP = {
 BOOT_SECTOR_FIELDS = [
     ('jump_code',          0x000, None, 3),
     ('oem_id',             0x003, 'str', 8),
+    # DOS 2.0
     ('bytes_per_sector',   0x00B, '<H', 2),
     ('sectors_per_cluster',0x00D, '<B', 1),
     ('reserved_sectors',   0x00E, '<H', 2),
@@ -44,10 +28,12 @@ BOOT_SECTOR_FIELDS = [
     ('total_sectors',      0x013, '<H', 2),
     ('media_descriptor',   0x015, '<B', 1),
     ('sectors_per_fat',    0x016, '<H', 2),
+    # DOS 3.31
     ('sectors_per_track',  0x018, '<H', 2),
     ('num_heads',          0x01A, '<H', 2),
     ('hidden_sectors',     0x01C, '<I', 4),
     ('total_sectors_large',0x020, '<I', 4),
+    # DOS 4.0
     ('drive_number',       0x024, '<B', 1),
     ('flags',              0x025, '<B', 1),
     ('signature_ext',      0x026, '<B', 1),
