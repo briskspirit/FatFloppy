@@ -154,6 +154,35 @@ class FloppyBPB:
 
         return cls(disk_manager)
 
+    def is_valid(self):
+        # TODO: Read media descriptor as a ground truth for head count and sector number validation
+        # Reference: https://www.stanislavs.org/helppc/media_descriptor_byte.html
+        valid_media_descriptors = {0xF0, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF}
+        if self.media_descriptor not in valid_media_descriptors:
+            return False
+
+        valid_bytes_per_sector = {128, 256, 512, 1024, 2048, 4096}
+        if self.bytes_per_sector not in valid_bytes_per_sector:
+            return False
+
+        valid_sectors_per_cluster = {1, 2, 4, 8, 16, 32, 64, 128}
+        if self.sectors_per_cluster not in valid_sectors_per_cluster:
+            return False
+
+        if not (0 < self.total_sectors <= 5760):
+            return False
+
+        if self.num_heads not in {1, 2}:
+            return False
+
+        # For sectors_per_track, we won't fail the check here since pre-3.31 BPBs may have junk.
+        # Instead, we'll allow fallback methods to handle it if other fields are sane.
+        if self.sectors_per_track is not None and not (8 <= self.sectors_per_track <= 36):
+            # Optional warning, but don't fail validity
+            print(f"Warning: sectors_per_track ({self.sectors_per_track}) is unusual but not invalidating BPB")
+
+        return True
+
     def is_boot_signature_valid(self):
         return self.signature == VALID_BOOT_SIGNATURE
 

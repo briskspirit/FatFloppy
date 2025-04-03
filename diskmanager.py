@@ -3,9 +3,12 @@ from abc import ABC, abstractmethod
 from types import SimpleNamespace
 
 from floppybpb import FloppyBPB
+from floppy_formats import FLOPPY_FORMATS
 from greaseweazle.codec import codec
 from greaseweazle.codec.ibm import ibm
 from greaseweazle.tools import read, util
+
+# TODO: FloppyBPB also needs geometry if setting it failed from BPB as GUI relies on it
 
 class DiskManager(ABC):
     def __init__(self):
@@ -46,17 +49,19 @@ class DiskManager(ABC):
 
     def read_bpb_geometry(self):
         try:
-            # Create a FloppyBPB instance using self as the disk_manager
             bpb = FloppyBPB(self)
-            # Set geometry from BPB attributes
-            self.sector_size = bpb.bytes_per_sector
-            self.sectors_per_track = bpb.sectors_per_track
-            self.num_heads = bpb.num_heads
-            self.total_sectors = bpb.total_sectors
-            if self.sectors_per_track and self.num_heads and self.total_sectors:
-                self.num_cylinders = self.total_sectors // (self.sectors_per_track * self.num_heads)
-            print(f"BPB geometry: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
-            return True
+            if bpb.is_valid():
+                self.sector_size = bpb.bytes_per_sector
+                self.sectors_per_track = bpb.sectors_per_track
+                self.num_heads = bpb.num_heads
+                self.total_sectors = bpb.total_sectors
+                if self.sectors_per_track and self.num_heads and self.total_sectors:
+                    self.num_cylinders = self.total_sectors // (self.sectors_per_track * self.num_heads)
+                print(f"BPB geometry: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
+                return True
+            else:
+                print("BPB is invalid; geometry not set from BPB")
+                return False
         except Exception as e:
             print(f"Warning: Error reading BPB geometry: {e}")
             return False
@@ -91,6 +96,21 @@ class FloppyDiskManager(DiskManager):
     @property
     def is_dirty(self):
         return len(self.dirty_tracks) > 0
+
+    def init_geometry_from_format(self):
+        try:
+            if self.format_name == 'ibm.scan':
+                self.read_and_detect_format()
+                if not self.read_bpb_geometry():
+                    self.detect_geometry_from_disk()
+            else:
+                self.init_geometry_from_fmt_cls()
+                if not self.has_complete_geometry():
+                    # TODO: check if this is even needed when we set geometry from hard set format
+                    self.read_bpb_geometry()
+        except Exception as e:
+            print(f"Warning: Could not initialize geometry from format: {e}")
+        self.ensure_geometry()
 
     def init_geometry_from_format(self):
         try:
@@ -591,29 +611,31 @@ class ImageFileManager(DiskManager):
         return self.dirty
 
     def _infer_geometry(self):
-        formats = {
-            163840: (8, 1, 40, 512),
-            184320: (9, 1, 40, 512),
-            327680: (8, 2, 40, 512),
-            368640: (9, 2, 40, 512),
-            737280: (9, 2, 80, 512),
-            1228800: (15, 2, 80, 512),
-            1474560: (18, 2, 80, 512),
-            1720320: (21, 2, 80, 512),
-            2949120: (36, 2, 80, 512),
-        }
+        if self.read_bpb_geometry():
+            return
 
-        if not self.read_bpb_geometry():
-            image_size = len(self.image_data)
-            if image_size in formats:
-                self.sectors_per_track, self.num_heads, self.num_cylinders, self.sector_size = formats[image_size]
-                self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
-            else:
-                self.sectors_per_track = 18
-                self.num_heads = 2
-                self.sector_size = 512
-                self.num_cylinders = image_size // (self.sectors_per_track * self.num_heads * self.sector_size)
-                self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+        # TODO: do we want to rely on the image size to infer geometry?
+        # Check against known floppy formats by media descriptor and other data?
+        image_size = len(self.image_data)
+        for fmt in FLOPPY_FORMATS:
+            expected_size = fmt['total_sectors'] * fmt['sector_size']
+            if image_size == expected_size:
+                self.sectors_per_track = fmt['sectors']
+                self.num_heads = fmt['heads']
+                self.num_cylinders = fmt['tracks']
+                self.sector_size = fmt['sector_size']
+                self.total_sectors = fmt['total_sectors']
+                print(f"Inferred geometry from FLOPPY_FORMATS: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
+                return
+
+        # TODO: should set for some old safe format prior to DOS 2.0 BPB introduction?
+        # And try to get media descriptor from FAT12 first table?
+        print("Warning: No matching format in FLOPPY_FORMATS; using default geometry")
+        self.sectors_per_track = 18
+        self.num_heads = 2
+        self.sector_size = 512
+        self.num_cylinders = image_size // (self.sectors_per_track * self.num_heads * self.sector_size)
+        self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
 
     def read_bytes(self, offset, length, progress_callback=None):
         data = self.image_data[offset:offset + length]
