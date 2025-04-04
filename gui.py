@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QDockWidget, QFileDialog,
                              QGraphicsPolygonItem, QGraphicsScene,
                              QGraphicsView, QInputDialog, QLabel, QMainWindow,
                              QMessageBox, QProgressDialog, QToolBar,
-                             QTreeWidget, QTreeWidgetItem)
+                             QTreeWidget, QTreeWidgetItem, QHeaderView)
 
 from diskmanager import FloppyDiskManager, ImageFileManager
 from fat import FAT12FileSystem
@@ -20,16 +20,15 @@ from floppybpb import FloppyBPB
 
 
 class ResizableGraphicsView(QGraphicsView):
-    def __init__(self, scene, app, parent=None):
+    def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
-        self.app = app
-        self.setSceneRect(0, 0, self.width(), self.height())
+        self.app = parent
+        self.setSceneRect(0, 0, self.width()-2, self.height()-2) # -2 fixes scrollbar appearance
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.setSceneRect(0, 0, self.width(), self.height())
+        self.setSceneRect(0, 0, self.width()-2, self.height()-2)
         self.app.draw_disk_map()
-
 
 class DragDropTreeWidget(QTreeWidget):
     def __init__(self, parent=None):
@@ -72,7 +71,7 @@ class DragDropTreeWidget(QTreeWidget):
         def import_files():
             for idx, file_path in enumerate(file_paths):
                 if os.path.isdir(file_path):
-                    QMessageBox.information(self.parent, "Info", 
+                    QMessageBox.information(self.parent, "Info",
                                         f"Directory dropping is not yet supported: {os.path.basename(file_path)}")
                     continue
 
@@ -213,23 +212,23 @@ class FileBrowserApp(QMainWindow):
         ]
 
         # Create font with the first available font in the list
-        app_font = QFont()
-        app_font.setFamily(monospace_fonts[0])  # Start with first preference
-        app_font.setStyleHint(QFont.StyleHint.Monospace)  # Hint to use monospace if first choice unavailable
-        app_font.setFixedPitch(True)  # Ensure fixed pitch
-        app_font.setPointSize(10)     # Set reasonable size
+        self.app_font = QFont()
+        self.app_font.setFamily(monospace_fonts[0])  # Start with first preference
+        self.app_font.setStyleHint(QFont.StyleHint.Monospace)  # Hint to use monospace if first choice unavailable
+        self.app_font.setFixedPitch(True)  # Ensure fixed pitch
+        self.app_font.setPointSize(12)     # Set reasonable size
 
         # Set font for the entire application
-        self.setFont(app_font)
+        self.setFont(self.app_font)
 
         # Apply the font to specific widgets that might need explicit setting
-        self.tree_widget.setFont(app_font)
-        self.file_list.setFont(app_font)
-        self.bpb_info.setFont(app_font)
+        self.tree_widget.setFont(self.app_font)
+        self.file_list.setFont(self.app_font)
+        self.bpb_info.setFont(self.app_font)
 
         # Create a slightly larger font for headings and labels
-        header_font = QFont(app_font)
-        header_font.setPointSize(11)
+        header_font = QFont(self.app_font)
+        # header_font.setPointSize(11)
         header_font.setBold(True)
 
         # Apply to headers
@@ -415,7 +414,7 @@ class FileBrowserApp(QMainWindow):
         # Directory Tree Dock
         self.tree_dock = QDockWidget("Directory Tree", self)
         self.tree_widget = QTreeWidget()
-        self.tree_widget.setHeaderLabel("Directory Tree")
+        self.tree_widget.setHeaderLabel("Directories")
         self.tree_widget.itemClicked.connect(self.select_directory)
         self.tree_dock.setWidget(self.tree_widget)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.tree_dock)
@@ -432,13 +431,20 @@ class FileBrowserApp(QMainWindow):
         # File List Dock
         self.file_list_dock = QDockWidget("Files in Current Directory", self)
         self.file_list = DragDropTreeWidget(self)
-        self.file_list.setHeaderLabels(["Name", "Size", "Date/Time", "Attributes"])
+        self.file_list.setHeaderLabels(["Name", "Size", "Date/Time", "Attr"])
         self.file_list.setDragEnabled(True)
         self.file_list.setAcceptDrops(True)
         self.file_list.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.file_list_dock.setWidget(self.file_list)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_list_dock)
+
+        # Configure column widths
+        header = self.file_list.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)          # Name column
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents) # Size column
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch) # Date/Time column
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch) # Attributes column
 
         # Disk Map Dock
         self.disk_map_dock = QDockWidget("Disk Map", self)
@@ -467,14 +473,16 @@ class FileBrowserApp(QMainWindow):
         self.total_space = 0
         self.fs = None
         self.bpb = None
-        self.disk_manager = None  # Reset disk_manager
+        self.disk_manager = None
 
-        # Clear all UI elements
         self.tree_widget.clear()
         self.file_list.clear()
         self.bpb_info.setText("No disk image loaded")
         self.disk_map_scene.clear()
         self.disk_map_scene.addText("No disk image loaded").setPos(10, 10)
+
+        self.head_action.setEnabled(False)
+        self.head_action.setText("Switch to Head 1")
 
         self.statusBar().showMessage("Ready")
 
@@ -516,16 +524,9 @@ class FileBrowserApp(QMainWindow):
             return
 
         try:
-            # Create a disk manager for the image file
             self.disk_manager = ImageFileManager(file_path)
-
-            # Create BPB instance to parse boot sector
             self.bpb = FloppyBPB(self.disk_manager)
-
-            # Get FAT12 parameters
             fat_params = self.bpb.get_fat12_params()
-
-            # Create FAT12 filesystem instance with callbacks
             self.fs = FAT12FileSystem(
                 read_bytes_func=self.disk_manager.read_bytes,
                 write_bytes_func=self.disk_manager.write_bytes,
@@ -533,17 +534,23 @@ class FileBrowserApp(QMainWindow):
                 params=fat_params
             )
 
-            # Set disk geometry based on BPB
             self.disk_manager.sectors_per_track = self.bpb.sectors_per_track
             self.disk_manager.num_heads = self.bpb.num_heads
             self.disk_manager.sector_size = self.bpb.bytes_per_sector
             self.disk_manager.total_sectors = self.bpb.total_sectors
 
-            # Update UI components
             self.root_node = self.build_fs_tree()
             self.current_node = self.root_node
             self.current_path = "/"
             self.refresh_filesystem_ui()
+
+            # Configure head toggle action based on number of heads
+            if self.disk_manager.num_heads > 1:
+                self.head_action.setEnabled(True)
+                self.head_action.setText(f"Switch to Head {1 - self.current_head}")
+            else:
+                self.head_action.setEnabled(False)
+                self.head_action.setText("Single-sided disk")
 
             self.statusBar().showMessage(f"Loaded: {file_path}")
         except Exception as e:
@@ -552,7 +559,6 @@ class FileBrowserApp(QMainWindow):
 
     def open_physical_floppy(self):
         try:
-            # Ask for device name
             device_name, ok = QInputDialog.getText(self, "Device Selection",
                                                 "Enter device name (e.g., COM3):")
             if not ok or not device_name:
@@ -564,16 +570,9 @@ class FileBrowserApp(QMainWindow):
             if not ok or not format_name:
                 format_name = "ibm.scan"
 
-            # Create a FloppyDiskManager for the physical floppy
             self.disk_manager = FloppyDiskManager(device_name, format_name=format_name)
-
-            # Create BPB instance to parse boot sector
             self.bpb = FloppyBPB(self.disk_manager)
-
-            # Get FAT12 parameters
             fat_params = self.bpb.get_fat12_params()
-
-            # Create FAT12 filesystem instance with callbacks
             self.fs = FAT12FileSystem(
                 read_bytes_func=self.disk_manager.read_bytes,
                 write_bytes_func=self.disk_manager.write_bytes,
@@ -581,11 +580,18 @@ class FileBrowserApp(QMainWindow):
                 params=fat_params
             )
 
-            # Update UI components
             self.root_node = self.build_fs_tree()
             self.current_node = self.root_node
             self.current_path = "/"
             self.refresh_filesystem_ui()
+
+            # Configure head toggle action based on number of heads
+            if self.disk_manager.num_heads > 1:
+                self.head_action.setEnabled(True)
+                self.head_action.setText(f"Switch to Head {1 - self.current_head}")
+            else:
+                self.head_action.setEnabled(False)
+                self.head_action.setText("Single-sided disk")
 
             self.statusBar().showMessage(f"Loaded physical floppy using {format_name}")
         except Exception as e:
@@ -614,6 +620,10 @@ class FileBrowserApp(QMainWindow):
         total_kb = total_bytes / 1024
         percent_free = (free_bytes / total_bytes * 100) if total_bytes > 0 else 0
 
+        # Calculate number of tracks
+        sectors_per_cylinder = self.bpb.sectors_per_track * self.bpb.num_heads
+        num_tracks = math.ceil(self.bpb.total_sectors / sectors_per_cylinder)
+
         info = (
             f"Bytes per Sector: {self.bpb.bytes_per_sector}\n"
             f"Sectors per Cluster: {self.bpb.sectors_per_cluster}\n"
@@ -625,6 +635,7 @@ class FileBrowserApp(QMainWindow):
             f"Sectors per FAT: {self.bpb.sectors_per_fat}\n"
             f"Sectors per Track: {self.bpb.sectors_per_track}\n"
             f"Number of Heads: {self.bpb.num_heads}\n"
+            f"Number of Tracks: {num_tracks}\n"
             f"Hidden Sectors: {self.bpb.hidden_sectors}\n"
             f"Disk Type: {self.bpb.get_disk_type()}\n"
             f"Free Space: {free_kb:.1f} KB / {total_kb:.1f} KB ({percent_free:.1f}%)"
@@ -889,11 +900,11 @@ class FileBrowserApp(QMainWindow):
         self.statusBar().showMessage(f"Added file {dest_name} to {dest_path}")
 
     def generate_arc_points(self, x0, y0, radius, theta_start, theta_end, num_points):
-        """Generate points for an arc"""
+        """Generate points along an arc for polygon drawing."""
         points = []
-        step = (theta_end - theta_start) / (num_points - 1)
+        delta_theta = (theta_end - theta_start) / (num_points - 1)
         for i in range(num_points):
-            theta = theta_start + i * step
+            theta = theta_start + i * delta_theta
             x = x0 + radius * math.cos(theta)
             y = y0 + radius * math.sin(theta)
             points.append(QPointF(x, y))
@@ -901,9 +912,12 @@ class FileBrowserApp(QMainWindow):
 
     def toggle_head(self):
         """Toggle between disk heads/sides"""
-        self.current_head = 1 - self.current_head
-        self.head_action.setText(f"Switch to Head {1 - self.current_head}")
-        self.draw_disk_map()
+        if self.disk_manager and self.disk_manager.num_heads > 1:
+            self.current_head = 1 - self.current_head
+            self.head_action.setText(f"Switch to Head {1 - self.current_head}")
+            self.draw_disk_map()
+        else:
+            QMessageBox.information(self, "Info", "Head switching is not available for this disk.")
 
     def get_busy_clusters(self):
         """Identify busy clusters and calculate free space"""
@@ -974,10 +988,21 @@ class FileBrowserApp(QMainWindow):
         self.disk_map_scene.clear()
 
         if not self.fs:
-            self.disk_map_scene.addText("No disk image loaded").setPos(10, 10)
+            view_width = self.disk_map_view.width()
+            view_height = self.disk_map_view.height()
+            text = self.disk_map_scene.addText("No disk image loaded")
+            text.setFont(self.app_font)
+            text_width = text.boundingRect().width()
+            text_height = text.boundingRect().height()
+            text.setPos((view_width - text_width) / 2, (view_height - text_height) / 2)
             return
 
         try:
+            # Check if the current head is valid for the disk
+            if self.current_head >= self.disk_manager.num_heads:
+                self.disk_map_scene.addText("No data for this head").setPos(10, 10)
+                return
+
             view_width = self.disk_map_view.width()
             view_height = self.disk_map_view.height()
             x0 = view_width / 2
@@ -987,32 +1012,38 @@ class FileBrowserApp(QMainWindow):
 
             # Get disk geometry from disk_manager
             disk_manager = self.disk_manager
-            sectors_per_track = getattr(disk_manager, 'sectors_per_track', None)
-            total_sectors = getattr(disk_manager, 'total_sectors', None)
-            num_heads = getattr(disk_manager, 'num_heads', None)
+            sectors_per_track = disk_manager.sectors_per_track
+            total_sectors = disk_manager.total_sectors
+            num_heads = disk_manager.num_heads
+            sector_size = disk_manager.sector_size
 
-            # Get sectors per cluster from BPB
-            sectors_per_cluster = self.bpb.sectors_per_cluster if self.bpb else 1
+            # Get BPB parameters
+            bytes_per_sector = self.bpb.bytes_per_sector
+            sectors_per_cluster = self.bpb.sectors_per_cluster
+            reserved = self.bpb.reserved_sectors
+            num_fats = self.bpb.num_fats
+            fat_size = self.bpb.sectors_per_fat
+            root_entries = self.bpb.root_entries
 
-            # Check if geometry info is available
-            if not sectors_per_track or not total_sectors or not num_heads:
-                self.disk_map_scene.addText("Disk geometry not available (using default values)").setPos(10, 10)
-                # Use default values for 1.44MB floppy if geometry is missing
-                sectors_per_track = 18
-                total_sectors = 2880
-                num_heads = 2
+            # Calculate root directory sectors
+            root_dir_sectors = math.ceil((root_entries * 32) / bytes_per_sector)
+
+            # Calculate first data sector
+            first_data_sector = reserved + (num_fats * fat_size) + root_dir_sectors
 
             # Calculate how many cylinders we have
             sectors_per_cylinder = sectors_per_track * num_heads
-            num_cylinders = (total_sectors + sectors_per_cylinder - 1) // sectors_per_cylinder
+            num_cylinders = math.ceil(total_sectors / sectors_per_cylinder)
 
             # Calculate angle for each sector
             angle_per_sector = 360 / sectors_per_track
             num_points = 20
 
             # Draw legend
-            legend_x = view_width - 150
+            legend_x = 10
             legend_y = 10
+            square_size = 10
+            vertical_spacing = 10
             colors = [
                 ("Boot Sector", Qt.GlobalColor.red),
                 ("FAT1", Qt.GlobalColor.green),
@@ -1021,18 +1052,24 @@ class FileBrowserApp(QMainWindow):
                 ("Busy Data Sector", Qt.GlobalColor.magenta),
                 ("Free Data Sector", Qt.GlobalColor.gray),
             ]
+
             for i, (label, color) in enumerate(colors):
+                # Create and add the square
                 rect = QGraphicsPolygonItem(QPolygonF([
-                    QPointF(legend_x, legend_y + i * 15),
-                    QPointF(legend_x + 10, legend_y + i * 15),
-                    QPointF(legend_x + 10, legend_y + i * 15 + 10),
-                    QPointF(legend_x, legend_y + i * 15 + 10)
+                    QPointF(legend_x, legend_y + i * vertical_spacing),
+                    QPointF(legend_x + square_size, legend_y + i * vertical_spacing),
+                    QPointF(legend_x + square_size, legend_y + i * vertical_spacing + square_size),
+                    QPointF(legend_x, legend_y + i * vertical_spacing + square_size)
                 ]))
                 rect.setBrush(QBrush(color))
                 self.disk_map_scene.addItem(rect)
+
+                # Create and add the text, centering it vertically with the square
                 text = self.disk_map_scene.addText(label)
-                text.setPos(legend_x + 15, legend_y + i * 15)
-                text.setFont(QFont("Arial", 8))
+                text.setFont(self.app_font)
+                text_height = text.boundingRect().height()
+                y_offset = (square_size - text_height) / 2
+                text.setPos(legend_x + square_size + 5, legend_y + i * vertical_spacing + y_offset)
 
             # Draw statistics
             stats_x = 10
@@ -1044,47 +1081,33 @@ class FileBrowserApp(QMainWindow):
                 f"Used: {self.total_space - self.free_space} clusters"
             )
             stats_text.setPos(stats_x, stats_y)
-            stats_text.setFont(QFont("Arial", 8))
-
-            # Get important filesystem values
-            reserved = self.bpb.reserved_sectors if self.bpb else 1
-            fat_size = self.bpb.sectors_per_fat if self.bpb else 9
-            root_dir_sectors = getattr(self.fs, 'root_dir_sectors', 14)
-
-            # Calculate the first data sector
-            first_data_sector = reserved + (self.bpb.num_fats * fat_size) + root_dir_sectors if self.bpb else 33
+            stats_text.setFont(self.app_font)
 
             # Draw sectors - one cylinder at a time
             for c in range(num_cylinders):
-                # Calculate the starting sector for this cylinder on the current head
                 cyl_start_sector = c * sectors_per_cylinder + (self.current_head * sectors_per_track)
 
                 for i in range(sectors_per_track):
-                    # Calculate the absolute sector number
                     s = cyl_start_sector + i
 
                     if s < total_sectors:
-                        # Get the appropriate color for this sector
                         color = self.get_sector_color(s, sectors_per_cluster, reserved, fat_size, root_dir_sectors, first_data_sector)
 
-                        # Calculate arc coordinates
                         theta_start = math.radians(i * angle_per_sector)
                         theta_end = math.radians((i + 1) * angle_per_sector)
                         r_outer = r_max - (r_max - r_min) * c / num_cylinders
                         r_inner = r_max - (r_max - r_min) * (c + 1) / num_cylinders
 
-                        # Generate arc points
                         inner_points = self.generate_arc_points(x0, y0, r_inner, theta_start, theta_end, num_points)
                         outer_points = self.generate_arc_points(x0, y0, r_outer, theta_end, theta_start, num_points)
                         points = inner_points + outer_points
 
-                        # Create and add sector polygon
                         polygon = QGraphicsPolygonItem(QPolygonF(points))
                         polygon.setBrush(QBrush(color))
                         polygon.setPen(QPen(Qt.GlobalColor.black, 0.5))
                         self.disk_map_scene.addItem(polygon)
 
-            # Draw radial lines (sector boundaries)
+            # Draw radial lines and concentric circles
             for sector in range(sectors_per_track):
                 theta = math.radians(sector * angle_per_sector)
                 p1 = QPointF(x0 + r_min * math.cos(theta), y0 + r_min * math.sin(theta))
@@ -1093,7 +1116,6 @@ class FileBrowserApp(QMainWindow):
                 line.setPen(QPen(Qt.GlobalColor.black, 0.5))
                 self.disk_map_scene.addItem(line)
 
-            # Draw concentric circles (cylinder boundaries)
             for cylinder in range(1, num_cylinders):
                 r = r_max - (r_max - r_min) * cylinder / num_cylinders
                 ellipse = QGraphicsEllipseItem(x0 - r, y0 - r, 2 * r, 2 * r)
@@ -1106,38 +1128,22 @@ class FileBrowserApp(QMainWindow):
             import traceback
             traceback.print_exc()
 
-    def get_sector_color(self, sector_num, sectors_per_cluster=1, reserved=1, fat_size=9, root_dir_sectors=14, first_data_sector=33):
+    def get_sector_color(self, sector_num, sectors_per_cluster, reserved, fat_size, root_dir_sectors, first_data_sector):
         """Determine the color for a sector based on its role in FAT12 filesystem."""
-        if not self.fs:
-            return Qt.GlobalColor.gray
-
-        try:
-            # Determine sector type based on sector number
-            if sector_num < reserved:
-                return Qt.GlobalColor.red  # Boot sector and reserved
-            elif sector_num < reserved + fat_size:
-                return Qt.GlobalColor.green  # FAT1
-            elif sector_num < reserved + 2 * fat_size:
-                return Qt.GlobalColor.blue  # FAT2
-            elif sector_num < first_data_sector:
-                return Qt.GlobalColor.yellow  # Root directory
-            else:
-                # Data area
-                try:
-                    # Calculate relative sector number in data area
-                    relative_sector = sector_num - first_data_sector
-
-                    # Calculate which cluster this sector belongs to
-                    cluster = (relative_sector // sectors_per_cluster) + 2  # First data cluster is 2
-
-                    # Check if this cluster is in the busy list
-                    if cluster in self.busy_clusters:
-                        return Qt.GlobalColor.magenta  # Busy cluster
-                    else:
-                        return Qt.GlobalColor.gray  # Free cluster
-                except Exception as e:
-                    print(f"Error determining cluster for sector {sector_num}: {e}")
-                    return Qt.GlobalColor.lightGray
-        except Exception as e:
-            print(f"Error determining sector color: {e}")
-            return Qt.GlobalColor.lightGray  # Default for any errors
+        if sector_num < reserved:
+            return Qt.GlobalColor.red  # Boot sector and reserved
+        elif sector_num < reserved + fat_size:
+            return Qt.GlobalColor.green  # FAT1
+        elif sector_num < reserved + 2 * fat_size:
+            return Qt.GlobalColor.blue  # FAT2
+        elif sector_num < first_data_sector:
+            return Qt.GlobalColor.yellow  # Root directory
+        else:
+            # Data area: color based on cluster status
+            try:
+                relative_sector = sector_num - first_data_sector
+                cluster = (relative_sector // sectors_per_cluster) + 2  # Cluster numbers start at 2
+                return Qt.GlobalColor.magenta if cluster in self.busy_clusters else Qt.GlobalColor.gray
+            except Exception as e:
+                print(f"Error determining cluster for sector {sector_num}: {e}")
+                return Qt.GlobalColor.lightGray
