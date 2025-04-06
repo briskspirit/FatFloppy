@@ -1,7 +1,8 @@
+import struct
+
 from abc import ABC, abstractmethod
 from types import SimpleNamespace
 
-from floppybpb import FloppyBPB
 from floppy_formats import FLOPPY_FORMATS
 from greaseweazle.codec import codec
 from greaseweazle.codec.ibm import ibm
@@ -47,15 +48,24 @@ class DiskManager(ABC):
             self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
 
     def read_bpb_geometry(self):
+        """Temporary internal BPB decoding to set geometry."""
         try:
-            bpb = FloppyBPB(self)
-            if bpb.is_valid():
-                self.sector_size = bpb.bytes_per_sector
-                self.sectors_per_track = bpb.sectors_per_track
-                self.num_heads = bpb.num_heads
-                self.total_sectors = bpb.total_sectors
-                if self.sectors_per_track and self.num_heads and self.total_sectors:
-                    self.num_cylinders = self.total_sectors // (self.sectors_per_track * self.num_heads)
+            boot_sector = self.read_bytes(0, 512)
+            bytes_per_sector = struct.unpack_from('<H', boot_sector, 0x00B)[0]
+            sectors_per_track = struct.unpack_from('<H', boot_sector, 0x018)[0]
+            num_heads = struct.unpack_from('<H', boot_sector, 0x01A)[0]
+            total_sectors = struct.unpack_from('<H', boot_sector, 0x013)[0]
+            if total_sectors == 0:
+                total_sectors = struct.unpack_from('<I', boot_sector, 0x020)[0]
+
+            # Basic validation
+            if bytes_per_sector in [128, 256, 512, 1024, 2048, 4096] and \
+               sectors_per_track > 0 and num_heads > 0 and total_sectors > 0:
+                self.sector_size = bytes_per_sector
+                self.sectors_per_track = sectors_per_track
+                self.num_heads = num_heads
+                self.total_sectors = total_sectors
+                self.num_cylinders = self.total_sectors // (self.sectors_per_track * self.num_heads)
                 print(f"BPB geometry: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
                 return True
             else:

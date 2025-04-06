@@ -15,8 +15,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QDockWidget, QFileDialog,
                              QTreeWidget, QTreeWidgetItem, QHeaderView)
 
 from diskmanager import FloppyDiskManager, ImageFileManager
-from fat import FAT12FileSystem
-from floppybpb import FloppyBPB
+from fat import FileSystemFactory
 
 
 class ResizableGraphicsView(QGraphicsView):
@@ -522,36 +521,29 @@ class FileBrowserApp(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img)")
         if not file_path:
             return
-
         try:
             self.disk_manager = ImageFileManager(file_path)
-            self.bpb = FloppyBPB(self.disk_manager)
-            fat_params = self.bpb.get_fat12_params()
-            self.fs = FAT12FileSystem(
+            self.fs = FileSystemFactory.create_filesystem(
                 read_bytes_func=self.disk_manager.read_bytes,
                 write_bytes_func=self.disk_manager.write_bytes,
-                flush_func=self.disk_manager.flush,
-                params=fat_params
+                flush_func=self.disk_manager.flush
             )
-
-            self.disk_manager.sectors_per_track = self.bpb.sectors_per_track
-            self.disk_manager.num_heads = self.bpb.num_heads
-            self.disk_manager.sector_size = self.bpb.bytes_per_sector
-            self.disk_manager.total_sectors = self.bpb.total_sectors
-
+            bpb = self.fs.get_bpb_info()
+            self.disk_manager.sectors_per_track = bpb['sectors_per_track']
+            self.disk_manager.num_heads = bpb['num_heads']
+            self.disk_manager.sector_size = bpb['bytes_per_sector']
+            self.disk_manager.total_sectors = bpb['total_sectors']
+            self.disk_manager.num_cylinders = self.disk_manager.total_sectors // (self.disk_manager.sectors_per_track * self.disk_manager.num_heads)
             self.root_node = self.build_fs_tree()
             self.current_node = self.root_node
             self.current_path = "/"
             self.refresh_filesystem_ui()
-
-            # Configure head toggle action based on number of heads
             if self.disk_manager.num_heads > 1:
                 self.head_action.setEnabled(True)
                 self.head_action.setText(f"Switch to Head {1 - self.current_head}")
             else:
                 self.head_action.setEnabled(False)
                 self.head_action.setText("Single-sided disk")
-
             self.statusBar().showMessage(f"Loaded: {file_path}")
         except Exception as e:
             self.reset_ui()
@@ -563,81 +555,65 @@ class FileBrowserApp(QMainWindow):
                                                 "Enter device name (e.g., COM3):")
             if not ok or not device_name:
                 device_name = None
-
             format_name, ok = QInputDialog.getText(self, "Format Selection",
                                                 "Enter format name (e.g., ibm.1440, ibm.scan):",
                                                 text="ibm.scan")
             if not ok or not format_name:
                 format_name = "ibm.scan"
-
             self.disk_manager = FloppyDiskManager(device_name, format_name=format_name)
-            self.bpb = FloppyBPB(self.disk_manager)
-            fat_params = self.bpb.get_fat12_params()
-            self.fs = FAT12FileSystem(
+            self.fs = FileSystemFactory.create_filesystem(
                 read_bytes_func=self.disk_manager.read_bytes,
                 write_bytes_func=self.disk_manager.write_bytes,
-                flush_func=self.disk_manager.flush,
-                params=fat_params
+                flush_func=self.disk_manager.flush
             )
-
+            bpb = self.fs.get_bpb_info()
+            self.disk_manager.sectors_per_track = bpb['sectors_per_track']
+            self.disk_manager.num_heads = bpb['num_heads']
+            self.disk_manager.sector_size = bpb['bytes_per_sector']
+            self.disk_manager.total_sectors = bpb['total_sectors']
+            self.disk_manager.num_cylinders = self.disk_manager.total_sectors // (self.disk_manager.sectors_per_track * self.disk_manager.num_heads)
             self.root_node = self.build_fs_tree()
             self.current_node = self.root_node
             self.current_path = "/"
             self.refresh_filesystem_ui()
-
-            # Configure head toggle action based on number of heads
             if self.disk_manager.num_heads > 1:
                 self.head_action.setEnabled(True)
                 self.head_action.setText(f"Switch to Head {1 - self.current_head}")
             else:
                 self.head_action.setEnabled(False)
                 self.head_action.setText("Single-sided disk")
-
             self.statusBar().showMessage(f"Loaded physical floppy using {format_name}")
         except Exception as e:
             self.reset_ui()
             QMessageBox.critical(self, "Error", f"Failed to open physical floppy: {str(e)}")
 
     def update_bpb_info(self):
-        """Update BPB information display with free space information"""
         if self.fs is None:
             self.bpb_info.setText("No disk image loaded")
             return
-
-        if self.bpb is None:
-            # Try to get BPB from the disk manager
-            try:
-                self.bpb = FloppyBPB(self.disk_manager)
-            except:
-                self.bpb_info.setText("Error reading boot sector")
-                return
-
-        # Calculate free space in bytes
-        cluster_size = self.bpb.sectors_per_cluster * self.bpb.bytes_per_sector
+        bpb = self.fs.get_bpb_info()
+        cluster_size = bpb['sectors_per_cluster'] * bpb['bytes_per_sector']
         free_bytes = self.free_space * cluster_size
         total_bytes = self.total_space * cluster_size
         free_kb = free_bytes / 1024
         total_kb = total_bytes / 1024
         percent_free = (free_bytes / total_bytes * 100) if total_bytes > 0 else 0
-
-        # Calculate number of tracks
-        sectors_per_cylinder = self.bpb.sectors_per_track * self.bpb.num_heads
-        num_tracks = math.ceil(self.bpb.total_sectors / sectors_per_cylinder)
-
+        sectors_per_cylinder = bpb['sectors_per_track'] * bpb['num_heads']
+        num_tracks = math.ceil(bpb['total_sectors'] / sectors_per_cylinder)
         info = (
-            f"Bytes per Sector: {self.bpb.bytes_per_sector}\n"
-            f"Sectors per Cluster: {self.bpb.sectors_per_cluster}\n"
-            f"Reserved Sectors: {self.bpb.reserved_sectors}\n"
-            f"Number of FATs: {self.bpb.num_fats}\n"
-            f"Root Entries: {self.bpb.root_entries}\n"
-            f"Total Sectors: {self.bpb.total_sectors}\n"
-            f"Media Descriptor: 0x{self.bpb.media_descriptor:02X}\n"
-            f"Sectors per FAT: {self.bpb.sectors_per_fat}\n"
-            f"Sectors per Track: {self.bpb.sectors_per_track}\n"
-            f"Number of Heads: {self.bpb.num_heads}\n"
+            f"Bytes per Sector: {bpb['bytes_per_sector']}\n"
+            f"Sectors per Cluster: {bpb['sectors_per_cluster']}\n"
+            f"Reserved Sectors: {bpb['reserved_sectors']}\n"
+            f"Number of FATs: {bpb['num_fats']}\n"
+            f"Root Entries: {bpb['root_entries']}\n"
+            f"Total Sectors: {bpb['total_sectors']}\n"
+            f"Media Descriptor: 0x{bpb['media_descriptor']:02X}\n"
+            f"Sectors per FAT: {bpb['sectors_per_fat']}\n"
+            f"Sectors per Track: {bpb['sectors_per_track']}\n"
+            f"Number of Heads: {bpb['num_heads']}\n"
             f"Number of Tracks: {num_tracks}\n"
-            f"Hidden Sectors: {self.bpb.hidden_sectors}\n"
-            f"Disk Type: {self.bpb.get_disk_type()}\n"
+            f"Hidden Sectors: {bpb['hidden_sectors']}\n"
+            f"Disk Type: {self.fs.get_disk_type()}\n"
             f"Free Space: {free_kb:.1f} KB / {total_kb:.1f} KB ({percent_free:.1f}%)"
         )
         self.bpb_info.setText(info)
@@ -1018,12 +994,13 @@ class FileBrowserApp(QMainWindow):
             sector_size = disk_manager.sector_size
 
             # Get BPB parameters
-            bytes_per_sector = self.bpb.bytes_per_sector
-            sectors_per_cluster = self.bpb.sectors_per_cluster
-            reserved = self.bpb.reserved_sectors
-            num_fats = self.bpb.num_fats
-            fat_size = self.bpb.sectors_per_fat
-            root_entries = self.bpb.root_entries
+            bpb = self.fs.get_bpb_info()
+            bytes_per_sector = bpb['bytes_per_sector']
+            sectors_per_cluster = bpb['sectors_per_cluster']
+            reserved = bpb['reserved_sectors']
+            num_fats = bpb['num_fats']
+            fat_size = bpb['sectors_per_fat']
+            root_entries = bpb['root_entries']
 
             # Calculate root directory sectors
             root_dir_sectors = math.ceil((root_entries * 32) / bytes_per_sector)

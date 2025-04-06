@@ -4,26 +4,280 @@ import struct
 
 from floppy_formats import FLOPPY_FORMATS
 
+
+class FATBPB:
+    """Unified BIOS Parameter Block parser for FAT file systems"""
+
+    BOOT_SECTOR_FIELDS = [
+        ('jump_code',          0x000, None, 3),
+        ('oem_id',             0x003, 'str', 8),
+        # DOS 2.0
+        ('bytes_per_sector',   0x00B, '<H', 2),
+        ('sectors_per_cluster',0x00D, '<B', 1),
+        ('reserved_sectors',   0x00E, '<H', 2),
+        ('num_fats',           0x010, '<B', 1),
+        ('root_entries',       0x011, '<H', 2),
+        ('total_sectors',      0x013, '<H', 2),
+        ('media_descriptor',   0x015, '<B', 1),
+        ('sectors_per_fat',    0x016, '<H', 2),
+        # DOS 3.31
+        ('sectors_per_track',  0x018, '<H', 2),
+        ('num_heads',          0x01A, '<H', 2),
+        ('hidden_sectors',     0x01C, '<I', 4),
+        ('total_sectors_large',0x020, '<I', 4),
+        # DOS 4.0
+        ('drive_number',       0x024, '<B', 1),
+        ('flags',              0x025, '<B', 1),
+        ('signature_ext',      0x026, '<B', 1),
+        ('volume_serial',      0x027, '<I', 4),
+        ('volume_label',       0x02B, 'str', 11),
+        ('fs_type',            0x036, 'str', 8),
+        ('bootstrap_code',     0x03E, None, 448),
+        ('signature',          0x1FE, '<H', 2),
+    ]
+
+    VALID_BOOT_SIGNATURE = 0xAA55
+
+    def __init__(self, read_bytes_func):
+        self.read_bytes = read_bytes_func
+        self.decode_boot_sector()
+
+    def decode_boot_sector(self):
+        boot_sector = self.read_bytes(0, 512)
+
+        for name, offset, fmt, size in self.BOOT_SECTOR_FIELDS:
+            if fmt == 'str':
+                value = boot_sector[offset:offset+size].decode('cp437').strip()
+            elif fmt is None:
+                value = boot_sector[offset:offset+size]
+            else:
+                value = struct.unpack_from(fmt, boot_sector, offset)[0]
+
+            setattr(self, name, value)
+
+        if self.total_sectors == 0:
+            self.total_sectors = self.total_sectors_large
+
+    def get_fat_type(self):
+        """Determine if it's FAT12, FAT16, or FAT32 based on cluster count."""
+        root_dir_sectors = (self.root_entries * 32 + self.bytes_per_sector - 1) // self.bytes_per_sector
+        fat_sectors = self.num_fats * self.sectors_per_fat
+        data_sectors = self.total_sectors - (self.reserved_sectors + fat_sectors + root_dir_sectors)
+        total_clusters = data_sectors // self.sectors_per_cluster
+
+        if total_clusters < 4085:
+            return "FAT12"
+        elif total_clusters < 65525:
+            return "FAT16"
+        else:
+            return "FAT32"  # Note: FAT32 has a different BPB structure
+
+    def is_valid(self):
+        """Check if the BPB has valid values."""
+        valid_media_descriptors = {0xF0, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF}
+        if self.media_descriptor not in valid_media_descriptors:
+            return False
+
+        valid_bytes_per_sector = {128, 256, 512, 1024, 2048, 4096}
+        if self.bytes_per_sector not in valid_bytes_per_sector:
+            return False
+
+        valid_sectors_per_cluster = {1, 2, 4, 8, 16, 32, 64, 128}
+        if self.sectors_per_cluster not in valid_sectors_per_cluster:
+            return False
+
+        if not (0 < self.total_sectors <= 5760):
+            return False
+
+        if self.num_heads not in {1, 2}:
+            return False
+
+        # For sectors_per_track, we won't fail the check here since pre-3.31 BPBs may have junk.
+        # Instead, we'll allow fallback methods to handle it if other fields are sane.
+        if self.sectors_per_track is not None and not (8 <= self.sectors_per_track <= 36):
+            # Optional warning, but don't fail validity
+            print(f"Warning: sectors_per_track ({self.sectors_per_track}) is unusual but not invalidating BPB")
+
+        return True
+
+    def is_boot_signature_valid(self):
+        return self.signature == self.VALID_BOOT_SIGNATURE
+
+    def get_params(self):
+        """Return BPB parameters for file system initialization."""
+        return {
+            'bytes_per_sector': self.bytes_per_sector,
+            'sectors_per_cluster': self.sectors_per_cluster,
+            'reserved_sectors': self.reserved_sectors,
+            'num_fats': self.num_fats,
+            'root_entries': self.root_entries,
+            'total_sectors': self.total_sectors,
+            'sectors_per_fat': self.sectors_per_fat,
+            'media_descriptor': self.media_descriptor,
+            'sectors_per_track': self.sectors_per_track,
+            'num_heads': self.num_heads,
+            'hidden_sectors': self.hidden_sectors,
+        }
+
+    def get_disk_type(self):
+        """Determine the disk type based on its geometry."""
+        geometry = {
+            'total_sectors': self.total_sectors,
+            'sectors_per_track': self.sectors_per_track,
+            'num_heads': self.num_heads,
+            'bytes_per_sector': self.bytes_per_sector
+        }
+
+        disk_type = self.match_disk_by_geometry(geometry)
+
+        if disk_type.startswith("Unknown"):
+            return f"Unknown (Media Descriptor: 0x{self.media_descriptor:02X}, Sectors: {self.total_sectors})"
+
+        return disk_type
+
+    @classmethod
+    def match_disk_by_geometry(cls, geometry):
+        for fmt in FLOPPY_FORMATS:
+            if (geometry['total_sectors'] == fmt["total_sectors"] and
+                geometry['sectors_per_track'] == fmt["sectors"] and
+                geometry['num_heads'] == fmt["heads"] and
+                geometry['bytes_per_sector'] == fmt["sector_size"]):
+                capacity_mb = fmt['capacity'] / 1024
+                return f"{fmt['size']} {fmt['type']} {capacity_mb:.2f} KB"
+
+        return f"Unknown (Sectors: {geometry['total_sectors']})"
+
+    @classmethod
+    def create_boot_sector(cls, params):
+        boot_sector = bytearray(512)
+        boot_sector[0:3] = b'\xEB\xFE\x90'
+
+        for name, offset, fmt, size in cls.BOOT_SECTOR_FIELDS:
+            if name == 'jump_code':
+                continue
+
+            if name == 'signature':
+                value = cls.VALID_BOOT_SIGNATURE
+            elif name in params:
+                value = params[name]
+            elif name == 'bootstrap_code':
+                value = bytes(size)
+            else:
+                continue
+
+            if fmt == 'str':
+                field_data = value.encode('cp437').ljust(size).upper()
+                boot_sector[offset:offset+size] = field_data
+            elif fmt is None and isinstance(value, bytes):
+                boot_sector[offset:offset+len(value)] = value
+            elif fmt is not None:
+                struct.pack_into(fmt, boot_sector, offset, value)
+
+        total_sectors = params.get('total_sectors', 0)
+        if total_sectors < 65536:
+            struct.pack_into('<H', boot_sector, 0x013, total_sectors)
+            struct.pack_into('<I', boot_sector, 0x020, 0)
+        else:
+            struct.pack_into('<H', boot_sector, 0x013, 0)
+            struct.pack_into('<I', boot_sector, 0x020, total_sectors)
+
+        return boot_sector
+
+    @classmethod
+    def calculate_sectors_per_fat(cls, total_sectors, reserved_sectors, num_fats, root_dir_sectors,
+                                 sectors_per_cluster, sector_size):
+        sectors_per_fat = 1
+        while True:
+            data_sectors = total_sectors - reserved_sectors - (num_fats * sectors_per_fat) - root_dir_sectors
+            if data_sectors <= 0:
+                raise ValueError("Invalid parameters: not enough sectors for data")
+            num_clusters = data_sectors // sectors_per_cluster
+            fat_size_bytes = math.ceil(num_clusters * 1.5)
+            required_sectors = math.ceil(fat_size_bytes / sector_size)
+            if required_sectors <= sectors_per_fat:
+                return sectors_per_fat
+            sectors_per_fat += 1
+
+    @classmethod
+    def from_parameters(cls, sector_size, sectors_per_track, num_tracks, num_heads, num_fats,
+                        root_entries, sectors_per_cluster, media_descriptor=0xF0, reserved_sectors=1,
+                        oem_id="MSDOS5.0", disk_manager=None):
+        # TODO: remove diskmanager from here and use write_bytes_func instead
+        if disk_manager is None:
+            raise ValueError("A disk_manager is required when creating from parameters")
+
+        total_sectors = num_tracks * sectors_per_track * num_heads
+        root_dir_sectors = (root_entries * 32 + sector_size - 1) // sector_size
+
+        sectors_per_fat = cls.calculate_sectors_per_fat(
+            total_sectors, reserved_sectors, num_fats,
+            root_dir_sectors, sectors_per_cluster, sector_size
+        )
+
+        params = {
+            'bytes_per_sector': sector_size,
+            'sectors_per_cluster': sectors_per_cluster,
+            'reserved_sectors': reserved_sectors,
+            'num_fats': num_fats,
+            'root_entries': root_entries,
+            'total_sectors': total_sectors,
+            'media_descriptor': media_descriptor,
+            'sectors_per_fat': sectors_per_fat,
+            'sectors_per_track': sectors_per_track,
+            'num_heads': num_heads,
+            'oem_id': oem_id,
+            'volume_label': 'NO NAME',
+            'fs_type': 'FAT12'
+        }
+
+        boot_sector = cls.create_boot_sector(params)
+        disk_manager.write_bytes(0, boot_sector)
+
+        return cls(disk_manager.read_bytes)
+
+class FileSystemFactory:
+    @staticmethod
+    def create_filesystem(read_bytes_func, write_bytes_func=None, flush_func=None):
+        """Create the appropriate file system instance based on BPB analysis."""
+        bpb = FATBPB(read_bytes_func)
+        fat_type = bpb.get_fat_type()
+        if fat_type == "FAT12":
+            return FAT12FileSystem(read_bytes_func, write_bytes_func, flush_func)
+        elif fat_type == "FAT16":
+            # For future implementation
+            raise ValueError("FAT16 file system is not implemented yet")
+        else:
+            raise ValueError(f"Unsupported file system type: {fat_type}")
+
 class FAT12FileSystem:
-    def __init__(self, read_bytes_func, write_bytes_func, flush_func, params):
+    def __init__(self, read_bytes_func, write_bytes_func, flush_func):
         self.read_bytes = read_bytes_func
         self.write_bytes = write_bytes_func
         self.flush_func = flush_func
-        self.params = params
-        self.sector_size = params['bytes_per_sector']
-        self.total_sectors = params['total_sectors']
-        self.reserved_sectors = params['reserved_sectors']
-        self.num_fats = params['num_fats']
-        self.sectors_per_fat = params['sectors_per_fat']
-        self.root_entries = params['root_entries']
+        self.bpb = FATBPB(read_bytes_func)
+        self.params = self.bpb.get_params()
+        self.sector_size = self.params['bytes_per_sector']
+        self.total_sectors = self.params['total_sectors']
+        self.reserved_sectors = self.params['reserved_sectors']
+        self.num_fats = self.params['num_fats']
+        self.sectors_per_fat = self.params['sectors_per_fat']
+        self.root_entries = self.params['root_entries']
         self.root_dir_sectors = (self.root_entries * 32 + self.sector_size - 1) // self.sector_size
         self.fat_start = self.reserved_sectors * self.sector_size
         self.root_dir_start = self.fat_start + (self.num_fats * self.sectors_per_fat * self.sector_size)
         self.data_area_start = self.root_dir_start + (self.root_dir_sectors * self.sector_size)
-        self.num_clusters = (self.total_sectors - (self.reserved_sectors + self.num_fats * self.sectors_per_fat + self.root_dir_sectors)) // params['sectors_per_cluster']
+        self.num_clusters = (self.total_sectors - (self.reserved_sectors + self.num_fats * self.sectors_per_fat + self.root_dir_sectors)) // self.params['sectors_per_cluster']
         self.cluster_size = self.params['sectors_per_cluster'] * self.sector_size
 
         print(self.check_filesystem_integrity())
+
+    def get_bpb_info(self):
+        """Provide BPB information for GUI display."""
+        return self.bpb.get_params()
+
+    def get_disk_type(self):
+        """Delegate to BPB for disk type identification."""
+        return self.bpb.get_disk_type()
 
     def initialize_fats(self):
         media_descriptor = self.params['media_descriptor']

@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import Qt
 from gui import FileBrowserApp
-from cli import run_cui
+# TODO: Fix CLI
+# from cli import run_cui
 
 if hasattr(sys, 'setappname'):
     sys.setappname('FatFloppy')
@@ -18,7 +19,9 @@ def main():
     args = parser.parse_args()
 
     if args.cli:
-        run_cui()
+        # run_cui()
+        print("CLI mode is not yet implemented.")
+        sys.exit(1)
     else:
         sys.argv[0] = 'FatFloppy'
         app = QApplication(sys.argv)
