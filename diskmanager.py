@@ -109,13 +109,10 @@ class FloppyDiskManager(DiskManager):
     def init_geometry_from_format(self):
         try:
             if self.format_name == 'ibm.scan':
-                self.read_and_detect_format()
-                if not self.read_bpb_geometry():
-                    self.detect_geometry_from_disk()
+                self.detect_geometry_from_disk()
             else:
                 self.init_geometry_from_fmt_cls()
                 if not self.has_complete_geometry():
-                    # TODO: check if this is even needed when we set geometry from hard set format
                     self.read_bpb_geometry()
         except Exception as e:
             print(f"Warning: Could not initialize geometry from format: {e}")
@@ -125,7 +122,16 @@ class FloppyDiskManager(DiskManager):
         return (self.sectors_per_track and self.num_heads and
                 self.num_cylinders and self.sector_size)
 
-    def read_and_detect_format(self):
+    def detect_geometry_from_disk(self):
+        """Detect disk geometry using multiple methods in priority order."""
+        # First try to read geometry from BPB - most reliable if available
+        if self.read_bpb_geometry():
+            print("Successfully read geometry from BPB")
+            return True
+
+        print("BPB geometry invalid or missing, attempting to detect from track 0...")
+
+        # Try to detect from track 0
         try:
             args = SimpleNamespace(
                 revs=2, raw=False, fmt_cls=self.fmt_cls,
@@ -134,6 +140,8 @@ class FloppyDiskManager(DiskManager):
                 adjust_speed=None, fake_index=None, hard_sectors=False,
                 drive=self.drive_obj, ticks=0, drive_ticks_per_rev=None
             )
+
+            track_zero_success = [False]  # Use list for mutable reference
 
             def read_track_zero():
                 for t in args.tracks:
@@ -149,9 +157,13 @@ class FloppyDiskManager(DiskManager):
                             if sectors:
                                 self.sector_size = len(sectors[0].dam.data) if hasattr(sectors[0].dam, 'data') else 512
                                 self.sectors_per_track = len(sectors)
-                                self.num_heads = 2
-                                self.num_cylinders = 80
+                                self.num_heads = 2  # Assume 2 heads initially
+                                self.num_cylinders = 80  # Assume 80 cylinders initially
                                 print(f"Detected from track 0: {self.sectors_per_track} sectors, {self.sector_size} bytes per sector")
+                                track_zero_success[0] = True
+                                return
+                        # TODO: check this logic, not sure if it is correct to set these defaults before trying deep detection
+                        # ah! read back at least number of sectors from GW? And also heads?
                         if hasattr(track, 'mode'):
                             if track.mode.name == 'MFM':
                                 print("Detected MFM encoding")
@@ -160,22 +172,31 @@ class FloppyDiskManager(DiskManager):
                                         self.sectors_per_track = 18
                                         self.num_cylinders = 80
                                         self.num_heads = 2
+                                        track_zero_success[0] = True
+                                        return
                             elif track.mode.name == 'FM':
                                 print("Detected FM encoding")
                                 if not self.sectors_per_track:
                                     self.sectors_per_track = 9
                                     self.num_cylinders = 40
                                     self.num_heads = 2
+                                    track_zero_success[0] = True
+                                    return
 
             util.with_drive_selected(read_track_zero, self.usb, self.drive_obj)
+
+            if track_zero_success[0]:
+                return True
         except Exception as e:
             print(f"Warning: Error detecting format from track 0: {e}")
 
-    def detect_geometry_from_disk(self):
-        print("Attempting to detect disk geometry from disk...")
-        try:
-            max_sectors = 0
-            for head in [0, 1]:
+        # If still missing information, try extended detection methods
+        print("Track 0 detection incomplete, trying extended detection...")
+
+        # Check for sectors on both heads
+        max_sectors = 0
+        for head in [0, 1]:
+            try:
                 args = SimpleNamespace(
                     revs=2, raw=False, fmt_cls=self.fmt_cls,
                     tracks=util.TrackSet(f'c=0:h={head}'),
@@ -185,63 +206,68 @@ class FloppyDiskManager(DiskManager):
                 )
 
                 def read_track():
+                    nonlocal max_sectors
                     for t in args.tracks:
                         _, dat = read.read_with_retry(self.usb, args, t)
                         if dat is not None:
                             track = getattr(dat, 'track', dat)
                             if hasattr(track, 'sectors'):
-                                nonlocal max_sectors
                                 max_sectors = max(max_sectors, len(track.sectors))
 
+                util.with_drive_selected(read_track, self.usb, self.drive_obj)
+            except Exception as e:
+                print(f"Error reading track for head {head}: {e}")
+
+        if max_sectors > 0:
+            self.sectors_per_track = max_sectors
+            print(f"Detected {max_sectors} sectors per track")
+
+        # Try to detect number of cylinders
+        if not self.num_cylinders:
+            max_cylinder = 40
+
+            def test_seek():
+                nonlocal max_cylinder
+                for test_cyl in [40, 80]:
+                    try:
+                        self.usb.seek(test_cyl, 0)
+                        max_cylinder = test_cyl
+                    except Exception:
+                        break
+
+            try:
+                util.with_drive_selected(test_seek, self.usb, self.drive_obj)
+                self.num_cylinders = max_cylinder + 1
+                print(f"Detected {self.num_cylinders} cylinders")
+            except Exception as e:
+                print(f"Error detecting cylinders: {e}")
+
+        # Try to detect number of heads
+        if not self.num_heads:
+            has_head1 = False
+
+            def test_head1():
+                nonlocal has_head1
                 try:
-                    util.with_drive_selected(read_track, self.usb, self.drive_obj)
+                    self.usb.seek(0, 1)
+                    has_head1 = True
                 except Exception:
-                    print(f"Error reading track for head {head}: {e}")
                     pass
 
-            if max_sectors > 0:
-                self.sectors_per_track = max_sectors
-                print(f"Detected {max_sectors} sectors per track")
+            try:
+                util.with_drive_selected(test_head1, self.usb, self.drive_obj)
+                self.num_heads = 2 if has_head1 else 1
+                print(f"Detected {self.num_heads} heads")
+            except Exception as e:
+                print(f"Error detecting heads: {e}")
 
-            if not self.num_cylinders:
-                max_cylinder = 40
+        # At this point, if we have sectors_per_track, num_heads, and num_cylinders,
+        # we've successfully detected the geometry
+        if self.sectors_per_track and self.num_heads and self.num_cylinders:
+            self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+            return True
 
-                def test_seek():
-                    nonlocal max_cylinder
-                    for test_cyl in [40, 80]:
-                        try:
-                            self.usb.seek(test_cyl, 0)
-                            max_cylinder = test_cyl
-                        except Exception:
-                            break
-
-                try:
-                    util.with_drive_selected(test_seek, self.usb, self.drive_obj)
-                    self.num_cylinders = max_cylinder + 1
-                    print(f"Detected {self.num_cylinders} cylinders")
-                except Exception as e:
-                    print(f"Error detecting cylinders: {e}")
-
-            if not self.num_heads:
-                has_head1 = False
-
-                def test_head1():
-                    nonlocal has_head1
-                    try:
-                        self.usb.seek(0, 1)
-                        has_head1 = True
-                    except Exception:
-                        pass
-
-                try:
-                    util.with_drive_selected(test_head1, self.usb, self.drive_obj)
-                    self.num_heads = 2 if has_head1 else 1
-                    print(f"Detected {self.num_heads} heads")
-                except Exception as e:
-                    print(f"Error detecting heads: {e}")
-
-        except Exception as e:
-            print(f"Error detecting geometry from disk: {e}")
+        return False
 
     def init_geometry_from_fmt_cls(self):
         if not self.fmt_cls or not hasattr(self.fmt_cls, 'tracks'):
