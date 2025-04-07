@@ -59,14 +59,14 @@ class DiskManager(ABC):
                 total_sectors = struct.unpack_from('<I', boot_sector, 0x020)[0]
 
             # Basic validation
-            if bytes_per_sector in [128, 256, 512, 1024, 2048, 4096] and \
+            if bytes_per_sector in [128, 256, 512, 1024] and \
                sectors_per_track > 0 and num_heads > 0 and total_sectors > 0:
                 self.sector_size = bytes_per_sector
                 self.sectors_per_track = sectors_per_track
                 self.num_heads = num_heads
                 self.total_sectors = total_sectors
                 self.num_cylinders = self.total_sectors // (self.sectors_per_track * self.num_heads)
-                print(f"BPB geometry: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
+                print(f"DISKMANAGER; BPB geometry: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
                 return True
             else:
                 print("BPB is invalid; geometry not set from BPB")
