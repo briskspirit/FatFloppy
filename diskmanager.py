@@ -634,12 +634,12 @@ class ImageFileManager(DiskManager):
                 self.num_cylinders = fmt['tracks']
                 self.sector_size = fmt['sector_size']
                 self.total_sectors = fmt['total_sectors']
-                print(f"Inferred geometry from FLOPPY_FORMATS: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
+                print(f"IMAGEDISKMANAGER; Inferred geometry from FLOPPY_FORMATS: {self.sectors_per_track} sectors/track, {self.num_heads} heads, {self.num_cylinders} cylinders, {self.sector_size} bytes/sector")
                 return
 
         # TODO: should set for some old safe format prior to DOS 2.0 BPB introduction?
         # And try to get media descriptor from FAT12 first table?
-        print("Warning: No matching format in FLOPPY_FORMATS; using default geometry")
+        print("IMAGEDISKMANAGER; Warning: No matching format in FLOPPY_FORMATS; using default geometry")
         self.sectors_per_track = 18
         self.num_heads = 2
         self.sector_size = 512

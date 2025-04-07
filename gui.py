@@ -528,12 +528,6 @@ class FileBrowserApp(QMainWindow):
                 write_bytes_func=self.disk_manager.write_bytes,
                 flush_func=self.disk_manager.flush
             )
-            bpb = self.fs.get_bpb_info()
-            self.disk_manager.sectors_per_track = bpb['sectors_per_track']
-            self.disk_manager.num_heads = bpb['num_heads']
-            self.disk_manager.sector_size = bpb['bytes_per_sector']
-            self.disk_manager.total_sectors = bpb['total_sectors']
-            self.disk_manager.num_cylinders = self.disk_manager.total_sectors // (self.disk_manager.sectors_per_track * self.disk_manager.num_heads)
             self.root_node = self.build_fs_tree()
             self.current_node = self.root_node
             self.current_path = "/"

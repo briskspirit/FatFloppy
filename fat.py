@@ -41,6 +41,9 @@ class FATBPB:
     def __init__(self, read_bytes_func):
         self.read_bytes = read_bytes_func
         self.decode_boot_sector()
+        if not self.is_valid():
+            print("FATBPB; Warning: BPB invalid or missing; inferring parameters.")
+            self.infer_parameters()
 
     def decode_boot_sector(self):
         boot_sector = self.read_bytes(0, 512)
@@ -58,8 +61,164 @@ class FATBPB:
         if self.total_sectors == 0:
             self.total_sectors = self.total_sectors_large
 
+    def infer_parameters(self):
+        image_size = self.guess_image_size()
+        if not image_size:
+            self.set_default_geometry()
+            return
+
+        for fmt in FLOPPY_FORMATS:
+            expected_size = fmt['total_sectors'] * fmt['sector_size']
+            if image_size == expected_size:
+                self.bytes_per_sector = fmt['sector_size']
+                self.sectors_per_track = fmt['sectors']
+                self.num_heads = fmt['heads']
+                self.total_sectors = fmt['total_sectors']
+                self.num_cylinders = fmt['tracks']
+                self.root_entries = fmt['root_directory']
+                self.reserved_sectors = 1
+                self.num_fats = 2
+                self.hidden_sectors = 0
+                self.media_descriptor = 0xF0
+                # Use sectors_per_fat from format if available, otherwise detect it
+                self.sectors_per_fat = fmt.get('sectors_per_fat', None)
+                if not self.sectors_per_fat:
+                    self.detect_fat_params_for_sectors_per_fat()
+                self.detect_sectors_per_cluster_and_fat()
+                print(f"FATBPB; Inferred geometry: {self.sectors_per_track} sectors/track, "
+                      f"{self.num_heads} heads, {self.num_cylinders} cylinders, "
+                      f"{self.bytes_per_sector} bytes/sector")
+                return
+
+        self.detect_fat12_params(image_size)
+
+    def guess_image_size(self):
+        chunk_size = 512
+        total_read = 0
+        try:
+            while True:
+                data = self.read_bytes(total_read, chunk_size)
+                if not data:
+                    break
+                total_read += len(data)
+                if len(data) < chunk_size:
+                    break
+            return total_read
+        except Exception:
+            return None
+
+    def detect_sectors_per_cluster_and_fat(self):
+        root_dir_sectors = math.ceil((self.root_entries * 32) / self.bytes_per_sector)
+        data_start_sector = self.reserved_sectors + (self.num_fats * self.sectors_per_fat) + root_dir_sectors
+        data_sectors = self.total_sectors - data_start_sector
+
+        possible_sc = []
+        for sc in [1, 2, 4, 8, 16]:
+            if data_sectors % sc != 0:
+                continue
+            num_clusters = data_sectors // sc
+            if num_clusters < 2:
+                continue
+            fat_bytes_needed = math.ceil((num_clusters + 2) * 1.5)
+            fat_sectors_needed = math.ceil(fat_bytes_needed / self.bytes_per_sector)
+            if fat_sectors_needed <= self.sectors_per_fat:
+                possible_sc.append(sc)
+
+        if not possible_sc:
+            print("No suitable sectors_per_cluster found; defaulting to 1.")
+            self.sectors_per_cluster = 1
+        else:
+            self.sectors_per_cluster = min(possible_sc)  # Prefer smallest valid value
+
+        num_clusters = data_sectors // self.sectors_per_cluster
+        fat_bytes_needed = math.ceil((num_clusters + 2) * 1.5)
+        self.sectors_per_fat = math.ceil(fat_bytes_needed / self.bytes_per_sector)
+
+    def detect_fat_params_for_sectors_per_fat(self):
+        fat_offsets = []
+        for sector in range(min(20, self.total_sectors)):
+            offset = sector * self.bytes_per_sector
+            data = self.read_bytes(offset, 3)
+            if len(data) < 3:
+                break
+            mdb = data[0]
+            if (mdb & 0xF0) == 0xF0 and data == bytes([mdb, 0xFF, 0xFF]):
+                fat_offsets.append(offset)
+                if len(fat_offsets) >= 2:
+                    break
+
+        if len(fat_offsets) >= 2:
+            self.sectors_per_fat = (fat_offsets[1] - fat_offsets[0]) // self.bytes_per_sector
+            self.reserved_sectors = fat_offsets[0] // self.bytes_per_sector
+            self.num_fats = 2
+            self.media_descriptor = mdb
+        elif fat_offsets:
+            self.sectors_per_fat = 2  # Default guess if only one FAT detected
+            self.reserved_sectors = fat_offsets[0] // self.bytes_per_sector
+            self.num_fats = 1
+            self.media_descriptor = mdb
+        else:
+            self.sectors_per_fat = 2  # Fallback default
+
+    def detect_fat12_params(self, image_size):
+        possible_sector_sizes = sorted({fmt['sector_size'] for fmt in FLOPPY_FORMATS})
+        for sector_size in possible_sector_sizes:
+            if image_size % sector_size != 0:
+                continue
+            total_sectors = image_size // sector_size
+            matching_formats = [fmt for fmt in FLOPPY_FORMATS if fmt['total_sectors'] == total_sectors]
+            if not matching_formats:
+                continue
+
+            fat_offsets = []
+            for sector in range(min(20, total_sectors)):
+                offset = sector * sector_size
+                data = self.read_bytes(offset, 3)
+                if len(data) < 3:
+                    break
+                mdb = data[0]
+                if (mdb & 0xF0) == 0xF0 and data == bytes([mdb, 0xFF, 0xFF]):
+                    fat_offsets.append(offset)
+                    if len(fat_offsets) >= 2:
+                        break
+
+            if fat_offsets:
+                self.bytes_per_sector = sector_size
+                self.total_sectors = total_sectors
+                self.reserved_sectors = fat_offsets[0] // sector_size
+                self.num_fats = min(len(fat_offsets), 2)
+                if len(fat_offsets) >= 2:
+                    self.sectors_per_fat = (fat_offsets[1] - fat_offsets[0]) // sector_size
+                else:
+                    self.sectors_per_fat = matching_formats[0].get('sectors_per_fat', 2)
+                self.root_entries = matching_formats[0]['root_directory']
+                self.media_descriptor = self.read_bytes(fat_offsets[0], 1)[0]
+                self.num_heads = matching_formats[0]['heads']
+                self.sectors_per_track = matching_formats[0]['sectors']
+                self.num_cylinders = matching_formats[0]['tracks']
+                self.detect_sectors_per_cluster_and_fat()
+                return
+
+        self.set_default_geometry()
+
+    def set_default_geometry(self):
+        self.bytes_per_sector = 512
+        self.sectors_per_track = 18
+        self.num_heads = 2
+        self.num_cylinders = 80
+        self.total_sectors = self.sectors_per_track * self.num_heads * self.num_cylinders
+        self.sectors_per_cluster = 1
+        self.reserved_sectors = 1
+        self.num_fats = 2
+        self.media_descriptor = 0xF0
+        self.root_entries = 112
+        self.sectors_per_fat = self.calculate_sectors_per_fat(
+            self.total_sectors, self.reserved_sectors, self.num_fats,
+            (self.root_entries * 32 + self.bytes_per_sector - 1) // self.bytes_per_sector,
+            self.sectors_per_cluster, self.bytes_per_sector
+        )
+
     def get_fat_type(self):
-        """Determine if it's FAT12, FAT16, or FAT32 based on cluster count."""
         root_dir_sectors = (self.root_entries * 32 + self.bytes_per_sector - 1) // self.bytes_per_sector
         fat_sectors = self.num_fats * self.sectors_per_fat
         data_sectors = self.total_sectors - (self.reserved_sectors + fat_sectors + root_dir_sectors)
@@ -70,10 +229,9 @@ class FATBPB:
         elif total_clusters < 65525:
             return "FAT16"
         else:
-            return "FAT32"  # Note: FAT32 has a different BPB structure
+            return "FAT32"
 
     def is_valid(self):
-        """Check if the BPB has valid values."""
         valid_media_descriptors = {0xF0, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF}
         if self.media_descriptor not in valid_media_descriptors:
             return False
@@ -92,19 +250,14 @@ class FATBPB:
         if self.num_heads not in {1, 2}:
             return False
 
-        # For sectors_per_track, we won't fail the check here since pre-3.31 BPBs may have junk.
-        # Instead, we'll allow fallback methods to handle it if other fields are sane.
         if self.sectors_per_track is not None and not (8 <= self.sectors_per_track <= 36):
-            # Optional warning, but don't fail validity
             print(f"Warning: sectors_per_track ({self.sectors_per_track}) is unusual but not invalidating BPB")
-
         return True
 
     def is_boot_signature_valid(self):
         return self.signature == self.VALID_BOOT_SIGNATURE
 
     def get_params(self):
-        """Return BPB parameters for file system initialization."""
         return {
             'bytes_per_sector': self.bytes_per_sector,
             'sectors_per_cluster': self.sectors_per_cluster,
@@ -120,19 +273,15 @@ class FATBPB:
         }
 
     def get_disk_type(self):
-        """Determine the disk type based on its geometry."""
         geometry = {
             'total_sectors': self.total_sectors,
             'sectors_per_track': self.sectors_per_track,
             'num_heads': self.num_heads,
             'bytes_per_sector': self.bytes_per_sector
         }
-
         disk_type = self.match_disk_by_geometry(geometry)
-
         if disk_type.startswith("Unknown"):
             return f"Unknown (Media Descriptor: 0x{self.media_descriptor:02X}, Sectors: {self.total_sectors})"
-
         return disk_type
 
     @classmethod
@@ -144,7 +293,6 @@ class FATBPB:
                 geometry['bytes_per_sector'] == fmt["sector_size"]):
                 capacity_mb = fmt['capacity'] / 1024
                 return f"{fmt['size']} {fmt['type']} {capacity_mb:.2f} KB"
-
         return f"Unknown (Sectors: {geometry['total_sectors']})"
 
     @classmethod
@@ -155,7 +303,6 @@ class FATBPB:
         for name, offset, fmt, size in cls.BOOT_SECTOR_FIELDS:
             if name == 'jump_code':
                 continue
-
             if name == 'signature':
                 value = cls.VALID_BOOT_SIGNATURE
             elif name in params:
@@ -164,7 +311,6 @@ class FATBPB:
                 value = bytes(size)
             else:
                 continue
-
             if fmt == 'str':
                 field_data = value.encode('cp437').ljust(size).upper()
                 boot_sector[offset:offset+size] = field_data
@@ -202,7 +348,6 @@ class FATBPB:
     def from_parameters(cls, sector_size, sectors_per_track, num_tracks, num_heads, num_fats,
                         root_entries, sectors_per_cluster, media_descriptor=0xF0, reserved_sectors=1,
                         oem_id="MSDOS5.0", disk_manager=None):
-        # TODO: remove diskmanager from here and use write_bytes_func instead
         if disk_manager is None:
             raise ValueError("A disk_manager is required when creating from parameters")
 

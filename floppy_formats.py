@@ -1,3 +1,4 @@
+# TODO: Add media descriptor to the formats
 FLOPPY_FORMATS = [
     {"size": "8\"",    "type": "SD", "heads": 1, "tracks": 77, "sectors": 26,   "sector_size": 128,     "total_sectors": 2002,  "root_directory": 68,   "capacity": 256256,     "rpm": 360, "encoding": "FM",  "codec": None}, # 68 root dirs for SCP, 64 for 86-DOS
     {"size": "8\"",    "type": "SD", "heads": 1, "tracks": 77, "sectors": 15,   "sector_size": 256,     "total_sectors": 1155,  "root_directory": 56,   "capacity": 295680,     "rpm": 360, "encoding": "FM",  "codec": None},
