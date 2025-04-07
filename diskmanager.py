@@ -121,21 +121,6 @@ class FloppyDiskManager(DiskManager):
             print(f"Warning: Could not initialize geometry from format: {e}")
         self.ensure_geometry()
 
-    def init_geometry_from_format(self):
-        try:
-            if self.format_name == 'ibm.scan':
-                self.read_and_detect_format()
-                self.read_bpb_geometry()
-                if not self.has_complete_geometry():
-                    self.detect_geometry_from_disk()
-            else:
-                self.init_geometry_from_fmt_cls()
-                if not self.has_complete_geometry():
-                    self.read_bpb_geometry()
-        except Exception as e:
-            print(f"Warning: Could not initialize geometry from format: {e}")
-        self.ensure_geometry()
-
     def has_complete_geometry(self):
         return (self.sectors_per_track and self.num_heads and
                 self.num_cylinders and self.sector_size)
@@ -211,6 +196,7 @@ class FloppyDiskManager(DiskManager):
                 try:
                     util.with_drive_selected(read_track, self.usb, self.drive_obj)
                 except Exception:
+                    print(f"Error reading track for head {head}: {e}")
                     pass
 
             if max_sectors > 0:
