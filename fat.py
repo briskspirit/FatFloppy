@@ -79,18 +79,16 @@ class FATBPB:
                 self.reserved_sectors = 1
                 self.num_fats = 2
                 self.hidden_sectors = 0
-                self.media_descriptor = 0xF0
+                self.media_descriptor = fmt['mdb']
                 # Use sectors_per_fat from format if available, otherwise detect it
-                self.sectors_per_fat = fmt.get('sectors_per_fat', None)
-                if not self.sectors_per_fat:
-                    self.detect_fat_params_for_sectors_per_fat()
+                self.detect_fat_params_for_sectors_per_fat()
                 self.detect_sectors_per_cluster_and_fat()
+                if self.media_descriptor != fmt['mdb']:
+                    continue
                 print(f"FATBPB; Inferred geometry: {self.sectors_per_track} sectors/track, "
                       f"{self.num_heads} heads, {self.num_cylinders} cylinders, "
                       f"{self.bytes_per_sector} bytes/sector")
                 return
-
-        self.detect_fat12_params(image_size)
 
     def guess_image_size(self):
         chunk_size = 512
@@ -159,47 +157,6 @@ class FATBPB:
             self.media_descriptor = mdb
         else:
             self.sectors_per_fat = 2  # Fallback default
-
-    def detect_fat12_params(self, image_size):
-        possible_sector_sizes = sorted({fmt['sector_size'] for fmt in FLOPPY_FORMATS})
-        for sector_size in possible_sector_sizes:
-            if image_size % sector_size != 0:
-                continue
-            total_sectors = image_size // sector_size
-            matching_formats = [fmt for fmt in FLOPPY_FORMATS if fmt['total_sectors'] == total_sectors]
-            if not matching_formats:
-                continue
-
-            fat_offsets = []
-            for sector in range(min(20, total_sectors)):
-                offset = sector * sector_size
-                data = self.read_bytes(offset, 3)
-                if len(data) < 3:
-                    break
-                mdb = data[0]
-                if (mdb & 0xF0) == 0xF0 and data == bytes([mdb, 0xFF, 0xFF]):
-                    fat_offsets.append(offset)
-                    if len(fat_offsets) >= 2:
-                        break
-
-            if fat_offsets:
-                self.bytes_per_sector = sector_size
-                self.total_sectors = total_sectors
-                self.reserved_sectors = fat_offsets[0] // sector_size
-                self.num_fats = min(len(fat_offsets), 2)
-                if len(fat_offsets) >= 2:
-                    self.sectors_per_fat = (fat_offsets[1] - fat_offsets[0]) // sector_size
-                else:
-                    self.sectors_per_fat = matching_formats[0].get('sectors_per_fat', 2)
-                self.root_entries = matching_formats[0]['root_directory']
-                self.media_descriptor = self.read_bytes(fat_offsets[0], 1)[0]
-                self.num_heads = matching_formats[0]['heads']
-                self.sectors_per_track = matching_formats[0]['sectors']
-                self.num_cylinders = matching_formats[0]['tracks']
-                self.detect_sectors_per_cluster_and_fat()
-                return
-
-        self.set_default_geometry()
 
     def set_default_geometry(self):
         self.bytes_per_sector = 512
