@@ -307,14 +307,17 @@ class FloppyDiskManager(DiskManager):
         track_id = (cyl, head)
         if track_id in self.track_data:
             print(f"Track {cyl}.{head} already in memory")
-        if track_id not in self.track_data:
-            args = SimpleNamespace(
-                revs=2, raw=False, fmt_cls=self.fmt_cls,
-                tracks=util.TrackSet(f'c={cyl}:h={head}'),
-                retries=3, seek_retries=0, reverse=False,
-                adjust_speed=None, fake_index=None, hard_sectors=False,
-                drive=self.drive_obj, ticks=0, drive_ticks_per_rev=None
-            )
+            return self.track_data[track_id]
+
+        args = SimpleNamespace(
+            revs=2, raw=False, fmt_cls=self.fmt_cls,
+            tracks=util.TrackSet(f'c={cyl}:h={head}'),
+            retries=3, seek_retries=0, reverse=False,  # Reduced retries to 1
+            adjust_speed=None, fake_index=None, hard_sectors=False,
+            drive=self.drive_obj, ticks=0, drive_ticks_per_rev=None
+        )
+
+        try:
             def read_track_wrapper():
                 track_iterator = util.TrackSet.TrackIter(args.tracks)
                 next(track_iterator)
@@ -341,8 +344,12 @@ class FloppyDiskManager(DiskManager):
                     raise ValueError(f"Failed to read track {cyl}.{head}")
 
             util.with_drive_selected(read_track_wrapper, self.usb, self.drive_obj)
-
-        return self.track_data[track_id]
+            return self.track_data[track_id]
+        except Exception as e:
+            print(f"Error reading track {cyl}.{head}: {e}")
+            # Create empty track data to prevent future retries on this track
+            self.track_data[track_id] = {}
+            raise ValueError(f"Failed to read track {cyl}.{head}: {str(e)}")
 
     def write_track(self, cyl, head, data):
         track_id = (cyl, head)
@@ -500,15 +507,22 @@ class FloppyDiskManager(DiskManager):
         tracks_to_load = [track_id for track_id in tracks_to_read if track_id not in self.track_data]
         total_tracks_to_load = len(tracks_to_load)
         tracks_loaded = 0
+        consecutive_failures = 0
+        max_consecutive_failures = 2  # Stop after 2 consecutive failures
 
         for track_id in tracks_to_load:
             try:
                 self.read_track(*track_id)
                 tracks_loaded += 1
+                consecutive_failures = 0
                 if progress_callback and total_tracks_to_load > 0:
                     progress_callback(tracks_loaded / total_tracks_to_load)
             except Exception as e:
                 print(f"Error reading track {track_id}: {e}")
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    # Too many consecutive failures, disk may be unformatted
+                    raise ValueError(f"Unable to read disk: multiple consecutive track read failures")
 
         # Assemble data, preferring dirty_sectors over track_data
         data = b''
@@ -655,22 +669,3 @@ class ImageFileManager(DiskManager):
                     if progress_callback:
                         progress_callback(min(i + len(chunk), total_bytes) / total_bytes)
             self.dirty = False
-
-
-class MemoryDiskManager(DiskManager):
-    def __init__(self, image_data):
-        super().__init__()
-        self.image_data = image_data
-
-    @property
-    def is_dirty(self):
-        return self.dirty
-
-    def read_bytes(self, offset, length):
-        return self.image_data[offset:offset + length]
-
-    def write_bytes(self, offset, data):
-        self.image_data[offset:offset + len(data)] = data
-
-    def flush(self):
-        pass

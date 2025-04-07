@@ -62,6 +62,7 @@ class FATBPB:
             self.total_sectors = self.total_sectors_large
 
     def infer_parameters(self):
+        # TODO: this is not a good approach for real floppy disks, tries to read the whole disk
         image_size = self.guess_image_size()
         if not image_size:
             self.set_default_geometry()
@@ -93,14 +94,25 @@ class FATBPB:
     def guess_image_size(self):
         chunk_size = 512
         total_read = 0
+        max_attempts = 1  # Keep it to low-level side to handle read errors
+        read_errors = 0
+
         try:
-            while True:
-                data = self.read_bytes(total_read, chunk_size)
-                if not data:
-                    break
-                total_read += len(data)
-                if len(data) < chunk_size:
-                    break
+            while read_errors < max_attempts:
+                try:
+                    data = self.read_bytes(total_read, chunk_size)
+                    if not data:
+                        break
+                    total_read += len(data)
+                    if len(data) < chunk_size:
+                        break
+                except Exception as e:
+                    read_errors += 1
+                    print(f"Read error at offset {total_read}: {e}")
+                    if read_errors >= max_attempts:
+                        if total_read == 0:
+                            print("Disk appears to be unformatted or unreadable")
+                        break
             return total_read
         except Exception:
             return None
@@ -341,15 +353,22 @@ class FileSystemFactory:
     @staticmethod
     def create_filesystem(read_bytes_func, write_bytes_func=None, flush_func=None):
         """Create the appropriate file system instance based on BPB analysis."""
-        bpb = FATBPB(read_bytes_func)
-        fat_type = bpb.get_fat_type()
-        if fat_type == "FAT12":
-            return FAT12FileSystem(read_bytes_func, write_bytes_func, flush_func)
-        elif fat_type == "FAT16":
-            # For future implementation
-            raise ValueError("FAT16 file system is not implemented yet")
-        else:
-            raise ValueError(f"Unsupported file system type: {fat_type}")
+        try:
+            bpb = FATBPB(read_bytes_func)
+            # Check for signs of unformatted disk
+            if bpb.bytes_per_sector == 0 or bpb.total_sectors == 0:
+                raise ValueError("Disk appears to be unformatted or erased")
+
+            fat_type = bpb.get_fat_type()
+            if fat_type == "FAT12":
+                return FAT12FileSystem(read_bytes_func, write_bytes_func, flush_func)
+            elif fat_type == "FAT16":
+                # For future implementation
+                raise ValueError("FAT16 file system is not implemented yet")
+            else:
+                raise ValueError(f"Unsupported file system type: {fat_type}")
+        except Exception as e:
+            raise ValueError(f"Cannot read filesystem: {str(e)}")
 
 class FAT12FileSystem:
     def __init__(self, read_bytes_func, write_bytes_func, flush_func):
