@@ -976,6 +976,9 @@ class FileBrowserApp(QMainWindow):
             return
 
         try:
+            # Get allocated clusters
+            self.busy_clusters = self.controller.get_allocated_clusters()
+
             # Get free space information from controller
             space_info = self.controller.get_free_space()
             if space_info:
@@ -983,22 +986,38 @@ class FileBrowserApp(QMainWindow):
                 # Convert to clusters for visualization
                 if self.controller.disk and self.controller.disk.geometry:
                     sector_size = self.controller.disk.geometry.sector_size
-                    self.free_space = free_bytes // sector_size
-                    self.total_space = total_bytes // sector_size
+                    sectors_per_cluster = 1
+                    if self.controller.filesystem and hasattr(self.controller.filesystem, "boot_sector"):
+                        sectors_per_cluster = self.controller.filesystem.boot_sector.sectors_per_cluster
+
+                    self.free_space = free_bytes // (sector_size * sectors_per_cluster)
+                    self.total_space = total_bytes // (sector_size * sectors_per_cluster)
                 else:
                     self.free_space = free_bytes // 512  # Fallback to default sector size
                     self.total_space = total_bytes // 512
             else:
-                # If free space info not available, make reasonable estimates
+                # If free space info not available, calculate from busy clusters
                 if self.controller.disk and self.controller.disk.geometry:
-                    self.total_space = self.controller.disk.geometry.total_sectors
-                    self.free_space = self.total_space // 4  # Assume 75% used as a placeholder
-                else:
-                    self.total_space = 0
-                    self.free_space = 0
+                    geometry = self.controller.disk.geometry
+                    total_sectors = geometry.total_sectors
+                    sectors_per_cluster = 1
+                    if self.controller.filesystem and hasattr(self.controller.filesystem, "boot_sector"):
+                        sectors_per_cluster = self.controller.filesystem.boot_sector.sectors_per_cluster
 
-            # Use empty busy_clusters since we can't get actual allocation data
-            self.busy_clusters = []
+                    # Calculate total data clusters (exclude boot, FAT, root dir)
+                    if hasattr(self.controller.filesystem, "boot_sector"):
+                        bpb = self.controller.filesystem.boot_sector
+                        reserved = bpb.reserved_sectors
+                        fat_size = bpb.sectors_per_fat * bpb.num_fats
+                        root_dir_sectors = (bpb.root_entries * 32 + bpb.bytes_per_sector - 1) // bpb.bytes_per_sector
+                        data_sectors = total_sectors - reserved - fat_size - root_dir_sectors
+                        self.total_space = data_sectors // sectors_per_cluster
+                    else:
+                        # Rough estimate if no BPB available
+                        self.total_space = (total_sectors - 33) // sectors_per_cluster  # 33 is typical overhead
+
+                    # Calculate free space
+                    self.free_space = self.total_space - len(self.busy_clusters)
 
         except Exception as e:
             self.busy_clusters = []

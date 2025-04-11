@@ -136,6 +136,16 @@ class DiskController:
 
         return False
 
+    def get_allocated_clusters(self) -> List[int]:
+        """Returns list of allocated cluster numbers if available"""
+        if not self.filesystem or not hasattr(self.filesystem, "get_allocated_clusters"):
+            return []
+
+        try:
+            return self.filesystem.get_allocated_clusters()
+        except:
+            return []
+
     def format_disk(self, format_profile: FormatProfile, fs_type: str = "FAT12") -> bool:
         if not self.disk or not self.driver:
             return False

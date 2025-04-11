@@ -465,6 +465,50 @@ class FATFilesystem(Filesystem):
 
         self.disk.flush()
 
+    def get_allocated_clusters(self) -> List[int]:
+        """Returns a list of allocated cluster numbers."""
+        if not self.is_valid():
+            return []
+
+        allocated_clusters = []
+        try:
+            for cluster in range(2, self.num_clusters + 2):
+                fat_entry = self._read_fat_entry(cluster)
+                # If entry is not 0 (free) and not bad cluster marker
+                if fat_entry != 0 and fat_entry < 0xFF0:
+                    allocated_clusters.append(cluster)
+                # Also include end-of-chain markers
+                elif fat_entry >= 0xFF8 and fat_entry <= 0xFFF:
+                    allocated_clusters.append(cluster)
+        except Exception as e:
+            print(f"Error getting allocated clusters: {e}")
+
+        return allocated_clusters
+
+    def get_free_space(self) -> Tuple[int, int]:
+        """Returns (free_bytes, total_bytes) for the filesystem."""
+        if not self.is_valid():
+            return (0, 0)
+
+        try:
+            # Calculate total disk space
+            total_bytes = self.boot_sector.total_sectors * self.boot_sector.bytes_per_sector
+
+            # Count free clusters
+            free_clusters = 0
+            total_clusters = self.num_clusters
+
+            for cluster in range(2, self.num_clusters + 2):
+                if self._read_fat_entry(cluster) == 0:
+                    free_clusters += 1
+
+            free_bytes = free_clusters * self.cluster_size
+
+            return (free_bytes, total_bytes)
+        except Exception as e:
+            print(f"Error calculating free space: {e}")
+            return (0, total_bytes)
+
     def format_fs(self) -> None:
         # TODO: Implement filesystem formatting
         pass
