@@ -1,0 +1,18 @@
+{
+  "bytes_per_sector": 512,
+  "sectors_per_cluster": 1,
+  "reserved_sectors": 1,
+  "num_fats": 2,
+  "root_entries": 224,
+  "total_sectors": 2880,
+  "media_descriptor": 240,
+  "sectors_per_fat": 9,
+  "sectors_per_track": 18,
+  "num_heads": 2,
+  "hidden_sectors": 0,
+  "total_sectors_large": 0,
+  "drive_number": 0,
+  "volume_label": "NO NAME",
+  "fs_type": "FAT12",
+  "oem_id": "MSDOS5.0"
+}
