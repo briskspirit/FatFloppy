@@ -122,17 +122,39 @@ class FATFilesystem(Filesystem):
             return None
 
     def _initialize_filesystem_parameters(self) -> None:
+        """Initialize filesystem parameters based on boot sector"""
         bpb = self.boot_sector
-        self.cluster_size = bpb.sectors_per_cluster * bpb.bytes_per_sector
-        self.fat_start = bpb.reserved_sectors * bpb.bytes_per_sector
-        self.root_dir_start = (bpb.reserved_sectors + bpb.num_fats * bpb.sectors_per_fat) * bpb.bytes_per_sector
-        self.root_dir_sectors = (bpb.root_entries * 32 + bpb.bytes_per_sector - 1) // bpb.bytes_per_sector
-        self.data_area_start = self.root_dir_start + (self.root_dir_sectors * bpb.bytes_per_sector)
 
-        data_sectors = bpb.total_sectors - (bpb.reserved_sectors + bpb.num_fats * bpb.sectors_per_fat + self.root_dir_sectors)
+        # Basic parameters
+        self.cluster_size = bpb.sectors_per_cluster * bpb.bytes_per_sector
+
+        # Calculate important offsets
+        self.fat_start = bpb.reserved_sectors * bpb.bytes_per_sector
+        print(f"FAT starts at byte offset: 0x{self.fat_start:X}")
+
+        # Root directory follows the FATs
+        fat_size_bytes = bpb.sectors_per_fat * bpb.bytes_per_sector
+        self.root_dir_start = self.fat_start + (bpb.num_fats * fat_size_bytes)
+        print(f"Root directory starts at byte offset: 0x{self.root_dir_start:X}")
+
+        # Root directory size
+        self.root_dir_sectors = (bpb.root_entries * 32 + bpb.bytes_per_sector - 1) // bpb.bytes_per_sector
+        root_dir_size = self.root_dir_sectors * bpb.bytes_per_sector
+
+        # Data area follows the root directory
+        self.data_area_start = self.root_dir_start + root_dir_size
+        print(f"Data area starts at byte offset: 0x{self.data_area_start:X}")
+        print(f"Cluster size: {self.cluster_size} bytes")
+
+        # Calculate number of data clusters
+        data_sectors = bpb.total_sectors - (bpb.reserved_sectors +
+                                        bpb.num_fats * bpb.sectors_per_fat +
+                                        self.root_dir_sectors)
         self.num_clusters = data_sectors // bpb.sectors_per_cluster
+        print(f"Number of data clusters: {self.num_clusters}")
 
         self.fat_type = bpb.get_fat_type()
+        print(f"Detected filesystem type: {self.fat_type}")
 
     def list_directory(self, path: str = "/") -> List[FileInfo]:
         if not self.is_valid():
@@ -164,34 +186,60 @@ class FATFilesystem(Filesystem):
         return entries
 
     def _list_directory_by_cluster(self, cluster: int) -> List[FileInfo]:
+        """List directory entries from the given cluster"""
         entries = []
 
-        # Validate input cluster number
-        if cluster < 2 and cluster != 0:  # 0 is a special case for root directory
-            print(f"Warning: Invalid starting cluster {cluster} for directory")
+        # Root directory special case
+        if cluster == 0:
+            return self._list_root_directory()
+
+        # Validation
+        if cluster < 2:
+            print(f"WARNING: Invalid directory cluster {cluster}")
             return entries
 
-        # Get the cluster chain for this directory
+        # Get clusters in this directory
         cluster_chain = self._get_cluster_chain(cluster)
-        if not cluster_chain and cluster >= 2:
-            print(f"Warning: Empty cluster chain for directory at cluster {cluster}")
+        if not cluster_chain:
+            print(f"WARNING: Empty cluster chain for directory at cluster {cluster}")
             return entries
 
-        # Process each cluster in the chain
+        print(f"Directory cluster chain: {cluster_chain}")
+
+        # Process each cluster in chain
         for c in cluster_chain:
-            cluster_offset = self.data_area_start + (c - 2) * self.cluster_size
-            cluster_data = self._read_bytes(cluster_offset, self.cluster_size)
+            # Calculate data area offset - this is critical!
+            offset = self.data_area_start + ((c - 2) * self.cluster_size)
+            print(f"Reading directory entries from cluster {c} at offset 0x{offset:X}")
 
-            for i in range(0, len(cluster_data), 32):
-                # Stop at end of directory marker
-                if i < len(cluster_data) and cluster_data[i] == 0x00:
-                    return entries  # End of directory entries
+            # Read cluster data
+            try:
+                data = self._read_bytes(offset, self.cluster_size)
 
-                if i + 32 <= len(cluster_data):
-                    entry_data = cluster_data[i:i+32]
+                # Process 32-byte directory entries
+                for i in range(0, len(data), 32):
+                    if i + 32 > len(data):
+                        break
+
+                    # Directory entry at this position
+                    entry_data = data[i:i+32]
+
+                    # End of directory?
+                    if entry_data[0] == 0x00:
+                        return entries
+
+                    # Deleted entry?
+                    if entry_data[0] == 0xE5:
+                        continue
+
+                    # Process entry
                     entry = self._parse_directory_entry(entry_data)
                     if entry:
+                        if entry.is_dir:
+                            print(f"Found directory: {entry.name}, cluster={entry.starting_cluster}")
                         entries.append(entry)
+            except Exception as e:
+                print(f"Error reading cluster {c}: {e}")
 
         return entries
 
@@ -631,25 +679,26 @@ class FATFilesystem(Filesystem):
         return cylinder, head, sector
 
     def _read_fat_entry(self, cluster: int) -> int:
+        """Read a FAT12 entry for the given cluster number"""
         if self.fat_type == "FAT12":
-            offset = self.fat_start + int(cluster * 1.5)
-            value_bytes = self._read_bytes(offset, 2)
-            if cluster % 2 == 0:
-                # Even cluster: uses the low 12 bits
-                value = struct.unpack('<H', value_bytes)[0] & 0x0FFF
-            else:
-                # Odd cluster: uses the high 12 bits
-                value = (struct.unpack('<H', value_bytes)[0] >> 4) & 0x0FFF
+            # FAT12 entries take 1.5 bytes per cluster
+            # For cluster N, the entry starts at byte position N*3/2
+            byte_offset = (cluster * 3) // 2
+            fat_offset = self.fat_start + byte_offset
 
-            # Check for reserved values to handle correctly
-            if 0xFF0 <= value <= 0xFFF:  # End of chain markers
-                return 0xFFF
-            elif value == 0xFF7:  # Bad cluster marker
-                return 0xFF7
+            # Read 2 bytes (16 bits) - enough to get our 12-bit entry
+            value_bytes = self._read_bytes(fat_offset, 2)
 
-            return value
+            # Extract the 12-bit value based on whether it's odd or even cluster
+            value = struct.unpack("<H", value_bytes)[0]
+
+            if cluster % 2 == 0:  # Even cluster - use low 12 bits
+                fat_value = value & 0x0FFF
+            else:  # Odd cluster - use high 12 bits
+                fat_value = value >> 4
+
+            return fat_value
         else:
-            # FAT16/FAT32 not implemented
             raise NotImplementedError("Only FAT12 is supported")
 
     def _set_fat_entry(self, cluster: int, value: int) -> None:
@@ -677,42 +726,39 @@ class FATFilesystem(Filesystem):
             raise NotImplementedError("Only FAT12 is supported")
 
     def _get_cluster_chain(self, start_cluster: int) -> List[int]:
-        # Special case handling for root directory
+        """Get the list of clusters in a chain starting from start_cluster"""
+        # Special case for root directory
         if start_cluster == 0:
+            return []
+
+        # Basic validation
+        if start_cluster < 2:
+            print(f"WARNING: Invalid starting cluster {start_cluster}")
             return []
 
         chain = []
         cluster = start_cluster
+        print(f"Following chain from cluster {start_cluster}")
 
-        # Sanity check to avoid infinite loops in case of FAT corruption
-        max_clusters = self.num_clusters
-        count = 0
-
-        while cluster >= 2 and cluster < 0xFF0 and count < max_clusters:
+        # Follow the cluster chain
+        max_length = min(1000, self.num_clusters)  # Reasonable limit
+        while cluster >= 2 and cluster < 0xFF0 and len(chain) < max_length:
             chain.append(cluster)
 
-            try:
-                next_cluster = self._read_fat_entry(cluster)
+            # Get next cluster
+            next_cluster = self._read_fat_entry(cluster)
+            print(f"  Cluster {cluster} → {next_cluster}")
 
-                # End of chain detection
-                if next_cluster >= 0xFF0:
-                    break
-
-                # Bad cluster or corruption detection
-                if next_cluster < 2:
-                    print(f"Warning: Bad cluster reference {next_cluster} in chain starting at {start_cluster}")
-                    break
-
-                # Loop detection
-                if next_cluster in chain:
-                    print(f"Warning: Loop detected in cluster chain at {next_cluster}")
-                    break
-
-                cluster = next_cluster
-                count += 1
-            except Exception as e:
-                print(f"Error reading cluster chain: {e}")
+            # End of chain?
+            if next_cluster >= 0xFF0:
                 break
+
+            # Detect circular chains
+            if next_cluster in chain:
+                print(f"WARNING: Circular reference detected at cluster {next_cluster}")
+                break
+
+            cluster = next_cluster
 
         return chain
 
@@ -902,3 +948,27 @@ class FATFilesystem(Filesystem):
             return False
 
         return True
+
+    def dump_fat(self, start_cluster=0, num_clusters=20):
+        """Debug helper to dump FAT contents"""
+        print("\nFAT Contents:")
+        print("Cluster | FAT Entry (Hex) | Next Cluster")
+        print("--------|----------------|-------------")
+
+        for i in range(start_cluster, start_cluster + num_clusters):
+            if i < 2:  # Reserved clusters
+                if i == 0:
+                    print(f"{i:7d} | {self.boot_sector.media_descriptor:04X}           | [Media Descriptor]")
+                else:
+                    print(f"{i:7d} | {0xFFF:04X}           | [Reserved]")
+            else:
+                fat_value = self._read_fat_entry(i)
+                if fat_value >= 0xFF0:
+                    next_cluster = "END"
+                elif fat_value == 0:
+                    next_cluster = "FREE"
+                elif fat_value == 0xFF7:
+                    next_cluster = "BAD"
+                else:
+                    next_cluster = str(fat_value)
+                print(f"{i:7d} | 0x{fat_value:03X}           | {next_cluster}")
