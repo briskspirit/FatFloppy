@@ -162,13 +162,15 @@ class FATFilesystem(Filesystem):
             return []
 
         if path == "/":
-            return self._list_root_directory()
+            results = self._list_root_directory()
+        else:
+            dir_entry = self._find_path(path)
+            if not dir_entry or not dir_entry.is_dir:
+                return []
+            results = self._list_directory_by_cluster(dir_entry.starting_cluster)
 
-        dir_entry = self._find_path(path)
-        if not dir_entry or not dir_entry.is_dir:
-            return []
-
-        return self._list_directory_by_cluster(dir_entry.starting_cluster)
+        # Filter out . and .. entries
+        return [entry for entry in results if entry.name not in [".", ".."]]
 
     def _list_root_directory(self) -> List[FileInfo]:
         entries = []
@@ -569,13 +571,17 @@ class FATFilesystem(Filesystem):
             return None  # Root directory has no entry
 
         parts = path.strip("/").split("/")
-        current_dir = "/"
 
-        # Start at the root directory
+        # Start with the root directory
+        current_cluster = 0  # 0 represents the root directory
         current_entry = None
 
         for part in parts:
-            entries = self.list_directory(current_dir)
+            # Get entries directly based on the cluster
+            if current_cluster == 0:
+                entries = self._list_root_directory()
+            else:
+                entries = self._list_directory_by_cluster(current_cluster)
 
             found = False
             for entry in entries:
@@ -583,13 +589,12 @@ class FATFilesystem(Filesystem):
                     if not entry.is_dir and part != parts[-1]:
                         return None  # Not a directory in the path
                     current_entry = entry
+                    current_cluster = entry.starting_cluster
                     found = True
                     break
 
             if not found:
                 return None
-
-            current_dir = f"{current_dir}{part}/" if current_dir == "/" else f"{current_dir}/{part}"
 
         return current_entry
 
