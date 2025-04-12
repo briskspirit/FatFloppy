@@ -188,89 +188,67 @@ class FATFilesystem(Filesystem):
 
         return entries
 
-    def _parse_directory_entry(self, entry_data: bytes) -> Optional[FileInfo]:
-        # Check for proper entry length
+    def _parse_directory_entry(self, entry_data):
         if len(entry_data) < 32:
+            print(f"Entry too short: {entry_data.hex()}")
             return None
-
-        # Check for end of directory or deleted entry
-        if entry_data[0] == 0x00 or entry_data[0] == 0xE5:
+        if entry_data[0] == 0x00:
+            print(f"End of directory: {entry_data.hex()}")
             return None
-
-        # Additional validation to prevent garbage entries
-        # First byte should be a valid ASCII character or a kanji marker (0x05)
-        first_byte = entry_data[0]
-        if not ((0x20 <= first_byte <= 0x7E) or first_byte == 0x05):
+        if entry_data[0] == 0xE5:
+            print(f"Deleted entry: {entry_data.hex()}")
             return None
-
         attr = entry_data[11]
-
-        # Validate attribute byte - bits 6 and 7 should be zero
-        if attr & 0xC0:
-            return None
-
-        # Skip volume labels
         if attr & 0x08:
+            print(f"Volume label skipped: {entry_data.hex()}")
             return None
-
-        # Validate filename bytes - should be valid ASCII for standard 8.3 names
-        for byte in entry_data[0:11]:
-            if byte != 0x20 and (byte < 0x20 or byte > 0x7E) and byte != 0x05:
-                # Allow some extended characters but filter out obvious garbage
-                if byte > 0xFE or byte < 0x01:
-                    return None
-
         try:
             name = entry_data[0:8].decode('cp437').strip()
             ext = entry_data[8:11].decode('cp437').strip()
             full_name = f"{name}.{ext}" if ext else name
 
-            is_dir = bool(attr & 0x10)
+            starting_cluster = struct.unpack('<H', entry_data[26:28])[0]
 
+            print(f"Parsing entry: {full_name}, attr={hex(attr)}, starting_cluster={starting_cluster}")
+            invalid_chars = set('"*+,/:;<=>?\\|')  # Removed '.' from invalid characters
+            if any(ord(c) < 32 or c in invalid_chars for c in full_name):
+                print(f"Invalid characters in {full_name}: {entry_data.hex()}")
+                return None
+            is_dir = bool(attr & 0x10)
+            size = struct.unpack('<I', entry_data[28:32])[0]
+            starting_cluster = struct.unpack('<H', entry_data[26:28])[0]
+            if is_dir and starting_cluster < 2 and name not in [".", ".."]:
+                print(f"WARNING: Directory {full_name} has invalid starting cluster {starting_cluster}")
             time_val = struct.unpack('<H', entry_data[22:24])[0]
             date_val = struct.unpack('<H', entry_data[24:26])[0]
-
             second = (time_val & 0x1F) * 2
             minute = (time_val >> 5) & 0x3F
             hour = (time_val >> 11) & 0x1F
-
             day = date_val & 0x1F
             month = (date_val >> 5) & 0x0F
             year = 1980 + ((date_val >> 9) & 0x7F)
-
-            # Validate date and time values
-            if day < 1 or day > 31 or month < 1 or month > 12 or year < 1980 or year > 2099:
+            try:
+                dt = datetime.datetime(year, month, day, hour, minute, second)
+            except ValueError:
+                print(f"Invalid date/time, using default: {time_val}, {date_val}")
                 dt = datetime.datetime(1980, 1, 1, 0, 0, 0)
-            else:
-                try:
-                    dt = datetime.datetime(year, month, day, hour, minute, second)
-                except ValueError:
-                    dt = datetime.datetime(1980, 1, 1, 0, 0, 0)
-
             attributes = []
             if attr & 0x01: attributes.append("RO")
             if attr & 0x02: attributes.append("H")
             if attr & 0x04: attributes.append("S")
             if attr & 0x20: attributes.append("A")
             attr_str = " ".join(attributes) if attributes else "-"
-
-            starting_cluster = struct.unpack('<H', entry_data[26:28])[0]
-            file_size = struct.unpack('<I', entry_data[28:32])[0]
-
-            # Check for reasonable file size for FAT12
-            if not is_dir and file_size > 16 * 1024 * 1024:  # 16MB is a reasonable maximum
-                return None
-
-            return FileInfo(
+            entry = FileInfo(
                 name=full_name,
-                size=0 if is_dir else file_size,
+                size=0 if is_dir else size,
                 is_dir=is_dir,
                 datetime=dt,
                 attributes=attr_str,
                 starting_cluster=starting_cluster
             )
-        except Exception:
-            # Any decoding or processing errors mean invalid entry
+            return entry
+        except Exception as e:
+            print(f"Failed to parse entry: {e}, data={entry_data.hex()}")
             return None
 
     def read_file(self, path: str, progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
