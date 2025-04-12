@@ -129,8 +129,9 @@ class FATFilesystem(Filesystem):
         self.cluster_size = bpb.sectors_per_cluster * bpb.bytes_per_sector
 
         # Calculate important offsets
-        self.fat_start = bpb.reserved_sectors * bpb.bytes_per_sector
+        self.fat_start = (bpb.reserved_sectors + bpb.hidden_sectors) * bpb.bytes_per_sector
         print(f"FAT starts at byte offset: 0x{self.fat_start:X}")
+        print(f"num_fats: {bpb.num_fats}, sectors_per_fat: {bpb.sectors_per_fat}")
 
         # Root directory follows the FATs
         fat_size_bytes = bpb.sectors_per_fat * bpb.bytes_per_sector
@@ -215,6 +216,7 @@ class FATFilesystem(Filesystem):
             # Read cluster data
             try:
                 data = self._read_bytes(offset, self.cluster_size)
+                print(f"Cluster {c} data[:64]: {data[:64].hex()}")
 
                 # Process 32-byte directory entries
                 for i in range(0, len(data), 32):
