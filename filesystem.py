@@ -166,78 +166,102 @@ class FATFilesystem(Filesystem):
     def _list_directory_by_cluster(self, cluster: int) -> List[FileInfo]:
         entries = []
 
+        # Validate input cluster number
+        if cluster < 2 and cluster != 0:  # 0 is a special case for root directory
+            print(f"Warning: Invalid starting cluster {cluster} for directory")
+            return entries
+
+        # Get the cluster chain for this directory
         cluster_chain = self._get_cluster_chain(cluster)
+        if not cluster_chain and cluster >= 2:
+            print(f"Warning: Empty cluster chain for directory at cluster {cluster}")
+            return entries
+
+        # Process each cluster in the chain
         for c in cluster_chain:
             cluster_offset = self.data_area_start + (c - 2) * self.cluster_size
             cluster_data = self._read_bytes(cluster_offset, self.cluster_size)
 
-            end_of_directory = False
             for i in range(0, len(cluster_data), 32):
                 # Stop at end of directory marker
                 if i < len(cluster_data) and cluster_data[i] == 0x00:
-                    end_of_directory = True
-                    break
+                    return entries  # End of directory entries
 
-                entry_data = cluster_data[i:i+32]
-                entry = self._parse_directory_entry(entry_data)
-                if entry:
-                    entries.append(entry)
-
-            if end_of_directory:
-                break
+                if i + 32 <= len(cluster_data):
+                    entry_data = cluster_data[i:i+32]
+                    entry = self._parse_directory_entry(entry_data)
+                    if entry:
+                        entries.append(entry)
 
         return entries
 
     def _parse_directory_entry(self, entry_data):
+        # Check for valid entry data
         if len(entry_data) < 32:
-            print(f"Entry too short: {entry_data.hex()}")
             return None
-        if entry_data[0] == 0x00:
-            print(f"End of directory: {entry_data.hex()}")
+
+        # Check for end of directory marker or deleted entry
+        first_byte = entry_data[0]
+        if first_byte == 0x00:  # End of directory
             return None
-        if entry_data[0] == 0xE5:
-            print(f"Deleted entry: {entry_data.hex()}")
+        if first_byte == 0xE5:  # Deleted entry
             return None
+
+        # Check for special attribute flags
         attr = entry_data[11]
-        if attr & 0x08:
-            print(f"Volume label skipped: {entry_data.hex()}")
+        if attr & 0x08:  # Volume label
             return None
+        if attr & 0x0F == 0x0F:  # Long filename entry
+            return None
+
+        # Validate the entry
         try:
+            # Get name and extension
             name = entry_data[0:8].decode('cp437').strip()
             ext = entry_data[8:11].decode('cp437').strip()
+
+            # Create full name
             full_name = f"{name}.{ext}" if ext else name
 
-            starting_cluster = struct.unpack('<H', entry_data[26:28])[0]
-
-            print(f"Parsing entry: {full_name}, attr={hex(attr)}, starting_cluster={starting_cluster}")
-            invalid_chars = set('"*+,/:;<=>?\\|')  # Removed '.' from invalid characters
-            if any(ord(c) < 32 or c in invalid_chars for c in full_name):
-                print(f"Invalid characters in {full_name}: {entry_data.hex()}")
+            # Check for valid characters
+            invalid_chars = set('"*/:<>?\\|')
+            if any(c < ' ' or c in invalid_chars for c in full_name):
                 return None
+
             is_dir = bool(attr & 0x10)
             size = struct.unpack('<I', entry_data[28:32])[0]
             starting_cluster = struct.unpack('<H', entry_data[26:28])[0]
+
+            # Validate directory entries
             if is_dir and starting_cluster < 2 and name not in [".", ".."]:
-                print(f"WARNING: Directory {full_name} has invalid starting cluster {starting_cluster}")
+                return None
+
+            # Parse date and time
             time_val = struct.unpack('<H', entry_data[22:24])[0]
             date_val = struct.unpack('<H', entry_data[24:26])[0]
+
             second = (time_val & 0x1F) * 2
             minute = (time_val >> 5) & 0x3F
             hour = (time_val >> 11) & 0x1F
+
             day = date_val & 0x1F
             month = (date_val >> 5) & 0x0F
             year = 1980 + ((date_val >> 9) & 0x7F)
+
             try:
                 dt = datetime.datetime(year, month, day, hour, minute, second)
             except ValueError:
-                print(f"Invalid date/time, using default: {time_val}, {date_val}")
                 dt = datetime.datetime(1980, 1, 1, 0, 0, 0)
+
+            # Parse attributes
             attributes = []
             if attr & 0x01: attributes.append("RO")
             if attr & 0x02: attributes.append("H")
             if attr & 0x04: attributes.append("S")
             if attr & 0x20: attributes.append("A")
             attr_str = " ".join(attributes) if attributes else "-"
+
+            # Create the file entry
             entry = FileInfo(
                 name=full_name,
                 size=0 if is_dir else size,
@@ -248,7 +272,6 @@ class FATFilesystem(Filesystem):
             )
             return entry
         except Exception as e:
-            print(f"Failed to parse entry: {e}, data={entry_data.hex()}")
             return None
 
     def read_file(self, path: str, progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
@@ -610,19 +633,24 @@ class FATFilesystem(Filesystem):
     def _read_fat_entry(self, cluster: int) -> int:
         if self.fat_type == "FAT12":
             offset = self.fat_start + int(cluster * 1.5)
+            value_bytes = self._read_bytes(offset, 2)
             if cluster % 2 == 0:
                 # Even cluster: uses the low 12 bits
-                value_bytes = self._read_bytes(offset, 2)
                 value = struct.unpack('<H', value_bytes)[0] & 0x0FFF
             else:
                 # Odd cluster: uses the high 12 bits
-                value_bytes = self._read_bytes(offset, 2)
                 value = (struct.unpack('<H', value_bytes)[0] >> 4) & 0x0FFF
+
+            # Check for reserved values to handle correctly
+            if 0xFF0 <= value <= 0xFFF:  # End of chain markers
+                return 0xFFF
+            elif value == 0xFF7:  # Bad cluster marker
+                return 0xFF7
+
+            return value
         else:
             # FAT16/FAT32 not implemented
             raise NotImplementedError("Only FAT12 is supported")
-
-        return value
 
     def _set_fat_entry(self, cluster: int, value: int) -> None:
         if self.fat_type == "FAT12":
@@ -649,21 +677,42 @@ class FATFilesystem(Filesystem):
             raise NotImplementedError("Only FAT12 is supported")
 
     def _get_cluster_chain(self, start_cluster: int) -> List[int]:
+        # Special case handling for root directory
+        if start_cluster == 0:
+            return []
+
         chain = []
         cluster = start_cluster
 
-        while cluster >= 2 and cluster < 0xFF0:
+        # Sanity check to avoid infinite loops in case of FAT corruption
+        max_clusters = self.num_clusters
+        count = 0
+
+        while cluster >= 2 and cluster < 0xFF0 and count < max_clusters:
             chain.append(cluster)
-            next_cluster = self._read_fat_entry(cluster)
 
-            if next_cluster >= 0xFF0:
+            try:
+                next_cluster = self._read_fat_entry(cluster)
+
+                # End of chain detection
+                if next_cluster >= 0xFF0:
+                    break
+
+                # Bad cluster or corruption detection
+                if next_cluster < 2:
+                    print(f"Warning: Bad cluster reference {next_cluster} in chain starting at {start_cluster}")
+                    break
+
+                # Loop detection
+                if next_cluster in chain:
+                    print(f"Warning: Loop detected in cluster chain at {next_cluster}")
+                    break
+
+                cluster = next_cluster
+                count += 1
+            except Exception as e:
+                print(f"Error reading cluster chain: {e}")
                 break
-
-            if next_cluster < 2:
-                # Bad cluster chain
-                break
-
-            cluster = next_cluster
 
         return chain
 
