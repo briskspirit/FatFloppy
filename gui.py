@@ -1187,23 +1187,39 @@ class FileBrowserApp(QMainWindow):
 
     def get_sector_color(self, sector_num, sectors_per_cluster, reserved, fat_size, root_dir_sectors, first_data_sector):
         """Determine the color for a sector based on its role in FAT12 filesystem."""
-        if sector_num < reserved:
-            return Qt.GlobalColor.red  # Boot sector and reserved
-        elif sector_num < reserved + fat_size:
-            return Qt.GlobalColor.green  # FAT1
-        elif sector_num < reserved + 2 * fat_size:
-            return Qt.GlobalColor.blue  # FAT2
-        elif sector_num < first_data_sector:
-            return Qt.GlobalColor.yellow  # Root directory
-        else:
-            # Data area: color based on cluster status
-            try:
-                relative_sector = sector_num - first_data_sector
-                cluster = (relative_sector // sectors_per_cluster) + 2  # Cluster numbers start at 2
-                return Qt.GlobalColor.magenta if cluster in self.busy_clusters else Qt.GlobalColor.gray
-            except Exception as e:
-                print(f"Error determining cluster for sector {sector_num}: {e}")
-                return Qt.GlobalColor.lightGray
+        # Ensure we don't divide by zero
+        if sectors_per_cluster <= 0:
+            sectors_per_cluster = 1
+
+        try:
+            if sector_num < reserved:
+                return Qt.GlobalColor.red  # Boot sector and reserved
+            elif sector_num < reserved + fat_size:
+                return Qt.GlobalColor.green  # FAT1
+            elif sector_num < reserved + 2 * fat_size:
+                return Qt.GlobalColor.blue  # FAT2
+            elif sector_num < first_data_sector:
+                return Qt.GlobalColor.yellow  # Root directory
+            else:
+                # Data area: color based on cluster status
+                try:
+                    if first_data_sector <= 0 or sector_num < first_data_sector:
+                        return Qt.GlobalColor.gray
+
+                    relative_sector = sector_num - first_data_sector
+
+                    # Validate to prevent division by zero
+                    if sectors_per_cluster <= 0:
+                        return Qt.GlobalColor.gray
+
+                    cluster = (relative_sector // sectors_per_cluster) + 2  # Cluster numbers start at 2
+                    return Qt.GlobalColor.magenta if cluster in self.busy_clusters else Qt.GlobalColor.gray
+                except Exception as e:
+                    print(f"Error determining cluster for sector {sector_num}: {e}")
+                    return Qt.GlobalColor.lightGray
+        except Exception as e:
+            print(f"Error in get_sector_color: {e}")
+            return Qt.GlobalColor.lightGray
 
 
 def run_gui():

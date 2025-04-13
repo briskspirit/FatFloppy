@@ -56,6 +56,22 @@ class DiskController:
             for geometry in default_geometries:
                 print(f"Trying with geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
                 self.set_geometry(geometry)
+
+                # For physical disks, we need to set the physical format too
+                if disk_type == "physical":
+                    encoding = "MFM"
+                    rate = 500 if geometry.sectors_per_track >= 18 else 250
+
+                    self.driver.set_physical_format(PhysicalFormat(
+                        encoding=encoding,
+                        rate=rate,
+                        rpm=300,
+                        gap3=84,
+                        sectors_per_track=geometry.sectors_per_track,
+                        heads=geometry.heads,
+                        sector_size=geometry.sector_size
+                    ))
+
                 if self.detect_filesystem():
                     print(f"Filesystem detected with geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
                     return True
