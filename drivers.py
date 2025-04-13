@@ -40,12 +40,11 @@ class DiskIODriver:
         raise NotImplementedError("Subclasses must implement set_physical_format")
 
 class GreaseweazleDriver(DiskIODriver):
-    def __init__(self, device_name=None, drive='A'):
+    def __init__(self, device_name=None, drive='A', drive_size="3.5"):
         super().__init__()
         self.device_name = device_name
         self.drive = drive
-        self.usb = None
-        self.drive_obj = None
+        self.drive_size = drive_size
         self.physical_format = None
         self.dirty_sectors = {}
         self.dirty_tracks = set()
@@ -57,7 +56,7 @@ class GreaseweazleDriver(DiskIODriver):
         self.last_successful_format = None  # Store the last successful format
         self.using_custom_diskdef = False
         self.scan_track_object = None
-        self.logger.debug(f"GreaseweazleDriver initialized with device={device_name}, drive={drive}")
+        self.logger.debug(f"GreaseweazleDriver initialized with device={device_name}, drive={drive}, size={drive_size}\"")
 
     def initialize(self):
         if self.initialized:

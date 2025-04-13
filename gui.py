@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QDockWidget, QFileDialog,
                              QTreeWidget, QTreeWidgetItem, QHeaderView)
 
 from controller import DiskController
+from drive_selection_dialog import DriveSelectionDialog
 
 
 class ResizableGraphicsView(QGraphicsView):
@@ -590,20 +591,19 @@ class FileBrowserApp(QMainWindow):
 
     def open_physical_floppy(self):
         try:
-            device_name, ok = QInputDialog.getText(self, "Device Selection",
-                                                "Enter device name (e.g., COM3):")
-            if not ok or not device_name:
-                device_name = None
+            # Create and show the drive selection dialog
+            dialog = DriveSelectionDialog(self)
+            if not dialog.exec():
+                return  # User cancelled
+
+            drive_letter, drive_size = dialog.get_selection()
 
             self.controller = DiskController()
-            if self.controller.open_disk(device_name, "physical"):
+            if self.controller.open_disk(None, "physical", drive_letter=drive_letter, drive_size=drive_size):
                 self.root_node = self.build_fs_tree()
                 self.current_node = self.root_node
                 self.current_path = "/"
                 self.refresh_filesystem_ui()
-
-                format_name = self.controller.detect_format()
-                format_text = f" using {format_name}" if format_name else ""
 
                 # Check if disk has multiple heads
                 if self.controller.disk and self.controller.disk.geometry and self.controller.disk.geometry.heads > 1:
@@ -613,7 +613,9 @@ class FileBrowserApp(QMainWindow):
                     self.head_action.setEnabled(False)
                     self.head_action.setText("Single-sided disk")
 
-                self.statusBar().showMessage(f"Loaded physical floppy{format_text}")
+                format_name = self.controller.detect_format()
+                format_text = f" using {format_name}" if format_name else ""
+                self.statusBar().showMessage(f"Loaded physical floppy{format_text} (Drive: {drive_letter}, Size: {drive_size}\")")
             else:
                 self.reset_ui()
                 QMessageBox.critical(self, "Error", "Failed to open physical floppy")

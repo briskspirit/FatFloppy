@@ -19,7 +19,7 @@ class DiskController:
         self.driver: Optional[DiskIODriver] = None
         self.logger.debug("DiskController initialized")
 
-    def open_disk(self, source: str, disk_type: str = "image") -> bool:
+    def open_disk(self, source: str, disk_type: str = "image", drive_letter: str = "A", drive_size: str = "3.5") -> bool:
         if self.disk:
             self.close_disk()
 
@@ -27,8 +27,8 @@ class DiskController:
             # Create appropriate driver
             if disk_type == "physical":
                 device_name = source if source else None
-                self.logger.debug(f"Creating GreaseweazleDriver with device: {device_name}")
-                self.driver = GreaseweazleDriver(device_name=device_name)
+                self.logger.debug(f"Creating GreaseweazleDriver with device: {device_name}, drive: {drive_letter}, size: {drive_size}\"")
+                self.driver = GreaseweazleDriver(device_name=device_name, drive=drive_letter, drive_size=drive_size)
             elif disk_type == "image":
                 if not os.path.exists(source):
                     self.logger.error(f"Image file not found: {source}")
@@ -44,7 +44,7 @@ class DiskController:
 
             # Different detection strategies based on disk type
             if disk_type == "physical":
-                result = self._detect_physical_disk_format()
+                result = self._detect_physical_disk_format(drive_size)
                 self.logger.info(f"Physical disk format detection {'succeeded' if result else 'failed'}")
                 return result
             else:
@@ -307,17 +307,43 @@ class DiskController:
         self.logger.debug(f"Listed {len(formats)} available formats")
         return formats
 
-    def _detect_physical_disk_format(self) -> bool:
-        """Detect format for physical floppy disks"""
-        self.logger.debug("Detecting physical disk format")
-        # Geometries to try, in order of likelihood
-        geometries = [
-            (DiskGeometry(80, 2, 18, 512), 500, "MFM"),  # 1.44MB 3.5" HD (most common)
-            (DiskGeometry(80, 2, 15, 512), 500, "MFM"),  # 1.2MB 5.25" HD
-            (DiskGeometry(80, 2, 9, 512), 250, "MFM"),   # 720KB 3.5" DD
-            (DiskGeometry(40, 2, 9, 512), 250, "MFM"),   # 360KB 5.25" DD
-            (DiskGeometry(40, 1, 8, 512), 125, "FM"),    # Less common FM format
-        ]
+    def _detect_physical_disk_format(self, drive_size: str = "3.5") -> bool:
+        """Detect format for physical floppy disks, considering drive size"""
+        self.logger.debug(f"Detecting physical disk format for {drive_size}\" drive")
+
+        # Geometries to try, filtered by drive size
+        geometries = []
+
+        if drive_size == "3.5":
+            # 3.5" geometries
+            geometries = [
+                (DiskGeometry(80, 2, 18, 512), 500, "MFM"),  # 1.44MB 3.5" HD (most common)
+                (DiskGeometry(80, 2, 9, 512), 250, "MFM"),   # 720KB 3.5" DD
+                (DiskGeometry(80, 2, 21, 512), 500, "MFM"),  # 1.68MB DMF format
+            ]
+        elif drive_size == "5.25":
+            # 5.25" geometries
+            geometries = [
+                (DiskGeometry(80, 2, 15, 512), 500, "MFM"),  # 1.2MB 5.25" HD
+                (DiskGeometry(40, 2, 9, 512), 250, "MFM"),   # 360KB 5.25" DD
+                (DiskGeometry(40, 1, 9, 512), 250, "MFM"),   # 180KB 5.25" DD
+                (DiskGeometry(40, 1, 8, 512), 250, "MFM"),   # 160KB 5.25" DD
+            ]
+        elif drive_size == "8":
+            # 8" geometries
+            geometries = [
+                (DiskGeometry(77, 2, 26, 128), 250, "FM"),   # 500KB 8" SD
+                (DiskGeometry(77, 1, 26, 128), 250, "FM"),   # 250KB 8" SD
+                (DiskGeometry(77, 2, 8, 1024), 500, "MFM"),  # 1.2MB 8" DD
+                (DiskGeometry(77, 2, 15, 512), 500, "MFM"),  # 1.2MB 8" DD
+            ]
+        else:
+            # Fallback to 3.5" if unknown size
+            self.logger.warning(f"Unknown drive size '{drive_size}', falling back to 3.5\" formats")
+            geometries = [
+                (DiskGeometry(80, 2, 18, 512), 500, "MFM"),  # 1.44MB 3.5" HD
+                (DiskGeometry(80, 2, 9, 512), 250, "MFM"),   # 720KB 3.5" DD
+            ]
 
         # Try each geometry until we find a valid filesystem
         for geometry, rate, encoding in geometries:
@@ -346,16 +372,19 @@ class DiskController:
                 continue
 
         # If we get here, just set a default geometry for displaying something
-        default_geometry = DiskGeometry(80, 2, 18, 512)
+        default_geometry = DiskGeometry(80, 2, 18, 512) if drive_size == "3.5" else (
+            DiskGeometry(40, 2, 9, 512) if drive_size == "5.25" else
+            DiskGeometry(77, 2, 26, 128)  # 8" default
+        )
         self.set_geometry(default_geometry)
         self.driver.set_physical_format(PhysicalFormat(
-            encoding="MFM",
-            rate=500,
+            encoding="MFM" if drive_size != "8" else "FM",
+            rate=500 if drive_size != "8" or drive_size != "5.25" else 250,
             rpm=300,
             gap3=84,
-            sectors_per_track=18,
-            heads=2,
-            sector_size=512
+            sectors_per_track=default_geometry.sectors_per_track,
+            heads=default_geometry.heads,
+            sector_size=default_geometry.sector_size
         ))
         self.logger.warning("No filesystem detected, using default geometry for display")
         return True
