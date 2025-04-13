@@ -204,6 +204,7 @@ class GreaseweazleDriver(DiskIODriver):
     def _read_track(self, cylinder: int, head: int) -> None:
         import types
         from greaseweazle.codec import codec
+        from greaseweazle.codec.ibm import ibm
 
         # List of formats to try
         formats_to_try = []
@@ -221,32 +222,19 @@ class GreaseweazleDriver(DiskIODriver):
         if self.last_successful_format:
             formats_to_try.append(self.last_successful_format)
 
-        # Then, try the current physical format if set
-        if self.physical_format and not self.last_successful_format:
-            if self.physical_format.encoding == "MFM":
-                format_name = "ibm.mfm"
-                rate = self.physical_format.rate
-                formats_to_try.append((format_name, rate))
-            else:
-                format_name = "ibm.fm"
-                rate = self.physical_format.rate
-                formats_to_try.append((format_name, rate))
-
-        # Add ibm.scan which automatically tries various formats
+        # Add ibm.scan first - it automatically tries various formats
         formats_to_try.append(("ibm.scan", None))
 
-        # Add other common formats if we don't have a successful format yet
+        # Only add other formats as fallbacks
         if not self.last_successful_format:
-            additional_formats = [
-                ("ibm.mfm", 250),  # DD 720KB
-                ("ibm.mfm", 500),  # HD 1.44MB
-                ("ibm.fm", 250),   # FM formats
-            ]
-
-            # Add additional formats if not already included
-            for fmt in additional_formats:
-                if fmt not in formats_to_try:
-                    formats_to_try.append(fmt)
+            # Only add the current physical format if set
+            if self.physical_format:
+                if self.physical_format.encoding == "MFM":
+                    rate = self.physical_format.rate
+                    formats_to_try.append(("ibm.mfm", rate))
+                else:
+                    rate = self.physical_format.rate
+                    formats_to_try.append(("ibm.fm", rate))
 
         # Initialize empty track data to ensure there's something
         self.track_data[(cylinder, head)] = {}
@@ -254,13 +242,31 @@ class GreaseweazleDriver(DiskIODriver):
         # Try each format until we find one that works
         for format_name, rate in formats_to_try:
             print(f"Trying to read track {cylinder}.{head} with format {format_name}" +
-                  (f" at {rate}kbps" if rate else ""))
+                (f" at {rate}kbps" if rate else ""))
 
             try:
                 # Get the format definition
                 fmt_cls = codec.get_diskdef(format_name)
                 result = self._read_track_with_format(cylinder, head, fmt_cls)
                 if result:
+                    # If using ibm.scan, extract additional information from track object
+                    if format_name == "ibm.scan" and hasattr(self, 'scan_track_object'):
+                        track_obj = self.scan_track_object
+                        if hasattr(track_obj, 'track'):
+                            track_obj = track_obj.track
+
+                        # Try to get more detailed information
+                        if hasattr(track_obj, 'mode'):
+                            mode = track_obj.mode
+                            encoding = "MFM" if str(mode) == "IBM MFM" else "FM"
+
+                            # Get rate and update physical format
+                            if hasattr(track_obj, 'clock'):
+                                rate_kbps = int(1.0 / (track_obj.clock * 2000)) if encoding == "MFM" else int(1.0 / (track_obj.clock * 1000))
+                                if self.physical_format:
+                                    self.physical_format.rate = rate_kbps
+                                    self.physical_format.encoding = encoding
+
                     # Store this successful format for future use
                     self.last_successful_format = (format_name, rate)
 
@@ -281,7 +287,7 @@ class GreaseweazleDriver(DiskIODriver):
         """Read a track with a specific format definition"""
         import types
         from greaseweazle.tools import read, util
-        from greaseweazle.codec.ibm import ibm  # Make sure to import ibm here
+        from greaseweazle.codec.ibm import ibm
 
         args = types.SimpleNamespace(
             revs=3,
@@ -306,6 +312,9 @@ class GreaseweazleDriver(DiskIODriver):
 
             sectors = None
             if dat is not None:
+                # Store the track object for additional info extraction
+                self.scan_track_object = dat
+
                 if hasattr(dat, 'track') and hasattr(dat.track, 'sectors'):
                     sectors = dat.track.sectors
                 elif hasattr(dat, 'sectors'):
@@ -343,6 +352,17 @@ class GreaseweazleDriver(DiskIODriver):
                             if rate is None:
                                 rate = 250 if encoding == "MFM" else 125
 
+                            # For ibm.scan, try to get more accurate rate info
+                            if fmt_cls.__class__.__name__ == 'IBMTrack_ScanDef' and hasattr(dat, 'track'):
+                                track_obj = dat.track
+                                if hasattr(track_obj, 'clock'):
+                                    # Calculate rate from clock
+                                    if encoding == "MFM":
+                                        rate = int(1.0 / (track_obj.clock * 2000))
+                                    else:
+                                        rate = int(1.0 / (track_obj.clock * 1000))
+                                    print(f"Detected rate from scan: {rate}kbps")
+
                             if self.physical_format is None:
                                 self.physical_format = PhysicalFormat(
                                     encoding=encoding,
@@ -358,9 +378,9 @@ class GreaseweazleDriver(DiskIODriver):
                                 self.physical_format.sectors_per_track = num_sectors
                                 self.physical_format.encoding = encoding
                                 self.physical_format.rate = rate
-                    return True
+                        return True
 
-            return False
+                return False
 
         success = False
         try:
@@ -505,7 +525,7 @@ class RawImageDriver(DiskIODriver):
         self.physical_format = physical_format
 
         # Check if we need to update our custom disk definition
-        if (self.using_custom_diskdef and previous_format and 
+        if (self.using_custom_diskdef and previous_format and
                 (previous_format.sectors_per_track != physical_format.sectors_per_track or
                 previous_format.heads != physical_format.heads)):
             # The physical format has changed significantly, recreate the custom disk definition
