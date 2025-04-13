@@ -64,8 +64,10 @@ class BootSectorData:
             raise ValueError("Boot sector data too short")
 
         boot_sig = struct.unpack_from('<H', data, 0x1FE)[0]
-        if boot_sig != 0xAA55:
-            raise ValueError("Invalid boot signature")
+        # TODO: make it soft check, don't fail as some don't have
+        # valid signature for some reason even having valid BPB
+        # if boot_sig != 0xAA55:
+            # raise ValueError("Invalid boot signature")
 
         result = cls()
         result.oem_id = data[3:11].decode('cp437').strip()

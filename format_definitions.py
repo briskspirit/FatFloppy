@@ -157,6 +157,36 @@ FLOPPY_FORMATS = {
     ),
 
     # 3.5" formats
+    "ibm_3.5_360k": FormatProfile(
+        name="ibm_3.5_360k",
+        description="3.5\" DD 360KB (80 tracks, 1 head, 9 sectors)",
+        geometry=DiskGeometry(
+            cylinders=80,
+            heads=1,
+            sectors_per_track=9,
+            sector_size=512
+        ),
+        physical_format=PhysicalFormat(
+            encoding="MFM",
+            rate=250,
+            rpm=300,
+            gap3=84,
+            sectors_per_track=9,
+            heads=2,
+            sector_size=512
+        ),
+        media_descriptor=0xFC,
+        boot_sector=BootSectorData(
+            sectors_per_track=9,
+            num_heads=1,
+            total_sectors=720,
+            media_descriptor=0xFC,
+            root_entries=112,
+            sectors_per_fat=3,
+            sectors_per_cluster=2
+        )
+    ),
+
     "ibm_3.5_720k": FormatProfile(
         name="ibm_3.5_720k",
         description="3.5\" DD 720KB (80 tracks, 2 heads, 9 sectors)",
