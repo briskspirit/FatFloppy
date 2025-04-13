@@ -15,8 +15,8 @@ class PhysicalFormat:
     encoding: str  # FM/MFM
     rate: int      # Data rate (kbps)
     rpm: int       # Rotations per minute
-    gap3: int      # Gap3 size
-    skew: int = 0  # Sector skew
+    gap3: int = 84 # Gap3 size
+    cskew: int = 0 # Sector skew
     interleave: int = 1
     # Additional fields needed for disk geometry
     sectors_per_track: int = 18
@@ -234,7 +234,7 @@ class GreaseweazleDriver(DiskIODriver):
             # Set track parameters
             track_def.add_param("secs", str(params['sectors_per_track']))
             track_def.add_param("bps", str(params['sector_size']))
-            track_def.add_param("gap3", str(params.get('gap3', '84')))
+            track_def.add_param("gap3", str(params['gap3']))
             track_def.add_param("rate", str(params['rate']))
 
             # Finalize the track definition

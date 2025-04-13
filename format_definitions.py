@@ -3,6 +3,8 @@ from disk import DiskGeometry
 from drivers import PhysicalFormat
 from formats import FormatProfile, BootSectorData
 
+# TODO: Adjust gap3 based on doc: https://www.isdaman.com/alsos/hardware/fdc/floppy.htm
+
 FLOPPY_FORMATS = {
     # 5.25" formats
     "ibm_5.25_160k": FormatProfile(
@@ -381,6 +383,8 @@ FLOPPY_FORMATS = {
             rate=500,
             rpm=300,
             gap3=12,
+            cskew=3,
+            interleave=2,
             sectors_per_track=21,
             heads=2,
             sector_size=512
@@ -411,6 +415,8 @@ FLOPPY_FORMATS = {
             rate=500,
             rpm=300,
             gap3=12,
+            cskew=3,
+            interleave=2,
             sectors_per_track=21,
             heads=2,
             sector_size=512
@@ -441,7 +447,7 @@ FLOPPY_FORMATS = {
             encoding="FM",
             rate=250,
             rpm=360,
-            gap3=27,
+            gap3=26,
             sectors_per_track=26,
             heads=1,
             sector_size=128
@@ -454,7 +460,67 @@ FLOPPY_FORMATS = {
             media_descriptor=0xFE,
             root_entries=68,
             sectors_per_fat=6,
-            sectors_per_cluster=4
+            sectors_per_cluster=1
+        )
+    ),
+
+    "ibm_8_298k": FormatProfile(
+        name="ibm_8_298k",
+        description="8\" SD 298KB (77 tracks, 1 head, 15 sectors)",
+        geometry=DiskGeometry(
+            cylinders=77,
+            heads=1,
+            sectors_per_track=15,
+            sector_size=256
+        ),
+        physical_format=PhysicalFormat(
+            encoding="FM",
+            rate=250,
+            rpm=360,
+            gap3=26,
+            sectors_per_track=15,
+            heads=1,
+            sector_size=256
+        ),
+        media_descriptor=0xFE,
+        boot_sector=BootSectorData(
+            sectors_per_track=15,
+            num_heads=1,
+            total_sectors=1155,
+            media_descriptor=0xFE,
+            root_entries=56,
+            sectors_per_fat=4,
+            sectors_per_cluster=1
+        )
+    ),
+
+    "ibm_8_315k": FormatProfile(
+        name="ibm_8_315k",
+        description="8\" SD 315KB (77 tracks, 1 head, 8 sectors)",
+        geometry=DiskGeometry(
+            cylinders=77,
+            heads=1,
+            sectors_per_track=8,
+            sector_size=512
+        ),
+        physical_format=PhysicalFormat(
+            encoding="FM",
+            rate=250,
+            rpm=360,
+            gap3=26,
+            sectors_per_track=8,
+            heads=1,
+            sector_size=512
+        ),
+        media_descriptor=0xFE,
+        boot_sector=BootSectorData(
+            sectors_per_track=8,
+            num_heads=1,
+            total_sectors=616,
+            media_descriptor=0xFE,
+            root_entries=64,
+            sectors_per_fat=2,
+            sectors_per_cluster=1
         )
     ),
 
@@ -471,7 +537,7 @@ FLOPPY_FORMATS = {
             encoding="FM",
             rate=250,
             rpm=360,
-            gap3=27,
+            gap3=26,
             sectors_per_track=26,
             heads=2,
             sector_size=128
@@ -484,13 +550,133 @@ FLOPPY_FORMATS = {
             media_descriptor=0xFD,
             root_entries=96,
             sectors_per_fat=6,
-            sectors_per_cluster=4
+            sectors_per_cluster=2
         )
     ),
 
-    "ibm_8_1.2m": FormatProfile(
-        name="ibm_8_1.2m",
-        description="8\" DD 1.2MB (77 tracks, 2 heads, 8 sectors)",
+    "ibm_8_590k": FormatProfile(
+        name="ibm_8_590k",
+        description="8\" SD 590KB (77 tracks, 2 heads, 15 sectors)",
+        geometry=DiskGeometry(
+            cylinders=77,
+            heads=2,
+            sectors_per_track=15,
+            sector_size=256
+        ),
+        physical_format=PhysicalFormat(
+            encoding="FM",
+            rate=250,
+            rpm=360,
+            gap3=26,
+            sectors_per_track=15,
+            heads=2,
+            sector_size=256
+        ),
+        media_descriptor=0xFD,
+        boot_sector=BootSectorData(
+            sectors_per_track=15,
+            num_heads=2,
+            total_sectors=2310,
+            media_descriptor=0xFD,
+            root_entries=96,
+            sectors_per_fat=4,
+            sectors_per_cluster=2
+        )
+    ),
+
+    "ibm_8_630k": FormatProfile(
+        name="ibm_8_630k",
+        description="8\" DD 630KB (77 tracks, 1 head, 8 sectors)",
+        geometry=DiskGeometry(
+            cylinders=77,
+            heads=1,
+            sectors_per_track=8,
+            sector_size=1024
+        ),
+        physical_format=PhysicalFormat(
+            encoding="MFM",
+            rate=500,
+            rpm=360,
+            gap3=84,
+            sectors_per_track=8,
+            heads=1,
+            sector_size=1024
+        ),
+        media_descriptor=0x00,
+        boot_sector=BootSectorData(
+            sectors_per_track=8,
+            num_heads=1,
+            total_sectors=616,
+            media_descriptor=0x00,
+            root_entries=96,
+            sectors_per_fat=1,
+            sectors_per_cluster=1
+        )
+    ),
+
+    "ibm_8_1025k": FormatProfile(
+        name="ibm_8_1025k",
+        description="8\" DD 1MB (77 tracks, 2 heads, 26 sectors)",
+        geometry=DiskGeometry(
+            cylinders=77,
+            heads=2,
+            sectors_per_track=26,
+            sector_size=256
+        ),
+        physical_format=PhysicalFormat(
+            encoding="MFM",
+            rate=500,
+            rpm=360,
+            gap3=54,
+            sectors_per_track=26,
+            heads=2,
+            sector_size=256
+        ),
+        media_descriptor=0xFE,
+        boot_sector=BootSectorData(
+            sectors_per_track=26,
+            num_heads=2,
+            total_sectors=4004,
+            media_descriptor=0xFE,
+            root_entries=192,
+            sectors_per_fat=6,
+            sectors_per_cluster=2
+        )
+    ),
+
+    "ibm_8_1180k": FormatProfile(
+        name="ibm_8_1180k",
+        description="8\" DD 1.2MB (77 tracks, 2 heads, 15 sectors)",
+        geometry=DiskGeometry(
+            cylinders=77,
+            heads=2,
+            sectors_per_track=15,
+            sector_size=512
+        ),
+        physical_format=PhysicalFormat(
+            encoding="MFM",
+            rate=500,
+            rpm=360,
+            gap3=84,
+            sectors_per_track=15,
+            heads=2,
+            sector_size=512
+        ),
+        media_descriptor=0xFE,
+        boot_sector=BootSectorData(
+            sectors_per_track=15,
+            num_heads=2,
+            total_sectors=2310,
+            media_descriptor=0xFE,
+            root_entries=192,
+            sectors_per_fat=4,
+            sectors_per_cluster=2
+        )
+    ),
+
+    "ibm_8_1260k": FormatProfile(
+        name="ibm_8_1260k",
+        description="8\" DD 1.25MB (77 tracks, 2 heads, 8 sectors)",
         geometry=DiskGeometry(
             cylinders=77,
             heads=2,
