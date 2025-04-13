@@ -1,5 +1,4 @@
 # format_definitions.py
-
 from disk import DiskGeometry
 from drivers import PhysicalFormat
 from formats import FormatProfile, BootSectorData

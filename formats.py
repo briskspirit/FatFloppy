@@ -1,8 +1,7 @@
 # formats.py
-
 from dataclasses import dataclass
 import struct
-from typing import Dict, List, Optional, Union, Tuple
+from typing import List, Optional, Tuple
 
 from disk import Disk, DiskGeometry
 from drivers import PhysicalFormat

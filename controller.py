@@ -1,19 +1,23 @@
 # controller.py
-
 from typing import List, Optional, Tuple
 import os
 
+from logging_config import get_logger
 from disk import Disk, DiskGeometry
 from drivers import DiskIODriver, GreaseweazleDriver, RawImageDriver, PhysicalFormat
 from formats import FormatManager, FormatProfile
 from filesystem import Filesystem, FATFilesystem
 
+logger = get_logger()
+
 class DiskController:
     def __init__(self):
+        self.logger = get_logger(self.__class__.__name__)
         self.disk: Optional[Disk] = None
         self.filesystem: Optional[Filesystem] = None
         self.format_manager = FormatManager()
         self.driver: Optional[DiskIODriver] = None
+        self.logger.debug("DiskController initialized")
 
     def open_disk(self, source: str, disk_type: str = "image") -> bool:
         if self.disk:
@@ -23,29 +27,39 @@ class DiskController:
             # Create appropriate driver
             if disk_type == "physical":
                 device_name = source if source else None
+                self.logger.debug(f"Creating GreaseweazleDriver with device: {device_name}")
                 self.driver = GreaseweazleDriver(device_name=device_name)
             elif disk_type == "image":
                 if not os.path.exists(source):
+                    self.logger.error(f"Image file not found: {source}")
                     return False
+                self.logger.debug(f"Creating RawImageDriver for: {source}")
                 self.driver = RawImageDriver(file_path=source)
             else:
+                self.logger.error(f"Unsupported disk type: {disk_type}")
                 raise ValueError(f"Unsupported disk type: {disk_type}")
 
             self.disk = Disk(self.driver)
+            self.logger.debug("Disk object created")
 
             # Different detection strategies based on disk type
             if disk_type == "physical":
-                return self._detect_physical_disk_format()
+                result = self._detect_physical_disk_format()
+                self.logger.info(f"Physical disk format detection {'succeeded' if result else 'failed'}")
+                return result
             else:
-                return self._detect_image_file_format(source)
+                result = self._detect_image_file_format(source)
+                self.logger.info(f"Image file format detection {'succeeded' if result else 'failed'}")
+                return result
 
         except Exception as e:
-            print(f"Error opening disk: {e}")
+            self.logger.exception(f"Error opening disk: {e}")
             self.close_disk()
             return False
 
     def _detect_physical_disk_format(self) -> bool:
         """Detect format for physical floppy disks"""
+        self.logger.debug("Detecting physical disk format")
         # Geometries to try, in order of likelihood
         geometries = [
             (DiskGeometry(80, 2, 18, 512), 500, "MFM"),  # 1.44MB 3.5" HD (most common)
@@ -58,6 +72,7 @@ class DiskController:
         # Try each geometry until we find a valid filesystem
         for geometry, rate, encoding in geometries:
             self.set_geometry(geometry)
+            self.logger.debug(f"Trying geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}, {encoding} at {rate}kbps")
 
             # Set the physical format
             self.driver.set_physical_format(PhysicalFormat(
@@ -74,10 +89,10 @@ class DiskController:
             try:
                 fs_type = self.detect_filesystem()
                 if fs_type:
-                    # Success! We've found a valid filesystem
+                    self.logger.info(f"Found valid filesystem {fs_type} with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
                     return True
             except Exception as e:
-                print(f"Failed with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}: {e}")
+                self.logger.debug(f"Failed with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}: {e}")
                 continue
 
         # If we get here, just set a default geometry for displaying something
@@ -92,11 +107,12 @@ class DiskController:
             heads=2,
             sector_size=512
         ))
-        print("No filesystem detected, using default geometry for display")
+        self.logger.warning("No filesystem detected, using default geometry for display")
         return True
 
     def _detect_image_file_format(self, file_path: str) -> bool:
         """Detect format for disk image files"""
+        self.logger.debug(f"Detecting format for image file: {file_path}")
         # First try to detect format
         format_name = self.detect_format()
         if format_name:
@@ -104,6 +120,7 @@ class DiskController:
             if profile:
                 self.set_format(profile)
                 if self.detect_filesystem():
+                    self.logger.info(f"Detected format {format_name} with valid filesystem")
                     return True
 
         # Try default geometries for image files
@@ -114,56 +131,75 @@ class DiskController:
         ]
 
         for geometry in default_geometries:
+            self.logger.debug(f"Trying default geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
             self.set_geometry(geometry)
             if self.detect_filesystem():
+                self.logger.info(f"Found valid filesystem with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
                 return True
 
         # No format detected, but we can still work with the image
         # Just set a default geometry
         if not self.disk.geometry:
             self.set_geometry(default_geometries[0])
+            self.logger.warning("No filesystem detected, using default 1.44MB geometry")
 
         return True
 
     def close_disk(self) -> None:
         if self.disk and self.driver:
             try:
+                self.logger.debug("Flushing driver before closing disk")
                 self.driver.flush()
-            except:
-                pass
+            except Exception as e:
+                self.logger.error(f"Error flushing driver: {e}")
 
+        self.logger.debug("Closing disk")
         self.disk = None
         self.filesystem = None
         self.driver = None
 
     def detect_geometry(self) -> Optional[DiskGeometry]:
         if not self.disk:
+            self.logger.error("No disk opened to detect geometry")
             return None
 
         format_name = self.detect_format()
         if format_name:
             profile = self.format_manager.get_format_by_name(format_name)
             if profile:
+                self.logger.debug(f"Detected geometry from format {format_name}")
                 return profile.geometry
 
+        self.logger.debug("Could not detect geometry from format")
         return None
 
     def set_geometry(self, geometry: DiskGeometry) -> None:
         if not self.disk:
+            self.logger.error("No disk opened to set geometry")
             raise ValueError("No disk opened")
 
+        self.logger.debug(f"Setting geometry to {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}, {geometry.sector_size} bytes/sector")
         self.disk.set_geometry(geometry)
 
     def detect_format(self) -> Optional[str]:
         if not self.disk:
+            self.logger.error("No disk opened to detect format")
             return None
 
-        return self.format_manager.detect_format(self.disk)
+        format_name = self.format_manager.detect_format(self.disk)
+        if format_name:
+            self.logger.debug(f"Detected format: {format_name}")
+        else:
+            self.logger.debug("No format detected")
+        return format_name
 
     def set_format(self, profile: FormatProfile) -> None:
         if not self.disk or not self.driver:
+            self.logger.error("No disk opened to set format")
             raise ValueError("No disk opened")
 
+        self.logger.debug(f"Setting format: {profile.name} ({profile.description})")
+        
         # Set disk geometry
         self.disk.set_geometry(profile.geometry)
 
@@ -172,25 +208,29 @@ class DiskController:
 
     def detect_filesystem(self) -> Optional[str]:
         if not self.disk:
+            self.logger.error("No disk opened to detect filesystem")
             return None
 
         # Try to mount a FAT filesystem
         try:
             # Validate geometry is set
             if not self.disk.geometry:
+                self.logger.warning("Cannot detect filesystem: disk geometry not set")
                 return None
 
             # Try to read the boot sector
             try:
+                self.logger.debug("Reading boot sector to detect filesystem")
                 boot_sector = self.disk.read_sector(0, 0, 1)
                 if not boot_sector or all(b == 0 for b in boot_sector):
-                    print("Boot sector is empty - disk may be unformatted")
+                    self.logger.warning("Boot sector is empty - disk may be unformatted")
                     return None
             except Exception as e:
-                print(f"Error reading boot sector: {e}")
+                self.logger.error(f"Error reading boot sector: {e}")
                 return None
 
             # Try to mount filesystem
+            self.logger.debug("Attempting to mount FAT filesystem")
             self.filesystem = FATFilesystem(self.disk)
             if self.filesystem.is_valid():
                 # Always check if the driver has a physically detected sector count
@@ -198,7 +238,7 @@ class DiskController:
                     actual_sectors = self.driver.physical_format.sectors_per_track
                     # If the driver detected a different sector count than geometry, use the detected count
                     if actual_sectors != self.disk.geometry.sectors_per_track:
-                        print(f"Updating geometry with physically detected sector count: {actual_sectors}")
+                        self.logger.info(f"Updating geometry with physically detected sector count: {actual_sectors}")
                         updated_geometry = DiskGeometry(
                             cylinders=self.disk.geometry.cylinders,
                             heads=self.disk.geometry.heads,
@@ -222,7 +262,7 @@ class DiskController:
                         # If these differ from our current geometry, update it
                         if (self.disk.geometry.sectors_per_track != sectors_per_track or
                             self.disk.geometry.heads != heads):
-                            print(f"Updating geometry from BPB: {sectors_per_track} sectors, {heads} heads")
+                            self.logger.info(f"Updating geometry from BPB: {sectors_per_track} sectors, {heads} heads")
 
                             updated_geometry = DiskGeometry(
                                 cylinders=self.disk.geometry.cylinders,
@@ -232,39 +272,54 @@ class DiskController:
                             )
                             self.set_geometry(updated_geometry)
 
+                self.logger.info("Valid FAT12 filesystem detected")
                 return "FAT12"
         except Exception as e:
-            print(f"Error detecting filesystem: {e}")
+            self.logger.exception(f"Error detecting filesystem: {e}")
             self.filesystem = None
 
+        self.logger.warning("No valid filesystem detected")
         return None
 
     def get_allocated_clusters(self) -> List[int]:
         """Returns list of allocated cluster numbers if available"""
         if not self.filesystem or not hasattr(self.filesystem, "get_allocated_clusters"):
+            self.logger.debug("Cannot get allocated clusters: no valid filesystem")
             return []
 
         try:
-            return self.filesystem.get_allocated_clusters()
-        except:
+            clusters = self.filesystem.get_allocated_clusters()
+            self.logger.debug(f"Found {len(clusters)} allocated clusters")
+            return clusters
+        except Exception as e:
+            self.logger.error(f"Error getting allocated clusters: {e}")
             return []
 
     def get_free_space(self) -> Optional[Tuple[int, int]]:
         """Returns (free_bytes, total_bytes) if available"""
         if not self.filesystem or not hasattr(self.filesystem, "get_free_space"):
+            self.logger.debug("Cannot get free space: no valid filesystem")
             return None
 
         try:
-            return self.filesystem.get_free_space()
-        except:
+            space_info = self.filesystem.get_free_space()
+            free_kb = space_info[0] // 1024
+            total_kb = space_info[1] // 1024
+            self.logger.debug(f"Free space: {free_kb}KB / {total_kb}KB")
+            return space_info
+        except Exception as e:
+            self.logger.error(f"Error getting free space: {e}")
             return None
 
     def list_directory(self, path: str = "/") -> List[dict]:
         if not self.filesystem:
+            self.logger.warning(f"Cannot list directory {path}: no valid filesystem")
             return []
 
         try:
+            self.logger.debug(f"Listing directory: {path}")
             items = self.filesystem.list_directory(path)
+            self.logger.debug(f"Found {len(items)} items in directory {path}")
             return [
                 {
                     "name": item.name,
@@ -276,51 +331,66 @@ class DiskController:
                 for item in items
             ]
         except Exception as e:
-            print(f"Error listing directory {path}: {e}")
+            self.logger.error(f"Error listing directory {path}: {e}")
             return []
 
     def read_file(self, path: str) -> Optional[bytes]:
         if not self.filesystem:
+            self.logger.warning(f"Cannot read file {path}: no valid filesystem")
             return None
 
         try:
-            return self.filesystem.read_file(path)
+            self.logger.debug(f"Reading file: {path}")
+            data = self.filesystem.read_file(path)
+            self.logger.debug(f"Read {len(data)} bytes from {path}")
+            return data
         except Exception as e:
-            print(f"Error reading file {path}: {e}")
+            self.logger.error(f"Error reading file {path}: {e}")
             return None
 
     def write_file(self, path: str, data: bytes) -> bool:
         if not self.filesystem:
+            self.logger.warning(f"Cannot write file {path}: no valid filesystem")
             return False
 
         try:
+            self.logger.debug(f"Writing {len(data)} bytes to file: {path}")
             self.filesystem.write_file(path, data)
+            self.logger.info(f"Successfully wrote file: {path}")
             return True
         except Exception as e:
-            print(f"Error writing file {path}: {e}")
+            self.logger.error(f"Error writing file {path}: {e}")
             return False
 
     def create_directory(self, path: str) -> bool:
         if not self.filesystem:
+            self.logger.warning(f"Cannot create directory {path}: no valid filesystem")
             return False
 
         try:
+            self.logger.debug(f"Creating directory: {path}")
             self.filesystem.create_directory(path)
+            self.logger.info(f"Successfully created directory: {path}")
             return True
         except Exception as e:
-            print(f"Error creating directory {path}: {e}")
+            self.logger.error(f"Error creating directory {path}: {e}")
             return False
 
     def delete_item(self, path: str) -> bool:
         if not self.filesystem:
+            self.logger.warning(f"Cannot delete item {path}: no valid filesystem")
             return False
 
         try:
+            self.logger.debug(f"Deleting item: {path}")
             self.filesystem.delete(path)
+            self.logger.info(f"Successfully deleted item: {path}")
             return True
         except Exception as e:
-            print(f"Error deleting item {path}: {e}")
+            self.logger.error(f"Error deleting item {path}: {e}")
             return False
 
     def list_formats(self) -> List[Tuple[str, str]]:
-        return self.format_manager.list_known_formats()
+        formats = self.format_manager.list_known_formats()
+        self.logger.debug(f"Listed {len(formats)} available formats")
+        return formats
