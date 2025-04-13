@@ -16,6 +16,8 @@ class DiskController:
         self.format_manager = FormatManager()
         self.driver: Optional[DiskIODriver] = None
 
+# In controller.py, modify the open_disk method
+
     def open_disk(self, source: str, disk_type: str = "image") -> bool:
         if self.disk:
             self.close_disk()
@@ -73,7 +75,20 @@ class DiskController:
                         boot_data = self.disk.read_sector(0, 0, 1)
                         # Try to detect filesystem
                         if self.detect_filesystem():
-                            print(f"Filesystem detected with geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
+                            # Update geometry with what was actually detected by the driver
+                            if hasattr(self.driver, 'physical_format') and self.driver.physical_format:
+                                actual_sectors_per_track = self.driver.physical_format.sectors_per_track
+                                if actual_sectors_per_track != geometry.sectors_per_track:
+                                    print(f"Updating geometry from {geometry.sectors_per_track} to {actual_sectors_per_track} sectors per track")
+                                    updated_geometry = DiskGeometry(
+                                        cylinders=geometry.cylinders,
+                                        heads=geometry.heads,
+                                        sectors_per_track=actual_sectors_per_track,
+                                        sector_size=geometry.sector_size
+                                    )
+                                    self.set_geometry(updated_geometry)
+
+                            print(f"Filesystem detected with geometry: {self.disk.geometry.cylinders}x{self.disk.geometry.heads}x{self.disk.geometry.sectors_per_track}")
                             return True
                     except Exception as e:
                         print(f"Failed with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}: {e}")
@@ -193,6 +208,43 @@ class DiskController:
             # Try to mount filesystem
             self.filesystem = FATFilesystem(self.disk)
             if self.filesystem.is_valid():
+                # Update geometry based on boot sector information
+                if hasattr(self.filesystem, 'boot_sector'):
+                    bs = self.filesystem.boot_sector
+                    if hasattr(bs, 'sectors_per_track') and hasattr(bs, 'num_heads'):
+                        sectors_per_track = bs.sectors_per_track
+                        heads = bs.num_heads
+
+                        # If these differ from our current geometry, update it
+                        if (self.disk.geometry.sectors_per_track != sectors_per_track or
+                            self.disk.geometry.heads != heads):
+                            print(f"Updating geometry from BPB: {sectors_per_track} sectors, {heads} heads")
+                            updated_geometry = DiskGeometry(
+                                cylinders=self.disk.geometry.cylinders,
+                                heads=heads,
+                                sectors_per_track=sectors_per_track,
+                                sector_size=self.disk.geometry.sector_size
+                            )
+                            self.set_geometry(updated_geometry)
+
+                            # Also update the driver's physical format
+                            if self.driver and hasattr(self.driver, 'physical_format') and self.driver.physical_format:
+                                self.driver.physical_format.sectors_per_track = sectors_per_track
+                                self.driver.physical_format.heads = heads
+
+                                # Create a custom disk definition if we have a physical drive
+                                if hasattr(self.driver, 'create_custom_diskdef'):
+                                    # Clear any existing custom disk definition if sectors mismatch
+                                    if (hasattr(self.driver, 'using_custom_diskdef') and
+                                            self.driver.using_custom_diskdef and
+                                            self.driver.physical_format.sectors_per_track != sectors_per_track):
+                                        print(f"Recreating custom disk definition with corrected sector count")
+                                        self.driver.physical_format.sectors_per_track = sectors_per_track
+                                        self.driver.physical_format.heads = heads
+                                        self.driver._create_and_set_custom_diskdef()
+                                    elif not hasattr(self.driver, 'using_custom_diskdef') or not self.driver.using_custom_diskdef:
+                                        self.driver._create_and_set_custom_diskdef()
+
                 return "FAT12"
         except Exception as e:
             print(f"Error detecting filesystem: {e}")
