@@ -2,7 +2,7 @@
 import datetime
 import struct
 from dataclasses import dataclass
-from typing import List, Optional, Union, Callable
+from typing import List, Optional, Union, Callable, Tuple
 
 from disk import Disk
 from logging_config import get_logger
@@ -573,16 +573,23 @@ class FATFilesystem(Filesystem):
         self.disk.flush()
 
     def delete(self, path: str) -> None:
+        self.logger.debug(f"Deleting item: {path}")
         if path == "/":
-            raise ValueError("Cannot delete root directory")
+            error_msg = "Cannot delete root directory"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
 
         parent_path, name = self._split_path(path)
-        parent_entry = self._find_path(parent_path)
+        self.logger.debug(f"Parent path: {parent_path}, item name: {name}")
 
+        parent_entry = self._find_path(parent_path)
         if not parent_entry and parent_path != "/":
-            raise ValueError(f"Parent directory not found: {parent_path}")
+            error_msg = f"Parent directory not found: {parent_path}"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
 
         parent_cluster = 0 if parent_path == "/" else parent_entry.starting_cluster
+        self.logger.debug(f"Parent directory is in cluster {parent_cluster}")
 
         # Find the entry to delete
         entry_to_delete = None
@@ -590,6 +597,7 @@ class FATFilesystem(Filesystem):
 
         if parent_cluster == 0:
             # Search in root directory
+            self.logger.debug("Searching for entry in root directory")
             root_dir_data = self._read_bytes(self.root_dir_start, self.boot_sector.root_entries * 32)
             for i in range(0, len(root_dir_data), 32):
                 entry_data = root_dir_data[i:i+32]
@@ -601,12 +609,15 @@ class FATFilesystem(Filesystem):
                     if entry and entry.name.upper() == name.upper():
                         entry_to_delete = entry
                         entry_offset = self.root_dir_start + i
+                        self.logger.debug(f"Found entry to delete at offset {entry_offset}")
                         break
         else:
             # Search in directory cluster chain
+            self.logger.debug(f"Searching for entry in directory cluster chain starting at {parent_cluster}")
             cluster_chain = self._get_cluster_chain(parent_cluster)
             for cluster in cluster_chain:
                 cluster_offset = self.data_area_start + (cluster - 2) * self.cluster_size
+                self.logger.debug(f"Checking cluster {cluster} at offset {cluster_offset}")
                 cluster_data = self._read_bytes(cluster_offset, self.cluster_size)
 
                 for i in range(0, len(cluster_data), 32):
@@ -619,44 +630,62 @@ class FATFilesystem(Filesystem):
                         if entry and entry.name.upper() == name.upper():
                             entry_to_delete = entry
                             entry_offset = cluster_offset + i
+                            self.logger.debug(f"Found entry to delete at offset {entry_offset} in cluster {cluster}")
                             break
 
                 if entry_to_delete:
                     break
 
         if not entry_to_delete or entry_offset is None:
-            raise ValueError(f"Item not found: {path}")
+            error_msg = f"Item not found: {path}"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        self.logger.debug(f"Found item to delete: {entry_to_delete.name}, is_dir={entry_to_delete.is_dir}, "
+                        f"starting_cluster={entry_to_delete.starting_cluster}")
 
         # If it's a directory, check if it's empty
         if entry_to_delete.is_dir:
+            self.logger.debug(f"Checking if directory {path} is empty")
             dir_entries = self._list_directory_by_cluster(entry_to_delete.starting_cluster)
             non_dot_entries = [e for e in dir_entries if e.name not in [".", ".."]]
             if non_dot_entries:
-                raise ValueError(f"Directory not empty: {path}")
+                error_msg = f"Directory not empty: {path}"
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            self.logger.debug("Directory is empty, proceeding with deletion")
 
         # Mark entry as deleted
+        self.logger.debug(f"Marking entry as deleted at offset {entry_offset}")
         self._write_bytes(entry_offset, b'\xE5' + self._read_bytes(entry_offset + 1, 31))
 
         # Free cluster chain
         if entry_to_delete.starting_cluster >= 2:
+            self.logger.debug(f"Freeing cluster chain starting at {entry_to_delete.starting_cluster}")
             self._free_cluster_chain(entry_to_delete.starting_cluster)
 
         # Invalidate the cached allocated clusters
+        self.logger.debug("Invalidating cached allocated clusters")
         self._cached_allocated_clusters = None
 
+        self.logger.info(f"Successfully deleted {path}")
         self.disk.flush()
 
     def get_allocated_clusters(self) -> List[int]:
         """Returns a list of allocated cluster numbers with caching for performance."""
+        self.logger.debug("Getting allocated clusters")
         if not self.is_valid():
+            self.logger.warning("Cannot get allocated clusters: Invalid filesystem")
             return []
 
         # Use cached value if available
         if self._cached_allocated_clusters is not None:
+            self.logger.debug(f"Using cached allocated clusters ({len(self._cached_allocated_clusters)} clusters)")
             return self._cached_allocated_clusters
 
         allocated_clusters = []
         try:
+            self.logger.debug(f"Scanning FAT for allocated clusters (range: 2-{self.num_clusters+1})")
             for cluster in range(2, self.num_clusters + 2):
                 fat_entry = self._read_fat_entry(cluster)
                 # If entry is not 0 (free) and not bad cluster marker
@@ -665,39 +694,51 @@ class FATFilesystem(Filesystem):
                 # Also include end-of-chain markers
                 elif fat_entry >= 0xFF8 and fat_entry <= 0xFFF:
                     allocated_clusters.append(cluster)
+            self.logger.info(f"Found {len(allocated_clusters)} allocated clusters")
         except Exception as e:
-            print(f"Error getting allocated clusters: {e}")
+            self.logger.error(f"Error getting allocated clusters: {e}", exc_info=True)
 
         # Cache the result
         self._cached_allocated_clusters = allocated_clusters
+        self.logger.debug("Cached allocated clusters list")
         return allocated_clusters
 
     def get_free_space(self) -> Tuple[int, int]:
         """Returns (free_bytes, total_bytes) for the filesystem."""
+        self.logger.debug("Calculating filesystem free space")
         if not self.is_valid():
+            self.logger.warning("Cannot get free space: Invalid filesystem")
             return (0, 0)
 
         try:
             # Calculate total disk space
             total_bytes = self.boot_sector.total_sectors * self.boot_sector.bytes_per_sector
+            self.logger.debug(f"Total disk space: {total_bytes} bytes "
+                            f"({total_bytes/1024:.1f}KB, {total_bytes/1024/1024:.2f}MB)")
 
             # Count free clusters - use the allocated clusters for efficiency
             allocated_clusters = self.get_allocated_clusters()
             total_clusters = self.num_clusters
             free_clusters = total_clusters - len(allocated_clusters)
+            self.logger.debug(f"Free clusters: {free_clusters}/{total_clusters}")
 
             free_bytes = free_clusters * self.cluster_size
+            percent_free = (free_bytes / total_bytes * 100) if total_bytes > 0 else 0
+            self.logger.info(f"Free space: {free_bytes} bytes ({free_bytes/1024:.1f}KB, {percent_free:.1f}%)")
 
             return (free_bytes, total_bytes)
         except Exception as e:
-            print(f"Error calculating free space: {e}")
+            self.logger.error(f"Error calculating free space: {e}", exc_info=True)
             return (0, total_bytes)
 
     def _find_path(self, path: str) -> Optional[FileInfo]:
+        self.logger.debug(f"Finding path: {path}")
         if path == "/" or path == "":
+            self.logger.debug("Root directory requested, returning None")
             return None  # Root directory has no entry
 
         parts = path.strip("/").split("/")
+        self.logger.debug(f"Path parts: {parts}")
 
         # Start with the root directory
         current_cluster = 0  # 0 represents the root directory
@@ -706,28 +747,36 @@ class FATFilesystem(Filesystem):
         for part in parts:
             # Get entries directly based on the cluster
             if current_cluster == 0:
+                self.logger.debug(f"Getting entries from root directory")
                 entries = self._list_root_directory()
             else:
+                self.logger.debug(f"Getting entries from cluster {current_cluster}")
                 entries = self._list_directory_by_cluster(current_cluster)
 
             found = False
             for entry in entries:
                 if entry.name.upper() == part.upper():
                     if not entry.is_dir and part != parts[-1]:
+                        self.logger.warning(f"'{part}' is not a directory but is used as a path component")
                         return None  # Not a directory in the path
                     current_entry = entry
                     current_cluster = entry.starting_cluster
+                    self.logger.debug(f"Found '{part}' with starting cluster {current_cluster}")
                     found = True
                     break
 
             if not found:
+                self.logger.warning(f"Path component '{part}' not found")
                 return None
 
+        self.logger.debug(f"Path found: {path}")
         return current_entry
 
     def _split_path(self, path: str) -> Tuple[str, str]:
+        self.logger.debug(f"Splitting path: {path}")
         path = path.rstrip("/")
         if "/" not in path:
+            self.logger.debug(f"No directory separator found, returning root and '{path}'")
             return "/", path
 
         parent_path = path[:path.rindex("/")]
@@ -735,10 +784,11 @@ class FATFilesystem(Filesystem):
             parent_path = "/"
 
         name = path[path.rindex("/")+1:]
-
+        self.logger.debug(f"Split result: parent='{parent_path}', name='{name}'")
         return parent_path, name
 
     def _read_bytes(self, offset: int, length: int) -> bytes:
+        self.logger.debug(f"Reading {length} bytes from offset {offset}")
         # Calculate sector addresses
         sector_size = self.boot_sector.bytes_per_sector
         start_sector = offset // sector_size
@@ -746,12 +796,16 @@ class FATFilesystem(Filesystem):
 
         # Optimize for single sector reads
         if start_sector == end_sector:
+            self.logger.debug(f"Single sector read optimization for sector {start_sector}")
             cylinder, head, sector = self._lba_to_chs(start_sector)
             sector_data = self.disk.read_sector(cylinder, head, sector)
             sector_offset = offset % sector_size
-            return sector_data[sector_offset:sector_offset + length]
+            result = sector_data[sector_offset:sector_offset + length]
+            self.logger.debug(f"Read {len(result)} bytes from sector C:{cylinder} H:{head} S:{sector}")
+            return result
 
         # Multi-sector reading
+        self.logger.debug(f"Multi-sector read from sector {start_sector} to {end_sector}")
         data = bytearray()
         current_offset = offset
         remaining_length = length
@@ -769,9 +823,11 @@ class FATFilesystem(Filesystem):
                 # Calculate additional full sectors needed
                 additional_sectors = (remaining_length - bytes_in_first_sector + sector_size - 1) // sector_size
                 sectors_to_read += additional_sectors
+                self.logger.debug(f"Reading {sectors_to_read} sectors")
 
             # Read one sector at a time - could be optimized for drivers that support multi-sector reads
             cylinder, head, sector = self._lba_to_chs(sector_num)
+            self.logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector}")
             sector_data = self.disk.read_sector(cylinder, head, sector)
 
             bytes_to_read = min(remaining_length, sector_size - sector_offset)
@@ -780,12 +836,15 @@ class FATFilesystem(Filesystem):
             current_offset += bytes_to_read
             remaining_length -= bytes_to_read
 
+        self.logger.debug(f"Completed multi-sector read, got {len(data)} bytes")
         return bytes(data)
 
     def _write_bytes(self, offset: int, data: bytes) -> None:
         if not data:
+            self.logger.debug("No data to write, returning")
             return
 
+        self.logger.debug(f"Writing {len(data)} bytes at offset {offset}")
         # Calculate sector addresses
         sector_size = self.boot_sector.bytes_per_sector
         start_sector = offset // sector_size
@@ -794,6 +853,7 @@ class FATFilesystem(Filesystem):
         # Optimize for single sector writes
         if start_sector == end_sector:
             sector_offset = offset % sector_size
+            self.logger.debug(f"Single sector write optimization for sector {start_sector}")
 
             # If we're writing a partial sector, read the current sector first
             cylinder, head, sector = self._lba_to_chs(start_sector)
@@ -803,10 +863,12 @@ class FATFilesystem(Filesystem):
             sector_data[sector_offset:sector_offset + len(data)] = data
 
             # Write the updated sector
+            self.logger.debug(f"Writing sector C:{cylinder} H:{head} S:{sector}")
             self.disk.write_sector(cylinder, head, sector, sector_data)
             return
 
         # Multi-sector writing
+        self.logger.debug(f"Multi-sector write from sector {start_sector} to {end_sector}")
         current_offset = offset
         data_pos = 0
 
@@ -815,12 +877,14 @@ class FATFilesystem(Filesystem):
             sector_offset = current_offset % sector_size
 
             cylinder, head, sector = self._lba_to_chs(sector_num)
+            self.logger.debug(f"Processing sector C:{cylinder} H:{head} S:{sector}")
 
             # If we're writing a partial sector, read the current sector first
             sector_data = bytearray(self.disk.read_sector(cylinder, head, sector))
 
             # Calculate how much data to write to this sector
             bytes_to_write = min(len(data) - data_pos, sector_size - sector_offset)
+            self.logger.debug(f"Writing {bytes_to_write} bytes to sector")
 
             # Update the sector data
             sector_data[sector_offset:sector_offset + bytes_to_write] = data[data_pos:data_pos + bytes_to_write]
@@ -831,7 +895,10 @@ class FATFilesystem(Filesystem):
             current_offset += bytes_to_write
             data_pos += bytes_to_write
 
+        self.logger.debug(f"Completed multi-sector write of {len(data)} bytes")
+
     def _lba_to_chs(self, lba: int) -> Tuple[int, int, int]:
+        self.logger.debug(f"Converting LBA {lba} to CHS")
         sectors_per_track = self.boot_sector.sectors_per_track
         heads = self.boot_sector.num_heads
 
@@ -840,10 +907,12 @@ class FATFilesystem(Filesystem):
         head = temp % heads
         cylinder = temp // heads
 
+        self.logger.debug(f"LBA {lba} = C:{cylinder} H:{head} S:{sector}")
         return cylinder, head, sector
 
     def _read_fat_entry(self, cluster: int) -> int:
         """Read a FAT12 entry for the given cluster number"""
+        self.logger.debug(f"Reading FAT entry for cluster {cluster}")
         if self.fat_type == "FAT12":
             # FAT12 entries take 1.5 bytes per cluster
             # For cluster N, the entry starts at byte position N*3/2
@@ -861,17 +930,22 @@ class FATFilesystem(Filesystem):
             else:  # Odd cluster - use high 12 bits
                 fat_value = value >> 4
 
+            self.logger.debug(f"FAT entry for cluster {cluster} = 0x{fat_value:03X}")
             return fat_value
         else:
+            error_msg = f"Unsupported FAT type: {self.fat_type}"
+            self.logger.error(error_msg)
             raise NotImplementedError("Only FAT12 is supported")
 
     def _set_fat_entry(self, cluster: int, value: int) -> None:
+        self.logger.debug(f"Setting FAT entry for cluster {cluster} to 0x{value:03X}")
         if self.fat_type == "FAT12":
             value &= 0x0FFF  # Ensure 12-bit value
 
             for fat_num in range(self.boot_sector.num_fats):
                 fat_offset = self.fat_start + (fat_num * self.boot_sector.sectors_per_fat * self.boot_sector.bytes_per_sector)
                 offset = fat_offset + int(cluster * 1.5)
+                self.logger.debug(f"Updating FAT #{fat_num+1} at offset {offset}")
 
                 if cluster % 2 == 0:
                     # Even cluster: update the low 12 bits
@@ -879,25 +953,31 @@ class FATFilesystem(Filesystem):
                     current_value = struct.unpack('<H', value_bytes)[0]
                     new_value = (current_value & 0xF000) | value
                     self._write_bytes(offset, struct.pack('<H', new_value))
+                    self.logger.debug(f"Updated even cluster entry: 0x{current_value:04X} -> 0x{new_value:04X}")
                 else:
                     # Odd cluster: update the high 12 bits
                     value_bytes = self._read_bytes(offset, 2)
                     current_value = struct.unpack('<H', value_bytes)[0]
                     new_value = (current_value & 0x000F) | (value << 4)
                     self._write_bytes(offset, struct.pack('<H', new_value))
+                    self.logger.debug(f"Updated odd cluster entry: 0x{current_value:04X} -> 0x{new_value:04X}")
         else:
             # FAT16/FAT32 not implemented
+            error_msg = f"Unsupported FAT type: {self.fat_type}"
+            self.logger.error(error_msg)
             raise NotImplementedError("Only FAT12 is supported")
 
     def _get_cluster_chain(self, start_cluster: int) -> List[int]:
         """Get the list of clusters in a chain starting from start_cluster"""
+        self.logger.debug(f"Getting cluster chain starting from cluster {start_cluster}")
         # Special case for root directory
         if start_cluster == 0:
+            self.logger.debug("Root directory (cluster 0) has no cluster chain")
             return []
 
         # Basic validation
         if start_cluster < 2:
-            print(f"WARNING: Invalid starting cluster {start_cluster}")
+            self.logger.warning(f"Invalid starting cluster {start_cluster}")
             return []
 
         chain = []
@@ -905,102 +985,133 @@ class FATFilesystem(Filesystem):
 
         # Follow the cluster chain
         max_length = min(1000, self.num_clusters)  # Reasonable limit
+        self.logger.debug(f"Following chain with max length {max_length}")
         while cluster >= 2 and cluster < 0xFF0 and len(chain) < max_length:
             chain.append(cluster)
 
             # Get next cluster
             next_cluster = self._read_fat_entry(cluster)
+            self.logger.debug(f"Cluster {cluster} -> Next cluster: 0x{next_cluster:03X}")
 
             # End of chain?
             if next_cluster >= 0xFF0:
+                self.logger.debug(f"End of chain reached at cluster {cluster}")
                 break
 
             # Detect circular chains
             if next_cluster in chain:
-                print(f"WARNING: Circular reference detected at cluster {next_cluster}")
+                self.logger.warning(f"Circular reference detected at cluster {next_cluster}")
                 break
 
             cluster = next_cluster
 
+        self.logger.debug(f"Cluster chain contains {len(chain)} clusters")
         return chain
 
     def _find_free_cluster(self) -> Optional[int]:
+        self.logger.debug("Searching for a free cluster")
         for cluster in range(2, self.num_clusters + 2):
             if self._read_fat_entry(cluster) == 0:
+                self.logger.debug(f"Found free cluster: {cluster}")
                 return cluster
 
+        self.logger.warning("No free clusters found")
         return None
 
     def _allocate_cluster_chain(self, num_clusters: int) -> Optional[List[int]]:
+        self.logger.debug(f"Allocating chain of {num_clusters} clusters")
         if num_clusters <= 0:
+            self.logger.debug("No clusters requested, returning empty list")
             return []
 
         clusters = []
         prev_cluster = None
 
-        for _ in range(num_clusters):
+        for i in range(num_clusters):
             cluster = self._find_free_cluster()
             if cluster is None:
+                self.logger.warning(f"Could not allocate {num_clusters} clusters (allocated {len(clusters)} so far)")
                 # Not enough free clusters, free what we've allocated so far
                 for c in clusters:
+                    self.logger.debug(f"Freeing previously allocated cluster {c}")
                     self._set_fat_entry(c, 0)
                 return None
 
             clusters.append(cluster)
+            self.logger.debug(f"Allocated cluster {cluster} ({i+1}/{num_clusters})")
 
             if prev_cluster is not None:
+                self.logger.debug(f"Linking cluster {prev_cluster} -> {cluster}")
                 self._set_fat_entry(prev_cluster, cluster)
 
             prev_cluster = cluster
 
         # Mark the last cluster as end of chain
         if prev_cluster is not None:
+            self.logger.debug(f"Marking cluster {prev_cluster} as end of chain")
             self._set_fat_entry(prev_cluster, 0xFFF)
 
+        self.logger.info(f"Successfully allocated chain of {len(clusters)} clusters")
         return clusters
 
     def _free_cluster_chain(self, start_cluster: int) -> None:
+        self.logger.debug(f"Freeing cluster chain starting at cluster {start_cluster}")
         cluster = start_cluster
 
+        freed_count = 0
         while cluster >= 2 and cluster < 0xFF0:
             next_cluster = self._read_fat_entry(cluster)
+            self.logger.debug(f"Freeing cluster {cluster} (next was 0x{next_cluster:03X})")
             self._set_fat_entry(cluster, 0)  # Mark as free
+            freed_count += 1
 
             if next_cluster >= 0xFF0:
+                self.logger.debug("End of chain reached")
                 break
 
             cluster = next_cluster
 
+        self.logger.info(f"Freed {freed_count} clusters in chain")
+
     def _read_cluster_chain(self, cluster_chain: List[int],
-                          progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
+                        progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
+        self.logger.debug(f"Reading data from cluster chain with {len(cluster_chain)} clusters")
         result = bytearray()
         total_clusters = len(cluster_chain)
 
         for i, cluster in enumerate(cluster_chain):
             cluster_offset = self.data_area_start + (cluster - 2) * self.cluster_size
+            self.logger.debug(f"Reading cluster {cluster} at offset {cluster_offset}")
             cluster_data = self._read_bytes(cluster_offset, self.cluster_size)
             result.extend(cluster_data)
 
             if progress_callback and total_clusters > 0:
-                progress_callback((i + 1) / total_clusters)
+                progress = (i + 1) / total_clusters
+                self.logger.debug(f"Read progress: {progress:.2f}")
+                progress_callback(progress)
 
+        self.logger.debug(f"Read {len(result)} bytes from cluster chain")
         return bytes(result)
 
     def _write_cluster_chain(self, cluster_chain: List[int], data: bytes,
-                          progress_callback: Optional[Callable[[float], None]] = None) -> None:
+                        progress_callback: Optional[Callable[[float], None]] = None) -> None:
+        self.logger.debug(f"Writing {len(data)} bytes to cluster chain with {len(cluster_chain)} clusters")
         remaining = len(data)
         data_pos = 0
         total_clusters = len(cluster_chain)
 
         for i, cluster in enumerate(cluster_chain):
             cluster_offset = self.data_area_start + (cluster - 2) * self.cluster_size
+            self.logger.debug(f"Writing to cluster {cluster} at offset {cluster_offset}")
 
             # Calculate how much data to write to this cluster
             chunk_size = min(remaining, self.cluster_size)
             chunk = data[data_pos:data_pos + chunk_size]
+            self.logger.debug(f"Writing {chunk_size} bytes to cluster")
 
             # If chunk is smaller than cluster size, pad with zeros
             if chunk_size < self.cluster_size:
+                self.logger.debug(f"Padding last chunk from {chunk_size} to {self.cluster_size} bytes")
                 chunk = chunk + bytes(self.cluster_size - chunk_size)
 
             # Write cluster data
@@ -1010,22 +1121,32 @@ class FATFilesystem(Filesystem):
             remaining -= chunk_size
 
             if progress_callback and total_clusters > 0:
-                progress_callback((i + 1) / total_clusters)
+                progress = (i + 1) / total_clusters
+                self.logger.debug(f"Write progress: {progress:.2f}")
+                progress_callback(progress)
+
+        self.logger.debug(f"Completed writing {len(data)} bytes to cluster chain")
 
     def _find_free_directory_entry(self, dir_cluster: int) -> Optional[int]:
+        self.logger.debug(f"Looking for free directory entry in cluster {dir_cluster}")
         if dir_cluster == 0:
             # Root directory
+            self.logger.debug("Searching root directory for free entry")
             root_dir_data = self._read_bytes(self.root_dir_start, self.boot_sector.root_entries * 32)
             for i in range(0, len(root_dir_data), 32):
                 if root_dir_data[i] == 0 or root_dir_data[i] == 0xE5:
+                    self.logger.debug(f"Found free entry in root directory at offset {self.root_dir_start + i}")
                     return self.root_dir_start + i
 
+            self.logger.warning("No free entry found in root directory")
             return None
         else:
             # Regular directory
+            self.logger.debug(f"Searching directory cluster chain for free entry")
             cluster_chain = self._get_cluster_chain(dir_cluster)
             for cluster in cluster_chain:
                 cluster_offset = self.data_area_start + (cluster - 2) * self.cluster_size
+                self.logger.debug(f"Checking cluster {cluster} at offset {cluster_offset}")
                 cluster_data = self._read_bytes(cluster_offset, self.cluster_size)
 
                 for i in range(0, len(cluster_data), 32):
@@ -1033,6 +1154,7 @@ class FATFilesystem(Filesystem):
                         break
 
                     if cluster_data[i] == 0 or cluster_data[i] == 0xE5:
+                        self.logger.debug(f"Found free entry at offset {cluster_offset + i}")
                         return cluster_offset + i
 
             # No free entry found, try to extend the directory
@@ -1040,31 +1162,38 @@ class FATFilesystem(Filesystem):
             new_cluster = self._find_free_cluster()
 
             if new_cluster is None:
+                self.logger.warning("Cannot extend directory: no free clusters")
                 return None
 
             # Update FAT chain
+            self.logger.info(f"Extending directory by adding new cluster {new_cluster}")
             self._set_fat_entry(last_cluster, new_cluster)
             self._set_fat_entry(new_cluster, 0xFFF)
 
             # Clear new cluster
             cluster_offset = self.data_area_start + (new_cluster - 2) * self.cluster_size
             self._write_bytes(cluster_offset, bytes(self.cluster_size))
+            self.logger.debug(f"Returning first entry in new cluster at offset {cluster_offset}")
 
             return cluster_offset
 
     def _create_directory_entry(self, name: str, is_dir: bool,
                             starting_cluster: int, size: int, dt: datetime.datetime) -> bytes:
+        self.logger.debug(f"Creating directory entry: name='{name}', is_dir={is_dir}, "
+                        f"cluster={starting_cluster}, size={size}")
         entry = bytearray(32)
 
         # Handle special directory names
         if is_dir and name in [".", ".."]:
             name_part = name.ljust(8)
             ext_part = "   "
+            self.logger.debug(f"Special directory entry: {name}")
         else:
             # Split name into name and extension parts
             parts = name.upper().split('.')
             name_part = parts[0].ljust(8)
             ext_part = parts[1].ljust(3) if len(parts) > 1 else "   "
+            self.logger.debug(f"Regular entry: name='{name_part}', ext='{ext_part}'")
 
         # Attribute byte
         attr = 0x10 if is_dir else 0x00
@@ -1072,6 +1201,7 @@ class FATFilesystem(Filesystem):
         # Time and date
         time_val = ((dt.hour & 0x1F) << 11) | ((dt.minute & 0x3F) << 5) | ((dt.second // 2) & 0x1F)
         date_val = (((dt.year - 1980) & 0x7F) << 9) | ((dt.month & 0x0F) << 5) | (dt.day & 0x1F)
+        self.logger.debug(f"Date/time: {dt} -> time=0x{time_val:04X}, date=0x{date_val:04X}")
 
         # Fill in the entry fields
         entry[0:8] = name_part.encode('cp437')
@@ -1083,30 +1213,37 @@ class FATFilesystem(Filesystem):
         entry[26:28] = struct.pack('<H', starting_cluster)
         entry[28:32] = struct.pack('<I', size)
 
+        self.logger.debug(f"Created directory entry ({len(entry)} bytes)")
         return bytes(entry)
 
     def _is_valid_83_name(self, name: str) -> bool:
+        self.logger.debug(f"Validating 8.3 filename: '{name}'")
         if isinstance(name, str):
             name = name.split('/')[-1]  # Get just the filename from a path
 
         # Check against invalid characters
         invalid_chars = '"*/:<>?\\|+,;=[]'
         if any(c in invalid_chars for c in name):
+            self.logger.warning(f"Invalid characters in name '{name}'")
             return False
 
         # Check name structure
         parts = name.split('.')
         if len(parts) > 2 or not parts[0]:
+            self.logger.warning(f"Invalid name structure: {parts}")
             return False
 
         # Check name and extension lengths
         if len(parts[0]) > 8 or (len(parts) == 2 and len(parts[1]) > 3):
+            self.logger.warning(f"Name or extension too long: {parts}")
             return False
 
         # Check against reserved names
         reserved = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
                     "LPT1", "LPT2", "LPT3", "LPT4"]
         if parts[0].upper() in reserved:
+            self.logger.warning(f"Reserved name: {parts[0].upper()}")
             return False
 
+        self.logger.debug(f"Valid 8.3 filename: '{name}'")
         return True
