@@ -213,7 +213,7 @@ FLOPPY_FORMATS = {
             total_sectors=720,
             media_descriptor=0xFC,
             root_entries=112,
-            sectors_per_fat=3,
+            sectors_per_fat=2,
             sectors_per_cluster=2
         )
     ),
@@ -361,6 +361,7 @@ FLOPPY_FORMATS = {
             sectors_per_track=36,
             num_heads=2,
             total_sectors=5760,
+            reserved_sectors=2,
             media_descriptor=0xF0,
             root_entries=224,
             sectors_per_fat=9,
@@ -395,8 +396,8 @@ FLOPPY_FORMATS = {
             num_heads=2,
             total_sectors=3360,
             media_descriptor=0xF0,
-            root_entries=224,
-            sectors_per_fat=9,
+            root_entries=16,
+            sectors_per_fat=5,
             sectors_per_cluster=2
         )
     ),
@@ -427,8 +428,8 @@ FLOPPY_FORMATS = {
             num_heads=2,
             total_sectors=3444,
             media_descriptor=0xF0,
-            root_entries=224,
-            sectors_per_fat=9,
+            root_entries=16,
+            sectors_per_fat=6,
             sectors_per_cluster=2
         )
     ),
@@ -460,7 +461,7 @@ FLOPPY_FORMATS = {
             media_descriptor=0xFE,
             root_entries=68,
             sectors_per_fat=6,
-            sectors_per_cluster=1
+            sectors_per_cluster=4
         )
     ),
 
@@ -490,7 +491,7 @@ FLOPPY_FORMATS = {
             media_descriptor=0xFE,
             root_entries=56,
             sectors_per_fat=4,
-            sectors_per_cluster=1
+            sectors_per_cluster=2
         )
     ),
 
@@ -547,10 +548,11 @@ FLOPPY_FORMATS = {
             sectors_per_track=26,
             num_heads=2,
             total_sectors=4004,
+            reserved_sectors=2,
             media_descriptor=0xFD,
             root_entries=96,
-            sectors_per_fat=6,
-            sectors_per_cluster=2
+            sectors_per_fat=12,
+            sectors_per_cluster=4
         )
     ),
 
@@ -577,9 +579,10 @@ FLOPPY_FORMATS = {
             sectors_per_track=15,
             num_heads=2,
             total_sectors=2310,
+            reserved_sectors=2,
             media_descriptor=0xFD,
             root_entries=96,
-            sectors_per_fat=4,
+            sectors_per_fat=7,
             sectors_per_cluster=2
         )
     ),
@@ -640,7 +643,7 @@ FLOPPY_FORMATS = {
             media_descriptor=0xFE,
             root_entries=192,
             sectors_per_fat=6,
-            sectors_per_cluster=2
+            sectors_per_cluster=4
         )
     ),
 
@@ -667,6 +670,7 @@ FLOPPY_FORMATS = {
             sectors_per_track=15,
             num_heads=2,
             total_sectors=2310,
+            reserved_sectors=2,
             media_descriptor=0xFE,
             root_entries=192,
             sectors_per_fat=4,
@@ -700,7 +704,7 @@ FLOPPY_FORMATS = {
             media_descriptor=0xFE,
             root_entries=192,
             sectors_per_fat=2,
-            sectors_per_cluster=2
+            sectors_per_cluster=1
         )
     ),
 }
