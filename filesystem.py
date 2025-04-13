@@ -146,62 +146,6 @@ class FATFilesystem(Filesystem):
         self.logger.debug(f"Filesystem validation: {'valid' if valid else 'invalid'}")
         return valid
 
-    def _read_boot_sector(self) -> Union[FATBootSector, None]:
-        try:
-            self.logger.debug("Reading boot sector")
-            # Try direct read if driver supports it
-            if hasattr(self.disk.driver, 'read_bytes_direct'):
-                self.logger.debug("Using direct read method for boot sector")
-                boot_sector_data = self.disk.driver.read_bytes_direct(0, 512)
-            else:
-                self.logger.debug("Using sector read method for boot sector")
-                boot_sector_data = self.disk.read_sector(0, 0, 1)
-
-            return FATBootSector(boot_sector_data)
-        except Exception as e:
-            self.logger.error(f"Error reading boot sector: {e}", exc_info=True)
-            return None
-
-    def _initialize_filesystem_parameters(self) -> None:
-        """Initialize filesystem parameters based on boot sector"""
-        # Only run this once
-        if self._init_completed:
-            self.logger.debug("Filesystem parameters already initialized")
-            return
-
-        self.logger.debug("Initializing filesystem parameters")
-        bpb = self.boot_sector
-
-        # Basic parameters
-        self.cluster_size = bpb.sectors_per_cluster * bpb.bytes_per_sector
-
-        # Calculate important offsets
-        self.fat_start = (bpb.reserved_sectors + bpb.hidden_sectors) * bpb.bytes_per_sector
-
-        # Root directory follows the FATs
-        fat_size_bytes = bpb.sectors_per_fat * bpb.bytes_per_sector
-        self.root_dir_start = self.fat_start + (bpb.num_fats * fat_size_bytes)
-
-        # Root directory size
-        self.root_dir_sectors = (bpb.root_entries * 32 + bpb.bytes_per_sector - 1) // bpb.bytes_per_sector
-        root_dir_size = self.root_dir_sectors * bpb.bytes_per_sector
-
-        # Data area follows the root directory
-        self.data_area_start = self.root_dir_start + root_dir_size
-
-        # Calculate number of data clusters
-        data_sectors = bpb.total_sectors - (bpb.reserved_sectors +
-                                        bpb.num_fats * bpb.sectors_per_fat +
-                                        self.root_dir_sectors)
-        self.num_clusters = data_sectors // bpb.sectors_per_cluster
-
-        self.fat_type = bpb.get_fat_type()
-
-        self.logger.info(f"Filesystem parameters initialized: "
-                      f"cluster_size={self.cluster_size}, "
-                      f"num_clusters={self.num_clusters}, "
-                      f"fat_type={self.fat_type}")
-
     def list_directory(self, path: str = "/") -> List[FileInfo]:
         if not self.is_valid():
             self.logger.warning("Cannot list directory: Invalid filesystem")
@@ -221,160 +165,6 @@ class FATFilesystem(Filesystem):
         filtered_results = [entry for entry in results if entry.name not in [".", ".."]]
         self.logger.debug(f"Found {len(filtered_results)} items in directory {path} (excluding . and ..)")
         return filtered_results
-
-    def _list_root_directory(self) -> List[FileInfo]:
-        self.logger.debug("Reading root directory")
-        entries = []
-
-        try:
-            root_dir_data = self._read_bytes(self.root_dir_start, self.boot_sector.root_entries * 32)
-            self.logger.debug(f"Read {len(root_dir_data)} bytes from root directory")
-
-            for i in range(0, len(root_dir_data), 32):
-                # Stop at end of directory marker
-                if root_dir_data[i] == 0x00:
-                    break
-
-                entry_data = root_dir_data[i:i+32]
-                entry = self._parse_directory_entry(entry_data)
-                if entry:
-                    entries.append(entry)
-
-            self.logger.debug(f"Found {len(entries)} entries in root directory")
-            return entries
-        except Exception as e:
-            self.logger.error(f"Error reading root directory: {e}", exc_info=True)
-            return []
-
-    def _list_directory_by_cluster(self, cluster: int) -> List[FileInfo]:
-        entries = []
-
-        if cluster == 0:
-            self.logger.debug("Cluster 0 requested, redirecting to root directory")
-            return self._list_root_directory()
-
-        if cluster < 2:
-            self.logger.warning(f"Invalid directory cluster: {cluster}")
-            return entries
-
-        try:
-            self.logger.debug(f"Reading directory from cluster: {cluster}")
-            cluster_chain = self._get_cluster_chain(cluster)
-            if not cluster_chain:
-                self.logger.warning(f"Empty cluster chain for cluster: {cluster}")
-                return entries
-
-            # Calculate total bytes to read
-            total_bytes = len(cluster_chain) * self.cluster_size
-            start_offset = self.data_area_start + (cluster_chain[0] - 2) * self.cluster_size
-            data = self._read_bytes(start_offset, total_bytes)
-            self.logger.debug(f"Read {len(data)} bytes from {len(cluster_chain)} clusters")
-
-            # Process all entries
-            for i in range(0, len(data), 32):
-                if i + 32 > len(data):
-                    break
-                entry_data = data[i:i+32]
-                if entry_data[0] == 0x00:
-                    break
-                if entry_data[0] == 0xE5:
-                    continue
-                entry = self._parse_directory_entry(entry_data)
-                if entry:
-                    entries.append(entry)
-
-            self.logger.debug(f"Found {len(entries)} entries in directory cluster {cluster}")
-            return entries
-        except Exception as e:
-            self.logger.error(f"Error reading directory from cluster {cluster}: {e}", exc_info=True)
-            return []
-
-    def _parse_directory_entry(self, entry_data):
-        # Check for valid entry data
-        if len(entry_data) < 32:
-            self.logger.warning(f"Directory entry too short: {len(entry_data)} bytes")
-            return None
-
-        # Check for end of directory marker or deleted entry
-        first_byte = entry_data[0]
-        if first_byte == 0x00:  # End of directory
-            return None
-        if first_byte == 0xE5:  # Deleted entry
-            return None
-
-        # Check for special attribute flags
-        attr = entry_data[11]
-        if attr & 0x08:  # Volume label
-            return None
-        if attr & 0x0F == 0x0F:  # Long filename entry
-            return None
-
-        # Validate the entry
-        try:
-            # Get name and extension
-            name = entry_data[0:8].decode('cp437').strip()
-            ext = entry_data[8:11].decode('cp437').strip()
-
-            # Create full name
-            full_name = f"{name}.{ext}" if ext else name
-
-            # Check for valid characters
-            invalid_chars = set('"*/:<>?\\|')
-            if any(c < ' ' or c in invalid_chars for c in full_name):
-                self.logger.warning(f"Invalid characters in filename: {repr(full_name)}")
-                return None
-
-            is_dir = bool(attr & 0x10)
-            size = struct.unpack('<I', entry_data[28:32])[0]
-            starting_cluster = struct.unpack('<H', entry_data[26:28])[0]
-
-            # Validate directory entries
-            if is_dir and starting_cluster < 2 and name not in [".", ".."]:
-                self.logger.warning(f"Invalid directory entry: {name}, cluster {starting_cluster}")
-                return None
-
-            # Parse date and time
-            time_val = struct.unpack('<H', entry_data[22:24])[0]
-            date_val = struct.unpack('<H', entry_data[24:26])[0]
-
-            second = (time_val & 0x1F) * 2
-            minute = (time_val >> 5) & 0x3F
-            hour = (time_val >> 11) & 0x1F
-
-            day = date_val & 0x1F
-            month = (date_val >> 5) & 0x0F
-            year = 1980 + ((date_val >> 9) & 0x7F)
-
-            try:
-                dt = datetime.datetime(year, month, day, hour, minute, second)
-            except ValueError:
-                self.logger.warning(f"Invalid date/time values for {full_name}: Y:{year} M:{month} D:{day} h:{hour} m:{minute} s:{second}")
-                dt = datetime.datetime(1980, 1, 1, 0, 0, 0)
-
-            # Parse attributes
-            attributes = []
-            if attr & 0x01: attributes.append("RO")
-            if attr & 0x02: attributes.append("H")
-            if attr & 0x04: attributes.append("S")
-            if attr & 0x20: attributes.append("A")
-            attr_str = " ".join(attributes) if attributes else "-"
-
-            # Create the file entry
-            entry = FileInfo(
-                name=full_name,
-                size=0 if is_dir else size,
-                is_dir=is_dir,
-                datetime=dt,
-                attributes=attr_str,
-                starting_cluster=starting_cluster
-            )
-
-            self.logger.debug(f"Parsed entry: {full_name}, {'dir' if is_dir else f'file ({size} bytes)'}, "
-                           f"cluster: {starting_cluster}")
-            return entry
-        except Exception as e:
-            self.logger.error(f"Error parsing directory entry: {e}", exc_info=True)
-            return None
 
     def read_file(self, path: str, progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
         if not self.is_valid():
@@ -730,6 +520,216 @@ class FATFilesystem(Filesystem):
         except Exception as e:
             self.logger.error(f"Error calculating free space: {e}", exc_info=True)
             return (0, total_bytes)
+
+    def _read_boot_sector(self) -> Union[FATBootSector, None]:
+        try:
+            self.logger.debug("Reading boot sector")
+            # Try direct read if driver supports it
+            if hasattr(self.disk.driver, 'read_bytes_direct'):
+                self.logger.debug("Using direct read method for boot sector")
+                boot_sector_data = self.disk.driver.read_bytes_direct(0, 512)
+            else:
+                self.logger.debug("Using sector read method for boot sector")
+                boot_sector_data = self.disk.read_sector(0, 0, 1)
+
+            return FATBootSector(boot_sector_data)
+        except Exception as e:
+            self.logger.error(f"Error reading boot sector: {e}", exc_info=True)
+            return None
+
+    def _initialize_filesystem_parameters(self) -> None:
+        """Initialize filesystem parameters based on boot sector"""
+        # Only run this once
+        if self._init_completed:
+            self.logger.debug("Filesystem parameters already initialized")
+            return
+
+        self.logger.debug("Initializing filesystem parameters")
+        bpb = self.boot_sector
+
+        # Basic parameters
+        self.cluster_size = bpb.sectors_per_cluster * bpb.bytes_per_sector
+
+        # Calculate important offsets
+        self.fat_start = (bpb.reserved_sectors + bpb.hidden_sectors) * bpb.bytes_per_sector
+
+        # Root directory follows the FATs
+        fat_size_bytes = bpb.sectors_per_fat * bpb.bytes_per_sector
+        self.root_dir_start = self.fat_start + (bpb.num_fats * fat_size_bytes)
+
+        # Root directory size
+        self.root_dir_sectors = (bpb.root_entries * 32 + bpb.bytes_per_sector - 1) // bpb.bytes_per_sector
+        root_dir_size = self.root_dir_sectors * bpb.bytes_per_sector
+
+        # Data area follows the root directory
+        self.data_area_start = self.root_dir_start + root_dir_size
+
+        # Calculate number of data clusters
+        data_sectors = bpb.total_sectors - (bpb.reserved_sectors +
+                                        bpb.num_fats * bpb.sectors_per_fat +
+                                        self.root_dir_sectors)
+        self.num_clusters = data_sectors // bpb.sectors_per_cluster
+
+        self.fat_type = bpb.get_fat_type()
+
+        self.logger.info(f"Filesystem parameters initialized: "
+                      f"cluster_size={self.cluster_size}, "
+                      f"num_clusters={self.num_clusters}, "
+                      f"fat_type={self.fat_type}")
+
+    def _list_root_directory(self) -> List[FileInfo]:
+        self.logger.debug("Reading root directory")
+        entries = []
+
+        try:
+            root_dir_data = self._read_bytes(self.root_dir_start, self.boot_sector.root_entries * 32)
+            self.logger.debug(f"Read {len(root_dir_data)} bytes from root directory")
+
+            for i in range(0, len(root_dir_data), 32):
+                # Stop at end of directory marker
+                if root_dir_data[i] == 0x00:
+                    break
+
+                entry_data = root_dir_data[i:i+32]
+                entry = self._parse_directory_entry(entry_data)
+                if entry:
+                    entries.append(entry)
+
+            self.logger.debug(f"Found {len(entries)} entries in root directory")
+            return entries
+        except Exception as e:
+            self.logger.error(f"Error reading root directory: {e}", exc_info=True)
+            return []
+
+    def _list_directory_by_cluster(self, cluster: int) -> List[FileInfo]:
+        entries = []
+
+        if cluster == 0:
+            self.logger.debug("Cluster 0 requested, redirecting to root directory")
+            return self._list_root_directory()
+
+        if cluster < 2:
+            self.logger.warning(f"Invalid directory cluster: {cluster}")
+            return entries
+
+        try:
+            self.logger.debug(f"Reading directory from cluster: {cluster}")
+            cluster_chain = self._get_cluster_chain(cluster)
+            if not cluster_chain:
+                self.logger.warning(f"Empty cluster chain for cluster: {cluster}")
+                return entries
+
+            # Calculate total bytes to read
+            total_bytes = len(cluster_chain) * self.cluster_size
+            start_offset = self.data_area_start + (cluster_chain[0] - 2) * self.cluster_size
+            data = self._read_bytes(start_offset, total_bytes)
+            self.logger.debug(f"Read {len(data)} bytes from {len(cluster_chain)} clusters")
+
+            # Process all entries
+            for i in range(0, len(data), 32):
+                if i + 32 > len(data):
+                    break
+                entry_data = data[i:i+32]
+                if entry_data[0] == 0x00:
+                    break
+                if entry_data[0] == 0xE5:
+                    continue
+                entry = self._parse_directory_entry(entry_data)
+                if entry:
+                    entries.append(entry)
+
+            self.logger.debug(f"Found {len(entries)} entries in directory cluster {cluster}")
+            return entries
+        except Exception as e:
+            self.logger.error(f"Error reading directory from cluster {cluster}: {e}", exc_info=True)
+            return []
+
+    def _parse_directory_entry(self, entry_data):
+        # Check for valid entry data
+        if len(entry_data) < 32:
+            self.logger.warning(f"Directory entry too short: {len(entry_data)} bytes")
+            return None
+
+        # Check for end of directory marker or deleted entry
+        first_byte = entry_data[0]
+        if first_byte == 0x00:  # End of directory
+            return None
+        if first_byte == 0xE5:  # Deleted entry
+            return None
+
+        # Check for special attribute flags
+        attr = entry_data[11]
+        if attr & 0x08:  # Volume label
+            return None
+        if attr & 0x0F == 0x0F:  # Long filename entry
+            return None
+
+        # Validate the entry
+        try:
+            # Get name and extension
+            name = entry_data[0:8].decode('cp437').strip()
+            ext = entry_data[8:11].decode('cp437').strip()
+
+            # Create full name
+            full_name = f"{name}.{ext}" if ext else name
+
+            # Check for valid characters
+            invalid_chars = set('"*/:<>?\\|')
+            if any(c < ' ' or c in invalid_chars for c in full_name):
+                self.logger.warning(f"Invalid characters in filename: {repr(full_name)}")
+                return None
+
+            is_dir = bool(attr & 0x10)
+            size = struct.unpack('<I', entry_data[28:32])[0]
+            starting_cluster = struct.unpack('<H', entry_data[26:28])[0]
+
+            # Validate directory entries
+            if is_dir and starting_cluster < 2 and name not in [".", ".."]:
+                self.logger.warning(f"Invalid directory entry: {name}, cluster {starting_cluster}")
+                return None
+
+            # Parse date and time
+            time_val = struct.unpack('<H', entry_data[22:24])[0]
+            date_val = struct.unpack('<H', entry_data[24:26])[0]
+
+            second = (time_val & 0x1F) * 2
+            minute = (time_val >> 5) & 0x3F
+            hour = (time_val >> 11) & 0x1F
+
+            day = date_val & 0x1F
+            month = (date_val >> 5) & 0x0F
+            year = 1980 + ((date_val >> 9) & 0x7F)
+
+            try:
+                dt = datetime.datetime(year, month, day, hour, minute, second)
+            except ValueError:
+                self.logger.warning(f"Invalid date/time values for {full_name}: Y:{year} M:{month} D:{day} h:{hour} m:{minute} s:{second}")
+                dt = datetime.datetime(1980, 1, 1, 0, 0, 0)
+
+            # Parse attributes
+            attributes = []
+            if attr & 0x01: attributes.append("RO")
+            if attr & 0x02: attributes.append("H")
+            if attr & 0x04: attributes.append("S")
+            if attr & 0x20: attributes.append("A")
+            attr_str = " ".join(attributes) if attributes else "-"
+
+            # Create the file entry
+            entry = FileInfo(
+                name=full_name,
+                size=0 if is_dir else size,
+                is_dir=is_dir,
+                datetime=dt,
+                attributes=attr_str,
+                starting_cluster=starting_cluster
+            )
+
+            self.logger.debug(f"Parsed entry: {full_name}, {'dir' if is_dir else f'file ({size} bytes)'}, "
+                           f"cluster: {starting_cluster}")
+            return entry
+        except Exception as e:
+            self.logger.error(f"Error parsing directory entry: {e}", exc_info=True)
+            return None
 
     def _find_path(self, path: str) -> Optional[FileInfo]:
         self.logger.debug(f"Finding path: {path}")

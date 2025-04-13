@@ -57,94 +57,6 @@ class DiskController:
             self.close_disk()
             return False
 
-    def _detect_physical_disk_format(self) -> bool:
-        """Detect format for physical floppy disks"""
-        self.logger.debug("Detecting physical disk format")
-        # Geometries to try, in order of likelihood
-        geometries = [
-            (DiskGeometry(80, 2, 18, 512), 500, "MFM"),  # 1.44MB 3.5" HD (most common)
-            (DiskGeometry(80, 2, 15, 512), 500, "MFM"),  # 1.2MB 5.25" HD
-            (DiskGeometry(80, 2, 9, 512), 250, "MFM"),   # 720KB 3.5" DD
-            (DiskGeometry(40, 2, 9, 512), 250, "MFM"),   # 360KB 5.25" DD
-            (DiskGeometry(40, 1, 8, 512), 125, "FM"),    # Less common FM format
-        ]
-
-        # Try each geometry until we find a valid filesystem
-        for geometry, rate, encoding in geometries:
-            self.set_geometry(geometry)
-            self.logger.debug(f"Trying geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}, {encoding} at {rate}kbps")
-
-            # Set the physical format
-            self.driver.set_physical_format(PhysicalFormat(
-                encoding=encoding,
-                rate=rate,
-                rpm=300,
-                gap3=84,
-                sectors_per_track=geometry.sectors_per_track,
-                heads=geometry.heads,
-                sector_size=geometry.sector_size
-            ))
-
-            # Try to detect filesystem with this geometry
-            try:
-                fs_type = self.detect_filesystem()
-                if fs_type:
-                    self.logger.info(f"Found valid filesystem {fs_type} with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
-                    return True
-            except Exception as e:
-                self.logger.debug(f"Failed with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}: {e}")
-                continue
-
-        # If we get here, just set a default geometry for displaying something
-        default_geometry = DiskGeometry(80, 2, 18, 512)
-        self.set_geometry(default_geometry)
-        self.driver.set_physical_format(PhysicalFormat(
-            encoding="MFM",
-            rate=500,
-            rpm=300,
-            gap3=84,
-            sectors_per_track=18,
-            heads=2,
-            sector_size=512
-        ))
-        self.logger.warning("No filesystem detected, using default geometry for display")
-        return True
-
-    def _detect_image_file_format(self, file_path: str) -> bool:
-        """Detect format for disk image files"""
-        self.logger.debug(f"Detecting format for image file: {file_path}")
-        # First try to detect format
-        format_name = self.detect_format()
-        if format_name:
-            profile = self.format_manager.get_format_by_name(format_name)
-            if profile:
-                self.set_format(profile)
-                if self.detect_filesystem():
-                    self.logger.info(f"Detected format {format_name} with valid filesystem")
-                    return True
-
-        # Try default geometries for image files
-        default_geometries = [
-            DiskGeometry(80, 2, 18, 512),  # 1.44MB
-            DiskGeometry(80, 2, 9, 512),   # 720KB
-            DiskGeometry(40, 2, 9, 512)    # 360KB
-        ]
-
-        for geometry in default_geometries:
-            self.logger.debug(f"Trying default geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
-            self.set_geometry(geometry)
-            if self.detect_filesystem():
-                self.logger.info(f"Found valid filesystem with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
-                return True
-
-        # No format detected, but we can still work with the image
-        # Just set a default geometry
-        if not self.disk.geometry:
-            self.set_geometry(default_geometries[0])
-            self.logger.warning("No filesystem detected, using default 1.44MB geometry")
-
-        return True
-
     def close_disk(self) -> None:
         if self.disk and self.driver:
             try:
@@ -199,7 +111,7 @@ class DiskController:
             raise ValueError("No disk opened")
 
         self.logger.debug(f"Setting format: {profile.name} ({profile.description})")
-        
+
         # Set disk geometry
         self.disk.set_geometry(profile.geometry)
 
@@ -394,3 +306,91 @@ class DiskController:
         formats = self.format_manager.list_known_formats()
         self.logger.debug(f"Listed {len(formats)} available formats")
         return formats
+
+    def _detect_physical_disk_format(self) -> bool:
+        """Detect format for physical floppy disks"""
+        self.logger.debug("Detecting physical disk format")
+        # Geometries to try, in order of likelihood
+        geometries = [
+            (DiskGeometry(80, 2, 18, 512), 500, "MFM"),  # 1.44MB 3.5" HD (most common)
+            (DiskGeometry(80, 2, 15, 512), 500, "MFM"),  # 1.2MB 5.25" HD
+            (DiskGeometry(80, 2, 9, 512), 250, "MFM"),   # 720KB 3.5" DD
+            (DiskGeometry(40, 2, 9, 512), 250, "MFM"),   # 360KB 5.25" DD
+            (DiskGeometry(40, 1, 8, 512), 125, "FM"),    # Less common FM format
+        ]
+
+        # Try each geometry until we find a valid filesystem
+        for geometry, rate, encoding in geometries:
+            self.set_geometry(geometry)
+            self.logger.debug(f"Trying geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}, {encoding} at {rate}kbps")
+
+            # Set the physical format
+            self.driver.set_physical_format(PhysicalFormat(
+                encoding=encoding,
+                rate=rate,
+                rpm=300,
+                gap3=84,
+                sectors_per_track=geometry.sectors_per_track,
+                heads=geometry.heads,
+                sector_size=geometry.sector_size
+            ))
+
+            # Try to detect filesystem with this geometry
+            try:
+                fs_type = self.detect_filesystem()
+                if fs_type:
+                    self.logger.info(f"Found valid filesystem {fs_type} with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
+                    return True
+            except Exception as e:
+                self.logger.debug(f"Failed with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}: {e}")
+                continue
+
+        # If we get here, just set a default geometry for displaying something
+        default_geometry = DiskGeometry(80, 2, 18, 512)
+        self.set_geometry(default_geometry)
+        self.driver.set_physical_format(PhysicalFormat(
+            encoding="MFM",
+            rate=500,
+            rpm=300,
+            gap3=84,
+            sectors_per_track=18,
+            heads=2,
+            sector_size=512
+        ))
+        self.logger.warning("No filesystem detected, using default geometry for display")
+        return True
+
+    def _detect_image_file_format(self, file_path: str) -> bool:
+        """Detect format for disk image files"""
+        self.logger.debug(f"Detecting format for image file: {file_path}")
+        # First try to detect format
+        format_name = self.detect_format()
+        if format_name:
+            profile = self.format_manager.get_format_by_name(format_name)
+            if profile:
+                self.set_format(profile)
+                if self.detect_filesystem():
+                    self.logger.info(f"Detected format {format_name} with valid filesystem")
+                    return True
+
+        # Try default geometries for image files
+        default_geometries = [
+            DiskGeometry(80, 2, 18, 512),  # 1.44MB
+            DiskGeometry(80, 2, 9, 512),   # 720KB
+            DiskGeometry(40, 2, 9, 512)    # 360KB
+        ]
+
+        for geometry in default_geometries:
+            self.logger.debug(f"Trying default geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
+            self.set_geometry(geometry)
+            if self.detect_filesystem():
+                self.logger.info(f"Found valid filesystem with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
+                return True
+
+        # No format detected, but we can still work with the image
+        # Just set a default geometry
+        if not self.disk.geometry:
+            self.set_geometry(default_geometries[0])
+            self.logger.warning("No filesystem detected, using default 1.44MB geometry")
+
+        return True
