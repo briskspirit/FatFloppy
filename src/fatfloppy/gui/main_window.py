@@ -3,7 +3,7 @@ import os
 import datetime
 
 from PyQt6.QtCore import (QCoreApplication, Qt)
-from PyQt6.QtGui import (QAction, QIcon, QFont)
+from PyQt6.QtGui import (QAction, QFont)
 from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
                              QMainWindow, QMessageBox, QProgressDialog, QToolBar,
                              QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView)
@@ -229,13 +229,6 @@ class FileBrowserApp(QMainWindow):
     def initUI(self):
         self.setWindowTitle("FatFloppy Disk Browser")
         self.setGeometry(100, 100, 1200, 800)
-
-        # Set window icon
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          '..', '..', '..', 'assets', 'icons', 'fatfloppy_icon.png')
-        print(f"Icon path: {icon_path}")
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
 
         # Menu Bar - with style adjustments
         menu_bar = self.menuBar()
@@ -867,10 +860,22 @@ class FileBrowserApp(QMainWindow):
 def run_gui():
     import sys
     from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtGui import QFont
+    from PyQt6.QtGui import QIcon
+    import os
 
     app = QApplication(sys.argv)
     app.setApplicationName("FatFloppy")
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = current_dir
+    while not os.path.exists(os.path.join(root_dir, 'assets')) and root_dir != os.path.dirname(root_dir):
+        root_dir = os.path.dirname(root_dir)
+    icon_path = os.path.join(root_dir, 'assets', 'icons', 'fatfloppy_icon.png')
+
+    if os.path.exists(icon_path):
+        app_icon = QIcon(icon_path)
+        app.setWindowIcon(app_icon)
+
     window = FileBrowserApp()
     window.show()
     sys.exit(app.exec())
