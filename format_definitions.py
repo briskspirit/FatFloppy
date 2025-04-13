@@ -172,7 +172,7 @@ FLOPPY_FORMATS = {
             rpm=300,
             gap3=84,
             sectors_per_track=9,
-            heads=1
+            heads=1,
             sector_size=512
         ),
         media_descriptor=0xFC,

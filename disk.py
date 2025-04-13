@@ -67,10 +67,7 @@ class Disk:
             raise ValueError(f"Invalid sector address: {cylinder},{head},{sector}")
 
         if len(data) != self.geometry.sector_size:
-            if len(data) < self.geometry.sector_size:
-                data = data + bytes(self.geometry.sector_size - len(data))
-            else:
-                data = data[:self.geometry.sector_size]
+            raise ValueError(f"Data size {len(data)} does not match sector size {self.geometry.sector_size}")
 
         self.driver.write_sector(cylinder, head, sector, data)
 
