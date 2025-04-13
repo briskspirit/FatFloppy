@@ -100,10 +100,12 @@ class Filesystem:
 class FATFilesystem(Filesystem):
     def __init__(self, disk: Disk):
         super().__init__(disk)
+        self._init_completed = False
         self.boot_sector = self._read_boot_sector()
 
         if self.is_valid():
             self._initialize_filesystem_parameters()
+            self._init_completed = True
 
     def is_valid(self) -> bool:
         return isinstance(self.boot_sector, FATBootSector) and self.boot_sector.is_valid()
@@ -123,6 +125,10 @@ class FATFilesystem(Filesystem):
 
     def _initialize_filesystem_parameters(self) -> None:
         """Initialize filesystem parameters based on boot sector"""
+        # Only run this once
+        if self._init_completed:
+            return
+
         bpb = self.boot_sector
 
         # Basic parameters

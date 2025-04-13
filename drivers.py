@@ -6,7 +6,8 @@ import struct
 
 from greaseweazle.tools import util
 from greaseweazle import usb as USB
-from greaseweazle.codec import codec  # Correct import
+from greaseweazle.codec import codec
+from greaseweazle.tools import read
 
 
 @dataclass
@@ -44,9 +45,11 @@ class GreaseweazleDriver(DiskIODriver):
         self.physical_format = None
         self.dirty_sectors = {}
         self.dirty_tracks = set()
-        self.track_data = {}
+        self.track_data = {}       # Track sector cache
+        self.sector_cache = {}     # Direct sector cache for faster lookups
         self.initialized = False
         self.fmt_cls = None
+        self.drive_ticks_per_rev = None
 
     def initialize(self):
         if self.initialized:
@@ -55,39 +58,50 @@ class GreaseweazleDriver(DiskIODriver):
         self.usb = util.usb_open(self.device_name)
         self.drive_obj = util.Drive()(self.drive)
 
-        # Set default format for initial reads
-        if self.physical_format and not self.fmt_cls:
-            if self.physical_format.encoding == "MFM":
-                format_name = "ibm.mfm"
-            else:
-                format_name = "ibm.fm"
-            try:
-                # Using the correct import
-                self.fmt_cls = codec.get_diskdef(format_name)
-            except Exception as e:
-                print(f"Warning: Failed to get disk definition: {e}")
+        # Measure drive RPM
+        try:
+            def measure_rpm():
+                flux = self.usb.read_track(2)
+                self.drive_ticks_per_rev = flux.ticks_per_rev
+                print(f"Measured drive RPM: {60 / (self.drive_ticks_per_rev / self.usb.sample_freq):.1f}")
+
+            util.with_drive_selected(measure_rpm, self.usb, self.drive_obj)
+        except Exception as e:
+            print(f"Warning: Failed to measure RPM: {e}")
+            # Use a reasonable default
+            self.drive_ticks_per_rev = 0.2 * self.usb.sample_freq
 
         self.initialized = True
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
-        self.initialize()
-        track_id = (cylinder, head)
+            self.initialize()
 
-        if track_id not in self.track_data:
-            try:
-                self._read_track(cylinder, head)
-            except Exception as e:
-                print(f"Error reading track {cylinder}.{head}: {e}")
-                # Create empty track data to prevent future retries
-                self.track_data[track_id] = {}
+            # Check direct sector cache first for fastest access
+            sector_key = (cylinder, head, sector)
+            if sector_key in self.sector_cache:
+                return self.sector_cache[sector_key]
 
-        if track_id in self.track_data and sector in self.track_data[track_id]:
-            return self.track_data[track_id][sector]
+            # Then check track cache
+            track_id = (cylinder, head)
+            if track_id not in self.track_data:
+                try:
+                    self._read_track(cylinder, head)
+                except Exception as e:
+                    print(f"Error reading track {cylinder}.{head}: {e}")
+                    # Create empty track data to prevent future retries
+                    self.track_data[track_id] = {}
 
-        sector_size = 512
-        if self.physical_format:
-            sector_size = self.physical_format.sector_size
-        return b'\x00' * sector_size
+            # After track read, check if sector is available
+            if track_id in self.track_data and sector in self.track_data[track_id]:
+                # Cache the sector directly for faster future access
+                self.sector_cache[sector_key] = self.track_data[track_id][sector]
+                return self.track_data[track_id][sector]
+
+            # Sector not found - return empty sector
+            sector_size = 512
+            if self.physical_format:
+                sector_size = self.physical_format.sector_size
+            return b'\x00' * sector_size
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
         self.initialize()
@@ -103,16 +117,32 @@ class GreaseweazleDriver(DiskIODriver):
         if not self.initialized or not self.dirty_tracks:
             return
 
+        # Make sure fmt_cls is set before writing
+        if not self.fmt_cls and self.physical_format:
+            try:
+                if self.physical_format.encoding == "MFM":
+                    format_name = "ibm.mfm"
+                else:
+                    format_name = "ibm.fm"
+                self.fmt_cls = codec.get_diskdef(format_name)
+            except Exception as e:
+                print(f"Warning: Failed to get disk definition for writing: {e}")
+                return
+
         def write_tracks():
             for track_id in sorted(self.dirty_tracks):
                 cylinder, head = track_id
                 self.usb.seek(cylinder, head)
-                flux_list = self._convert_to_flux(cylinder, head)
-                self.usb.write_track(
-                    flux_list=flux_list,
-                    cue_at_index=True,
-                    terminate_at_index=True
-                )
+                try:
+                    flux_list = self._convert_to_flux(cylinder, head)
+                    self.usb.write_track(
+                        flux_list=flux_list,
+                        cue_at_index=True,
+                        terminate_at_index=True
+                    )
+                    print(f"Successfully wrote track {cylinder}.{head}")
+                except Exception as e:
+                    print(f"Error writing track {cylinder}.{head}: {e}")
 
         util.with_drive_selected(write_tracks, self.usb, self.drive_obj)
         self.dirty_tracks.clear()
@@ -123,76 +153,135 @@ class GreaseweazleDriver(DiskIODriver):
 
         # Update fmt_cls based on the new physical format
         if self.initialized:
-            if physical_format.encoding == "MFM":
-                format_name = "ibm.mfm"
-            else:
-                format_name = "ibm.fm"
             try:
+                if physical_format.encoding == "MFM":
+                    format_name = "ibm.mfm"
+                else:
+                    format_name = "ibm.fm"
                 self.fmt_cls = codec.get_diskdef(format_name)
             except Exception as e:
                 print(f"Warning: Failed to get disk definition: {e}")
 
     def _read_track(self, cylinder: int, head: int) -> None:
-        from greaseweazle.tools import read
         import types
 
-        args = types.SimpleNamespace(
-            revs=2, raw=True,  # Changed to raw=True to capture flux even if no sectors found
-            fmt_cls=self.fmt_cls,
-            tracks=util.TrackSet(f'c={cylinder}:h={head}'),
-            retries=3, seek_retries=0, reverse=False,
-            adjust_speed=None, fake_index=None, hard_sectors=False,
-            drive=self.drive_obj, ticks=0, drive_ticks_per_rev=None
-        )
+        # List of formats to try
+        formats_to_try = []
 
-        # If fmt_cls isn't set yet, try to set it
-        if not args.fmt_cls:
+        # Add primary format if set
+        if self.physical_format:
+            if self.physical_format.encoding == "MFM":
+                formats_to_try.append(("ibm.mfm", self.physical_format.rate))
+            else:
+                formats_to_try.append(("ibm.fm", self.physical_format.rate))
+
+        # Add default formats to try if we don't find anything with primary format
+        if not formats_to_try or formats_to_try[0][0] != "ibm.scan":
+            formats_to_try.append(("ibm.scan", None))  # ibm.scan automatically tries various formats
+
+        # Add other common formats
+        additional_formats = [
+            ("ibm.mfm", 500),  # HD 1.44MB
+            ("ibm.mfm", 250),  # DD 720KB
+            ("ibm.fm", 250),   # FM formats
+        ]
+
+        # Add additional formats if not already included
+        for fmt in additional_formats:
+            if fmt not in formats_to_try:
+                formats_to_try.append(fmt)
+
+        # Initialize empty track data to ensure there's something
+        self.track_data[(cylinder, head)] = {}
+
+        # Try each format until we find one that works
+        for format_name, rate in formats_to_try:
+            print(f"Trying to read track {cylinder}.{head} with format {format_name}" +
+                  (f" at {rate}kbps" if rate else ""))
+
             try:
-                if self.physical_format and self.physical_format.encoding == "MFM":
-                    format_name = "ibm.mfm"
-                else:
-                    format_name = "ibm.fm"
-                args.fmt_cls = codec.get_diskdef(format_name)
+                # Get the format definition
+                fmt_cls = codec.get_diskdef(format_name)
+
+                # Create the arguments
+                args = types.SimpleNamespace(
+                    revs=3,
+                    raw=False,
+                    fmt_cls=fmt_cls,
+                    tracks=util.TrackSet(f'c={cylinder}:h={head}'),
+                    retries=2,
+                    seek_retries=0,
+                    reverse=False,
+                    adjust_speed=None,
+                    fake_index=None,
+                    hard_sectors=False,
+                    drive=self.drive_obj,
+                    ticks=0,
+                    drive_ticks_per_rev=self.drive_ticks_per_rev
+                )
+
+                # Read the track
+                def read_track_wrapper():
+                    track_iterator = util.TrackSet.TrackIter(args.tracks)
+                    next(track_iterator)
+                    flux, dat = read.read_with_retry(self.usb, args, track_iterator)
+
+                    sectors = None
+                    if dat is not None:
+                        if hasattr(dat, 'track') and hasattr(dat.track, 'sectors'):
+                            sectors = dat.track.sectors
+                        elif hasattr(dat, 'sectors'):
+                            sectors = dat.sectors
+
+                    if sectors:
+                        sector_data = {
+                            s.idam.r: bytes(s.dam.data)
+                            for s in sectors
+                            if hasattr(s, 'idam') and hasattr(s, 'dam') and hasattr(s.dam, 'data')
+                        }
+
+                        if sector_data:
+                            print(f"Found {len(sector_data)} sectors on track {cylinder}.{head} using {format_name}")
+                            # Use this data and exit the loop
+                            self.track_data[(cylinder, head)] = sector_data
+                            self.fmt_cls = fmt_cls
+                            if self.physical_format is None and rate is not None:
+                                # Update physical format if not set
+                                encoding = "MFM" if format_name == "ibm.mfm" else "FM"
+                                sectors_per_track = len(sector_data)
+                                self.physical_format = PhysicalFormat(
+                                    encoding=encoding,
+                                    rate=rate,
+                                    rpm=300,
+                                    gap3=84,
+                                    sectors_per_track=sectors_per_track,
+                                    heads=2,
+                                    sector_size=512
+                                )
+                            return True
+
+                    return False
+
+                success = False
+                try:
+                    util.with_drive_selected(read_track_wrapper, self.usb, self.drive_obj)
+                    if self.track_data[(cylinder, head)]:
+                        success = True
+                        break
+                except Exception as e:
+                    print(f"Error trying format {format_name}: {e}")
+                    continue
+
+                if success:
+                    break
+
             except Exception as e:
-                print(f"Warning: Failed to get disk definition for track read: {e}")
+                print(f"Failed to try format {format_name}: {e}")
+                continue
 
-        def read_track_wrapper():
-            track_iterator = util.TrackSet.TrackIter(args.tracks)
-            next(track_iterator)
-            flux, dat = read.read_with_retry(self.usb, args, track_iterator)
-
-            # Initialize empty track data
-            self.track_data[(cylinder, head)] = {}
-
-            # Try to extract sector information if available
-            if dat is not None:
-                sectors = None
-                if hasattr(dat, 'track') and hasattr(dat.track, 'sectors'):
-                    sectors = dat.track.sectors
-                elif hasattr(dat, 'sectors'):
-                    sectors = dat.sectors
-
-                if sectors:
-                    sector_data = {
-                        s.idam.r: bytes(s.dam.data)
-                        for s in sectors
-                        if hasattr(s, 'idam') and hasattr(s, 'dam') and hasattr(s.dam, 'data')
-                    }
-                    self.track_data[(cylinder, head)] = sector_data
-                    print(f"Found {len(sector_data)} sectors on track {cylinder}.{head}")
-                else:
-                    print(f"No sectors found on track {cylinder}.{head}, but flux data was read")
-
-            # Even if no sectors are found, we've read the track's flux
-            # Return true to avoid exceptions
-            return True
-
-        try:
-            util.with_drive_selected(read_track_wrapper, self.usb, self.drive_obj)
-        except Exception as e:
-            print(f"Error in read_track_wrapper: {e}")
-            # Create empty track data to prevent future retries
-            self.track_data[(cylinder, head)] = {}
+        # If we still didn't find any sectors, log it
+        if not self.track_data[(cylinder, head)]:
+            print(f"No sectors found on track {cylinder}.{head} after trying all formats")
 
     def _convert_to_flux(self, cylinder: int, head: int) -> List[int]:
         from greaseweazle.track import MasterTrack
@@ -218,21 +307,23 @@ class GreaseweazleDriver(DiskIODriver):
         track = track_def.mk_track(cylinder, head)
         track_id = (cylinder, head)
 
-        for s in track.sectors:
-            if hasattr(s, 'idam') and hasattr(s.idam, 'r'):
-                sector_num = s.idam.r
-                if track_id in self.dirty_sectors and sector_num in self.dirty_sectors[track_id]:
-                    s.dam.data = bytearray(self.dirty_sectors[track_id][sector_num])
-                    s.crc = s.idam.crc = s.dam.crc = 0
+        if track_id in self.dirty_sectors:
+            for s in track.sectors:
+                if hasattr(s, 'idam') and hasattr(s.idam, 'r'):
+                    sector_num = s.idam.r
+                    if sector_num in self.dirty_sectors[track_id]:
+                        s.dam.data = bytearray(self.dirty_sectors[track_id][sector_num])
+                        s.crc = s.idam.crc = s.dam.crc = 0
 
         master_track = track.master_track()
 
-        # Get drive parameters
-        def measure_rpm():
-            flux = self.usb.read_track(2)
-            self.drive_ticks_per_rev = flux.ticks_per_rev
+        # Ensure we have drive_ticks_per_rev
+        if not self.drive_ticks_per_rev:
+            def measure_rpm():
+                flux = self.usb.read_track(2)
+                self.drive_ticks_per_rev = flux.ticks_per_rev
 
-        util.with_drive_selected(measure_rpm, self.usb, self.drive_obj)
+            util.with_drive_selected(measure_rpm, self.usb, self.drive_obj)
 
         master_track.time_per_rev = self.drive_ticks_per_rev / self.usb.sample_freq
         wflux = master_track.flux_for_writeout(cue_at_index=True)

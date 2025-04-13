@@ -1058,39 +1058,43 @@ class FileBrowserApp(QMainWindow):
                 return
 
             geometry = self.controller.disk.geometry
-            sectors_per_track = geometry.sectors_per_track
-            num_heads = geometry.heads
-            sector_size = geometry.sector_size
-            total_sectors = geometry.total_sectors
-            num_cylinders = geometry.cylinders
+            sectors_per_track = max(1, geometry.sectors_per_track)  # Ensure non-zero
+            num_heads = max(1, geometry.heads)  # Ensure non-zero
+            sector_size = max(128, geometry.sector_size)  # Ensure non-zero
+            total_sectors = max(1, geometry.total_sectors)  # Ensure non-zero
+            num_cylinders = max(1, geometry.cylinders)  # Ensure non-zero
 
             # Extract filesystem parameters needed for drawing
             bpb = None
             if self.controller.filesystem and hasattr(self.controller.filesystem, "boot_sector"):
                 bpb = self.controller.filesystem.boot_sector
 
-            # Set FAT filesystem parameters
+            # Set FAT filesystem parameters with safe defaults
+            reserved_sectors = 1
+            num_fats = 2
+            fat_size = 9
+            root_dir_sectors = 14
+            sectors_per_cluster = 1
+            fat_start = reserved_sectors
+            root_dir_start = fat_start + (num_fats * fat_size)
+            data_area_start = root_dir_start + root_dir_sectors
+            first_data_sector = data_area_start
+
+            # Override with actual values if available
             if bpb and hasattr(bpb, "reserved_sectors"):
-                reserved_sectors = bpb.reserved_sectors
-                num_fats = bpb.num_fats
-                fat_size = bpb.sectors_per_fat
-                root_entries = bpb.root_entries
-                sectors_per_cluster = bpb.sectors_per_cluster
-                root_dir_sectors = (root_entries * 32 + sector_size - 1) // sector_size
-                fat_start = reserved_sectors
-                root_dir_start = fat_start + (num_fats * fat_size)
-                data_area_start = root_dir_start + root_dir_sectors
-                first_data_sector = data_area_start
-            else:
-                # Default values for FAT12
-                reserved_sectors = 1
-                num_fats = 2
-                fat_size = 9
-                root_dir_sectors = 14
-                sectors_per_cluster = 1
-                fat_start = reserved_sectors
-                root_dir_start = fat_start + (num_fats * fat_size)
-                first_data_sector = root_dir_start + root_dir_sectors
+                try:
+                    reserved_sectors = max(1, bpb.reserved_sectors)
+                    num_fats = max(1, bpb.num_fats)
+                    fat_size = max(1, bpb.sectors_per_fat)
+                    root_entries = max(16, bpb.root_entries)
+                    sectors_per_cluster = max(1, bpb.sectors_per_cluster)
+                    root_dir_sectors = (root_entries * 32 + sector_size - 1) // sector_size
+                    fat_start = reserved_sectors
+                    root_dir_start = fat_start + (num_fats * fat_size)
+                    data_area_start = root_dir_start + root_dir_sectors
+                    first_data_sector = data_area_start
+                except Exception as e:
+                    print(f"Error getting filesystem parameters: {e}")
 
             # Calculate angle for each sector
             angle_per_sector = 360 / sectors_per_track
@@ -1148,7 +1152,11 @@ class FileBrowserApp(QMainWindow):
                     s = cyl_start_sector + i
 
                     if s < total_sectors:
-                        color = self.get_sector_color(s, sectors_per_cluster, reserved_sectors, fat_size, root_dir_sectors, first_data_sector)
+                        try:
+                            color = self.get_sector_color(s, sectors_per_cluster, reserved_sectors, fat_size, root_dir_sectors, first_data_sector)
+                        except Exception as e:
+                            print(f"Error getting sector color for sector {s}: {e}")
+                            color = Qt.GlobalColor.lightGray
 
                         theta_start = math.radians(i * angle_per_sector)
                         theta_end = math.radians((i + 1) * angle_per_sector)
@@ -1185,11 +1193,12 @@ class FileBrowserApp(QMainWindow):
             import traceback
             traceback.print_exc()
 
+    # Update the get_sector_color method to be more robust
     def get_sector_color(self, sector_num, sectors_per_cluster, reserved, fat_size, root_dir_sectors, first_data_sector):
         """Determine the color for a sector based on its role in FAT12 filesystem."""
-        # Ensure we don't divide by zero
-        if sectors_per_cluster <= 0:
-            sectors_per_cluster = 1
+        # Safety checks to prevent division by zero
+        sectors_per_cluster = max(1, sectors_per_cluster)
+        first_data_sector = max(1, first_data_sector)
 
         try:
             if sector_num < reserved:
@@ -1203,15 +1212,7 @@ class FileBrowserApp(QMainWindow):
             else:
                 # Data area: color based on cluster status
                 try:
-                    if first_data_sector <= 0 or sector_num < first_data_sector:
-                        return Qt.GlobalColor.gray
-
-                    relative_sector = sector_num - first_data_sector
-
-                    # Validate to prevent division by zero
-                    if sectors_per_cluster <= 0:
-                        return Qt.GlobalColor.gray
-
+                    relative_sector = max(0, sector_num - first_data_sector)
                     cluster = (relative_sector // sectors_per_cluster) + 2  # Cluster numbers start at 2
                     return Qt.GlobalColor.magenta if cluster in self.busy_clusters else Qt.GlobalColor.gray
                 except Exception as e:
