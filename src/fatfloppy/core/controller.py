@@ -395,38 +395,52 @@ class DiskController:
         elif drive_size == "8":
             default_cylinders = 77
 
-        # First, determine if the disk is single-sided or double-sided
-        # by attempting to read from head 1
-        has_second_head = False
+        # Initialize with temporary geometry to read the boot sector
+        temp_geometry = DiskGeometry(
+            cylinders=default_cylinders,
+            heads=2,  # Start with double-sided to read boot sector
+            sectors_per_track=18 if drive_size == "3.5" else 9,
+            sector_size=512
+        )
+        self.set_geometry(temp_geometry)
+
+        # Set temporary physical format based on common parameters for the drive size
+        self.driver.set_physical_format(PhysicalFormat(
+            encoding="MFM",
+            rate=500 if drive_size == "3.5" else 250,
+            rpm=300 if drive_size != "8" else 360,
+            gap3=84 if drive_size != "8" else 26,
+            sectors_per_track=temp_geometry.sectors_per_track,
+            heads=temp_geometry.heads,
+            sector_size=temp_geometry.sector_size
+        ))
+
+        # Ensure driver is initialized
+        if hasattr(self.driver, 'initialize'):
+            self.driver.initialize()
+
+        # Try to detect filesystem to get head count from BPB
+        has_second_head = True  # Default to true
         try:
-            self.logger.debug("Testing if disk has a second head (head 1)")
+            fs_type = self.detect_filesystem()
+            if fs_type and hasattr(self.filesystem, 'boot_sector'):
+                bs = self.filesystem.boot_sector
+                if hasattr(bs, 'num_heads') and bs.num_heads > 0:
+                    self.logger.info(f"BPB reports {bs.num_heads} heads")
+                    has_second_head = bs.num_heads > 1
+                    if not has_second_head:
+                        self.logger.info("Filesystem indicates single-sided disk")
+                    return True  # If we have a filesystem, we can return success
+        except Exception as e:
+            self.logger.warning(f"Error detecting filesystem: {e}")
+            # Continue with format detection
 
-            # Set temporary geometry just for testing
-            temp_geometry = DiskGeometry(
-                cylinders=default_cylinders,
-                heads=2,
-                sectors_per_track=18 if drive_size == "3.5" else 9,
-                sector_size=512
-            )
-            self.set_geometry(temp_geometry)
-
-            # Set temporary physical format
-            self.driver.set_physical_format(PhysicalFormat(
-                encoding="MFM",
-                rate=500 if drive_size == "3.5" else 250,
-                rpm=300 if drive_size != "8" else 360,
-                gap3=84 if drive_size != "8" else 26,
-                sectors_per_track=temp_geometry.sectors_per_track,
-                heads=temp_geometry.heads,
-                sector_size=temp_geometry.sector_size
-            ))
-
-            # Try to read something from head 1
-            # We'll do this by trying to read the sector data
+        # Only if we couldn't determine from filesystem, physically test head 1
+        if not fs_type:
+            self.logger.debug("No filesystem detected, testing if disk has a second head (head 1)")
             try:
-                # Use the driver's read capability if possible
+                # Use the driver's read capability to test head 1
                 if hasattr(self.driver, '_read_track'):
-                    # Attempt to read track at head 1, cylinder 0
                     self.logger.debug("Testing head 1 at cylinder 0")
                     success = self.driver._read_track(0, 1)
                     if success:
@@ -434,20 +448,22 @@ class DiskController:
                         has_second_head = True
                     else:
                         self.logger.info("Could not read from head 1 - disk appears to be single-sided")
+                        has_second_head = False
                 else:
-                    # Try direct sector read as fallback
-                    self.logger.debug("Trying direct sector read from head 1")
-                    self.disk.read_sector(0, 1, 1)  # Try to read first sector on head 1
-                    self.logger.info("Successfully read from head 1 - disk is double-sided")
-                    has_second_head = True
+                    # Fallback to direct sector read
+                    try:
+                        self.logger.debug("Trying direct sector read from head 1")
+                        self.disk.read_sector(0, 1, 1)
+                        self.logger.info("Successfully read from head 1 - disk is double-sided")
+                        has_second_head = True
+                    except Exception:
+                        self.logger.info("Could not read from head 1 - disk appears to be single-sided")
+                        has_second_head = False
             except Exception as e:
-                self.logger.debug(f"Failed to read from head 1: {e}")
-                self.logger.info("Could not read from head 1 - disk appears to be single-sided")
-        except Exception as e:
-            self.logger.warning(f"Error testing for second head: {e}")
-            # If we can't test, assume double-sided as safer default
-            self.logger.info("Assuming double-sided disk due to test failure")
-            has_second_head = True
+                self.logger.warning(f"Error testing for second head: {e}")
+                # If we can't test, assume double-sided as safer default
+                self.logger.info("Assuming double-sided disk due to test failure")
+                has_second_head = True
 
         # Get formats from format_definitions.py
         filtered_formats = []

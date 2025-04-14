@@ -264,6 +264,9 @@ class GreaseweazleDriver(DiskIODriver):
 
     def _read_track(self, cylinder: int, head: int) -> bool:
         """Read a track and detect its format"""
+        # Ensure driver is initialized before attempting to read
+        self.initialize()
+
         self.logger.info(f"Reading track C:{cylinder} H:{head}")
         import types
         from greaseweazle.codec import codec
