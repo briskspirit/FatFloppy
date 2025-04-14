@@ -19,7 +19,7 @@ class DiskController:
         self.driver: Optional[DiskIODriver] = None
         self.logger.debug("DiskController initialized")
 
-    def open_disk(self, source: str, disk_type: str = "image", drive_letter: str = "A", drive_size: str = "3.5") -> bool:
+    def open_disk(self, source: str, disk_type: str = "image", drive_letter: str = "A", drive_size: str = "3.5", format_info: dict = None) -> bool:
         if self.disk:
             self.close_disk()
 
@@ -29,6 +29,31 @@ class DiskController:
                 device_name = source if source else None
                 self.logger.debug(f"Creating GreaseweazleDriver with device: {device_name}, drive: {drive_letter}, size: {drive_size}\"")
                 self.driver = GreaseweazleDriver(device_name=device_name, drive=drive_letter, drive_size=drive_size)
+
+                # Apply format parameters if provided
+                if format_info:
+                    self.logger.info(f"Using user-specified format parameters")
+                    physical_format = PhysicalFormat(
+                        encoding=format_info.get("encoding", "MFM"),
+                        rate=format_info.get("rate", 500),
+                        rpm=format_info.get("rpm", 300),
+                        gap3=format_info.get("gap3", 84),
+                        cskew=format_info.get("cskew", 0),
+                        interleave=format_info.get("interleave", 1),
+                        sectors_per_track=format_info.get("sectors_per_track", 18),
+                        heads=format_info.get("heads", 2),
+                        sector_size=format_info.get("sector_size", 512)
+                    )
+                    self.driver.set_physical_format(physical_format)
+
+                    # Set geometry based on format parameters
+                    geometry = DiskGeometry(
+                        cylinders=format_info.get("cylinders", 80),
+                        heads=format_info.get("heads", 2),
+                        sectors_per_track=format_info.get("sectors_per_track", 18),
+                        sector_size=format_info.get("sector_size", 512)
+                    )
+
             elif disk_type == "image":
                 if not os.path.exists(source):
                     self.logger.error(f"Image file not found: {source}")
@@ -44,6 +69,27 @@ class DiskController:
 
             # Different detection strategies based on disk type
             if disk_type == "physical":
+                # If format info was provided, apply geometry directly
+                if format_info:
+                    geometry = DiskGeometry(
+                        cylinders=format_info.get("cylinders", 80),
+                        heads=format_info.get("heads", 2),
+                        sectors_per_track=format_info.get("sectors_per_track", 18),
+                        sector_size=format_info.get("sector_size", 512)
+                    )
+                    self.disk.set_geometry(geometry)
+                    self.logger.info(f"Set geometry from user-specified format")
+
+                    # Try to detect the filesystem with the specified format
+                    if self.detect_filesystem():
+                        self.logger.info("Filesystem detected with user-specified format")
+                        return True
+
+                    # If filesystem detection failed, we still return true
+                    # since the user explicitly set the format
+                    return True
+
+                # Otherwise use the regular detection method
                 result = self._detect_physical_disk_format(drive_size)
                 self.logger.info(f"Physical disk format detection {'succeeded' if result else 'failed'}")
                 return result
@@ -311,6 +357,13 @@ class DiskController:
         """Detect format for physical floppy disks, considering drive size"""
         self.logger.debug(f"Detecting physical disk format for {drive_size}\" drive")
 
+        # Default cylinder count based on drive size
+        default_cylinders = 80
+        if drive_size == "5.25":
+            default_cylinders = 40
+        elif drive_size == "8":
+            default_cylinders = 77
+
         # Geometries to try, filtered by drive size
         geometries = []
 
@@ -324,7 +377,7 @@ class DiskController:
         elif drive_size == "5.25":
             # 5.25" geometries
             geometries = [
-                (DiskGeometry(80, 2, 15, 512), 500, "MFM"),  # 1.2MB 5.25" HD
+                (DiskGeometry(40, 2, 15, 512), 500, "MFM"),  # 1.2MB 5.25" HD
                 (DiskGeometry(40, 2, 9, 512), 250, "MFM"),   # 360KB 5.25" DD
                 (DiskGeometry(40, 1, 9, 512), 250, "MFM"),   # 180KB 5.25" DD
                 (DiskGeometry(40, 1, 8, 512), 250, "MFM"),   # 160KB 5.25" DD
@@ -366,22 +419,44 @@ class DiskController:
                 fs_type = self.detect_filesystem()
                 if fs_type:
                     self.logger.info(f"Found valid filesystem {fs_type} with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}")
+
+                    # Calculate correct cylinder count based on BPB if available
+                    if hasattr(self.filesystem, 'boot_sector') and self.filesystem.boot_sector:
+                        bs = self.filesystem.boot_sector
+                        if bs.total_sectors > 0 and bs.sectors_per_track > 0 and bs.num_heads > 0:
+                            # Calculate cylinders from total sectors
+                            calculated_cylinders = bs.total_sectors // (bs.sectors_per_track * bs.num_heads)
+
+                            if calculated_cylinders > 0 and calculated_cylinders != geometry.cylinders:
+                                self.logger.info(f"Updating cylinder count from {geometry.cylinders} to {calculated_cylinders} based on BPB data")
+
+                                # Update geometry with calculated cylinder count
+                                updated_geometry = DiskGeometry(
+                                    cylinders=calculated_cylinders,
+                                    heads=bs.num_heads,
+                                    sectors_per_track=bs.sectors_per_track,
+                                    sector_size=geometry.sector_size
+                                )
+                                self.set_geometry(updated_geometry)
+
                     return True
             except Exception as e:
                 self.logger.debug(f"Failed with geometry {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}: {e}")
                 continue
 
         # If we get here, just set a default geometry for displaying something
-        default_geometry = DiskGeometry(80, 2, 18, 512) if drive_size == "3.5" else (
-            DiskGeometry(40, 2, 9, 512) if drive_size == "5.25" else
-            DiskGeometry(77, 2, 26, 128)  # 8" default
+        default_geometry = DiskGeometry(
+            cylinders=default_cylinders,
+            heads=2 if drive_size != "8" or drive_size != "5.25" else 1,
+            sectors_per_track=18 if drive_size == "3.5" else (9 if drive_size == "5.25" else 26),
+            sector_size=512 if drive_size != "8" else 128
         )
         self.set_geometry(default_geometry)
         self.driver.set_physical_format(PhysicalFormat(
             encoding="MFM" if drive_size != "8" else "FM",
-            rate=500 if drive_size != "8" or drive_size != "5.25" else 250,
-            rpm=300,
-            gap3=84,
+            rate=500 if drive_size == "3.5" else 250,
+            rpm=300 if drive_size != "8" else 360,
+            gap3=84 if drive_size != "8" else 26,
             sectors_per_track=default_geometry.sectors_per_track,
             heads=default_geometry.heads,
             sector_size=default_geometry.sector_size

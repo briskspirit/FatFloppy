@@ -426,10 +426,10 @@ class FileBrowserApp(QMainWindow):
             if not dialog.exec():
                 return  # User cancelled
 
-            drive_letter, drive_size = dialog.get_selection()
+            drive_letter, drive_size, format_info = dialog.get_selection()
 
             self.controller = DiskController()
-            if self.controller.open_disk(None, "physical", drive_letter=drive_letter, drive_size=drive_size):
+            if self.controller.open_disk(None, "physical", drive_letter=drive_letter, drive_size=drive_size, format_info=format_info):
                 self.root_node = self.build_fs_tree()
                 self.current_node = self.root_node
                 self.current_path = "/"
@@ -445,6 +445,11 @@ class FileBrowserApp(QMainWindow):
 
                 format_name = self.controller.detect_format()
                 format_text = f" using {format_name}" if format_name else ""
+
+                # Add format info if custom was selected
+                if format_info and not format_info.get("profile_name"):
+                    format_text += f" (Custom format: {format_info.get('cylinders')}x{format_info.get('heads')}x{format_info.get('sectors_per_track')})"
+
                 self.statusBar().showMessage(f"Loaded physical floppy{format_text} (Drive: {drive_letter}, Size: {drive_size}\")")
             else:
                 self.reset_ui()
