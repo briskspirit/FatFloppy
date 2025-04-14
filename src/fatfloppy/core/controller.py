@@ -54,31 +54,14 @@ class DiskController:
                         sector_size=format_info.get("sector_size", 512)
                     )
 
-            elif disk_type == "image":
-                if not os.path.exists(source):
-                    self.logger.error(f"Image file not found: {source}")
-                    return False
-                self.logger.debug(f"Creating RawImageDriver for: {source}")
-                self.driver = RawImageDriver(file_path=source)
-            else:
-                self.logger.error(f"Unsupported disk type: {disk_type}")
-                raise ValueError(f"Unsupported disk type: {disk_type}")
-
-            self.disk = Disk(self.driver)
-            self.logger.debug("Disk object created")
-
-            # Different detection strategies based on disk type
-            if disk_type == "physical":
-                # If format info was provided, apply geometry directly
-                if format_info:
-                    geometry = DiskGeometry(
-                        cylinders=format_info.get("cylinders", 80),
-                        heads=format_info.get("heads", 2),
-                        sectors_per_track=format_info.get("sectors_per_track", 18),
-                        sector_size=format_info.get("sector_size", 512)
-                    )
+                    self.disk = Disk(self.driver)
                     self.disk.set_geometry(geometry)
                     self.logger.info(f"Set geometry from user-specified format")
+
+                    # Create custom disk definition for Greaseweazle when format is explicitly specified
+                    if hasattr(self.driver, '_create_and_set_custom_diskdef'):
+                        self.logger.debug("Creating custom disk definition for Greaseweazle")
+                        self.driver._create_and_set_custom_diskdef()
 
                     # Try to detect the filesystem with the specified format
                     if self.detect_filesystem():
@@ -89,14 +72,62 @@ class DiskController:
                     # since the user explicitly set the format
                     return True
 
-                # Otherwise use the regular detection method
-                result = self._detect_physical_disk_format(drive_size)
-                self.logger.info(f"Physical disk format detection {'succeeded' if result else 'failed'}")
-                return result
-            else:
+                # Create disk object
+                self.disk = Disk(self.driver)
+                self.logger.debug("Disk object created")
+
+                # Different detection strategies based on disk type
+                if disk_type == "physical":
+                    # If format info was provided, apply geometry directly
+                    if format_info:
+                        geometry = DiskGeometry(
+                            cylinders=format_info.get("cylinders", 80),
+                            heads=format_info.get("heads", 2),
+                            sectors_per_track=format_info.get("sectors_per_track", 18),
+                            sector_size=format_info.get("sector_size", 512)
+                        )
+                        self.disk.set_geometry(geometry)
+                        self.logger.info(f"Set geometry from user-specified format")
+
+                        # Create custom disk definition for Greaseweazle when format is explicitly specified
+                        if hasattr(self.driver, '_create_and_set_custom_diskdef'):
+                            self.driver._create_and_set_custom_diskdef()
+                            self.logger.info("Created custom disk definition for Greaseweazle")
+
+                        # Try to detect the filesystem with the specified format
+                        if self.detect_filesystem():
+                            self.logger.info("Filesystem detected with user-specified format")
+                            return True
+
+                        # If filesystem detection failed, we still return true
+                        # since the user explicitly set the format
+                        return True
+
+                    # Otherwise use the regular detection method
+                    result = self._detect_physical_disk_format(drive_size)
+                    self.logger.info(f"Physical disk format detection {'succeeded' if result else 'failed'}")
+                    return result
+                else:
+                    result = self._detect_image_file_format(source)
+                    self.logger.info(f"Image file format detection {'succeeded' if result else 'failed'}")
+                    return result
+
+            elif disk_type == "image":
+                if not os.path.exists(source):
+                    self.logger.error(f"Image file not found: {source}")
+                    return False
+                self.logger.debug(f"Creating RawImageDriver for: {source}")
+                self.driver = RawImageDriver(file_path=source)
+
+                self.disk = Disk(self.driver)
+                self.logger.debug("Disk object created")
+
                 result = self._detect_image_file_format(source)
                 self.logger.info(f"Image file format detection {'succeeded' if result else 'failed'}")
                 return result
+            else:
+                self.logger.error(f"Unsupported disk type: {disk_type}")
+                raise ValueError(f"Unsupported disk type: {disk_type}")
 
         except Exception as e:
             self.logger.exception(f"Error opening disk: {e}")
@@ -364,51 +395,115 @@ class DiskController:
         elif drive_size == "8":
             default_cylinders = 77
 
-        # Geometries to try, filtered by drive size
-        geometries = []
+        # First, determine if the disk is single-sided or double-sided
+        # by attempting to read from head 1
+        has_second_head = False
+        try:
+            self.logger.debug("Testing if disk has a second head (head 1)")
 
-        if drive_size == "3.5":
-            # 3.5" geometries
-            geometries = [
-                (DiskGeometry(80, 2, 18, 512), 500, "MFM"),  # 1.44MB 3.5" HD (most common)
-                (DiskGeometry(80, 2, 9, 512), 250, "MFM"),   # 720KB 3.5" DD
-                (DiskGeometry(80, 2, 21, 512), 500, "MFM"),  # 1.68MB DMF format
-            ]
-        elif drive_size == "5.25":
-            # 5.25" geometries
-            geometries = [
-                (DiskGeometry(40, 2, 15, 512), 500, "MFM"),  # 1.2MB 5.25" HD
-                (DiskGeometry(40, 2, 9, 512), 250, "MFM"),   # 360KB 5.25" DD
-                (DiskGeometry(40, 1, 9, 512), 250, "MFM"),   # 180KB 5.25" DD
-                (DiskGeometry(40, 1, 8, 512), 250, "MFM"),   # 160KB 5.25" DD
-            ]
-        elif drive_size == "8":
-            # 8" geometries
-            geometries = [
-                (DiskGeometry(77, 2, 26, 128), 250, "FM"),   # 500KB 8" SD
-                (DiskGeometry(77, 1, 26, 128), 250, "FM"),   # 250KB 8" SD
-                (DiskGeometry(77, 2, 8, 1024), 500, "MFM"),  # 1.2MB 8" DD
-                (DiskGeometry(77, 2, 15, 512), 500, "MFM"),  # 1.2MB 8" DD
-            ]
-        else:
-            # Fallback to 3.5" if unknown size
-            self.logger.warning(f"Unknown drive size '{drive_size}', falling back to 3.5\" formats")
-            geometries = [
-                (DiskGeometry(80, 2, 18, 512), 500, "MFM"),  # 1.44MB 3.5" HD
-                (DiskGeometry(80, 2, 9, 512), 250, "MFM"),   # 720KB 3.5" DD
-            ]
+            # Set temporary geometry just for testing
+            temp_geometry = DiskGeometry(
+                cylinders=default_cylinders,
+                heads=2,
+                sectors_per_track=18 if drive_size == "3.5" else 9,
+                sector_size=512
+            )
+            self.set_geometry(temp_geometry)
+
+            # Set temporary physical format
+            self.driver.set_physical_format(PhysicalFormat(
+                encoding="MFM",
+                rate=500 if drive_size == "3.5" else 250,
+                rpm=300 if drive_size != "8" else 360,
+                gap3=84 if drive_size != "8" else 26,
+                sectors_per_track=temp_geometry.sectors_per_track,
+                heads=temp_geometry.heads,
+                sector_size=temp_geometry.sector_size
+            ))
+
+            # Try to read something from head 1
+            # We'll do this by trying to read the sector data
+            try:
+                # Use the driver's read capability if possible
+                if hasattr(self.driver, '_read_track'):
+                    # Attempt to read track at head 1, cylinder 0
+                    self.logger.debug("Testing head 1 at cylinder 0")
+                    success = self.driver._read_track(0, 1)
+                    if success:
+                        self.logger.info("Successfully read from head 1 - disk is double-sided")
+                        has_second_head = True
+                    else:
+                        self.logger.info("Could not read from head 1 - disk appears to be single-sided")
+                else:
+                    # Try direct sector read as fallback
+                    self.logger.debug("Trying direct sector read from head 1")
+                    self.disk.read_sector(0, 1, 1)  # Try to read first sector on head 1
+                    self.logger.info("Successfully read from head 1 - disk is double-sided")
+                    has_second_head = True
+            except Exception as e:
+                self.logger.debug(f"Failed to read from head 1: {e}")
+                self.logger.info("Could not read from head 1 - disk appears to be single-sided")
+        except Exception as e:
+            self.logger.warning(f"Error testing for second head: {e}")
+            # If we can't test, assume double-sided as safer default
+            self.logger.info("Assuming double-sided disk due to test failure")
+            has_second_head = True
+
+        # Get formats from format_definitions.py
+        filtered_formats = []
+        try:
+            from .format_definitions import FLOPPY_FORMATS
+            for name, profile in FLOPPY_FORMATS.items():
+                # Filter formats based on drive size
+                if ((drive_size == "3.5" and "3.5\"" in profile.description) or
+                    (drive_size == "5.25" and "5.25\"" in profile.description) or
+                    (drive_size == "8" and "8\"" in profile.description)):
+
+                    # Filter formats based on detected head count
+                    if not has_second_head and profile.geometry.heads > 1:
+                        self.logger.debug(f"Skipping format {name} because it requires 2 heads but disk appears to be single-sided")
+                        continue
+
+                    # Extract all parameters directly from the profile
+                    geometry = DiskGeometry(
+                        cylinders=profile.geometry.cylinders,
+                        heads=profile.geometry.heads,
+                        sectors_per_track=profile.geometry.sectors_per_track,
+                        sector_size=profile.geometry.sector_size
+                    )
+
+                    # Preserve all physical format parameters
+                    fmt_params = {
+                        "rate": profile.physical_format.rate,
+                        "encoding": profile.physical_format.encoding,
+                        "rpm": profile.physical_format.rpm,
+                        "gap3": profile.physical_format.gap3,
+                        "cskew": profile.physical_format.cskew,
+                        "interleave": profile.physical_format.interleave
+                    }
+
+                    filtered_formats.append((geometry, fmt_params, name))
+                    self.logger.debug(f"Added format {name}: {profile.description} - "
+                                    f"{geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}, "
+                                    f"{fmt_params['encoding']}, {fmt_params['rate']}kbps")
+        except Exception as e:
+            self.logger.error(f"Error loading formats from format_definitions: {e}")
+            return False
 
         # Try each geometry until we find a valid filesystem
-        for geometry, rate, encoding in geometries:
+        for geometry, fmt_params, format_name in filtered_formats:
             self.set_geometry(geometry)
-            self.logger.debug(f"Trying geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}, {encoding} at {rate}kbps")
+            self.logger.debug(f"Trying geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}, "
+                            f"{fmt_params['encoding']} at {fmt_params['rate']}kbps, {fmt_params['rpm']}rpm, gap3={fmt_params['gap3']}")
 
-            # Set the physical format
+            # Set the physical format - make sure to use all parameters from the format
             self.driver.set_physical_format(PhysicalFormat(
-                encoding=encoding,
-                rate=rate,
-                rpm=300,
-                gap3=84,
+                encoding=fmt_params['encoding'],
+                rate=fmt_params['rate'],
+                rpm=fmt_params['rpm'],
+                gap3=fmt_params['gap3'],
+                cskew=fmt_params['cskew'],
+                interleave=fmt_params['interleave'],
                 sectors_per_track=geometry.sectors_per_track,
                 heads=geometry.heads,
                 sector_size=geometry.sector_size
@@ -445,20 +540,28 @@ class DiskController:
                 continue
 
         # If we get here, just set a default geometry for displaying something
+        default_heads = 1 if not has_second_head else 2
         default_geometry = DiskGeometry(
             cylinders=default_cylinders,
-            heads=2 if drive_size != "8" or drive_size != "5.25" else 1,
+            heads=default_heads,
             sectors_per_track=18 if drive_size == "3.5" else (9 if drive_size == "5.25" else 26),
             sector_size=512 if drive_size != "8" else 128
         )
         self.set_geometry(default_geometry)
+
+        # Set default physical format parameters based on drive size
+        default_encoding = "MFM" if drive_size != "8" else "FM"
+        default_rate = 500 if drive_size == "3.5" else 250
+        default_rpm = 300 if drive_size != "8" else 360
+        default_gap3 = 84 if drive_size != "8" else 26
+
         self.driver.set_physical_format(PhysicalFormat(
-            encoding="MFM" if drive_size != "8" else "FM",
-            rate=500 if drive_size == "3.5" else 250,
-            rpm=300 if drive_size != "8" else 360,
-            gap3=84 if drive_size != "8" else 26,
+            encoding=default_encoding,
+            rate=default_rate,
+            rpm=default_rpm,
+            gap3=default_gap3,
             sectors_per_track=default_geometry.sectors_per_track,
-            heads=default_geometry.heads,
+            heads=default_heads,
             sector_size=default_geometry.sector_size
         ))
         self.logger.warning("No filesystem detected, using default geometry for display")

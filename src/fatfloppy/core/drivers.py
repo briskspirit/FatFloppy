@@ -279,18 +279,20 @@ class GreaseweazleDriver(DiskIODriver):
             self.logger.debug(f"Using last successful format first: {self.last_successful_format}")
             formats_to_try.append(self.last_successful_format)
 
-        # Add ibm.scan as a reliable detector
-        formats_to_try.append(("ibm.scan", None))
+        # Only add ibm.scan for auto-detection if no custom format is defined
+        if not self.fmt_cls or not self.using_custom_diskdef:
+            # Add ibm.scan as a reliable detector
+            formats_to_try.append(("ibm.scan", None))
 
-        # Only add other formats as fallbacks if we don't have a known good format
-        if not self.last_successful_format and not (self.fmt_cls and self.using_custom_diskdef):
-            if self.physical_format:
-                if self.physical_format.encoding == "MFM":
-                    rate = self.physical_format.rate
-                    formats_to_try.append(("ibm.mfm", rate))
-                else:
-                    rate = self.physical_format.rate
-                    formats_to_try.append(("ibm.fm", rate))
+            # Only add other formats as fallbacks if we don't have a known good format
+            if not self.last_successful_format:
+                if self.physical_format:
+                    if self.physical_format.encoding == "MFM":
+                        rate = self.physical_format.rate
+                        formats_to_try.append(("ibm.mfm", rate))
+                    else:
+                        rate = self.physical_format.rate
+                        formats_to_try.append(("ibm.fm", rate))
 
         # Initialize empty track data
         self.track_data[(cylinder, head)] = {}
@@ -402,8 +404,9 @@ class GreaseweazleDriver(DiskIODriver):
                             self.last_successful_format = format_tuple
                             self.logger.debug(f"Setting last successful format to {format_tuple}")
 
-                        # Create a custom disk definition if we detected sectors and don't already have one
-                        if not self.using_custom_diskdef and self.physical_format:
+                        # Create a custom disk definition if we detected sectors using ibm.scan
+                        # and don't already have a custom definition
+                        if format_tuple[0] == "ibm.scan" and not self.using_custom_diskdef and self.physical_format:
                             self._create_and_set_custom_diskdef()
 
                         success = True
