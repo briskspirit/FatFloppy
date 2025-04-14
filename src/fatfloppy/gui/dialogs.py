@@ -1,7 +1,7 @@
 # src/fatfloppy/gui/dialogs.py
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
                              QDialogButtonBox, QGroupBox, QRadioButton, QFormLayout,
-                             QSpinBox, QWidget)
+                             QSpinBox)
 
 class DriveSelectionDialog(QDialog):
     def __init__(self, parent=None):

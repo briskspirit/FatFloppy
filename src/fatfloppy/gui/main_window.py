@@ -6,7 +6,8 @@ from PyQt6.QtCore import (QCoreApplication, Qt)
 from PyQt6.QtGui import (QAction, QFont)
 from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
                              QMainWindow, QMessageBox, QProgressDialog, QToolBar,
-                             QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView)
+                             QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
+                             QWidget, QVBoxLayout, QGroupBox)
 
 from ..core.controller import DiskController
 from .dialogs import DriveSelectionDialog
@@ -33,6 +34,195 @@ class FileBrowserApp(QMainWindow):
         # Set up application-wide monospaced font
         self.setup_fonts()
 
+    def initUI(self):
+        self.setWindowTitle("FatFloppy Disk Browser")
+        self.setGeometry(100, 100, 1200, 800)
+
+        # Menu Bar - with style adjustments
+        menu_bar = self.menuBar()
+        menu_bar.setStyleSheet("QMenuBar { min-height: 20px; max-height: 25px; }")
+        file_menu = menu_bar.addMenu("File")
+        file_menu.setStyleSheet("QMenu { padding: 5px; }")
+
+        open_image_action = QAction("Open Disk Image File", self)
+        open_image_action.triggered.connect(self.open_disk_image_file)
+        file_menu.addAction(open_image_action)
+
+        open_floppy_action = QAction("Open Physical Floppy", self)
+        open_floppy_action.triggered.connect(self.open_physical_floppy)
+        file_menu.addAction(open_floppy_action)
+
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # Main Toolbar
+        self.toolbar = QToolBar("Main Toolbar", self)
+        self.toolbar.setStyleSheet("QToolBar { spacing: 5px; min-height: 25px; max-height: 30px; }")
+        self.addToolBar(self.toolbar)
+
+        # Head selection action
+        self.head_action = QAction("Switch to head 1", self)
+        self.head_action.setToolTip("Switch between disk heads (sides)")
+        self.head_action.triggered.connect(self.toggle_head)
+        self.toolbar.addAction(self.head_action)
+        self.toolbar.addSeparator()
+
+        # Extract file action
+        extract_action = QAction("Extract", self)
+        extract_action.setToolTip("Extract selected file to local filesystem")
+        extract_action.triggered.connect(self.extract_selected_file)
+        self.toolbar.addAction(extract_action)
+
+        # Delete item action
+        delete_action = QAction("Delete", self)
+        delete_action.setToolTip("Delete selected file or directory")
+        delete_action.triggered.connect(self.delete_selected_item)
+        self.toolbar.addAction(delete_action)
+
+        # Create directory action
+        create_dir_action = QAction("New Folder", self)
+        create_dir_action.setToolTip("Create a new directory in current location")
+        create_dir_action.triggered.connect(self.create_directory)
+        self.toolbar.addAction(create_dir_action)
+
+        # Add file action
+        add_file_action = QAction("Add File", self)
+        add_file_action.setToolTip("Add a file to current directory")
+        add_file_action.triggered.connect(self.add_file)
+        self.toolbar.addAction(add_file_action)
+
+        # Directory Tree Dock
+        self.tree_dock = QDockWidget("Directory Tree", self)
+        self.tree_widget = QTreeWidget()
+        self.tree_widget.setHeaderLabel("Directories")
+        self.tree_widget.itemClicked.connect(self.select_directory)
+        self.tree_dock.setWidget(self.tree_widget)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.tree_dock)
+
+        # Disk Information Dock (Replacing BPB Information Dock)
+        self.disk_info_dock = QDockWidget("Disk Information", self)
+        disk_info_widget = QWidget()
+        disk_info_layout = QVBoxLayout(disk_info_widget)
+
+        # Geometry section
+        self.geometry_group = QGroupBox("Physical Geometry")
+        self.geometry_info = QLabel("No disk image loaded")
+        geometry_layout = QVBoxLayout(self.geometry_group)
+        geometry_layout.addWidget(self.geometry_info)
+        self.geometry_group.setLayout(geometry_layout)
+
+        # Filesystem section
+        self.filesystem_group = QGroupBox("Filesystem")
+        self.filesystem_info = QLabel("No filesystem detected")
+        filesystem_layout = QVBoxLayout(self.filesystem_group)
+        filesystem_layout.addWidget(self.filesystem_info)
+        self.filesystem_group.setLayout(filesystem_layout)
+
+        # Add sections to main layout
+        disk_info_layout.addWidget(self.geometry_group)
+        disk_info_layout.addWidget(self.filesystem_group)
+        disk_info_layout.setContentsMargins(2, 2, 2, 2)
+        disk_info_layout.setSpacing(4)
+
+        disk_info_widget.setLayout(disk_info_layout)
+        self.disk_info_dock.setWidget(disk_info_widget)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.disk_info_dock)
+
+        self.splitDockWidget(self.tree_dock, self.disk_info_dock, Qt.Orientation.Vertical)
+        self.resizeDocks([self.tree_dock, self.disk_info_dock], [640, 160], Qt.Orientation.Vertical)
+
+        # File List Dock
+        self.file_list_dock = QDockWidget("Files in Current Directory", self)
+        self.file_list = DragDropTreeWidget(self)
+        self.file_list.setHeaderLabels(["Name", "Size", "Date/Time", "Attr"])
+        self.file_list.setDragEnabled(True)
+        self.file_list.setAcceptDrops(True)
+        self.file_list.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.file_list_dock.setWidget(self.file_list)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_list_dock)
+
+        # Configure column widths
+        header = self.file_list.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)          # Name column
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents) # Size column
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch) # Date/Time column
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch) # Attributes column
+
+        # Disk Map Dock
+        self.disk_map_dock = QDockWidget("Disk Map", self)
+        self.disk_map = DiskMapView(self)
+        self.disk_map_view = self.disk_map.view
+        self.disk_map_dock.setWidget(self.disk_map_view)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.disk_map_dock)
+
+        self.splitDockWidget(self.file_list_dock, self.disk_map_dock, Qt.Orientation.Horizontal)
+        self.resizeDocks([self.file_list_dock, self.disk_map_dock], [480, 720], Qt.Orientation.Horizontal)
+
+        # Initialize UI displays
+        self.reset_ui()
+
+        self.statusBar().showMessage("Ready")
+
+    def reset_ui(self):
+        """Reset UI to initial empty state"""
+        self.root_node = None
+        self.current_node = None
+        self.current_path = "/"
+        self.current_head = 0
+        self.busy_clusters = []
+        self.free_space = 0
+        self.total_space = 0
+
+        if self.controller:
+            self.controller.close_disk()
+        self.controller = None
+
+        self.tree_widget.clear()
+        self.file_list.clear()
+        self.geometry_info.setText("No disk image loaded")
+        self.filesystem_info.setText("No filesystem detected")
+        self.disk_map.scene.clear()
+        self.disk_map.scene.addText("No disk image loaded").setPos(10, 10)
+
+        self.head_action.setEnabled(False)
+        self.head_action.setText("Switch to Head 1")
+
+        self.statusBar().showMessage("Ready")
+
+    def refresh_filesystem_ui(self, preserve_path=None):
+        """
+        Centralized method to refresh all filesystem-related UI components
+
+        Args:
+            preserve_path (str, optional): Path to navigate to after refresh.
+                                            If None, defaults to root.
+        """
+        # Rebuild the tree from the filesystem
+        self.root_node = self.build_fs_tree()
+        self.populate_tree()
+
+        # Restore the current directory selection if path provided
+        if preserve_path:
+            self.navigate_to_path(preserve_path)
+        else:
+            self.current_node = self.root_node
+            self.current_path = "/"
+            self.update_file_list()
+
+        # Update space usage information
+        self.get_busy_clusters()
+
+        # Update disk info with current geometry and filesystem information
+        self.update_disk_info()
+
+        # Redraw the disk map
+        self.draw_disk_map()
+
+        # Update status bar
+        self.statusBar().showMessage(f"Current path: {self.current_path}")
+
     def setup_fonts(self):
         """Setup application-wide monospaced font with fallbacks."""
         # List of monospaced fonts in order of preference
@@ -58,17 +248,13 @@ class FileBrowserApp(QMainWindow):
         # Apply the font to specific widgets that might need explicit setting
         self.tree_widget.setFont(self.app_font)
         self.file_list.setFont(self.app_font)
-        self.bpb_info.setFont(self.app_font)
+        self.geometry_info.setFont(self.app_font)
+        self.filesystem_info.setFont(self.app_font)
 
         # Create a slightly larger font for headings and labels
         header_font = QFont(self.app_font)
         # header_font.setPointSize(11)
         header_font.setBold(True)
-
-        # Apply to headers
-        self.tree_widget.headerItem().setFont(0, header_font)
-        for i in range(self.file_list.columnCount()):
-            self.file_list.headerItem().setFont(i, header_font)
 
     def perform_with_progress(self, operation, title="Operation in Progress..."):
         # Create a modal progress dialog
@@ -103,6 +289,174 @@ class FileBrowserApp(QMainWindow):
             del self._operation_result
             return result
         return None
+
+    def open_disk_image_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img)")
+        if not file_path:
+            return
+        try:
+            self.controller = DiskController()
+            if self.controller.open_disk(file_path, "image"):
+                self.root_node = self.build_fs_tree()
+                self.current_node = self.root_node
+                self.current_path = "/"
+                self.refresh_filesystem_ui()
+
+                # Check if disk has multiple heads
+                if self.controller.disk and self.controller.disk.geometry and self.controller.disk.geometry.heads > 1:
+                    self.head_action.setEnabled(True)
+                    self.head_action.setText(f"Switch to Head {1 - self.current_head}")
+                else:
+                    self.head_action.setEnabled(False)
+                    self.head_action.setText("Single-sided disk")
+
+                self.statusBar().showMessage(f"Loaded: {file_path}")
+            else:
+                self.reset_ui()
+                QMessageBox.critical(self, "Error", "Failed to open disk image")
+        except Exception as e:
+            self.reset_ui()
+            QMessageBox.critical(self, "Error", f"Failed to open disk image: {str(e)}")
+
+    def open_physical_floppy(self):
+        try:
+            # Create and show the drive selection dialog
+            dialog = DriveSelectionDialog(self)
+            if not dialog.exec():
+                return  # User cancelled
+
+            drive_letter, drive_size, format_info = dialog.get_selection()
+
+            self.controller = DiskController()
+            if self.controller.open_disk(None, "physical", drive_letter=drive_letter, drive_size=drive_size, format_info=format_info):
+                self.root_node = self.build_fs_tree()
+                self.current_node = self.root_node
+                self.current_path = "/"
+                self.refresh_filesystem_ui()
+
+                # Check if disk has multiple heads
+                if self.controller.disk and self.controller.disk.geometry and self.controller.disk.geometry.heads > 1:
+                    self.head_action.setEnabled(True)
+                    self.head_action.setText(f"Switch to Head {1 - self.current_head}")
+                else:
+                    self.head_action.setEnabled(False)
+                    self.head_action.setText("Single-sided disk")
+
+                format_name = self.controller.detect_format()
+                format_text = f" using {format_name}" if format_name else ""
+
+                # Add format info if custom was selected
+                if format_info and not format_info.get("profile_name"):
+                    format_text += f" (Custom format: {format_info.get('cylinders')}x{format_info.get('heads')}x{format_info.get('sectors_per_track')})"
+
+                self.statusBar().showMessage(f"Loaded physical floppy{format_text} (Drive: {drive_letter}, Size: {drive_size}\")")
+            else:
+                self.reset_ui()
+                QMessageBox.critical(self, "Error", "Failed to open physical floppy")
+        except Exception as e:
+            self.reset_ui()
+            QMessageBox.critical(self, "Error", f"Failed to open physical floppy: {str(e)}")
+
+    def update_disk_info(self):
+        """Update both geometry and filesystem information"""
+        self.update_geometry_info()
+        self.update_filesystem_info()
+
+    def update_geometry_info(self):
+        """Update physical geometry information"""
+        if not self.controller or not self.controller.disk or not self.controller.disk.geometry:
+            self.geometry_info.setText("Disk geometry not available")
+            return
+
+        geometry = self.controller.disk.geometry
+        total_sectors = geometry.total_sectors
+        total_bytes = total_sectors * geometry.sector_size
+
+        # Get format information
+        format_info = "Unknown"
+        format_name = self.controller.detect_format()
+        if format_name:
+            format_profile = self.controller.format_manager.get_format_by_name(format_name)
+            if format_profile:
+                format_info = format_profile.description
+
+        # Get physical format information if available
+        encoding = rpm = data_rate = "Unknown"
+        if hasattr(self.controller.driver, 'physical_format') and self.controller.driver.physical_format:
+            phys_format = self.controller.driver.physical_format
+            encoding = phys_format.encoding
+            rpm = f"{phys_format.rpm} RPM"
+            data_rate = f"{phys_format.rate} kbps"
+
+        # Build geometry info text
+        info = (
+            f"Format: {format_info}\n"
+            f"Encoding: {encoding}\n"
+            f"Data Rate: {data_rate}\n"
+            f"Rotation Speed: {rpm}\n"
+            f"Bytes per Sector: {geometry.sector_size}\n"
+            f"Sectors per Track: {geometry.sectors_per_track}\n"
+            f"Number of Heads: {geometry.heads}\n"
+            f"Number of Cylinders: {geometry.cylinders}\n"
+            f"Total Sectors: {total_sectors}\n"
+            f"Total Size: {total_bytes / 1024:.1f} KB"
+        )
+
+        self.geometry_info.setText(info)
+
+    def update_filesystem_info(self):
+        """Update filesystem and BPB information"""
+        if not self.controller:
+            self.filesystem_info.setText("No disk loaded")
+            return
+
+        # Get filesystem type
+        fs_type = self.controller.detect_filesystem() or "Unknown"
+        if fs_type == "Unknown":
+            self.filesystem_info.setText("No filesystem detected")
+            return
+
+        # Try to get free space
+        space_info = self.controller.get_free_space()
+        if space_info:
+            free_bytes, total_bytes = space_info
+            free_kb = free_bytes / 1024
+            total_kb = total_bytes / 1024
+            percent_free = (free_bytes / total_bytes * 100) if total_bytes > 0 else 0
+        else:
+            free_kb = 0
+            total_kb = 0
+            percent_free = 0
+
+        # Get additional BPB info if available
+        bpb_info = ""
+        if self.controller.filesystem and hasattr(self.controller.filesystem, 'boot_sector'):
+            bs = self.controller.filesystem.boot_sector
+            if hasattr(bs, 'sectors_per_cluster'):
+                bpb_info += f"Sectors per Cluster: {bs.sectors_per_cluster}\n"
+            if hasattr(bs, 'root_entries'):
+                bpb_info += f"Root Directory Entries: {bs.root_entries}\n"
+            if hasattr(bs, 'reserved_sectors'):
+                bpb_info += f"Reserved Sectors: {bs.reserved_sectors}\n"
+            if hasattr(bs, 'num_fats'):
+                bpb_info += f"Number of FATs: {bs.num_fats}\n"
+            if hasattr(bs, 'sectors_per_fat'):
+                bpb_info += f"Sectors per FAT: {bs.sectors_per_fat}\n"
+            if hasattr(bs, 'media_descriptor'):
+                bpb_info += f"Media Descriptor: 0x{bs.media_descriptor:02X}\n"
+            if hasattr(bs, 'volume_label') and bs.volume_label.strip():
+                bpb_info += f"Volume Label: {bs.volume_label}\n"
+            if hasattr(bs, 'fs_type') and bs.fs_type.strip():
+                bpb_info += f"Filesystem Type: {bs.fs_type}\n"
+
+        # Build filesystem info text
+        info = (
+            f"Filesystem: {fs_type}\n"
+            f"{bpb_info}"
+            f"Free Space: {free_kb:.1f} KB / {total_kb:.1f} KB ({percent_free:.1f}%)"
+        )
+
+        self.filesystem_info.setText(info)
 
     def build_fs_tree(self):
         """Builds a tree representation of the filesystem."""
@@ -225,289 +579,6 @@ class FileBrowserApp(QMainWindow):
                     parent.appendChild(node)
 
         return root_node
-
-    def initUI(self):
-        self.setWindowTitle("FatFloppy Disk Browser")
-        self.setGeometry(100, 100, 1200, 800)
-
-        # Menu Bar - with style adjustments
-        menu_bar = self.menuBar()
-        menu_bar.setStyleSheet("QMenuBar { min-height: 20px; max-height: 25px; }")
-        file_menu = menu_bar.addMenu("File")
-        file_menu.setStyleSheet("QMenu { padding: 5px; }")
-
-        open_image_action = QAction("Open Disk Image File", self)
-        open_image_action.triggered.connect(self.open_disk_image_file)
-        file_menu.addAction(open_image_action)
-
-        open_floppy_action = QAction("Open Physical Floppy", self)
-        open_floppy_action.triggered.connect(self.open_physical_floppy)
-        file_menu.addAction(open_floppy_action)
-
-        exit_action = QAction("Exit", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-
-        # Main Toolbar
-        self.toolbar = QToolBar("Main Toolbar", self)
-        self.toolbar.setStyleSheet("QToolBar { spacing: 5px; min-height: 25px; max-height: 30px; }")
-        self.addToolBar(self.toolbar)
-
-        # Head selection action
-        self.head_action = QAction("Switch to head 1", self)
-        self.head_action.setToolTip("Switch between disk heads (sides)")
-        self.head_action.triggered.connect(self.toggle_head)
-        self.toolbar.addAction(self.head_action)
-        self.toolbar.addSeparator()
-
-        # Extract file action
-        extract_action = QAction("Extract", self)
-        extract_action.setToolTip("Extract selected file to local filesystem")
-        extract_action.triggered.connect(self.extract_selected_file)
-        self.toolbar.addAction(extract_action)
-
-        # Delete item action
-        delete_action = QAction("Delete", self)
-        delete_action.setToolTip("Delete selected file or directory")
-        delete_action.triggered.connect(self.delete_selected_item)
-        self.toolbar.addAction(delete_action)
-
-        # Create directory action
-        create_dir_action = QAction("New Folder", self)
-        create_dir_action.setToolTip("Create a new directory in current location")
-        create_dir_action.triggered.connect(self.create_directory)
-        self.toolbar.addAction(create_dir_action)
-
-        # Add file action
-        add_file_action = QAction("Add File", self)
-        add_file_action.setToolTip("Add a file to current directory")
-        add_file_action.triggered.connect(self.add_file)
-        self.toolbar.addAction(add_file_action)
-
-        # Directory Tree Dock
-        self.tree_dock = QDockWidget("Directory Tree", self)
-        self.tree_widget = QTreeWidget()
-        self.tree_widget.setHeaderLabel("Directories")
-        self.tree_widget.itemClicked.connect(self.select_directory)
-        self.tree_dock.setWidget(self.tree_widget)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.tree_dock)
-
-        # BPB Information Dock
-        self.bpb_dock = QDockWidget("BPB Information", self)
-        self.bpb_info = QLabel("No disk image loaded")
-        self.bpb_dock.setWidget(self.bpb_info)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.bpb_dock)
-
-        self.splitDockWidget(self.tree_dock, self.bpb_dock, Qt.Orientation.Vertical)
-        self.resizeDocks([self.tree_dock, self.bpb_dock], [640, 160], Qt.Orientation.Vertical)
-
-        # File List Dock
-        self.file_list_dock = QDockWidget("Files in Current Directory", self)
-        self.file_list = DragDropTreeWidget(self)
-        self.file_list.setHeaderLabels(["Name", "Size", "Date/Time", "Attr"])
-        self.file_list.setDragEnabled(True)
-        self.file_list.setAcceptDrops(True)
-        self.file_list.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
-        self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.file_list_dock.setWidget(self.file_list)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_list_dock)
-
-        # Configure column widths
-        header = self.file_list.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)          # Name column
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents) # Size column
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch) # Date/Time column
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch) # Attributes column
-
-        # Disk Map Dock
-        self.disk_map_dock = QDockWidget("Disk Map", self)
-        self.disk_map = DiskMapView(self)
-        self.disk_map_view = self.disk_map.view
-        self.disk_map_dock.setWidget(self.disk_map_view)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.disk_map_dock)
-
-        self.splitDockWidget(self.file_list_dock, self.disk_map_dock, Qt.Orientation.Horizontal)
-        self.resizeDocks([self.file_list_dock, self.disk_map_dock], [480, 720], Qt.Orientation.Horizontal)
-
-        # Initialize UI displays
-        self.reset_ui()
-
-        self.statusBar().showMessage("Ready")
-
-    def reset_ui(self):
-        """Reset UI to initial empty state"""
-        self.root_node = None
-        self.current_node = None
-        self.current_path = "/"
-        self.current_head = 0
-        self.busy_clusters = []
-        self.free_space = 0
-        self.total_space = 0
-
-        if self.controller:
-            self.controller.close_disk()
-        self.controller = None
-
-        self.tree_widget.clear()
-        self.file_list.clear()
-        self.bpb_info.setText("No disk image loaded")
-        self.disk_map.scene.clear()
-        self.disk_map.scene.addText("No disk image loaded").setPos(10, 10)
-
-        self.head_action.setEnabled(False)
-        self.head_action.setText("Switch to Head 1")
-
-        self.statusBar().showMessage("Ready")
-
-    def refresh_filesystem_ui(self, preserve_path=None):
-        """
-        Centralized method to refresh all filesystem-related UI components
-
-        Args:
-            preserve_path (str, optional): Path to navigate to after refresh.
-                                          If None, defaults to root.
-        """
-        # Rebuild the tree from the filesystem
-        self.root_node = self.build_fs_tree()
-        self.populate_tree()
-
-        # Restore the current directory selection if path provided
-        if preserve_path:
-            self.navigate_to_path(preserve_path)
-        else:
-            self.current_node = self.root_node
-            self.current_path = "/"
-            self.update_file_list()
-
-        # Update space usage information
-        self.get_busy_clusters()
-
-        # Update BPB info with current free space
-        self.update_bpb_info()
-
-        # Redraw the disk map
-        self.draw_disk_map()
-
-        # Update status bar
-        self.statusBar().showMessage(f"Current path: {self.current_path}")
-
-    def open_disk_image_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img)")
-        if not file_path:
-            return
-        try:
-            self.controller = DiskController()
-            if self.controller.open_disk(file_path, "image"):
-                self.root_node = self.build_fs_tree()
-                self.current_node = self.root_node
-                self.current_path = "/"
-                self.refresh_filesystem_ui()
-
-                # Check if disk has multiple heads
-                if self.controller.disk and self.controller.disk.geometry and self.controller.disk.geometry.heads > 1:
-                    self.head_action.setEnabled(True)
-                    self.head_action.setText(f"Switch to Head {1 - self.current_head}")
-                else:
-                    self.head_action.setEnabled(False)
-                    self.head_action.setText("Single-sided disk")
-
-                self.statusBar().showMessage(f"Loaded: {file_path}")
-            else:
-                self.reset_ui()
-                QMessageBox.critical(self, "Error", "Failed to open disk image")
-        except Exception as e:
-            self.reset_ui()
-            QMessageBox.critical(self, "Error", f"Failed to open disk image: {str(e)}")
-
-    def open_physical_floppy(self):
-        try:
-            # Create and show the drive selection dialog
-            dialog = DriveSelectionDialog(self)
-            if not dialog.exec():
-                return  # User cancelled
-
-            drive_letter, drive_size, format_info = dialog.get_selection()
-
-            self.controller = DiskController()
-            if self.controller.open_disk(None, "physical", drive_letter=drive_letter, drive_size=drive_size, format_info=format_info):
-                self.root_node = self.build_fs_tree()
-                self.current_node = self.root_node
-                self.current_path = "/"
-                self.refresh_filesystem_ui()
-
-                # Check if disk has multiple heads
-                if self.controller.disk and self.controller.disk.geometry and self.controller.disk.geometry.heads > 1:
-                    self.head_action.setEnabled(True)
-                    self.head_action.setText(f"Switch to Head {1 - self.current_head}")
-                else:
-                    self.head_action.setEnabled(False)
-                    self.head_action.setText("Single-sided disk")
-
-                format_name = self.controller.detect_format()
-                format_text = f" using {format_name}" if format_name else ""
-
-                # Add format info if custom was selected
-                if format_info and not format_info.get("profile_name"):
-                    format_text += f" (Custom format: {format_info.get('cylinders')}x{format_info.get('heads')}x{format_info.get('sectors_per_track')})"
-
-                self.statusBar().showMessage(f"Loaded physical floppy{format_text} (Drive: {drive_letter}, Size: {drive_size}\")")
-            else:
-                self.reset_ui()
-                QMessageBox.critical(self, "Error", "Failed to open physical floppy")
-        except Exception as e:
-            self.reset_ui()
-            QMessageBox.critical(self, "Error", f"Failed to open physical floppy: {str(e)}")
-
-    def update_bpb_info(self):
-        if not self.controller or not self.controller.filesystem:
-            self.bpb_info.setText("No disk image loaded")
-            return
-
-        if not self.controller.disk or not self.controller.disk.geometry:
-            self.bpb_info.setText("Disk geometry not available")
-            return
-
-        geometry = self.controller.disk.geometry
-        sector_size = geometry.sector_size
-        total_sectors = geometry.total_sectors
-
-        # Try to get free space
-        space_info = self.controller.get_free_space()
-        if space_info:
-            free_bytes, total_bytes = space_info
-            free_kb = free_bytes / 1024
-            total_kb = total_bytes / 1024
-            percent_free = (free_bytes / total_bytes * 100) if total_bytes > 0 else 0
-        else:
-            total_bytes = total_sectors * sector_size
-            free_kb = 0
-            total_kb = total_bytes / 1024
-            percent_free = 0
-
-        # Get filesystem type
-        fs_type = self.controller.detect_filesystem() or "Unknown"
-
-        # Get format information
-        format_info = "Unknown"
-        format_name = self.controller.detect_format()
-        if format_name:
-            format_profile = self.controller.format_manager.get_format_by_name(format_name)
-            if format_profile:
-                format_info = format_profile.description
-
-        # Build info text
-        info = (
-            f"Bytes per Sector: {sector_size}\n"
-            f"Sectors per Track: {geometry.sectors_per_track}\n"
-            f"Number of Heads: {geometry.heads}\n"
-            f"Number of Tracks: {geometry.cylinders}\n"
-            f"Total Sectors: {total_sectors}\n"
-            f"Format: {format_info}\n"
-            f"Filesystem: {fs_type}\n"
-            f"Free Space: {free_kb:.1f} KB / {total_kb:.1f} KB ({percent_free:.1f}%)"
-        )
-
-        self.bpb_info.setText(info)
 
     def populate_tree(self):
         """Populate the directory tree widget"""
