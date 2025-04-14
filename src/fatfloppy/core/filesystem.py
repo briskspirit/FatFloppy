@@ -547,11 +547,19 @@ class FATFilesystem(Filesystem):
         self.logger.debug("Initializing filesystem parameters")
         bpb = self.boot_sector
 
+        # Sanity check for hidden sectors
+        if hasattr(bpb, 'hidden_sectors') and bpb.hidden_sectors > 100:
+            self.logger.warning(f"Unreasonable hidden_sectors value: {bpb.hidden_sectors}, capping at 0")
+            bpb.hidden_sectors = 0
+
         # Basic parameters
         self.cluster_size = bpb.sectors_per_cluster * bpb.bytes_per_sector
 
         # Calculate important offsets
-        self.fat_start = (bpb.reserved_sectors + bpb.hidden_sectors) * bpb.bytes_per_sector
+        self.fat_start = bpb.reserved_sectors * bpb.bytes_per_sector
+        # Only add hidden sectors if reasonable value
+        if hasattr(bpb, 'hidden_sectors') and bpb.hidden_sectors > 0 and bpb.hidden_sectors < 100:
+            self.fat_start += bpb.hidden_sectors * bpb.bytes_per_sector
 
         # Root directory follows the FATs
         fat_size_bytes = bpb.sectors_per_fat * bpb.bytes_per_sector

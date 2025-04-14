@@ -203,8 +203,17 @@ class GreaseweazleDriver(DiskIODriver):
 
         self.logger.debug("Creating custom disk definition")
         # Get geometry information from physical format
+
+        # Determine appropriate cylinder count based on drive size and density
+        cylinders = 80  # Default for 3.5" disks
+        if hasattr(self, 'drive_size') and self.drive_size == "5.25":
+            # For 5.25" disks, DD is typically 40 cylinders, HD is 80
+            # Determine based on data rate - 250Kbps is DD, 500Kbps is HD
+            if self.physical_format.rate == 250:
+                cylinders = 40
+
         params = {
-            'cyls': 80,  # Assume 80 cylinders
+            'cyls': cylinders,
             'heads': self.physical_format.heads,
             'sectors_per_track': self.physical_format.sectors_per_track,
             'sector_size': self.physical_format.sector_size,
@@ -249,7 +258,7 @@ class GreaseweazleDriver(DiskIODriver):
             self.fmt_cls = disk_def
             self.using_custom_diskdef = True
             self.logger.info(f"Custom disk definition created: {params['sectors_per_track']} sectors, "
-                          f"{params['sector_size']} bytes/sector, {params['encoding']} encoding")
+                        f"{params['sector_size']} bytes/sector, {params['encoding']} encoding")
         except Exception as e:
             self.logger.error(f"Failed to create custom disk definition: {e}", exc_info=True)
 
