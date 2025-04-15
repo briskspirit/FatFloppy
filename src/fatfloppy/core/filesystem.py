@@ -132,6 +132,7 @@ class FATFilesystem(Filesystem):
         self._init_completed = False
         self.boot_sector = self._read_boot_sector()
         self._cached_allocated_clusters = None
+        self.fat_cache: Optional[bytearray] = None # In-memory cache for FAT sectors
 
         if self.is_valid():
             self._initialize_filesystem_parameters()
@@ -819,132 +820,183 @@ class FATFilesystem(Filesystem):
         self.logger.debug(f"LBA {lba} = C:{cylinder} H:{head} S:{sector}")
         return cylinder, head, sector
 
-    def _read_fat_sectors(self) -> List[bytearray]:
-        """Load all FAT sectors into memory."""
-        self.logger.debug("Reading all FAT sectors into memory")
-        fat_start = self.fat_start
-        fat_size = self.boot_sector.sectors_per_fat * self.boot_sector.bytes_per_sector
-        fat_data = []
-        for i in range(self.boot_sector.num_fats):
-            offset = fat_start + (i * fat_size)
-            fat_sectors = bytearray(self._read_bytes(offset, fat_size))
-            self.logger.debug(f"Read FAT {i+1} at offset {offset}, size {fat_size} bytes")
-            fat_data.append(fat_sectors)
-        return fat_data
+    def _read_fat_sectors(self) -> None:
+        """Reads all FAT sectors for the primary FAT into the cache."""
+        if self.fat_cache is not None:
+            self.logger.debug("FAT cache already loaded")
+            return
+        try:
+            self.logger.debug("Reading all FAT sectors into memory")
+            fat_size_bytes = self.boot_sector.sectors_per_fat * self.boot_sector.bytes_per_sector
+            # Read only the primary FAT (FAT #0)
+            self.fat_cache = bytearray(self._read_bytes(self.fat_start, fat_size_bytes))
+            self.logger.info(f"Read {len(self.fat_cache)} bytes into FAT cache (FAT #1)")
+        except Exception as e:
+            self.logger.error(f"Error reading FAT sectors into cache: {e}", exc_info=True)
+            self.fat_cache = None # Ensure cache is None on error
+            raise # Re-raise the exception
 
-    def _write_fat_sectors(self, fat_data: List[bytearray]) -> None:
-        """Write all FAT sectors back to disk."""
-        self.logger.debug("Writing all FAT sectors back to disk")
-        fat_start = self.fat_start
-        fat_size = self.boot_sector.sectors_per_fat * self.boot_sector.bytes_per_sector
-        for i, fat in enumerate(fat_data):
-            offset = fat_start + (i * fat_size)
-            self._write_bytes(offset, fat)
-            self.logger.debug(f"Wrote FAT {i+1} at offset {offset}, size {len(fat)} bytes")
+    def _write_fat_sectors(self) -> None:
+        """Writes the cached FAT sectors back to both FAT copies on disk."""
+        if self.fat_cache is None:
+            self.logger.warning("FAT cache is not loaded, cannot write back.")
+            return
+        try:
+            self.logger.debug("Writing all FAT sectors back to disk")
+            fat_size_bytes = len(self.fat_cache)
+            for fat_num in range(self.boot_sector.num_fats):
+                fat_offset = self.fat_start + (fat_num * fat_size_bytes)
+                self._write_bytes(fat_offset, self.fat_cache)
+                self.logger.info(f"Wrote {fat_size_bytes} bytes from cache to FAT #{fat_num+1} at offset {fat_offset}")
+            # Invalidate cluster list cache after writing FAT
+            self._cached_allocated_clusters = None
+        except Exception as e:
+            self.logger.error(f"Error writing FAT sectors from cache: {e}", exc_info=True)
+            raise
 
     def _read_fat_entry(self, cluster: int) -> int:
-        self.logger.debug(f"Reading FAT entry for cluster {cluster}")
+        """Read a FAT12 entry for the given cluster number using the cache."""
+        self.logger.debug(f"Reading FAT entry for cluster {cluster} (using cache)")
+        return self._read_fat_entry_mem(cluster) # Read from cache
+
+    def _read_fat_entry_mem(self, cluster: int) -> int:
+        """Reads a FAT12 entry from the in-memory cache."""
+        if self.fat_cache is None:
+            self.logger.debug("FAT cache miss, loading FAT sectors.")
+            self._read_fat_sectors()
+            if self.fat_cache is None: # Check again in case read failed
+                 self.logger.error(f"Cannot read FAT entry for cluster {cluster}: Cache load failed.")
+                 # Or potentially fall back to direct read? For now, raise error
+                 raise IOError("Failed to load FAT cache for reading entry")
+
+        # self.logger.debug(f"Reading FAT entry from memory for cluster {cluster}")
         if self.fat_type == "FAT12":
-            byte_offset = (cluster * 3) // 2
-            fat_offset = self.fat_start + byte_offset
-            value_bytes = self._read_bytes(fat_offset, 2)
-            value = struct.unpack("<H", value_bytes)[0]
+            byte_offset = int(cluster * 1.5)
+            # Check bounds
+            if byte_offset + 1 >= len(self.fat_cache):
+                 self.logger.error(f"FAT cache bounds error reading cluster {cluster} (offset {byte_offset})")
+                 # Handle error appropriately, e.g., return a specific value or raise
+                 return 0xFFFF # Indicate an error? Or raise?
+            # Read 2 bytes directly from cache
+            value = struct.unpack_from('<H', self.fat_cache, byte_offset)[0]
             if cluster % 2 == 0:
                 fat_value = value & 0x0FFF
             else:
                 fat_value = value >> 4
-            self.logger.debug(f"FAT entry for cluster {cluster} = 0x{fat_value:03X}")
+            # self.logger.debug(f"Memory FAT entry for cluster {cluster} = 0x{fat_value:03X}")
             return fat_value
         else:
-            error_msg = f"Unsupported FAT type: {self.fat_type}"
-            self.logger.error(error_msg)
             raise NotImplementedError("Only FAT12 is supported")
 
-    def _read_fat_entry_mem(self, cluster: int, fat_data: bytearray) -> int:
-        """Read a FAT12 entry from in-memory FAT data."""
-        self.logger.debug(f"Reading FAT entry from memory for cluster {cluster}")
-        byte_offset = (cluster * 3) // 2
-        value = struct.unpack_from("<H", fat_data, byte_offset)[0]
-        if cluster % 2 == 0:
-            fat_value = value & 0x0FFF
-        else:
-            fat_value = value >> 4
-        self.logger.debug(f"Memory FAT entry for cluster {cluster} = 0x{fat_value:03X}")
-        return fat_value
+    def _set_fat_entry_mem(self, cluster: int, value: int) -> None:
+        """Sets a FAT12 entry in the in-memory cache."""
+        if self.fat_cache is None:
+             self.logger.debug("FAT cache miss on set, loading FAT sectors.")
+             self._read_fat_sectors()
+             if self.fat_cache is None:
+                  self.logger.error(f"Cannot set FAT entry for cluster {cluster}: Cache load failed.")
+                  raise IOError("Failed to load FAT cache for setting entry")
 
-    def _set_fat_entry_mem(self, cluster: int, value: int, fat_data: bytearray) -> None:
-        """Set a FAT12 entry in in-memory FAT data."""
         self.logger.debug(f"Setting FAT entry in memory for cluster {cluster} to 0x{value:03X}")
-        value &= 0x0FFF
-        byte_offset = (cluster * 3) // 2
-        current = struct.unpack_from("<H", fat_data, byte_offset)[0]
-        if cluster % 2 == 0:
-            new_value = (current & 0xF000) | value
-        else:
-            new_value = (current & 0x000F) | (value << 4)
-        struct.pack_into("<H", fat_data, byte_offset, new_value)
-        self.logger.debug(f"Updated memory FAT entry at offset {byte_offset} to 0x{new_value:04X}")
-
-    def _set_fat_entry(self, cluster: int, value: int) -> None:
-        self.logger.debug(f"Setting FAT entry for cluster {cluster} to 0x{value:03X}")
         if self.fat_type == "FAT12":
             value &= 0x0FFF
-            for fat_num in range(self.boot_sector.num_fats):
-                fat_offset = self.fat_start + (fat_num * self.boot_sector.sectors_per_fat * self.boot_sector.bytes_per_sector)
-                offset = fat_offset + int(cluster * 1.5)
-                self.logger.debug(f"Updating FAT #{fat_num+1} at offset {offset}")
-                if cluster % 2 == 0:
-                    value_bytes = self._read_bytes(offset, 2)
-                    current_value = struct.unpack('<H', value_bytes)[0]
-                    new_value = (current_value & 0xF000) | value
-                    self._write_bytes(offset, struct.pack('<H', new_value))
-                    self.logger.debug(f"Updated even cluster entry: 0x{current_value:04X} -> 0x{new_value:04X}")
-                else:
-                    value_bytes = self._read_bytes(offset, 2)
-                    current_value = struct.unpack('<H', value_bytes)[0]
-                    new_value = (current_value & 0x000F) | (value << 4)
-                    self._write_bytes(offset, struct.pack('<H', new_value))
-                    self.logger.debug(f"Updated odd cluster entry: 0x{current_value:04X} -> 0x{new_value:04X}")
+            byte_offset = int(cluster * 1.5)
+            # Check bounds
+            if byte_offset + 1 >= len(self.fat_cache):
+                 self.logger.error(f"FAT cache bounds error writing cluster {cluster} (offset {byte_offset})")
+                 raise IndexError("FAT cache offset out of bounds")
+
+            # Read current 2 bytes from cache
+            current_value = struct.unpack_from('<H', self.fat_cache, byte_offset)[0]
+            if cluster % 2 == 0: # Even
+                new_value = (current_value & 0xF000) | value
+            else: # Odd
+                new_value = (current_value & 0x000F) | (value << 4)
+            # Write the modified 2 bytes back to cache
+            struct.pack_into('<H', self.fat_cache, byte_offset, new_value)
+            old_fat_value = 0 # Assume free initially for simplicity of check
+            if cluster % 2 == 0: old_fat_value = current_value & 0x0FFF
+            else: old_fat_value = current_value >> 4
+
+            if (old_fat_value == 0 and value != 0) or \
+            (old_fat_value != 0 and value == 0):
+                # We allocated a free cluster or freed an allocated one
+                self.logger.debug("Invalidating _cached_allocated_clusters due to FAT change")
+                self._cached_allocated_clusters = None
+            # self.logger.debug(f"Updated memory FAT entry at offset {byte_offset} to 0x{new_value:04X}")
         else:
-            self.logger.error(f"Unsupported FAT type: {self.fat_type}")
             raise NotImplementedError("Only FAT12 is supported")
 
+    def _set_fat_entry(self, cluster: int, value: int) -> None:
+        """Sets FAT entry in cache and writes cache back to disk buffer."""
+        self.logger.debug(f"Setting FAT entry for cluster {cluster} to 0x{value:03X} (will write cache)")
+        self._set_fat_entry_mem(cluster, value) # Update cache
+        self._write_fat_sectors()              # Write cache back immediately
+
     def _get_cluster_chain(self, start_cluster: int) -> List[int]:
+        """Get the list of clusters in a chain starting from start_cluster"""
         self.logger.debug(f"Getting cluster chain starting from cluster {start_cluster}")
         if start_cluster == 0:
             self.logger.debug("Root directory (cluster 0) has no cluster chain")
             return []
-
         if start_cluster < 2:
             self.logger.warning(f"Invalid starting cluster {start_cluster}")
             return []
 
+        # ***** REMOVE THIS LINE *****
+        # fat_data = self._read_fat_sectors()[0] # Incorrect - _read_fat_sectors returns None
+        # **************************
+
         chain = []
         cluster = start_cluster
-        max_length = min(1000, self.num_clusters)
+        max_length = self.num_clusters + 2 # Allow slightly more than total for error detection
         self.logger.debug(f"Following chain with max length {max_length}")
 
-        fat_data = self._read_fat_sectors()[0]
         while cluster >= 2 and cluster < 0xFF0 and len(chain) < max_length:
             chain.append(cluster)
-            next_cluster = self._read_fat_entry_mem(cluster, fat_data)
+
+            # ***** USE _read_fat_entry *****
+            # This method correctly uses the cache via _read_fat_entry_mem
+            next_cluster = self._read_fat_entry(cluster)
+            # *****************************
+
             self.logger.debug(f"Cluster {cluster} -> Next cluster: 0x{next_cluster:03X}")
-            if next_cluster >= 0xFF0:
-                self.logger.debug(f"End of chain reached at cluster {cluster}")
+
+            if next_cluster >= 0xFF8: # Check for EOC (>= 0xFF8 for FAT12) or bad cluster
+                self.logger.debug(f"End of chain or special marker reached at cluster {cluster}")
                 break
+            if next_cluster == 0: # Pointing to free cluster - chain broken
+                 self.logger.warning(f"Chain broken at cluster {cluster}: points to free cluster 0")
+                 break
+            if next_cluster < 2: # Invalid cluster pointer
+                 self.logger.warning(f"Chain broken at cluster {cluster}: points to invalid cluster {next_cluster}")
+                 break
+
+            # Detect circular chains more robustly
             if next_cluster in chain:
-                self.logger.warning(f"Circular reference detected at cluster {next_cluster}")
+                self.logger.warning(f"Circular reference detected at cluster {next_cluster} (points back into chain)")
+                # Decide how to handle - truncate or raise? Truncate for now.
                 break
+
             cluster = next_cluster
+
+        if len(chain) >= max_length:
+             self.logger.warning(f"Cluster chain exceeded maximum length ({max_length}), possibly unterminated or looped.")
 
         self.logger.debug(f"Cluster chain contains {len(chain)} clusters")
         return chain
 
     def _find_free_cluster(self) -> Optional[int]:
-        self.logger.debug("Searching for a free cluster")
-        fat_data = self._read_fat_sectors()[0]
+        """Find the next free cluster using the in-memory FAT cache."""
+        self.logger.debug("Searching for a free cluster (using cache)")
+        if self.fat_cache is None: # Load cache if not already loaded
+            self._read_fat_sectors()
+        if self.fat_cache is None: # Check if loading failed
+            self.logger.error("Cannot find free cluster: FAT cache failed to load.")
+            return None
+
         for cluster in range(2, self.num_clusters + 2):
-            if self._read_fat_entry_mem(cluster, fat_data) == 0:
+            if self._read_fat_entry_mem(cluster) == 0: # Read from cache
                 self.logger.debug(f"Found free cluster: {cluster}")
                 return cluster
         self.logger.warning("No free clusters found")
@@ -956,67 +1008,97 @@ class FATFilesystem(Filesystem):
             self.logger.debug("No clusters requested, returning empty list")
             return []
 
-        fat_data_list = self._read_fat_sectors()
-        primary_fat = fat_data_list[0]
+        # Ensure FAT cache is loaded and up-to-date before starting
+        if self.fat_cache is None:
+            self._read_fat_sectors()
+        # If allocation happened before, ensure subsequent writes flushed the cache
+        # For simplicity here, assume cache is ready or read again if needed.
 
         clusters = []
         prev_cluster = None
 
         for i in range(num_clusters):
-            cluster = None
-            for c in range(2, self.num_clusters + 2):
-                if self._read_fat_entry_mem(c, primary_fat) == 0:
-                    cluster = c
-                    break
+            cluster = self._find_free_cluster() # Finds based on current cache state
             if cluster is None:
-                self.logger.warning(f"Could not allocate {num_clusters} clusters (allocated {len(clusters)})")
+                # ... (handle error, free previously allocated clusters IN CACHE) ...
+                self.logger.warning(f"Could not allocate {num_clusters} clusters (allocated {len(clusters)} so far)")
                 for c in clusters:
-                    self._set_fat_entry_mem(c, 0, primary_fat)
-                self._write_fat_sectors(fat_data_list)
+                    self.logger.debug(f"Freeing previously allocated cluster {c} in cache")
+                    self._set_fat_entry_mem(c, 0) # Use memory version
+                # Note: We might not need to write FAT back here if we failed.
                 return None
+
+            # ***** FIX: Mark cluster as non-free *immediately* in the cache *****
+            # Temporarily mark it, e.g., with a temporary value like 0xFFE or the next cluster if known
+            # Let's use 0xFFF for now, it will be overwritten by the link later if needed
+            self._set_fat_entry_mem(cluster, 0xFFF) # Mark as used in cache
+            # *****************************************************************
 
             clusters.append(cluster)
             self.logger.debug(f"Allocated cluster {cluster} ({i+1}/{num_clusters})")
 
             if prev_cluster is not None:
-                self._set_fat_entry_mem(prev_cluster, cluster, primary_fat)
+                self.logger.debug(f"Linking cluster {prev_cluster} -> {cluster} in cache")
+                # This links the *previous* cluster to the *current* one
+                self._set_fat_entry_mem(prev_cluster, cluster)
 
             prev_cluster = cluster
 
+        # Mark the *actual* last cluster as end of chain (0xFFF)
+        # This might overwrite the temporary marker placed above, which is fine.
         if prev_cluster is not None:
-            self._set_fat_entry_mem(prev_cluster, 0xFFF, primary_fat)
+            self.logger.debug(f"Marking cluster {prev_cluster} as end of chain in cache")
+            self._set_fat_entry_mem(prev_cluster, 0xFFF)
 
-        for fat in fat_data_list:
-            fat[:] = primary_fat
-        self._write_fat_sectors(fat_data_list)
+        # ----> Crucial: Write the modified cache back to disk buffer <----
+        self._write_fat_sectors()
 
         self.logger.info(f"Successfully allocated chain of {len(clusters)} clusters")
         return clusters
 
     def _free_cluster_chain(self, start_cluster: int) -> None:
+        """Frees a chain of clusters in the FAT, starting from start_cluster."""
         self.logger.debug(f"Freeing cluster chain starting at cluster {start_cluster}")
         if start_cluster < 2:
-            self.logger.debug("Invalid start cluster, nothing to free")
-            return
+             self.logger.warning(f"Attempted to free invalid start cluster {start_cluster}")
+             return
 
-        fat_data_list = self._read_fat_sectors()
-        primary_fat = fat_data_list[0]
-
-        current_cluster = start_cluster
+        cluster = start_cluster
         freed_count = 0
-        while current_cluster >= 2 and current_cluster <= self.num_clusters + 1:
-            next_cluster = self._read_fat_entry_mem(current_cluster, primary_fat)
-            self.logger.debug(f"Freeing cluster {current_cluster}, next is {next_cluster}")
-            self._set_fat_entry_mem(current_cluster, 0, primary_fat)
-            freed_count += 1
-            if next_cluster >= 0xFF8 or next_cluster < 2:
-                break
-            current_cluster = next_cluster
+        # Limit loop iterations to prevent infinite loops on corrupted FATs
+        max_iterations = self.num_clusters + 2
 
-        for fat in fat_data_list:
-            fat[:] = primary_fat
-        self._write_fat_sectors(fat_data_list)
+        for _ in range(max_iterations):
+            if cluster < 2 or cluster >= 0xFF0: # Stop if invalid or EOC/bad
+                break
+
+            # Read the *next* cluster number BEFORE overwriting the current entry
+            next_cluster = self._read_fat_entry(cluster)
+
+            # Mark the *current* cluster as free (0)
+            self.logger.debug(f"Freeing cluster {cluster} (next was 0x{next_cluster:03X})")
+            self._set_fat_entry(cluster, 0) # This uses cache + writes back immediately
+            freed_count += 1
+
+            # Move to the next cluster in the chain
+            cluster = next_cluster
+
+            # Check for explicit end of chain marker after reading it
+            if next_cluster >= 0xFF8: # >= 0xFF8 for FAT12 EOC/reserved
+                 self.logger.debug("End of chain marker reached during free.")
+                 break
+            # Check for broken chain (pointing to already free cluster)
+            if next_cluster == 0:
+                 self.logger.warning("Chain broken during free: encountered pointer to free cluster.")
+                 break
+
+        if _ == max_iterations - 1 and cluster >= 2 and cluster < 0xFF0:
+             self.logger.warning(f"Cluster chain freeing exceeded maximum iterations ({max_iterations}), possibly looped.")
+
+        # No need to explicitly write FAT sectors here, as _set_fat_entry does it now.
         self.logger.info(f"Freed {freed_count} clusters in chain")
+        # Invalidate the cluster list cache as allocation has changed
+        self._cached_allocated_clusters = None
 
     def _read_cluster_chain(self, cluster_chain: List[int],
                         progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
@@ -1153,7 +1235,20 @@ class FATFilesystem(Filesystem):
             self.logger.warning(f"Invalid name structure: {parts}")
             return False
 
-        if len(parts[0]) > 8 or (len(parts) == 2 and len(parts[1]) > 3):
+        name_part = parts[0]
+        ext_part = parts[1] if len(parts) == 2 else ""
+
+        # --- FIX: Add checks for trailing/leading dots ---
+        if name_part.endswith('.') or (ext_part and ext_part.endswith('.')):
+            self.logger.warning(f"Name or extension ends with a dot: '{name}'")
+            return False
+        if name_part.startswith('.') or (ext_part and ext_part.startswith('.')):
+            self.logger.warning(f"Name or extension starts with a dot: '{name}'")
+            return False # Technically allowed by some OS, but often problematic
+        # --- END FIX ---
+
+        # Check name and extension lengths
+        if len(name_part) > 8 or len(ext_part) > 3:
             self.logger.warning(f"Name or extension too long: {parts}")
             return False
 

@@ -17,11 +17,14 @@ class DiskController:
         self.filesystem: Optional[Filesystem] = None
         self.format_manager = FormatManager()
         self.driver: Optional[DiskIODriver] = None
+        self.explicit_format_set = False
         self.logger.debug("DiskController initialized")
 
     def open_disk(self, source: str, disk_type: str = "image", drive_letter: str = "A", drive_size: str = "3.5", format_info: dict = None) -> bool:
         if self.disk:
             self.close_disk()
+
+        self.explicit_format_set = False
 
         try:
             # Create appropriate driver
@@ -32,6 +35,7 @@ class DiskController:
 
                 # Apply format parameters if provided
                 if format_info:
+                    self.explicit_format_set = True
                     self.logger.info(f"Using user-specified format parameters")
                     physical_format = PhysicalFormat(
                         encoding=format_info.get("encoding", "MFM"),
@@ -236,8 +240,8 @@ class DiskController:
                         )
                         self.set_geometry(updated_geometry)
 
-                # Now check BPB data only if we don't have custom detection
-                elif hasattr(self.filesystem, 'boot_sector'):
+                # Only update from BPB if an explicit format wasn't provided during open_disk
+                elif not self.explicit_format_set and hasattr(self.filesystem, 'boot_sector'):
                     bs = self.filesystem.boot_sector
 
                     # Only update geometry from BPB if the detected values are valid and reasonable

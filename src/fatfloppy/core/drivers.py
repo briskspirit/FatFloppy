@@ -1,3 +1,5 @@
+# src/fatfloppy/core/drivers.py
+import io
 from dataclasses import dataclass
 from typing import List
 
@@ -671,15 +673,43 @@ class RawImageDriver(DiskIODriver):
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
-        offset = self._calculate_sector_offset(cylinder, head, sector)
-        self.logger.debug(f"Writing sector C:{cylinder} H:{head} S:{sector} to offset {offset}, {len(data)} bytes")
+        # --- Revised Logic for Standard Block Write ---
+        sector_size = self.physical_format.sector_size
 
-        # Ensure image_data is large enough
-        if offset + len(data) > len(self.image_data):
-            self.logger.info(f"Extending image size from {len(self.image_data)} to {offset + len(data)} bytes")
-            self.image_data.extend(b'\x00' * (offset + len(data) - len(self.image_data)))
+        # Ensure the provided data matches the expected sector size.
+        # This makes the driver more robust, although the filesystem layer
+        # should already handle padding.
+        if len(data) != sector_size:
+            self.logger.warning(f"RawImageDriver.write_sector received data size {len(data)} != sector size {sector_size}. Adjusting.")
+            if len(data) < sector_size:
+                # Pad data if too short
+                data = data + bytes(sector_size - len(data))
+            else:
+                # Truncate data if too long
+                data = data[:sector_size]
 
-        self.image_data[offset:offset + len(data)] = data
+        # Calculate the starting offset for this logical sector in the image buffer
+        sector_start_offset = self._calculate_sector_offset(cylinder, head, sector)
+        sector_end_offset = sector_start_offset + sector_size
+
+        self.logger.debug(f"Writing sector C:{cylinder} H:{head} S:{sector} ({len(data)} bytes) at image offset {sector_start_offset}")
+
+        # 1. Ensure image_data buffer is large enough to contain the entire target sector
+        if sector_end_offset > len(self.image_data):
+            self.logger.info(f"Extending image size from {len(self.image_data)} to {sector_end_offset} bytes to contain full sector")
+            padding_needed = sector_end_offset - len(self.image_data)
+            self.image_data.extend(b'\x00' * padding_needed)
+
+        # 2. Write the provided sector data directly into the image buffer
+        #    The calling layer (e.g., FATFilesystem._write_bytes) is responsible
+        #    for ensuring 'data' contains the correct full sector content.
+        try:
+            self.image_data[sector_start_offset : sector_end_offset] = data
+        except IndexError as e:
+             # This should ideally not happen after the extension check, but good to catch
+             self.logger.error(f"IndexError during image buffer write! Offset: {sector_start_offset}, End: {sector_end_offset}, Buffer size: {len(self.image_data)}", exc_info=True)
+             raise e # Re-raise after logging
+
         self.dirty = True
 
     def flush(self) -> None:

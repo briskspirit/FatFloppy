@@ -30,9 +30,10 @@ class Disk:
         self.logger.debug("Disk object initialized")
 
     def set_geometry(self, geometry: DiskGeometry) -> None:
-        self.logger.info(f"Setting disk geometry: {geometry.cylinders}x{geometry.heads}x{geometry.sectors_per_track}, "
-                       f"{geometry.sector_size} bytes/sector")
+        self.logger.info(f"Setting disk geometry from object: {geometry!r}") # Log the passed object
+        self.logger.info(f"  Passed Geometry -> Cyls: {geometry.cylinders}, Heads: {geometry.heads}, SPT: {geometry.sectors_per_track}, Size: {geometry.sector_size}")
         self.geometry = geometry
+        self.logger.info(f"  Result self.geometry -> Cyls: {self.geometry.cylinders}, Heads: {self.geometry.heads}, SPT: {self.geometry.sectors_per_track}, Size: {self.geometry.sector_size}")
 
         # Update the driver's physical format with geometry settings
         if not hasattr(self.driver, "physical_format") or not self.driver.physical_format:
