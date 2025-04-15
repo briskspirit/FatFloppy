@@ -419,31 +419,9 @@ class TestFATFilesystem(unittest.TestCase):
         root_entries = self.fs.list_directory("/")
         self.assertEqual(root_entries, [])
 
-    # --- BPB / Geometry Tests ---
-    # These would ideally use the DiskController, but we can test
-    # FATFilesystem's reliance on Disk geometry here.
-
-    def test_16_init_with_different_geometry_720k(self):
-        # Re-setup with 720KB geometry on the same (initially 1.44MB) image data
-        # This simulates reading a 720KB disk in a 1.44MB drive/image.
-        # NOTE: For a *real* 720KB image, you'd need a different test file.
-        # Here we just test if the FS logic *uses* the provided geometry.
-        self.disk.set_geometry(FMT_720.geometry)
-        # Re-init FS with the new geometry
-        fs_720 = FATFilesystem(self.disk)
-        self.assertTrue(fs_720.is_valid(), "Should still parse BPB even if geometry differs slightly")
-
-        # Check if calculations reflect 720KB geometry if BPB matches it
-        # On a standard 1.44MB formatted disk, the BPB *won't* match 720KB,
-        # so the FS should still report 1.44MB parameters based on BPB.
-        self.assertEqual(fs_720.boot_sector.total_sectors, 2880, "BPB total_sectors should override geometry")
-        self.assertEqual(fs_720.boot_sector.sectors_per_track, 18, "BPB sectors_per_track should override")
-        self.assertEqual(fs_720.boot_sector.num_heads, 2, "BPB num_heads should override")
-        self.assertEqual(fs_720.cluster_size, 512, "BPB dictates cluster size")
-
     # --- Robustness Tests ---
 
-    def test_17_read_file_corrupted_fat_chain_loop(self):
+    def test_16_read_file_corrupted_fat_chain_loop(self):
         # Create a file, then manually corrupt FAT to create a loop
         filename = "LOOP.DAT"
         filedata = bytes([i % 256 for i in range(1200)]) # Needs 3 clusters (c1, c2, c3)
@@ -475,7 +453,7 @@ class TestFATFilesystem(unittest.TestCase):
              print(f"Caught expected exception from reading looped FAT: {e}")
              pass
 
-    def test_18_read_file_corrupted_fat_chain_free_sector(self):
+    def test_17_read_file_corrupted_fat_chain_free_sector(self):
         # Create a file, then manually corrupt FAT to point to a free sector (0)
         filename = "FREEPTR.DAT"
         filedata = bytes([i % 256 for i in range(1200)]) # Needs 3 clusters (c1, c2, c3)
@@ -554,7 +532,7 @@ class TestFATFilesystem(unittest.TestCase):
         self.assertEqual(read_data, filedata[:expected_len])
 
 
-    def test_19_fat_mirroring_consistency(self):
+    def test_18_fat_mirroring_consistency(self):
          # Test mirroring after various operations
         self.fs.write_file("MIRROR1.TXT", b"abc")
         self._check_fat_mirror()
@@ -573,6 +551,28 @@ class TestFATFilesystem(unittest.TestCase):
 
         self.fs.delete("MIRRORDR")
         self._check_fat_mirror()
+
+    # --- BPB / Geometry Tests ---
+    # These would ideally use the DiskController, but we can test
+    # FATFilesystem's reliance on Disk geometry here.
+
+    def test_19_init_with_different_geometry_720k(self):
+        # Re-setup with 720KB geometry on the same (initially 1.44MB) image data
+        # This simulates reading a 720KB disk in a 1.44MB drive/image.
+        # NOTE: For a *real* 720KB image, you'd need a different test file.
+        # Here we just test if the FS logic *uses* the provided geometry.
+        self.disk.set_geometry(FMT_720.geometry)
+        # Re-init FS with the new geometry
+        fs_720 = FATFilesystem(self.disk)
+        self.assertTrue(fs_720.is_valid(), "Should still parse BPB even if geometry differs slightly")
+
+        # Check if calculations reflect 720KB geometry if BPB matches it
+        # On a standard 1.44MB formatted disk, the BPB *won't* match 720KB,
+        # so the FS should still report 1.44MB parameters based on BPB.
+        self.assertEqual(fs_720.boot_sector.total_sectors, 2880, "BPB total_sectors should override geometry")
+        self.assertEqual(fs_720.boot_sector.sectors_per_track, 18, "BPB sectors_per_track should override")
+        self.assertEqual(fs_720.boot_sector.num_heads, 2, "BPB num_heads should override")
+        self.assertEqual(fs_720.cluster_size, 512, "BPB dictates cluster size")
 
 
     def test_20_invalid_83_filenames(self):

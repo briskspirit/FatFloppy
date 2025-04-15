@@ -1217,8 +1217,14 @@ class FATFilesystem(Filesystem):
 
     def _is_valid_83_name(self, name: str) -> bool:
         self.logger.debug(f"Validating 8.3 filename: '{name}'")
+        # Get just the filename portion if a path is provided
         if isinstance(name, str):
             name = name.split('/')[-1]
+
+        # Check for trailing dot directly before splitting
+        if name.endswith('.'):
+            self.logger.warning(f"Filename ends with a dot: '{name}'")
+            return False
 
         invalid_chars = '"*/:<>?\\|+,;=[]'
         if any(c in invalid_chars for c in name):
@@ -1233,14 +1239,10 @@ class FATFilesystem(Filesystem):
         name_part = parts[0]
         ext_part = parts[1] if len(parts) == 2 else ""
 
-        # --- FIX: Add checks for trailing/leading dots ---
-        if name_part.endswith('.') or (ext_part and ext_part.endswith('.')):
-            self.logger.warning(f"Name or extension ends with a dot: '{name}'")
-            return False
+        # Check for leading dots
         if name_part.startswith('.') or (ext_part and ext_part.startswith('.')):
             self.logger.warning(f"Name or extension starts with a dot: '{name}'")
-            return False # Technically allowed by some OS, but often problematic
-        # --- END FIX ---
+            return False
 
         # Check name and extension lengths
         if len(name_part) > 8 or len(ext_part) > 3:
