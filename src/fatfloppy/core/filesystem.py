@@ -444,9 +444,8 @@ class FATFilesystem(Filesystem):
         allocated_clusters = []
         try:
             self.logger.debug(f"Scanning FAT for allocated clusters (range: 2-{self.num_clusters+1})")
-            fat_data = self._read_fat_sectors()[0]
             for cluster in range(2, self.num_clusters + 2):
-                fat_entry = self._read_fat_entry_mem(cluster, fat_data)
+                fat_entry = self._read_fat_entry_mem(cluster)
                 if fat_entry != 0 and fat_entry < 0xFF0:
                     allocated_clusters.append(cluster)
                 elif fat_entry >= 0xFF8 and fat_entry <= 0xFFF:
@@ -942,10 +941,6 @@ class FATFilesystem(Filesystem):
         if start_cluster < 2:
             self.logger.warning(f"Invalid starting cluster {start_cluster}")
             return []
-
-        # ***** REMOVE THIS LINE *****
-        # fat_data = self._read_fat_sectors()[0] # Incorrect - _read_fat_sectors returns None
-        # **************************
 
         chain = []
         cluster = start_cluster

@@ -50,11 +50,17 @@ class TestFATFilesystem(unittest.TestCase):
 
     def tearDown(self):
         print(f"Starting tearDown for: {self.id()}")
+        # --- Force Resource Release and Deletion Order ---
+
+        # 1. Dereference filesystem, disk, driver objects first
+        #    This should trigger __del__ if defined, and signals they are no longer needed.
         fs_to_del = getattr(self, 'fs', None)
         disk_to_del = getattr(self, 'disk', None)
         driver_to_del = getattr(self, 'driver', None)
+        img_path_to_del = getattr(self, 'test_img_path', None)
         temp_dir_to_del = getattr(self, 'temp_dir', None)
 
+        # Explicitly set attributes to None before deleting the variables
         if hasattr(self, 'fs'): self.fs = None
         if hasattr(self, 'disk'): self.disk = None
         if hasattr(self, 'driver'): self.driver = None
@@ -65,15 +71,25 @@ class TestFATFilesystem(unittest.TestCase):
         del disk_to_del
         del driver_to_del
 
+        # 2. Optional: Force Garbage Collection (might help diagnose, but shouldn't be needed)
+        # import gc
+        # gc.collect()
+
+        # 3. Remove the temporary directory (which contains the image file)
+        #    This ensures the file is gone from the filesystem.
         if temp_dir_to_del and os.path.exists(temp_dir_to_del):
             print(f"Attempting to remove directory: {temp_dir_to_del}")
             try:
                 shutil.rmtree(temp_dir_to_del)
                 print(f"Successfully removed directory: {temp_dir_to_del}")
             except OSError as e:
+                # Handle potential errors (e.g., file still locked - unlikely)
                 print(f"ERROR: Failed to remove temp dir '{temp_dir_to_del}' in tearDown: {e}")
+                # If removal fails, the next test's setUp might fail or reuse the old dir.
+                # Depending on test runner, this might halt execution.
         elif temp_dir_to_del:
              print(f"Directory not found for removal: {temp_dir_to_del}")
+
 
         print(f"Finished tearDown for: {self.id()}")
 
@@ -408,12 +424,18 @@ class TestFATFilesystem(unittest.TestCase):
     # FATFilesystem's reliance on Disk geometry here.
 
     def test_16_init_with_different_geometry_720k(self):
-        # This test still uses self.disk/self.driver from setUp
-        # but its local fs_720 object is discarded.
+        # Re-setup with 720KB geometry on the same (initially 1.44MB) image data
+        # This simulates reading a 720KB disk in a 1.44MB drive/image.
+        # NOTE: For a *real* 720KB image, you'd need a different test file.
+        # Here we just test if the FS logic *uses* the provided geometry.
         self.disk.set_geometry(FMT_720.geometry)
         # Re-init FS with the new geometry
         fs_720 = FATFilesystem(self.disk)
         self.assertTrue(fs_720.is_valid(), "Should still parse BPB even if geometry differs slightly")
+
+        # Check if calculations reflect 720KB geometry if BPB matches it
+        # On a standard 1.44MB formatted disk, the BPB *won't* match 720KB,
+        # so the FS should still report 1.44MB parameters based on BPB.
         self.assertEqual(fs_720.boot_sector.total_sectors, 2880, "BPB total_sectors should override geometry")
         self.assertEqual(fs_720.boot_sector.sectors_per_track, 18, "BPB sectors_per_track should override")
         self.assertEqual(fs_720.boot_sector.num_heads, 2, "BPB num_heads should override")
@@ -453,117 +475,83 @@ class TestFATFilesystem(unittest.TestCase):
              print(f"Caught expected exception from reading looped FAT: {e}")
              pass
 
-    # TODO: gets polluted by test16, so has local setup and teardown, needs improvement!!
     def test_18_read_file_corrupted_fat_chain_free_sector(self):
-        # This test is now self-contained and DOES NOT use self.fs/disk/driver
-        print("--- Running test_18 as self-contained ---")
-        local_temp_dir = None # Initialize to None for finally block
+        # Create a file, then manually corrupt FAT to point to a free sector (0)
+        filename = "FREEPTR.DAT"
+        filedata = bytes([i % 256 for i in range(1200)]) # Needs 3 clusters (c1, c2, c3)
+        self.fs.write_file(filename, filedata)
+
+        # --- Debug Read 1: After file write ---
+        print(f"DEBUG 1: Reading root dir sector after write_file (Offset {self.fs.root_dir_start})")
         try:
-            # --- START: Test-Local Setup ---
-            local_temp_dir = tempfile.mkdtemp(prefix="fatfloppy_test_18_")
-            local_test_img_path = os.path.join(local_temp_dir, "test_18_fs.img")
-            print(f"Creating image for test_18 in: {local_test_img_path}")
-
-            if not os.path.exists(EMPTY_IMG):
-                 raise unittest.SkipTest(f"{EMPTY_IMG} not found.")
-            with open(EMPTY_IMG, 'rb') as src, open(local_test_img_path, 'wb') as dst:
-                 shutil.copyfileobj(src, dst)
-
-            local_driver = RawImageDriver(local_test_img_path)
-            local_disk = Disk(local_driver)
-            # Explicitly use 1.44MB format for this test
-            format_144 = FLOPPY_FORMATS['ibm_3.5_1.44m'] # Get format def locally
-            local_disk.set_geometry(format_144.geometry)
-            local_driver.set_physical_format(format_144.physical_format)
-
-            local_fs = FATFilesystem(local_disk)
-            # Caches should be None initially, but clear explicitly for clarity
-            local_fs.fat_cache = None
-            local_fs._cached_allocated_clusters = None
-            self.assertTrue(local_fs.is_valid(), "Local FS invalid on setup")
-            # --- END: Test-Local Setup ---
-
-            filename = "FREEPTR.DAT"
-            filedata = bytes([i % 256 for i in range(1200)]) # Needs 3 clusters (c1, c2, c3)
-            local_fs.write_file(filename, filedata)
-
-            # Helper to read FAT entry using local_fs
-            def _read_local_fat(fs_obj, cluster):
-                 # Ensure cache is loaded if needed (though write_file should have done it)
-                 if fs_obj.fat_cache is None: fs_obj._read_fat_sectors()
-                 if fs_obj.fat_cache is None: raise RuntimeError("Failed to load FAT cache in helper")
-
-                 byte_offset = int(cluster * 1.5)
-                 # Check bounds before reading
-                 if byte_offset + 1 >= len(fs_obj.fat_cache):
-                      raise IndexError(f"FAT read out of bounds: cluster {cluster}, offset {byte_offset}, cache size {len(fs_obj.fat_cache)}")
-                 value = struct.unpack_from('<H', fs_obj.fat_cache, byte_offset)[0]
-                 return (value & 0x0FFF) if cluster % 2 == 0 else (value >> 4)
-
-            # Helper to check mirror using local_fs
-            def _check_local_mirror(fs_obj):
-                 if fs_obj.boot_sector.num_fats < 2: return
-                 fat1_offset = fs_obj.fat_start
-                 fat_size = fs_obj.boot_sector.sectors_per_fat * fs_obj.boot_sector.bytes_per_sector
-                 fat2_offset = fat1_offset + fat_size
-                 # Use _read_bytes which goes through the driver to the buffer
-                 fat1_data = fs_obj._read_bytes(fat1_offset, fat_size)
-                 fat2_data = fs_obj._read_bytes(fat2_offset, fat_size)
-                 self.assertEqual(fat1_data, fat2_data, "Local FAT tables not mirrored")
-
-            entry = next(e for e in local_fs.list_directory("/") if e.name == filename)
-            c1 = entry.starting_cluster
-            c2 = _read_local_fat(local_fs, c1)
-            c3 = _read_local_fat(local_fs, c2)
-            self.assertEqual(_read_local_fat(local_fs, c3), 0xFFF) # Verify initial chain
-
-            # Corrupt using local_fs._set_fat_entry which handles cache and writing back
-            local_fs._set_fat_entry(c2, 0)
-            _check_local_mirror(local_fs) # Check mirror immediately after corruption write
-
-            # --- No need to reload FS object ---
-
+            root_sec_after_write = self.fs._read_bytes(self.fs.root_dir_start, 512)
+            print(f"DEBUG 1: First 64 bytes: {root_sec_after_write[:64].hex(' ')}")
+            # Try parsing the entry directly
             try:
-                # Read using the same local_fs instance that did the corruption
-                read_data = local_fs.read_file(filename)
-            except ValueError as e:
-                print(f"ERROR: File not found even in self-contained test. Directory listing:")
-                try:
-                    # Use the same local_fs instance to list
-                    print(local_fs.list_directory("/"))
-                except Exception as list_e:
-                    print(f"Could not list directory: {list_e}")
-                # Add FAT dump for debugging
-                print(f"Dumping FAT entries around cluster {c1}, {c2}, {c3}:")
-                try:
-                    for cl in range(max(0, c1-2), c1+3): print(f"  Cluster {cl}: {hex(_read_local_fat(local_fs, cl))}")
-                    for cl in range(max(0, c2-2), c2+3): print(f"  Cluster {cl}: {hex(_read_local_fat(local_fs, cl))}")
-                    for cl in range(max(0, c3-2), c3+3): print(f"  Cluster {cl}: {hex(_read_local_fat(local_fs, cl))}")
-                except Exception as fat_e:
-                    print(f"Could not dump FAT: {fat_e}")
+                 entry_info = self.fs._parse_directory_entry(root_sec_after_write[:32])
+                 print(f"DEBUG 1: Parsed entry: {entry_info}")
+            except Exception as e:
+                 print(f"DEBUG 1: Failed to parse entry: {e}")
+        except Exception as e:
+            print(f"DEBUG 1: Error reading root sector: {e}")
+        # --- End Debug Read 1 ---
 
-                raise e # Re-raise the original error
+        # Find the entry using the *current* fs object
+        entry = next(e for e in self.fs.list_directory("/") if e.name == filename)
+        c1 = entry.starting_cluster
+        c2 = self._read_test_fat_entry(c1)
+        c3 = self._read_test_fat_entry(c2)
+        self.assertEqual(self._read_test_fat_entry(c3), 0xFFF) # Verify initial chain
 
-            # Should have read only c1 and c2
-            expected_len = 2 * local_fs.cluster_size # Use local_fs cluster size
-            self.assertEqual(len(read_data), expected_len, "Read should truncate at the corrupted FAT entry pointing to 0")
-            # Check content of the first two clusters
-            self.assertEqual(read_data, filedata[:expected_len])
+        # Corrupt chain: c2 -> 0
+        self.fs._set_fat_entry(c2, 0)
 
-        finally:
-            # --- START: Test-Local Teardown ---
-            # Clean up local resources explicitly
-            # Dereferencing might help garbage collection if needed
-            local_fs = None
-            local_disk = None
-            local_driver = None
-            if local_temp_dir and os.path.exists(local_temp_dir):
-                print(f"Cleaning up self-contained temp dir: {local_temp_dir}")
-                try:
-                    shutil.rmtree(local_temp_dir)
-                except OSError as e:
-                    print(f"ERROR cleaning up self-contained temp dir: {e}")
-            # --- END: Test-Local Teardown ---
+        # --- Debug Read 2: After FAT corruption ---
+        print(f"DEBUG 2: Reading root dir sector after FAT corruption (Offset {self.fs.root_dir_start})")
+        try:
+            root_sec_after_corrupt = self.fs._read_bytes(self.fs.root_dir_start, 512)
+            print(f"DEBUG 2: First 64 bytes: {root_sec_after_corrupt[:64].hex(' ')}")
+            # Try parsing the entry directly
+            try:
+                 entry_info_2 = self.fs._parse_directory_entry(root_sec_after_corrupt[:32])
+                 print(f"DEBUG 2: Parsed entry: {entry_info_2}")
+            except Exception as e:
+                 print(f"DEBUG 2: Failed to parse entry: {e}")
+        except Exception as e:
+            print(f"DEBUG 2: Error reading root sector: {e}")
+        # --- End Debug Read 2 ---
+
+        self._check_fat_mirror()
+
+        # --- Force FS Re-initialization ---
+        print("DEBUG: Re-initializing FS object after corruption")
+        # Create a NEW FS instance using the SAME disk object.
+        # This forces re-reading the BPB and initializing parameters from the possibly modified buffer.
+        fs_reloaded = FATFilesystem(self.disk)
+        # Check validity and ensure caches are clear for the reloaded instance
+        self.assertTrue(fs_reloaded.is_valid(), "Filesystem became invalid after FAT corruption?")
+        fs_reloaded.fat_cache = None
+        fs_reloaded._cached_allocated_clusters = None
+        # --- End Re-initialization ---
+
+        # Reading should stop prematurely. Use the *reloaded* FS object.
+        try:
+            read_data = fs_reloaded.read_file(filename)
+        except ValueError as e:
+            # If it *still* fails here, print the directory listing from the reloaded object
+            print(f"ERROR: File not found even after reloading FS. Reloaded directory listing:")
+            try:
+                reloaded_listing = fs_reloaded.list_directory("/")
+                print(reloaded_listing)
+            except Exception as list_e:
+                print(f"Could not list directory after reload: {list_e}")
+            raise e # Re-raise the original error
+
+        # Should have read only c1 and c2
+        expected_len = 2 * fs_reloaded.cluster_size # Use reloaded fs object's cluster size
+        self.assertEqual(len(read_data), expected_len, "Read should truncate at the corrupted FAT entry pointing to 0")
+        # Check content of the first two clusters
+        self.assertEqual(read_data, filedata[:expected_len])
 
 
     def test_19_fat_mirroring_consistency(self):
