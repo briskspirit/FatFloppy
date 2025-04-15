@@ -14,8 +14,8 @@ from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 RESOURCE_DIR = os.path.join(os.path.dirname(__file__), 'resources')
 EMPTY_IMG = os.path.join(RESOURCE_DIR, 'empty_1.44mb.img')
 POPULATED_IMG = os.path.join(RESOURCE_DIR, 'populated_1.44mb.img')
-TEST_FILE_TXT = os.path.join(RESOURCE_DIR, 'test_file.txt')
-PATTERN_FILE_BIN = os.path.join(RESOURCE_DIR, 'pattern_file.bin')
+TEST_FILE_TXT = os.path.join(RESOURCE_DIR, 'TEST.TXT')
+PATTERN_FILE_BIN = os.path.join(RESOURCE_DIR, 'PATTERN.BIN')
 
 FMT_144 = FLOPPY_FORMATS['ibm_3.5_1.44m']
 

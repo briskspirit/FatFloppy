@@ -337,7 +337,16 @@ class DiskController:
             data = self.filesystem.read_file(path)
             self.logger.debug(f"Read {len(data)} bytes from {path}")
             return data
+        except ValueError as e:
+            # More specific handling for expected errors like "File not found"
+            # This provides clearer logging without returning None for known issues
+            if "File not found" in str(e):
+                self.logger.warning(f"File not found: {path}")
+            else:
+                self.logger.warning(f"Value error reading file {path}: {e}")
+            return None
         except Exception as e:
+            # General error handling for unexpected errors
             self.logger.error(f"Error reading file {path}: {e}")
             return None
 
