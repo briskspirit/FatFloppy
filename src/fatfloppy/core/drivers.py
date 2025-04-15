@@ -1,4 +1,3 @@
-# src/fatfloppy/core/drivers.py
 from dataclasses import dataclass
 from typing import List
 
@@ -17,7 +16,6 @@ class PhysicalFormat:
     gap3: int = 84 # Gap3 size
     cskew: int = 0 # Sector skew
     interleave: int = 1
-    # Additional fields needed for disk geometry
     sectors_per_track: int = 18
     heads: int = 2
     sector_size: int = 512
@@ -55,6 +53,7 @@ class GreaseweazleDriver(DiskIODriver):
         self.last_successful_format = None  # Store the last successful format
         self.using_custom_diskdef = False
         self.scan_track_object = None
+        self.verify_writes = True  # Enable write verification by default
         self.logger.debug(f"GreaseweazleDriver initialized with device={device_name}, drive={drive}, size={drive_size}\"")
 
     def initialize(self):
@@ -147,36 +146,79 @@ class GreaseweazleDriver(DiskIODriver):
         # Make sure fmt_cls is set before writing
         if not self.fmt_cls and self.physical_format:
             try:
-                if self.physical_format.encoding == "MFM":
-                    format_name = "ibm.mfm"
-                else:
-                    format_name = "ibm.fm"
-                self.logger.debug(f"Getting disk definition for format: {format_name}")
-                self.fmt_cls = codec.get_diskdef(format_name)
+                self._create_and_set_custom_diskdef()
             except Exception as e:
-                self.logger.error(f"Failed to get disk definition for writing: {e}")
+                self.logger.error(f"Failed to create disk definition for writing: {e}")
                 return
 
-        def write_tracks():
-            for track_id in sorted(self.dirty_tracks):
-                cylinder, head = track_id
-                self.logger.info(f"Writing track C:{cylinder} H:{head}")
-                self.usb.seek(cylinder, head)
+        # Pre-read tracks that are not fully dirty
+        tracks_to_read = [track_id for track_id in self.dirty_tracks if len(self.dirty_sectors.get(track_id, {})) < self.physical_format.sectors_per_track]
+        for track_id in tracks_to_read:
+            cylinder, head = track_id
+            try:
+                self._read_track(cylinder, head)
+            except Exception as e:
+                self.logger.error(f"Failed to read track C:{cylinder} H:{head}: {e}")
+
+        # Get a list of dirty tracks to process
+        tracks_to_write = sorted(list(self.dirty_tracks))
+        successfully_written = []
+
+        # Process each track individually to maintain proper drive selection context
+        for track_id in tracks_to_write:
+            cylinder, head = track_id
+
+            # Use a wrapper function to capture the result
+            result = [False]  # Use a list to make it mutable from the inner function
+
+            def write_track_wrapper():
                 try:
+                    self.logger.info(f"Writing track C:{cylinder} H:{head}")
+
+                    # Generate flux list for the track
                     flux_list = self._convert_to_flux(cylinder, head)
+
+                    # Seek and write - this will now happen within the drive_selected context
+                    self.usb.seek(cylinder, head)
+
+                    # Write the track
                     self.usb.write_track(
                         flux_list=flux_list,
                         cue_at_index=True,
                         terminate_at_index=True
                     )
+
                     self.logger.info(f"Successfully wrote track C:{cylinder} H:{head}")
+                    result[0] = True
                 except Exception as e:
                     self.logger.error(f"Error writing track C:{cylinder} H:{head}: {e}", exc_info=True)
 
-        util.with_drive_selected(write_tracks, self.usb, self.drive_obj)
-        self.dirty_tracks.clear()
-        self.dirty_sectors.clear()
-        self.logger.debug("Flush completed, cleared dirty tracks and sectors")
+            # Execute the write operation within proper drive selection context
+            try:
+                util.with_drive_selected(write_track_wrapper, self.usb, self.drive_obj, motor=True)
+
+                if result[0]:
+                    successfully_written.append(track_id)
+                else:
+                    self.logger.warning(f"Failed to write track C:{cylinder} H:{head}")
+            except Exception as e:
+                self.logger.error(f"Drive selection error for track C:{cylinder} H:{head}: {e}", exc_info=True)
+
+        # Clear successful tracks from the dirty list and invalidate track_data cache
+        for track_id in successfully_written:
+            if track_id in self.dirty_tracks:
+                self.dirty_tracks.remove(track_id)
+                if track_id in self.dirty_sectors:
+                    del self.dirty_sectors[track_id]
+            # Invalidate the track_data cache for this track
+            if track_id in self.track_data:
+                del self.track_data[track_id]
+                self.logger.debug(f"Cleared track_data cache for track {track_id}")
+
+        if successfully_written:
+            self.logger.info(f"Successfully wrote {len(successfully_written)} tracks")
+        else:
+            self.logger.warning("No tracks were successfully written")
 
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
         self.logger.info(f"Setting physical format: {physical_format.encoding}, {physical_format.rate}kbps, "
@@ -431,7 +473,13 @@ class GreaseweazleDriver(DiskIODriver):
     def _convert_to_flux(self, cylinder: int, head: int) -> List[int]:
         self.logger.debug(f"Converting track C:{cylinder} H:{head} to flux")
 
+        # Make sure we have a format definition
         if not self.fmt_cls:
+            if not self.physical_format:
+                error_msg = "No physical format defined for writing"
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+
             if self.physical_format.encoding == "MFM":
                 format_name = "ibm.mfm"
             else:
@@ -444,47 +492,78 @@ class GreaseweazleDriver(DiskIODriver):
                 self.logger.error(error_msg)
                 raise ValueError(error_msg)
 
+        # Get the track definition
         track_def = None
-        for key, value in self.fmt_cls.track_map.items():
-            track_def = value
-            break
+        track_coords = (cylinder, head)
+
+        if track_coords in self.fmt_cls.track_map:
+            track_def = self.fmt_cls.track_map[track_coords]
+            self.logger.debug(f"Found specific track definition for C:{cylinder} H:{head}")
+        else:
+            # Fallback to any track definition
+            for key, value in self.fmt_cls.track_map.items():
+                track_def = value
+                self.logger.debug(f"Using generic track definition")
+                break
 
         if not track_def:
             error_msg = "No track definition found"
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
+        # Create the track with the proper definition
         track = track_def.mk_track(cylinder, head)
         track_id = (cylinder, head)
 
-        # Apply dirty sectors to the track
+        # Set sector data from self.track_data if available
+        if track_id in self.track_data:
+            for s in track.sectors:
+                if hasattr(s, 'idam') and hasattr(s.idam, 'r'):
+                    sector_num = s.idam.r
+                    if sector_num in self.track_data[track_id]:
+                        s.dam.data = bytearray(self.track_data[track_id][sector_num])
+                        s.crc = s.idam.crc = s.dam.crc = 0
+
+        # Then apply dirty sectors
         if track_id in self.dirty_sectors:
             self.logger.debug(f"Applying {len(self.dirty_sectors[track_id])} dirty sectors to track")
             for s in track.sectors:
                 if hasattr(s, 'idam') and hasattr(s.idam, 'r'):
                     sector_num = s.idam.r
                     if sector_num in self.dirty_sectors[track_id]:
-                        s.dam.data = bytearray(self.dirty_sectors[track_id][sector_num])
+                        sector_data = self.dirty_sectors[track_id][sector_num]
+                        # Ensure data length matches expected sector size
+                        expected_size = len(s.dam.data)
+                        if len(sector_data) != expected_size:
+                            if len(sector_data) < expected_size:
+                                sector_data = sector_data + bytes(expected_size - len(sector_data))
+                            else:
+                                sector_data = sector_data[:expected_size]
+                            self.logger.debug(f"Adjusted sector {sector_num} data to {expected_size} bytes")
+                        s.dam.data = bytearray(sector_data)
                         s.crc = s.idam.crc = s.dam.crc = 0
                         self.logger.debug(f"Applied dirty sector {sector_num} to track")
 
+        # Generate the master track
         master_track = track.master_track()
 
         # Ensure we have drive_ticks_per_rev
         if not self.drive_ticks_per_rev:
-            def measure_rpm():
-                self.logger.debug("Measuring drive RPM (late initialization)")
-                flux = self.usb.read_track(2)
-                self.drive_ticks_per_rev = flux.ticks_per_rev
-                rpm = 60 / (self.drive_ticks_per_rev / self.usb.sample_freq)
-                self.logger.info(f"Drive RPM measured: {rpm:.1f}")
+            self.logger.debug("No drive_ticks_per_rev available, using default based on physical format")
+            if self.physical_format and self.physical_format.rpm:
+                self.drive_ticks_per_rev = (60.0 / self.physical_format.rpm) * self.usb.sample_freq
+                self.logger.info(f"Using RPM from format: {self.physical_format.rpm}")
+            else:
+                self.drive_ticks_per_rev = 0.2 * self.usb.sample_freq  # Default 300 RPM
+                self.logger.info("Using default 300 RPM (0.2s per revolution)")
 
-            util.with_drive_selected(measure_rpm, self.usb, self.drive_obj)
-
+        # Set the time per revolution in the master track
         master_track.time_per_rev = self.drive_ticks_per_rev / self.usb.sample_freq
+
+        # Generate writeout flux
         wflux = master_track.flux_for_writeout(cue_at_index=True)
 
-        # Generate flux list
+        # Generate flux list with proper timing
         factor = self.drive_ticks_per_rev / wflux.ticks_to_index
         rem = 0.0
         wflux_list = []
@@ -496,6 +575,53 @@ class GreaseweazleDriver(DiskIODriver):
 
         self.logger.debug(f"Converted track to {len(wflux_list)} flux transitions")
         return wflux_list
+
+    def _write_track(self, cylinder: int, head: int) -> bool:
+        """Write a track with proper format handling"""
+        self.logger.info(f"Writing track C:{cylinder} H:{head}")
+
+        track_id = (cylinder, head)
+        if track_id not in self.dirty_sectors:
+            self.logger.debug(f"No dirty sectors for track C:{cylinder} H:{head}, nothing to write")
+            return True
+
+        try:
+            # Make sure the custom format is properly set up before writing
+            if not self.fmt_cls and self.physical_format:
+                self._create_and_set_custom_diskdef()
+
+            # Generate flux list for the track
+            flux_list = self._convert_to_flux(cylinder, head)
+
+            # Seek to the track
+            self.usb.seek(cylinder, head)
+
+            # Write the track
+            self.usb.write_track(
+                flux_list=flux_list,
+                cue_at_index=True,
+                terminate_at_index=True
+            )
+
+            # Verify the written track if enabled
+            if hasattr(self, 'verify_writes') and self.verify_writes:
+                self.logger.debug(f"Verifying written track C:{cylinder} H:{head}")
+                # Clear track cache to force a fresh read
+                if track_id in self.track_data:
+                    del self.track_data[track_id]
+                if track_id in self.dirty_tracks:
+                    self.dirty_tracks.remove(track_id)
+                # Read the track back and verify
+                success = self._read_track(cylinder, head)
+                if not success:
+                    self.logger.error(f"Track verification failed for C:{cylinder} H:{head}")
+                    return False
+
+            self.logger.info(f"Successfully wrote track C:{cylinder} H:{head}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error writing track C:{cylinder} H:{head}: {e}", exc_info=True)
+            return False
 
 class RawImageDriver(DiskIODriver):
     def __init__(self, file_path, image_data=None):
