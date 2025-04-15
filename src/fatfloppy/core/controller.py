@@ -434,6 +434,7 @@ class DiskController:
 
         # Try to detect filesystem to get head count from BPB
         has_second_head = True  # Default to true
+        fs_type = None  # Initialize fs_type to prevent UnboundLocalError
         try:
             fs_type = self.detect_filesystem()
             if fs_type and hasattr(self.filesystem, 'boot_sector'):

@@ -276,15 +276,16 @@ class TestDiskControllerPhysical(unittest.TestCase):
             ]
 
             # 3. detect_filesystem (make it succeed for the expected format with correct side effect)
-            with patch.object(DiskController, 'detect_filesystem') as mock_detect_fs:
+            with patch('fatfloppy.core.controller.DiskController.detect_filesystem', autospec=True) as mock_detect_fs:
                 # Define the mock function that mimics the behavior of detect_filesystem
-                def mock_detect_filesystem_side_effect(*args, **kwargs):
-                    self.controller.filesystem = MagicMock(spec=FATFilesystem)
-                    self.controller.filesystem.is_valid.return_value = True
-                    self.controller.filesystem.fat_type = "FAT12"
-                    self.controller.filesystem.boot_sector = MagicMock()
-                    self.controller.filesystem.boot_sector.sectors_per_track = expected_format.geometry.sectors_per_track
-                    self.controller.filesystem.boot_sector.num_heads = expected_format.geometry.heads
+                def mock_detect_filesystem_side_effect(self_arg, *args, **kwargs):
+                    # Set the filesystem on the instance that's calling detect_filesystem
+                    self_arg.filesystem = MagicMock(spec=FATFilesystem)
+                    self_arg.filesystem.is_valid.return_value = True
+                    self_arg.filesystem.fat_type = "FAT12"
+                    self_arg.filesystem.boot_sector = MagicMock()
+                    self_arg.filesystem.boot_sector.sectors_per_track = expected_format.geometry.sectors_per_track
+                    self_arg.filesystem.boot_sector.num_heads = expected_format.geometry.heads
                     return "FAT12"
 
                 # Set the side effect
