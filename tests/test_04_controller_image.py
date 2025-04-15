@@ -160,7 +160,7 @@ class TestDiskControllerImage(unittest.TestCase):
         self.assertTrue(any(e['name'] == 'SUB' and e['is_dir'] for e in newdir_list))
 
         # Write a file inside
-        filepath = f"{dirpath}/TEST_IN_SUB.TXT"
+        filepath = f"{dirpath}/TEST_SUB.TXT"
         write_success = self.controller.write_file(filepath, b"hello")
         self.assertTrue(write_success)
         read_back = self.controller.read_file(filepath)
