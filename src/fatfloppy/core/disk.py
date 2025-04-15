@@ -117,6 +117,11 @@ class Disk:
 
     def write_sectors(self, start_cylinder: int, start_head: int, start_sector: int,
                       data: bytes) -> None:
+        if not self.geometry:
+            error_msg = "Disk geometry not set"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+
         if not data:
             self.logger.warning("No data to write")
             return

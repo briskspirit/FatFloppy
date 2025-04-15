@@ -552,11 +552,56 @@ class TestFATFilesystem(unittest.TestCase):
         self.fs.delete("MIRRORDR")
         self._check_fat_mirror()
 
+    def test_19_write_zero_byte_file(self):
+        """Test creating and reading a zero-byte file"""
+        filename = "ZERO.DAT"
+        self.fs.write_file(filename, b"")
+        self._check_fat_mirror()
+
+        entries = self.fs.list_directory("/")
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry.name, filename)
+        self.assertEqual(entry.size, 0)
+        self.assertFalse(entry.is_dir)
+        self.assertGreater(entry.starting_cluster, 1, "Starting cluster should be allocated (>1)")
+
+        # Verify FAT entry for the allocated cluster is EOF
+        fat_val = self._read_test_fat_entry(entry.starting_cluster)
+        self.assertEqual(fat_val, 0xFFF, "Allocated cluster for zero-byte file should be marked EOF (FFF)")
+
+        # Read back
+        read_data = self.fs.read_file(filename)
+        self.assertEqual(read_data, b"")
+
+        # Delete
+        self.fs.delete(filename)
+        self._check_fat_mirror()
+        self.assertEqual(self.fs.list_directory("/"), [])
+
+        fat_val_after = self._read_test_fat_entry(entry.starting_cluster)
+        self.assertEqual(fat_val_after, 0, "Cluster should be freed after deleting zero-byte file")
+
+    def test_20_read_zero_byte_file(self):
+        """Test reading a zero-byte file created externally (or by previous step)"""
+        filename = "ZEROBYTE.FIL"
+        # Manually create a directory entry for a zero-byte file
+        now = datetime.datetime.now()
+        # Cluster 0 means zero length
+        entry_data = self.fs._create_directory_entry(filename, False, 0, 0, now)
+        # Find free entry offset in root (mocking this is complex, just write at start)
+        entry_offset = self.fs.root_dir_start
+        self.fs._write_bytes(entry_offset, entry_data)
+
+        # Read the file
+        read_data = self.fs.read_file(filename)
+        self.assertEqual(read_data, b"")
+
     # --- BPB / Geometry Tests ---
     # These would ideally use the DiskController, but we can test
     # FATFilesystem's reliance on Disk geometry here.
 
-    def test_19_init_with_different_geometry_720k(self):
+    def test_21_init_with_different_geometry_720k(self):
         # Re-setup with 720KB geometry on the same (initially 1.44MB) image data
         # This simulates reading a 720KB disk in a 1.44MB drive/image.
         # NOTE: For a *real* 720KB image, you'd need a different test file.
@@ -575,7 +620,7 @@ class TestFATFilesystem(unittest.TestCase):
         self.assertEqual(fs_720.cluster_size, 512, "BPB dictates cluster size")
 
 
-    def test_20_invalid_83_filenames(self):
+    def test_22_invalid_83_filenames(self):
         invalid_names = [
             "TOOLONGNAME.TXT",
             "SHORT.TOOLONGEXT",
@@ -592,7 +637,7 @@ class TestFATFilesystem(unittest.TestCase):
             with self.assertRaises(ValueError, msg=f"Should fail for invalid name: {name}"):
                 self.fs.create_directory(name)
 
-    def test_21_fat_offsets(self):
+    def test_23_fat_offsets(self):
         self.assertEqual(self.fs.fat_start, 512, "FAT start should be at sector 1")
         self.assertEqual(self.fs.root_dir_start, 9728, "Root directory should start after FATs")
         fat_size = self.fs.boot_sector.sectors_per_fat * self.fs.boot_sector.bytes_per_sector

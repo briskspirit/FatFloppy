@@ -201,13 +201,14 @@ class FATFilesystem(Filesystem):
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
-        if not self._is_valid_83_name(path):
-            error_msg = f"Invalid 8.3 filename: {path}"
+        self.logger.debug(f"Writing file: {path}, {len(data)} bytes")
+        parent_path, file_name = self._split_path(path)
+        if not self._is_valid_83_name(file_name): # Validate only the final component
+            error_msg = f"Invalid 8.3 filename: {file_name}"
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
         self.logger.debug(f"Writing file: {path}, {len(data)} bytes")
-        parent_path, file_name = self._split_path(path)
         parent_entry = self._find_path(parent_path)
 
         if not parent_entry:
@@ -273,7 +274,7 @@ class FATFilesystem(Filesystem):
         self.logger.debug(f"Creating directory: {path}")
         parent_path, dir_name = self._split_path(path)
 
-        if not self._is_valid_83_name(dir_name):
+        if not self._is_valid_83_name(dir_name) or '.' in dir_name: # Validate only the final component
             error_msg = f"Invalid 8.3 directory name: {dir_name}"
             self.logger.error(error_msg)
             raise ValueError(error_msg)
@@ -1216,44 +1217,66 @@ class FATFilesystem(Filesystem):
         return bytes(entry)
 
     def _is_valid_83_name(self, name: str) -> bool:
-        self.logger.debug(f"Validating 8.3 filename: '{name}'")
-        # Get just the filename portion if a path is provided
-        if isinstance(name, str):
-            name = name.split('/')[-1]
+        self.logger.debug(f"Validating 8.3 filename component: '{name}'") # Clarify logging
 
-        # Check for trailing dot directly before splitting
+        # This function should ONLY validate a single name component (file or dir)
+        # NOT a full path. The calling function should handle path splitting.
+        if '/' in name or '\\' in name:
+             self.logger.warning(f"Path separators not allowed in filename component: '{name}'")
+             return False
+
+        # Check for trailing dot
         if name.endswith('.'):
-            self.logger.warning(f"Filename ends with a dot: '{name}'")
+            self.logger.warning(f"Filename component ends with a dot: '{name}'")
             return False
 
-        invalid_chars = '"*/:<>?\\|+,;=[]'
+        # Check for leading dot (but allow "." and "..")
+        if name.startswith('.') and name not in ['.', '..']:
+             self.logger.warning(f"Filename component starts with a dot: '{name}'")
+             return False
+
+        invalid_chars = '"*/:<>?\\|+,;=[] '
         if any(c in invalid_chars for c in name):
-            self.logger.warning(f"Invalid characters in name '{name}'")
+            self.logger.warning(f"Invalid characters in name component '{name}'")
+            return False
+
+        # Check for characters below ASCII 32 (control characters)
+        if any(ord(c) < 32 for c in name):
+            self.logger.warning(f"Control characters in name component '{name}'")
             return False
 
         parts = name.split('.')
         if len(parts) > 2 or not parts[0]:
-            self.logger.warning(f"Invalid name structure: {parts}")
-            return False
+             # Allow names with no extension (e.g., "MYDIR") - '.' is invalid char handled above
+             if len(parts) == 1 and parts[0]:
+                 name_part = parts[0]
+                 ext_part = ""
+             else:
+                 # This case handles names like ".ext" or "name..ext" or "."
+                 self.logger.warning(f"Invalid name structure: {parts}")
+                 return False
+        elif len(parts) == 2:
+             name_part = parts[0]
+             ext_part = parts[1]
+             # Ensure extension is not empty if dot exists (e.g., "filename.")
+             if not ext_part:
+                  self.logger.warning(f"Filename ends with a dot (caught by split): '{name}'")
+                  return False
+        else: # len(parts) == 1
+             name_part = parts[0]
+             ext_part = ""
 
-        name_part = parts[0]
-        ext_part = parts[1] if len(parts) == 2 else ""
-
-        # Check for leading dots
-        if name_part.startswith('.') or (ext_part and ext_part.startswith('.')):
-            self.logger.warning(f"Name or extension starts with a dot: '{name}'")
-            return False
 
         # Check name and extension lengths
         if len(name_part) > 8 or len(ext_part) > 3:
-            self.logger.warning(f"Name or extension too long: {parts}")
+            self.logger.warning(f"Name component or extension too long: {parts}")
             return False
 
         reserved = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
                     "LPT1", "LPT2", "LPT3", "LPT4"]
-        if parts[0].upper() in reserved:
-            self.logger.warning(f"Reserved name: {parts[0].upper()}")
+        if name_part.upper() in reserved:
+            self.logger.warning(f"Reserved name: {name_part.upper()}")
             return False
 
-        self.logger.debug(f"Valid 8.3 filename: '{name}'")
+        self.logger.debug(f"Valid 8.3 filename component: '{name}'")
         return True
