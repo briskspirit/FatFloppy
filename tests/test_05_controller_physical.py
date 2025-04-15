@@ -241,27 +241,27 @@ class TestDiskControllerPhysical(unittest.TestCase):
             # --- Configure Mocks for Auto-Detect ---
             # 1. Initialize (RPM measurement)
             def rpm_side_effect(func, usb, drive, motor=True): # Accept motor argument
-             print(f"DEBUG: rpm_side_effect called with func={func.__name__}, motor={motor}")
-             if "measure_rpm" in func.__name__:
-                 # Simulate drive_motor calls if needed, although measure_rpm doesn't need motor=True itself
-                 try:
-                     usb.drive_select(drive.unit_id)
-                     usb.drive_motor(drive.unit_id, True) # Assume motor needs to be on for RPM read
-                     usb.read_track.return_value = create_mock_flux(ticks_per_rev=3200000)
-                     func()
-                 finally:
-                     usb.drive_motor(drive.unit_id, False)
-                     usb.drive_deselect()
-             else:
-                 # For other calls using this side_effect (if any), just execute
-                 # Or add more specific simulation if needed
-                 try:
-                      usb.drive_select(drive.unit_id)
-                      usb.drive_motor(drive.unit_id, motor)
-                      func()
-                 finally:
-                      usb.drive_motor(drive.unit_id, False)
-                      usb.drive_deselect()
+                print(f"DEBUG: rpm_side_effect called with func={func.__name__}, motor={motor}")
+                if "measure_rpm" in func.__name__:
+                    # Simulate drive_motor calls if needed, although measure_rpm doesn't need motor=True itself
+                    try:
+                        usb.drive_select(drive.unit_id)
+                        usb.drive_motor(drive.unit_id, True) # Assume motor needs to be on for RPM read
+                        usb.read_track.return_value = create_mock_flux(ticks_per_rev=3200000)
+                        func()
+                    finally:
+                        usb.drive_motor(drive.unit_id, False)
+                        usb.drive_deselect()
+                else:
+                    # For other calls using this side_effect (if any), just execute
+                    # Or add more specific simulation if needed
+                    try:
+                        usb.drive_select(drive.unit_id)
+                        usb.drive_motor(drive.unit_id, motor)
+                        func()
+                    finally:
+                        usb.drive_motor(drive.unit_id, False)
+                        usb.drive_deselect()
             self.mock_with_drive_selected.side_effect = rpm_side_effect
 
             # 2. _detect_physical_disk_format
@@ -270,28 +270,41 @@ class TestDiskControllerPhysical(unittest.TestCase):
             # Mock read_with_retry to simulate successful read on head 0, fail on head 1 for head check if needed
             # For simplicity, let's assume head 1 read succeeds initially for double-sided check
             self.mock_read_with_retry.side_effect = [
-                 (create_mock_flux(), create_mock_codec(0, 0, expected_format)), # For detect_filesystem C=0, H=0
-                 (create_mock_flux(), create_mock_codec(0, 1, expected_format)), # For head 1 check C=0, H=1 (assume success initially)
-                 # Add more if detect_physical tries other tracks/formats
+                (create_mock_flux(), create_mock_codec(0, 0, expected_format)), # For detect_filesystem C=0, H=0
+                (create_mock_flux(), create_mock_codec(0, 1, expected_format)), # For head 1 check C=0, H=1 (assume success initially)
+                # Add more if detect_physical tries other tracks/formats
             ]
 
-            # 3. detect_filesystem (make it succeed for the expected format)
-            with patch.object(DiskController, 'detect_filesystem', return_value="FAT12") as mock_detect_fs:
-                 success = self.controller.open_disk(source=None, disk_type="physical", drive_letter=drive_letter, drive_size=drive_size)
+            # 3. detect_filesystem (make it succeed for the expected format with correct side effect)
+            with patch.object(DiskController, 'detect_filesystem') as mock_detect_fs:
+                # Define the mock function that mimics the behavior of detect_filesystem
+                def mock_detect_filesystem_side_effect(*args, **kwargs):
+                    self.controller.filesystem = MagicMock(spec=FATFilesystem)
+                    self.controller.filesystem.is_valid.return_value = True
+                    self.controller.filesystem.fat_type = "FAT12"
+                    self.controller.filesystem.boot_sector = MagicMock()
+                    self.controller.filesystem.boot_sector.sectors_per_track = expected_format.geometry.sectors_per_track
+                    self.controller.filesystem.boot_sector.num_heads = expected_format.geometry.heads
+                    return "FAT12"
 
-                 self.assertTrue(success)
-                 self.assertIsInstance(self.controller.driver, GreaseweazleDriver)
-                 self.assertEqual(self.controller.driver.drive, drive_letter)
-                 self.mock_usb_open.assert_called_with(None)
-                 self.mock_Drive.assert_called() # Check Drive() was called
-                 # Check RPM measurement was attempted
-                 self.assertTrue(any(call.args[0].__name__ == 'measure_rpm' for call in self.mock_with_drive_selected.call_args_list if call.args))
-                 self.assertTrue(self.controller.driver.initialized)
-                 self.assertIsNotNone(self.controller.disk)
-                 self.assertIsNotNone(self.controller.disk.geometry)
-                 self.assertIsNotNone(self.controller.filesystem)
-                 # Check if detect_filesystem was called during the process
-                 mock_detect_fs.assert_called()
+                # Set the side effect
+                mock_detect_fs.side_effect = mock_detect_filesystem_side_effect
+
+                success = self.controller.open_disk(source=None, disk_type="physical", drive_letter=drive_letter, drive_size=drive_size)
+
+                self.assertTrue(success)
+                self.assertIsInstance(self.controller.driver, GreaseweazleDriver)
+                self.assertEqual(self.controller.driver.drive, drive_letter)
+                self.mock_usb_open.assert_called_with(None)
+                self.mock_Drive.assert_called() # Check Drive() was called
+                # Check RPM measurement was attempted
+                self.assertTrue(any(call.args[0].__name__ == 'measure_rpm' for call in self.mock_with_drive_selected.call_args_list if call.args))
+                self.assertTrue(self.controller.driver.initialized)
+                self.assertIsNotNone(self.controller.disk)
+                self.assertIsNotNone(self.controller.disk.geometry)
+                self.assertIsNotNone(self.controller.filesystem)
+                # Check if detect_filesystem was called during the process
+                mock_detect_fs.assert_called()
 
 
     def test_02_open_physical_with_explicit_format(self):
