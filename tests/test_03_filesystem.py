@@ -592,6 +592,11 @@ class TestFATFilesystem(unittest.TestCase):
             with self.assertRaises(ValueError, msg=f"Should fail for invalid name: {name}"):
                 self.fs.create_directory(name)
 
+    def test_21_fat_offsets(self):
+        self.assertEqual(self.fs.fat_start, 512, "FAT start should be at sector 1")
+        self.assertEqual(self.fs.root_dir_start, 9728, "Root directory should start after FATs")
+        fat_size = self.fs.boot_sector.sectors_per_fat * self.fs.boot_sector.bytes_per_sector
+        self.assertEqual(fat_size, 4608, "FAT size should be 9 sectors")
 
 if __name__ == '__main__':
     unittest.main()
