@@ -1,1 +1,0 @@
-TEST_HW=true python -m unittest discover -v tests.test_05_controller_physical

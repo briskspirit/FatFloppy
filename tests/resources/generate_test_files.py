@@ -5,17 +5,17 @@ import os
 RESOURCE_DIR = os.path.dirname(__file__)
 
 # --- Create test_file.txt ---
-txt_path = os.path.join(RESOURCE_DIR, "test_file.txt")
+txt_path = os.path.join(RESOURCE_DIR, "TEST.TXT")
 if not os.path.exists(txt_path):
     with open(txt_path, "w") as f:
         f.write("Hello, floppy world!")
     print(f"Created {txt_path}")
 
 # --- Create pattern_file.bin ---
-bin_path = os.path.join(RESOURCE_DIR, "pattern_file.bin")
+bin_path = os.path.join(RESOURCE_DIR, "PATTERN.BIN")
 if not os.path.exists(bin_path):
     pattern = b'\xAA\xBB\xCC\xDD'
-    file_size = 1024
+    file_size = 4096
     with open(bin_path, "wb") as f:
         for _ in range(file_size // len(pattern)):
             f.write(pattern)
