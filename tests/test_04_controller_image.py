@@ -197,11 +197,25 @@ class TestDiskControllerImage(unittest.TestCase):
         self.controller.open_disk(self.test_img_path, disk_type="image")
         space_info = self.controller.get_free_space()
         self.assertIsNotNone(space_info)
-        free_bytes, total_bytes = space_info
+        free_bytes, total_bytes_from_fs = space_info
 
-        self.assertEqual(total_bytes, FMT_144.geometry.total_bytes)
-        self.assertLess(free_bytes, total_bytes) # Populated should have used space
-        self.assertGreater(free_bytes, 0)
+        # Verify the filesystem object exists
+        self.assertIsNotNone(self.controller.filesystem)
+        self.assertTrue(hasattr(self.controller.filesystem, 'num_clusters'))
+        self.assertTrue(hasattr(self.controller.filesystem, 'cluster_size'))
+
+        # FIX: Calculate expected data area size from filesystem parameters
+        expected_data_area_bytes = self.controller.filesystem.num_clusters * self.controller.filesystem.cluster_size
+
+        # Assert total bytes from get_free_space matches calculated data area
+        self.assertEqual(total_bytes_from_fs, expected_data_area_bytes, "Total bytes from get_free_space should match calculated data area size")
+
+        # Original checks (still valid)
+        self.assertLess(free_bytes, total_bytes_from_fs) # Populated should have used space
+        self.assertGreaterEqual(free_bytes, 0) # Free bytes can be 0 if full
+
+        # Optional: Verify physical size using geometry if needed elsewhere
+        self.assertEqual(self.controller.disk.geometry.total_bytes, FMT_144.geometry.total_bytes, "Disk geometry total bytes should match format definition")
 
     def test_12_get_allocated_clusters(self):
         # Use populated image

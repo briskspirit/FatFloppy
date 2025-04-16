@@ -217,9 +217,9 @@ class TestDiskOperations(unittest.TestCase):
 
     def test_11_disk_error_invalid_write_size(self):
         """Test write_sector fails if data size doesn't match sector size"""
-        with self.assertRaisesRegex(ValueError, "Data size .* does not match sector size"):
+        with self.assertRaisesRegex(ValueError, "Data size .* does not match geometry sector size"):
             self.disk.write_sector(0, 0, 1, b'\x00'*(self.geom.sector_size - 1))
-        with self.assertRaisesRegex(ValueError, "Data size .* does not match sector size"):
+        with self.assertRaisesRegex(ValueError, "Data size .* does not match geometry sector size"):
             self.disk.write_sector(0, 0, 1, b'\x00'*(self.geom.sector_size + 1))
 
     def test_12_disk_set_geometry_updates_driver_format(self):

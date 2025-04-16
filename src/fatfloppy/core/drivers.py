@@ -223,21 +223,18 @@ class GreaseweazleDriver(DiskIODriver):
             self.logger.warning("No tracks were successfully written")
 
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
-        self.logger.info(f"Setting physical format: {physical_format.encoding}, {physical_format.rate}kbps, "
-                        f"{physical_format.sectors_per_track} sectors/track")
-        self.physical_format = physical_format
+        """Sets or updates the physical format used for track reading/writing."""
+        if not isinstance(physical_format, PhysicalFormat):
+            raise TypeError("physical_format must be a PhysicalFormat object")
 
-        # Update fmt_cls based on the new physical format
-        if self.initialized:
-            try:
-                if physical_format.encoding == "MFM":
-                    format_name = "ibm.mfm"
-                else:
-                    format_name = "ibm.fm"
-                self.logger.debug(f"Getting disk definition for format: {format_name}")
-                self.fmt_cls = codec.get_diskdef(format_name)
-            except Exception as e:
-                self.logger.warning(f"Failed to get disk definition: {e}")
+        self.logger.info(f"Setting physical format: Enc={physical_format.encoding}, Rate={physical_format.rate}kbps, "
+                        f"RPM={physical_format.rpm}, SPT={physical_format.sectors_per_track}, "
+                        f"Heads={physical_format.heads}, SectorSize={physical_format.sector_size}, "
+                        f"Gap3={physical_format.gap3}")
+        self.physical_format = physical_format
+        self.fmt_cls = None # Reset cached format class
+        self.using_custom_diskdef = False # Reset custom definition flag
+        self.last_successful_format = None # Clear last successful format
 
     def _create_and_set_custom_diskdef(self):
         """Create and set a custom disk definition based on detected parameters"""
@@ -644,73 +641,142 @@ class RawImageDriver(DiskIODriver):
             self.logger.info(f"Loaded {len(self.image_data)} bytes from {file_path}")
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
-        # For the boot sector (and a few others), support reading without geometry
-        if not self.geometry_set and cylinder == 0 and head == 0 and sector <= 3:
-            # Use standard 512-byte sectors as a fallback
-            sector_size = 512 if not self.physical_format else self.physical_format.sector_size
-            offset = (sector - 1) * sector_size
-            self.logger.debug(f"Reading early sector C:{cylinder} H:{head} S:{sector} without geometry")
-            if offset + sector_size <= len(self.image_data):
-                return bytes(self.image_data[offset:offset + sector_size])
-            self.logger.warning(f"Sector beyond image size: C:{cylinder} H:{head} S:{sector}, returning empty sector")
-            return b'\x00' * sector_size
+        """Reads a single sector from the image buffer using CHS addressing."""
+        # Allow reading boot sector even if geometry/format not fully set
+        is_boot_sector = (cylinder == 0 and head == 0 and sector == 1)
 
-        if not self.physical_format:
-            error_msg = "Physical format not set"
+        if not self.physical_format and not is_boot_sector:
+            # If format isn't set (implying geometry isn't either), fail unless it's the boot sector
+            error_msg = "Physical format not set, cannot read sector"
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
-        offset = self._calculate_sector_offset(cylinder, head, sector)
-        self.logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector} from offset {offset}")
-        if offset + self.physical_format.sector_size <= len(self.image_data):
-            return bytes(self.image_data[offset:offset + self.physical_format.sector_size])
-        self.logger.warning(f"Sector beyond image size: C:{cylinder} H:{head} S:{sector}, returning empty sector")
-        return b'\x00' * self.physical_format.sector_size
+        # Determine sector size: use format if available, default to 512 otherwise (esp. for boot sector)
+        sector_size = 512
+        if self.physical_format and self.physical_format.sector_size > 0:
+            sector_size = self.physical_format.sector_size
+        elif not is_boot_sector:
+             self.logger.warning("Physical format has zero sector size, using default 512.")
+
+
+        try:
+             offset = self._calculate_sector_offset(cylinder, head, sector, sector_size)
+             # self.logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector} (Size:{sector_size}) from offset {offset}")
+        except ValueError as e: # Catch calculation errors from invalid geometry
+             self.logger.error(f"Cannot calculate offset for C:{cylinder} H:{head} S:{sector}: {e}")
+             # Return empty sector matching expected size? Or raise? Return empty.
+             return b'\x00' * sector_size
+
+        # Check if read is within bounds of current image data
+        if offset >= len(self.image_data):
+             self.logger.warning(f"Read attempt beyond image size: Offset {offset} >= Size {len(self.image_data)} for C:{cylinder} H:{head} S:{sector}. Returning empty sector.")
+             return b'\x00' * sector_size
+
+        end_offset = offset + sector_size
+        data = self.image_data[offset:end_offset]
+
+        # Pad if read was short (e.g., reading last sector of a smaller-than-expected image)
+        if len(data) < sector_size:
+             self.logger.warning(f"Read short data ({len(data)} bytes) from image at offset {offset}. Padding to {sector_size} bytes.")
+             data = data + bytes(sector_size - len(data))
+
+        return bytes(data)
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
+        """Writes a single sector to the image buffer using CHS addressing."""
         if not self.physical_format:
-            error_msg = "Physical format not set"
+            error_msg = "Physical format not set, cannot write sector"
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
-        # --- Revised Logic for Standard Block Write ---
         sector_size = self.physical_format.sector_size
+        if sector_size <= 0:
+             error_msg = f"Invalid sector size ({sector_size}) in physical format."
+             self.logger.error(error_msg)
+             raise ValueError(error_msg)
 
-        # Ensure the provided data matches the expected sector size.
-        # This makes the driver more robust, although the filesystem layer
-        # should already handle padding.
+        # Ensure data matches sector size (pad or truncate)
         if len(data) != sector_size:
-            self.logger.warning(f"RawImageDriver.write_sector received data size {len(data)} != sector size {sector_size}. Adjusting.")
+            self.logger.warning(f"RawImageDriver.write_sector received data size {len(data)} != sector size {sector_size} for C:{cylinder} H:{head} S:{sector}. Adjusting.")
             if len(data) < sector_size:
-                # Pad data if too short
                 data = data + bytes(sector_size - len(data))
             else:
-                # Truncate data if too long
                 data = data[:sector_size]
 
-        # Calculate the starting offset for this logical sector in the image buffer
-        sector_start_offset = self._calculate_sector_offset(cylinder, head, sector)
-        sector_end_offset = sector_start_offset + sector_size
-
-        self.logger.debug(f"Writing sector C:{cylinder} H:{head} S:{sector} ({len(data)} bytes) at image offset {sector_start_offset}")
-
-        # 1. Ensure image_data buffer is large enough to contain the entire target sector
-        if sector_end_offset > len(self.image_data):
-            self.logger.info(f"Extending image size from {len(self.image_data)} to {sector_end_offset} bytes to contain full sector")
-            padding_needed = sector_end_offset - len(self.image_data)
-            self.image_data.extend(b'\x00' * padding_needed)
-
-        # 2. Write the provided sector data directly into the image buffer
-        #    The calling layer (e.g., FATFilesystem._write_bytes) is responsible
-        #    for ensuring 'data' contains the correct full sector content.
         try:
-            self.image_data[sector_start_offset : sector_end_offset] = data
-        except IndexError as e:
-             # This should ideally not happen after the extension check, but good to catch
-             self.logger.error(f"IndexError during image buffer write! Offset: {sector_start_offset}, End: {sector_end_offset}, Buffer size: {len(self.image_data)}", exc_info=True)
-             raise e # Re-raise after logging
+            offset = self._calculate_sector_offset(cylinder, head, sector, sector_size)
+            # self.logger.debug(f"Writing sector C:{cylinder} H:{head} S:{sector} ({len(data)} bytes) at image offset {offset}")
+        except ValueError as e:
+            self.logger.error(f"Cannot calculate offset for write C:{cylinder} H:{head} S:{sector}: {e}")
+            raise IOError(f"Failed to calculate offset for writing sector C:{cylinder} H:{head} S:{sector}") from e
 
-        self.dirty = True
+
+        # Ensure image buffer is large enough
+        required_size = offset + sector_size
+        if required_size > len(self.image_data):
+            self.logger.info(f"Extending image size from {len(self.image_data)} to {required_size} bytes.")
+            try:
+                 self.image_data.extend(b'\x00' * (required_size - len(self.image_data)))
+            except MemoryError:
+                 self.logger.error(f"MemoryError extending image buffer to {required_size} bytes.")
+                 raise IOError("Not enough memory to extend image buffer")
+
+        # Write the data
+        try:
+            self.image_data[offset : offset + sector_size] = data
+            self.dirty = True
+        except IndexError:
+             # This should ideally not happen after the extension check, but log if it does
+             self.logger.error(f"IndexError during image buffer write! Offset: {offset}, Size: {sector_size}, Buffer size: {len(self.image_data)}", exc_info=True)
+             raise IOError("Internal error writing to image buffer")
+        except Exception as e:
+             self.logger.error(f"Unexpected error writing image buffer at offset {offset}: {e}", exc_info=True)
+             raise IOError("Failed to write to image buffer") from e
+
+    # ... (flush remains the same) ...
+
+    def set_physical_format(self, physical_format: PhysicalFormat) -> None:
+        """Sets the physical format/geometry for the image."""
+        if not isinstance(physical_format, PhysicalFormat):
+            raise TypeError("physical_format must be a PhysicalFormat object")
+        self.logger.info(f"Setting physical format for image: Enc={physical_format.encoding}, Rate={physical_format.rate}kbps, "
+                       f"SPT={physical_format.sectors_per_track}, Heads={physical_format.heads}, SectorSize={physical_format.sector_size}")
+        self.physical_format = physical_format
+        # Mark geometry as set if format is valid? Or rely on Disk.set_geometry?
+        # Disk.set_geometry calls this, so setting self.physical_format is sufficient.
+        # self.geometry_set = True # Maybe not needed here, Disk manages geometry object
+
+
+    def _calculate_sector_offset(self, cylinder: int, head: int, sector: int, sector_size: int) -> int:
+        """Calculates the byte offset for a sector using CHS addressing."""
+        # Requires physical_format to be set to get dimensions
+        if not self.physical_format:
+            # Allow calculation only if called for boot sector (C=0,H=0,S=1) with default geom
+             if cylinder == 0 and head == 0 and sector == 1:
+                  self.logger.debug("Calculating offset for boot sector without full format set (using defaults).")
+                  # Assume default geometry for boot sector offset calculation only
+                  sectors_per_track = 18 # A common default
+                  heads = 2 # Assume 2 heads initially
+             else:
+                  raise ValueError("Cannot calculate sector offset: Physical format not set.")
+        else:
+            sectors_per_track = self.physical_format.sectors_per_track
+            heads = self.physical_format.heads
+
+        if sectors_per_track <= 0 or heads <= 0 or sector_size <= 0:
+             raise ValueError(f"Invalid geometry parameters in physical format (SPT={sectors_per_track}, Heads={heads}, Size={sector_size})")
+
+        # Basic validation of CHS values (sector is 1-based)
+        # Let Disk class handle strict bounds checking against cylinders
+        if head < 0 or sector < 1:
+             raise ValueError(f"Invalid CHS values for offset calculation (H={head}, S={sector})")
+
+        # Standard LBA calculation based on CHS interleaving
+        lba = (cylinder * heads + head) * sectors_per_track + (sector - 1)
+        byte_offset = lba * sector_size
+
+        # self.logger.debug(f"Calculated offset for C:{cylinder} H:{head} S:{sector} (Size:{sector_size}) -> LBA {lba} -> Offset {byte_offset}")
+        return byte_offset
 
     def flush(self) -> None:
         if self.dirty:
@@ -721,23 +787,6 @@ class RawImageDriver(DiskIODriver):
             self.dirty = False
         else:
             self.logger.debug("No changes to flush")
-
-    def set_physical_format(self, physical_format: PhysicalFormat) -> None:
-        self.logger.info(f"Setting physical format: {physical_format.encoding}, {physical_format.rate}kbps, "
-                       f"{physical_format.sectors_per_track} sectors/track")
-        self.physical_format = physical_format
-        self.geometry_set = True
-
-    def _calculate_sector_offset(self, cylinder: int, head: int, sector: int) -> int:
-        sectors_per_track = self.physical_format.sectors_per_track
-        heads = self.physical_format.heads
-        sector_size = self.physical_format.sector_size
-
-        sectors_per_cylinder = sectors_per_track * heads
-        byte_offset = ((cylinder * sectors_per_cylinder) +
-                       (head * sectors_per_track) +
-                       (sector - 1)) * sector_size
-        return byte_offset
 
     # Allow direct read of bytes for initial format detection
     def read_bytes_direct(self, offset: int, length: int) -> bytes:
