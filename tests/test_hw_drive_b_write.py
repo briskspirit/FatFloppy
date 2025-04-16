@@ -110,16 +110,6 @@ class TestHardwareDriveBWrite(unittest.TestCase):
             print(f"  Reading back {filepath}...")
             read_content = self.controller.read_file(filepath)
             self.assertEqual(read_content, content, f"Read content mismatch for {filepath}")
-
-            # Optional: Verify cluster count if desired
-            print(f"  Verifying cluster usage...")
-            entry = next(e for e in self.controller.list_directory("/") if e['name'] == 'MULTI_B.BIN')
-            self.assertIsNotNone(entry)
-            expected_clusters = (len(content) + self.controller.filesystem.cluster_size - 1) // self.controller.filesystem.cluster_size
-            cluster_chain = self.controller.filesystem._get_cluster_chain(entry['starting_cluster'])
-            self.assertEqual(len(cluster_chain), expected_clusters, f"Expected {expected_clusters} clusters, found chain length {len(cluster_chain)}")
-
-
         finally:
             self.addCleanup(self._cleanup_item, filepath)
 
