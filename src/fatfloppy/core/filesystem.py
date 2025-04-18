@@ -241,11 +241,10 @@ class Filesystem:
     def list_directory(self, path: str) -> List[FileInfo]:
         raise NotImplementedError("Subclasses must implement list_directory")
 
-    def read_file(self, path: str, progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
+    def read_file(self, path: str) -> bytes:
         raise NotImplementedError("Subclasses must implement read_file")
 
-    def write_file(self, path: str, data: bytes,
-                  progress_callback: Optional[Callable[[float], None]] = None) -> None:
+    def write_file(self, path: str, data: bytes) -> None:
         raise NotImplementedError("Subclasses must implement write_file")
 
     def create_directory(self, path: str) -> None:
@@ -319,7 +318,7 @@ class FATFilesystem(Filesystem):
         self.logger.debug(f"Found {len(filtered_results)} user items in directory {path}")
         return filtered_results
 
-    def read_file(self, path: str, progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
+    def read_file(self, path: str) -> bytes:
         """Reads the contents of a file."""
         if not self.is_valid():
             error_msg = f"Cannot read file {path}: Invalid or uninitialized filesystem"
@@ -355,7 +354,7 @@ class FATFilesystem(Filesystem):
                  return b''
 
             self.logger.debug(f"File {path} uses {len(cluster_chain)} clusters.")
-            file_data = self._read_cluster_chain_data(cluster_chain, progress_callback)
+            file_data = self._read_cluster_chain_data(cluster_chain)
 
             # Truncate to the actual file size specified in the directory entry
             result = file_data[:file_entry_info.size]
@@ -365,8 +364,7 @@ class FATFilesystem(Filesystem):
             self.logger.error(f"Error reading file {path}: {e}", exc_info=True)
             raise IOError(f"Failed to read file {path}") from e
 
-    def write_file(self, path: str, data: bytes,
-                  progress_callback: Optional[Callable[[float], None]] = None) -> None:
+    def write_file(self, path: str, data: bytes) -> None:
         """Writes data to a file, overwriting if it exists."""
         if not self.is_valid():
             error_msg = f"Cannot write file {path}: Invalid or uninitialized filesystem"
@@ -415,7 +413,7 @@ class FATFilesystem(Filesystem):
 
             # Write data to clusters
             self.logger.debug(f"Writing data to allocated clusters")
-            self._write_cluster_chain_data(clusters, data, progress_callback)
+            self._write_cluster_chain_data(clusters, data)
         else:
              self.logger.debug("File is 0 bytes, no clusters needed for data.")
              clusters = []
@@ -1466,6 +1464,8 @@ class FATFilesystem(Filesystem):
              return b''
         if not self.boot_sector or self.boot_sector.bytes_per_sector == 0:
              raise ValueError("Cannot read bytes: Invalid boot sector or bytes_per_sector is zero.")
+        if not self.disk: # Added check for disk
+             raise ValueError("Cannot read bytes: Disk object not available.")
 
         sector_size = self.boot_sector.bytes_per_sector
         start_lba = offset // sector_size
@@ -1475,8 +1475,8 @@ class FATFilesystem(Filesystem):
         self.logger.debug(f"Reading {length} bytes from offset {offset} (LBA {start_lba} to {end_lba}, {num_sectors} sectors)")
 
         try:
-            # Calculate CHS for the starting sector
-            start_cyl, start_head, start_sec = self._lba_to_chs(start_lba)
+            # Calculate CHS for the starting sector using the Disk object
+            start_cyl, start_head, start_sec = self.disk.lba_to_chs(start_lba)
 
             # Read all necessary sectors at once using disk.read_sectors
             self.logger.debug(f"Calling disk.read_sectors: C={start_cyl} H={start_head} S={start_sec}, Num={num_sectors}")
@@ -1516,6 +1516,8 @@ class FATFilesystem(Filesystem):
             return
         if not self.boot_sector or self.boot_sector.bytes_per_sector == 0:
              raise ValueError("Cannot write bytes: Invalid boot sector or bytes_per_sector is zero.")
+        if not self.disk: # Added check for disk
+             raise ValueError("Cannot write bytes: Disk object not available.")
 
         sector_size = self.boot_sector.bytes_per_sector
         length = len(data)
@@ -1525,8 +1527,6 @@ class FATFilesystem(Filesystem):
         self.logger.debug(f"Writing {length} bytes to offset {offset} (LBA {start_lba} to {end_lba})")
 
         # --- Simpler approach: Iterate and write sector by sector ---
-        # This avoids complex buffer management here and relies on disk.write_sector,
-        # which might be implemented efficiently by the driver anyway.
         current_offset = offset
         data_written = 0
         try:
@@ -1535,7 +1535,8 @@ class FATFilesystem(Filesystem):
                 offset_in_sector = current_offset % sector_size
                 bytes_to_write_this_sector = min(length - data_written, sector_size - offset_in_sector)
 
-                cyl, head, sec = self._lba_to_chs(lba)
+                # Calculate CHS using the Disk object
+                cyl, head, sec = self.disk.lba_to_chs(lba) # CHANGED HERE
                 # self.logger.debug(f"Processing write for LBA {lba} (C:{cyl} H:{head} S:{sec})")
 
                 # If the write is partial within this sector, need read-modify-write
@@ -1572,9 +1573,7 @@ class FATFilesystem(Filesystem):
             self.logger.error(f"Error writing bytes starting at offset {offset}: {e}", exc_info=True)
             raise IOError(f"Failed to write data at offset {offset}") from e
 
-
-    def _read_cluster_chain_data(self, cluster_chain: List[int],
-                                progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
+    def _read_cluster_chain_data(self, cluster_chain: List[int]) -> bytes:
         """Reads the data content of a cluster chain."""
         if not cluster_chain:
             return b''
@@ -1593,11 +1592,6 @@ class FATFilesystem(Filesystem):
                      self.logger.warning(f"Read short data for cluster {cluster} ({len(cluster_data)} bytes), padding.")
                      cluster_data += bytes(self.cluster_size - len(cluster_data))
                 result.extend(cluster_data)
-
-                if progress_callback:
-                    progress = (i + 1) / total_clusters
-                    # self.logger.debug(f"Read progress: {progress:.2f}")
-                    progress_callback(progress)
             except ValueError as e: # Catch offset errors
                 self.logger.error(f"Error getting offset or reading cluster {cluster}: {e}")
                 raise IOError(f"Failed to read data for cluster {cluster}") from e
@@ -1609,8 +1603,7 @@ class FATFilesystem(Filesystem):
         self.logger.debug(f"Read total {len(result)} bytes from cluster chain")
         return bytes(result)
 
-    def _write_cluster_chain_data(self, cluster_chain: List[int], data: bytes,
-                                progress_callback: Optional[Callable[[float], None]] = None) -> None:
+    def _write_cluster_chain_data(self, cluster_chain: List[int], data: bytes) -> None:
         """Writes data across a cluster chain."""
         if not cluster_chain and len(data) > 0:
              raise ValueError("Cannot write data: Cluster chain is empty but data is present.")
@@ -1638,14 +1631,7 @@ class FATFilesystem(Filesystem):
                     self._write_bytes(cluster_offset, padded_chunk)
                 else:
                      self._write_bytes(cluster_offset, chunk)
-
                 data_pos += chunk_size
-
-                if progress_callback and total_clusters > 0:
-                    progress = (i + 1) / total_clusters
-                    # self.logger.debug(f"Write progress: {progress:.2f}")
-                    progress_callback(progress)
-
                 # Stop if all data is written (e.g., if chain was longer than needed)
                 if data_pos >= len(data):
                     break
@@ -1909,37 +1895,3 @@ class FATFilesystem(Filesystem):
 
         # self.logger.debug(f"Valid 8.3 name component: '{name}'")
         return True
-
-
-    # --- Geometry / LBA / CHS ---
-
-    def _lba_to_chs(self, lba: int) -> Tuple[int, int, int]:
-        """Converts Logical Block Address (LBA) to Cylinder, Head, Sector (CHS)."""
-        if not self.disk or not self.disk.geometry:
-            raise ValueError("Cannot convert LBA to CHS: Disk geometry not set.")
-
-        geom = self.disk.geometry
-        if geom.sectors_per_track == 0 or geom.heads == 0:
-             raise ValueError(f"Invalid geometry prevents LBA->CHS conversion (SPT={geom.sectors_per_track}, Heads={geom.heads})")
-
-        # Check LBA bounds
-        max_lba = geom.total_sectors - 1
-        if not (0 <= lba <= max_lba):
-            self.logger.warning(f"LBA {lba} is out of bounds (0-{max_lba}) for current geometry.")
-            # Optionally raise error, or clamp/return indicative values
-            # Raising seems safer to prevent unexpected behaviour
-            raise IndexError(f"LBA {lba} out of bounds for geometry (0-{max_lba})")
-
-
-        sector = (lba % geom.sectors_per_track) + 1 # Sector is 1-based
-        temp = lba // geom.sectors_per_track
-        head = temp % geom.heads
-        cylinder = temp // geom.heads
-
-        # self.logger.debug(f"LBA {lba} -> C:{cylinder} H:{head} S:{sector}")
-        return cylinder, head, sector
-
-    # Note: _chs_to_lba might be useful but is not strictly needed for current ops
-    # def _chs_to_lba(self, cylinder: int, head: int, sector: int) -> int:
-    #     """Converts Cylinder, Head, Sector (CHS) to Logical Block Address (LBA)."""
-    #     # ... implementation ...

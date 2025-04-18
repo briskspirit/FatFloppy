@@ -61,12 +61,8 @@ class DragDropTreeWidget(QTreeWidget):
 
                 try:
                     self.parent.add_file_to_disk(file_path, new_name, current_path)
-                    # callback((idx + 1) / total_files)  # Update progress
                 except Exception as e:
                     QMessageBox.critical(self.parent, "Error", f"Failed to add file: {str(e)}")
-
-        # Execute with progress dialog
-        # self.parent.perform_with_progress(lambda cb: import_files(cb))
         import_files()
 
     def mouseMoveEvent(self, event):
@@ -85,25 +81,17 @@ class DragDropTreeWidget(QTreeWidget):
         temp_dir = tempfile.mkdtemp()
         urls = []
 
-        def prepare_files(callback):
-            for idx, item in enumerate(files_to_drag):
-                node = item.node
-                try:
-                    file_path = self.parent.build_full_path(node.name)
-                    file_data = self.parent.controller.read_file(file_path)
-                    temp_path = os.path.join(temp_dir, node.name)
-                    with open(temp_path, 'wb') as f:
-                        f.write(file_data)
-                    urls.append(QUrl.fromLocalFile(temp_path))
-                    callback((idx + 1) / total_files)  # Update progress
-                except Exception as e:
-                    QMessageBox.critical(self.parent, "Error", f"Failed to prepare file for dragging: {str(e)}")
-            return urls
-
-        # Execute with progress dialog
-        result_urls = self.parent.perform_with_progress(lambda cb: prepare_files(cb), title="Preparing Files...")
-        if result_urls:
-            urls = result_urls
+        for idx, item in enumerate(files_to_drag):
+            node = item.node
+            try:
+                file_path = self.parent.build_full_path(node.name)
+                file_data = self.parent.controller.read_file(file_path)
+                temp_path = os.path.join(temp_dir, node.name)
+                with open(temp_path, 'wb') as f:
+                    f.write(file_data)
+                urls.append(QUrl.fromLocalFile(temp_path))
+            except Exception as e:
+                QMessageBox.critical(self.parent, "Error", f"Failed to prepare file for dragging: {str(e)}")
 
         if urls:
             drag = QDrag(self)

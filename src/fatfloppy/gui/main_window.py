@@ -14,7 +14,6 @@ from .dialogs import DriveSelectionDialog
 from .disk_map import DiskMapView
 from .file_browser import DragDropTreeWidget
 from .models import FileSystemNode
-from .operations import OperationWorker
 
 class FileBrowserApp(QMainWindow):
     def __init__(self):
@@ -255,40 +254,6 @@ class FileBrowserApp(QMainWindow):
         header_font = QFont(self.app_font)
         # header_font.setPointSize(11)
         header_font.setBold(True)
-
-    def perform_with_progress(self, operation, title="Operation in Progress..."):
-        # Create a modal progress dialog
-        progress_dialog = QProgressDialog(title, None, 0, 100, self)
-        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        progress_dialog.setMinimumDuration(0)
-        progress_dialog.setCancelButton(None)
-        progress_dialog.show()
-
-        # Initialize the worker with the operation
-        worker = OperationWorker(operation)
-
-        # Connect signals
-        worker.progress_signal.connect(lambda p: progress_dialog.setValue(int(p * 100)))
-        worker.error_signal.connect(
-            lambda e: (QMessageBox.critical(self, "Error", e), progress_dialog.close())
-        )
-        worker.finished_signal.connect(
-            lambda result: (setattr(self, '_operation_result', result), progress_dialog.close())
-        )
-
-        # Start the worker thread
-        worker.start()
-
-        # Run the event loop until the worker finishes
-        while worker.isRunning():
-            QCoreApplication.processEvents()
-
-        # Retrieve and return the result
-        if hasattr(self, '_operation_result'):
-            result = self._operation_result
-            del self._operation_result
-            return result
-        return None
 
     def open_disk_image_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img)")
@@ -647,10 +612,7 @@ class FileBrowserApp(QMainWindow):
 
         try:
             file_path = self.build_full_path(node.name)
-            file_data = self.perform_with_progress(
-                lambda cb: self.controller.read_file(file_path),
-                title="Extracting File..."
-            )
+            file_data = self.controller.read_file(file_path)
 
             if file_data:
                 save_path, _ = QFileDialog.getSaveFileName(self, "Save File", node.name)
@@ -682,10 +644,7 @@ class FileBrowserApp(QMainWindow):
                                   f"Are you sure you want to delete the {msg_type} {node.name}?",
                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 # Delete the item
-                success = self.perform_with_progress(
-                    lambda cb: self.controller.delete_item(item_path),
-                    title="Deleting Item..."
-                )
+                success = self.controller.delete_item(item_path)
 
                 if success:
                     # Remember the current path
@@ -777,10 +736,7 @@ class FileBrowserApp(QMainWindow):
             return
 
         try:
-            success = self.perform_with_progress(
-                lambda cb: self.controller.create_directory(current_path + "/" + dir_name),
-                title="Creating Directory..."
-            )
+            success = self.controller.create_directory(current_path + "/" + dir_name)
 
             if success:
                 # Update UI
@@ -843,10 +799,7 @@ class FileBrowserApp(QMainWindow):
 
         # Add file to disk
         full_path = f"{dest_path}{'/' if not dest_path.endswith('/') else ''}{dest_name}"
-        success = self.perform_with_progress(
-            lambda cb: self.controller.write_file(full_path, file_data),
-            title="Adding File..."
-        )
+        success = self.controller.write_file(full_path, file_data)
 
         if success:
             # Update UI

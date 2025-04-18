@@ -1,6 +1,6 @@
 # src/fatfloppy/core/disk.py
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 from ..utils.logging_config import get_logger
 from .drivers import DiskIODriver, PhysicalFormat
@@ -286,3 +286,38 @@ class Disk:
                  raise IOError("Disk flush operation failed") from e
         else:
              self.logger.debug("Driver does not support flush operation.")
+
+    # --- Geometry / LBA / CHS --- MOVED HERE ---
+    def lba_to_chs(self, lba: int) -> Tuple[int, int, int]:
+        """Converts Logical Block Address (LBA) to Cylinder, Head, Sector (CHS)."""
+        # Use self.geometry directly
+        if not self.geometry:
+            raise ValueError("Cannot convert LBA to CHS: Disk geometry not set.")
+
+        geom = self.geometry # Use self.geometry
+        if geom.sectors_per_track == 0 or geom.heads == 0:
+             raise ValueError(f"Invalid geometry prevents LBA->CHS conversion (SPT={geom.sectors_per_track}, Heads={geom.heads})")
+
+        # Check LBA bounds
+        max_lba = geom.total_sectors - 1
+        if not (0 <= lba <= max_lba):
+            # Use self.logger for consistency within the Disk class
+            self.logger.warning(f"LBA {lba} is out of bounds (0-{max_lba}) for current geometry.")
+            # Optionally raise error, or clamp/return indicative values
+            # Raising seems safer to prevent unexpected behaviour
+            raise IndexError(f"LBA {lba} out of bounds for geometry (0-{max_lba})")
+
+        sector = (lba % geom.sectors_per_track) + 1 # Sector is 1-based
+        temp = lba // geom.sectors_per_track
+        head = temp % geom.heads
+        cylinder = temp // geom.heads
+
+        # self.logger.debug(f"LBA {lba} -> C:{cylinder} H:{head} S:{sector}")
+        return cylinder, head, sector
+
+    # Note: _chs_to_lba might be useful but is not strictly needed for current ops
+    # def chs_to_lba(self, cylinder: int, head: int, sector: int) -> int:
+    #     """Converts Cylinder, Head, Sector (CHS) to Logical Block Address (LBA)."""
+    #     if not self.geometry:
+    #         raise ValueError("Cannot convert CHS to LBA: Disk geometry not set.")
+    #     # ... implementation ...
