@@ -57,7 +57,7 @@ This is a hobby project, and contributions are welcome! Please:
 
 ## License
 
-MIT License (see ).
+[Unlicense License](https://unlicense.org).
 
 ## Acknowledgements
 
