@@ -2,7 +2,7 @@
 
 FatFloppy is a graphical utility for browsing and managing FAT12 floppy disks on modern systems, supporting both physical disks (via Greaseweazle hardware) and raw disk images (`.img`, `.ima`). It’s a unique tool for retro computing enthusiasts, offering live file browsing for old floppies—something rare in today’s OSes. This is an **alpha version**, with core features working but more to come (e.g., formatting, progress indicators).
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Unlicense](https://img.shields.io/badge/License-Unlicense-yellow.svg)](https://unlicense.org)
 
 ## Key Features
 
