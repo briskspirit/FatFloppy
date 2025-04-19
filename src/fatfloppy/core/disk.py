@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from ..utils.logging_config import get_logger
+from .utils.logging_config import get_logger
 from .drivers import DiskIODriver, PhysicalFormat
 
 logger = get_logger()

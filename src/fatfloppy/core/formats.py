@@ -1,6 +1,6 @@
 # src/fatfloppy/core/formats.py
-from dataclasses import dataclass
 import struct
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from .disk import Disk, DiskGeometry

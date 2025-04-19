@@ -1,8 +1,8 @@
 # src/fatfloppy/core/controller.py
-from typing import List, Optional, Tuple
 import os
+from typing import List, Optional, Tuple
 
-from ..utils.logging_config import get_logger
+from .utils.logging_config import get_logger
 from .disk import Disk, DiskGeometry
 from .drivers import DiskIODriver, GreaseweazleDriver, RawImageDriver, PhysicalFormat
 from .formats import FormatManager, FormatProfile

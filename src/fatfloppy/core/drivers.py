@@ -1,9 +1,8 @@
 # src/fatfloppy/core/drivers.py
-import io
 from dataclasses import dataclass
 from typing import List
 
-from ..utils.logging_config import get_logger
+from .utils.logging_config import get_logger
 from greaseweazle.tools import util
 from greaseweazle.codec import codec
 from greaseweazle.tools import read

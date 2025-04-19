@@ -1,8 +1,8 @@
 # src/fatfloppy/utils/logging_config.py
-import logging
-import sys
 import os
+import sys
 import inspect
+import logging
 from datetime import datetime
 
 # Define log format to include timestamp, level, module/class/method, and message

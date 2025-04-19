@@ -2,10 +2,10 @@
 import os
 import datetime
 
-from PyQt6.QtCore import (QCoreApplication, Qt)
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import (QAction, QFont)
 from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
-                             QMainWindow, QMessageBox, QProgressDialog, QToolBar,
+                             QMainWindow, QMessageBox, QToolBar,
                              QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
                              QWidget, QVBoxLayout, QGroupBox)
 

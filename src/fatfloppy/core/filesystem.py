@@ -1,10 +1,11 @@
-import datetime
-import struct
-from dataclasses import dataclass
-from typing import List, Optional, Union, Callable, Tuple
+# src/fatfloppy/core/filesystem.py
 import re
+import struct
+import datetime
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
-from ..utils.logging_config import get_logger
+from .utils.logging_config import get_logger
 from .disk import Disk
 
 logger = get_logger("FATFilesystem") # More specific logger name
