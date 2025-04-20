@@ -96,50 +96,60 @@ def test_06_read_beyond_image_size(driver_setup):
     last_sector_data = driver.read_sector(last_valid_c, last_valid_h, last_valid_s)
     assert len(last_sector_data) == sector_size
     past_end_offset = len(driver.image_data)
-    read_data = driver.read_bytes_direct(past_end_offset, sector_size)
-    assert read_data == b'\x00' * sector_size
-    lba_past_end = len(driver.image_data) // sector_size
-    if lba_past_end < geom.total_sectors:
-        cyl_past, head_past, sect_past = _manual_lba_to_chs(lba_past_end, geom)
-        read_data_past = driver.read_sector(cyl_past, head_past, sect_past)
-        assert read_data_past == b'\x00' * sector_size
+    with pytest.raises(IOError, match="Read request exceeds image bounds"):
+        driver.read_bytes_direct(past_end_offset, sector_size)
 
-@pytest.mark.skip(reason="TODO: bad logic in the code, we shouldn't allow extending the image!!")
-def test_07_write_extends_image(driver_setup):
+def test_07_write_within_bounds(driver_setup):
     driver, test_img_path, sector_size, geom = driver_setup
-    initial_size = len(driver.image_data)
-    test_data = b'EXTEND' * (sector_size // 6 + 1)
-    assert len(test_data) > sector_size
-    cyl, head, sect = geom.cylinders - 1, geom.heads - 1, geom.sectors_per_track
-    first_chunk = test_data[:sector_size]
-    driver.write_sector(cyl, head, sect, first_chunk)
-    last_lba = (geom.total_sectors - 1)
-    next_lba = last_lba + 1
-    if next_lba >= geom.total_sectors:
-        pytest.skip("Calculated next LBA is outside disk geometry, cannot test extension this way.")
-    next_cyl, next_head, next_sect = _manual_lba_to_chs(next_lba, geom)
-    second_chunk = test_data[sector_size:]
-    driver.write_sector(next_cyl, next_head, next_sect, second_chunk)
-    required_offset = (next_lba * sector_size) + sector_size
-    assert len(driver.image_data) >= required_offset
-    assert driver.dirty is True
+    test_data = b'LAST' * (sector_size // 4)
+    assert len(test_data) == sector_size
+    last_cyl, last_head, last_sect = geom.cylinders - 1, geom.heads - 1, geom.sectors_per_track
+    driver.write_sector(last_cyl, last_head, last_sect, test_data)
     driver.flush()
-    assert driver.dirty is False
-    assert test_img_path.stat().st_size >= required_offset
     driver2 = RawImageDriver(str(test_img_path))
     driver2.set_physical_format(FMT_144.physical_format)
-    read_data1 = driver2.read_sector(cyl, head, sect)
-    read_data2 = driver2.read_sector(next_cyl, next_head, next_sect)
-    combined_read = read_data1 + read_data2[:len(second_chunk)]
-    assert combined_read == test_data
+    read_data = driver2.read_sector(last_cyl, last_head, last_sect)
+    assert read_data == test_data
+
+    invalid_cyl = geom.cylinders
+    with pytest.raises(IOError, match="Cannot write sector .* out of bounds"):
+        driver.write_sector(invalid_cyl, 0, 1, test_data)
+
+    invalid_head = geom.heads + 1
+    with pytest.raises(IOError, match="Invalid sector access"):
+        driver.write_sector(0, invalid_head, 1, test_data)
+
+    invalid_sect = geom.sectors_per_track + 25
+    with pytest.raises(IOError, match="Invalid sector access"):
+        driver.write_sector(0, 0, invalid_sect, test_data)
 
 def test_08_read_bytes_direct(driver_setup):
     driver, _, _, _ = driver_setup
     data = driver.read_bytes_direct(510, 2)
     if EMPTY_IMG_SRC.exists():
         assert data == b'\x55\xAA'
-    read_data = driver.read_bytes_direct(len(driver.image_data) - 10, 20)
-    assert len(read_data) == 20
-    expected_start = driver.image_data[-10:]
-    expected_padding = b'\x00' * 10
-    assert read_data == expected_start + expected_padding
+
+    offset = len(driver.image_data) - 10
+    with pytest.raises(IOError, match="Read request exceeds image bounds"):
+        driver.read_bytes_direct(offset, 20)
+
+    offset = len(driver.image_data)
+    with pytest.raises(IOError, match="Read request exceeds image bounds"):
+        driver.read_bytes_direct(offset, 10)
+
+    offset = len(driver.image_data) - 10
+    read_data = driver.read_bytes_direct(offset, 10)
+    assert len(read_data) == 10
+    assert read_data == driver.image_data[-10:]
+
+    read_data = driver.read_bytes_direct(0, 0)
+    assert read_data == b''
+
+    read_data = driver.read_bytes_direct(len(driver.image_data), 0)
+    assert read_data == b''
+
+    with pytest.raises(ValueError, match="Offset and length must be non-negative"):
+        driver.read_bytes_direct(-1, 10)
+
+    with pytest.raises(ValueError, match="Offset and length must be non-negative"):
+        driver.read_bytes_direct(0, -1)

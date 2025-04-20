@@ -384,19 +384,16 @@ class RawImageDriver(DiskIODriver):
             self.dirty = False
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
-        is_boot_sector = cylinder == 0 and head == 0 and sector == 1
-        if not self.physical_format and not is_boot_sector:
+        if not self.physical_format:
             raise ValueError("Physical format not set, cannot read sector")
-        sector_size = 512 if not self.physical_format else self.physical_format.sector_size
+        sector_size = self.physical_format.sector_size
         try:
             offset = self._calculate_sector_offset(cylinder, head, sector, sector_size)
-        except ValueError:
-            return b"\x00" * sector_size
-        if offset >= len(self.image_data):
-            return b"\x00" * sector_size
-        end_offset = offset + sector_size
-        data = self.image_data[offset:end_offset]
-        return data + bytes(sector_size - len(data)) if len(data) < sector_size else bytes(data)
+        except ValueError as e:
+            raise IOError(f"Invalid sector access: {e}")
+        if offset + sector_size > len(self.image_data):
+            raise IOError(f"Sector C:{cylinder} H:{head} S:{sector} is out of bounds")
+        return bytes(self.image_data[offset:offset + sector_size])
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
         if not self.physical_format:
@@ -404,25 +401,16 @@ class RawImageDriver(DiskIODriver):
         sector_size = self.physical_format.sector_size
         if sector_size <= 0:
             raise ValueError(f"Invalid sector size ({sector_size}) in physical format.")
-        data = (
-            data + bytes(sector_size - len(data))
-            if len(data) < sector_size
-            else data[:sector_size] if len(data) > sector_size else data
-        )
+        if len(data) != sector_size:
+            raise ValueError(f"Data length ({len(data)}) does not match sector size ({sector_size})")
         try:
             offset = self._calculate_sector_offset(cylinder, head, sector, sector_size)
         except ValueError as e:
-            raise IOError(f"Failed to calculate offset for writing sector C:{cylinder} H:{head} S:{sector}") from e
-        required_size = offset + sector_size
-        if required_size > len(self.image_data):
-            self.image_data.extend(b"\x00" * (required_size - len(self.image_data)))
-        try:
-            self.image_data[offset:offset + sector_size] = data
-            self.dirty = True
-        except IndexError:
-            raise IOError("Internal error writing to image buffer")
-        except Exception as e:
-            raise IOError("Failed to write to image buffer") from e
+            raise IOError(f"Invalid sector access: {e}")
+        if offset + sector_size > len(self.image_data):
+            raise IOError(f"Cannot write sector C:{cylinder} H:{head} S:{sector}: out of bounds")
+        self.image_data[offset:offset + sector_size] = data
+        self.dirty = True
 
     def flush(self) -> None:
         if self.dirty:
@@ -435,27 +423,21 @@ class RawImageDriver(DiskIODriver):
             raise TypeError("physical_format must be a PhysicalFormat object")
         self.physical_format = copy.deepcopy(physical_format)
 
+    def read_bytes_direct(self, offset: int, length: int) -> bytes:
+        if offset < 0 or length < 0:
+            raise ValueError("Offset and length must be non-negative")
+        if offset + length > len(self.image_data):
+            raise IOError("Read request exceeds image bounds")
+        return bytes(self.image_data[offset:offset + length])
+
     def _calculate_sector_offset(self, cylinder: int, head: int, sector: int, sector_size: int) -> int:
         if not self.physical_format:
-            if cylinder == 0 and head == 0 and sector == 1:
-                sectors_per_track = 18
-                heads = 2
-            else:
-                raise ValueError("Cannot calculate sector offset: Physical format not set.")
-        else:
-            sectors_per_track = self.physical_format.sectors_per_track
-            heads = self.physical_format.heads
+            raise ValueError("Physical format not set")
+        sectors_per_track = self.physical_format.sectors_per_track
+        heads = self.physical_format.heads
         if sectors_per_track <= 0 or heads <= 0 or sector_size <= 0:
-            raise ValueError(f"Invalid geometry parameters in physical format (SPT={sectors_per_track}, Heads={heads}, Size={sector_size})")
-        if head < 0 or sector < 1:
-            raise ValueError(f"Invalid CHS values for offset calculation (H={head}, S={sector})")
+            raise ValueError(f"Invalid geometry parameters (SPT={sectors_per_track}, Heads={heads}, Size={sector_size})")
+        if cylinder < 0 or head < 0 or head >= heads or sector < 1 or sector > sectors_per_track:
+            raise ValueError(f"Invalid CHS: C={cylinder}, H={head}, S={sector}")
         lba = (cylinder * heads + head) * sectors_per_track + (sector - 1)
         return lba * sector_size
-
-    def read_bytes_direct(self, offset: int, length: int) -> bytes:
-        if offset + length <= len(self.image_data):
-            return bytes(self.image_data[offset:offset + length])
-        if offset < len(self.image_data):
-            available = len(self.image_data) - offset
-            return bytes(self.image_data[offset:]) + b"\x00" * (length - available)
-        return b"\x00" * length
