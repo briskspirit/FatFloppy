@@ -307,114 +307,145 @@ class DiskController:
     def get_format_by_name(self, name: str) -> Optional[FormatProfile]:
         return self.known_formats.get(name)
 
-    def _detect_physical_disk_format(self, drive_size: str = "3.5") -> bool:
-        default_cylinders = 80
-        if drive_size == "5.25":
-            default_cylinders = 40
+    def _get_default_geometry_and_physical(self, drive_size: str) -> Tuple[DiskGeometry, PhysicalFormat]:
+        if drive_size == "3.5":
+            cylinders = 80
+            sectors_per_track = 18
+            sector_size = 512
+            rate = 500
+            encoding = "MFM"
+            rpm = 300
+        elif drive_size == "5.25":
+            cylinders = 40
+            sectors_per_track = 9
+            sector_size = 512
+            rate = 250
+            encoding = "MFM"
+            rpm = 300
         elif drive_size == "8":
-            default_cylinders = 77
-        temp_geometry = DiskGeometry(
-            cylinders=default_cylinders,
+            cylinders = 77
+            sectors_per_track = 26
+            sector_size = 128
+            rate = 250
+            encoding = "FM"
+            rpm = 360
+        else:
+            raise ValueError(f"Unsupported drive size: {drive_size}")
+
+        geometry = DiskGeometry(
+            cylinders=cylinders,
             heads=2,
-            sectors_per_track=18 if drive_size == "3.5" else (9 if drive_size == "5.25" else 26),
-            sector_size=512 if drive_size != "8" else 128
+            sectors_per_track=sectors_per_track,
+            sector_size=sector_size
         )
-        temp_rate = 500 if drive_size == "3.5" else (250 if drive_size == "5.25" else 250)
-        temp_encoding = "MFM" if drive_size != "8" else "FM"
-        temp_rpm = 300 if drive_size != "8" else 360
-        temp_physical = PhysicalFormat(
-            encoding=temp_encoding, rate=temp_rate, rpm=temp_rpm,
-            sectors_per_track=temp_geometry.sectors_per_track,
-            heads=temp_geometry.heads, sector_size=temp_geometry.sector_size
+        physical = PhysicalFormat(
+            encoding=encoding,
+            rate=rate,
+            rpm=rpm,
+            sectors_per_track=sectors_per_track,
+            heads=2,
+            sector_size=sector_size
         )
+        return geometry, physical
+
+    def _check_second_head(self, temp_profile: FormatProfile) -> bool:
+        self.set_format(temp_profile)
+        if hasattr(self.driver, '_read_track') and isinstance(self.driver, GreaseweazleDriver):
+            try:
+                success = self.driver._read_track(0, 1)
+                if success:
+                    track_data = self.driver.track_data.get((0, 1), {})
+                    return bool(track_data)
+                return False
+            except Exception:
+                self.logger.warning("Error reading track; assuming double-sided as fallback")
+                return True  # Fallback to double-sided on error, consistent with original
+        else:
+            try:
+                self.disk.read_sector(0, 1, 1)
+                return True
+            except Exception:
+                return False
+
+    def _filter_known_formats(self, drive_size: str, has_second_head: bool) -> List[FormatProfile]:
+        filtered = []
+        size_str = f"{drive_size}\""
+        for profile in self.known_formats.values():
+            if size_str not in profile.description:
+                continue
+            if not has_second_head and profile.geometry.heads > 1:
+                continue
+            filtered.append(profile)
+        return filtered
+
+    def _find_matching_format(self, filtered_formats: List[FormatProfile]) -> Optional[FormatProfile]:
+        for profile in filtered_formats:
+            try:
+                self.set_format(profile)
+                if self.detect_filesystem():
+                    return profile
+            except Exception:
+                continue
+        return None
+
+    def _detect_physical_disk_format(self, drive_size: str = "3.5") -> bool:
+        temp_geometry, temp_physical = self._get_default_geometry_and_physical(drive_size)
         temp_profile = FormatProfile(
-            name="temp_detect", description="Temporary for detection",
-            geometry=temp_geometry, physical_format=temp_physical
+            name="temp_detect",
+            description="Temporary for detection",
+            geometry=temp_geometry,
+            physical_format=temp_physical
         )
         self.set_format(temp_profile)
         if hasattr(self.driver, 'initialize'):
             self.driver.initialize()
-        has_second_head = True
-        fs_type = None
-        self.set_geometry(temp_geometry)
+
         try:
             fs_type = self.detect_filesystem()
             if fs_type and self.filesystem and hasattr(self.filesystem, 'boot_sector'):
                 bs = self.filesystem.boot_sector
                 if hasattr(bs, 'num_heads') and bs.num_heads > 0:
-                    has_second_head = bs.num_heads > 1
+                    heads = bs.num_heads
+                    updated_geometry = DiskGeometry(
+                        cylinders=temp_geometry.cylinders,
+                        heads=heads,
+                        sectors_per_track=temp_geometry.sectors_per_track,
+                        sector_size=temp_geometry.sector_size
+                    )
+                    self.set_geometry(updated_geometry)
                     return True
-        except Exception as e:
-            pass
-        if fs_type is None:
-            try:
-                if hasattr(self.driver, '_read_track') and isinstance(self.driver, GreaseweazleDriver):
-                    self.set_format(temp_profile)
-                    success = self.driver._read_track(0, 1)
-                    if success:
-                        track_data = self.driver.track_data.get((0, 1), {})
-                        if track_data:
-                            has_second_head = True
-                        else:
-                            has_second_head = False
-                    else:
-                        has_second_head = False
-                else:
-                    try:
-                        if temp_geometry.heads < 2:
-                            temp_geometry.heads = 2
-                            self.set_geometry(temp_geometry)
-                        self.disk.read_sector(0, 1, 1)
-                        has_second_head = True
-                    except Exception:
-                        has_second_head = False
-            except Exception as e:
-                has_second_head = True
-        filtered_formats = []
-        try:
-            for name, profile in self.known_formats.items():
-                size_match = False
-                if drive_size == "3.5" and "3.5\"" in profile.description: size_match = True
-                elif drive_size == "5.25" and "5.25\"" in profile.description: size_match = True
-                elif drive_size == "8" and "8\"" in profile.description: size_match = True
-                if not size_match:
-                    continue
-                if not has_second_head and profile.geometry.heads > 1:
-                    continue
-                filtered_formats.append(profile)
-        except Exception as e:
-            return False
-        for profile in filtered_formats:
-            try:
-                self.set_format(profile)
-                fs_type = self.detect_filesystem()
-                if fs_type:
-                    return True
-            except Exception as e:
-                continue
-        default_heads = 1 if not has_second_head else 2
-        final_geometry = DiskGeometry(
-            cylinders=default_cylinders,
+        except Exception:
+            self.logger.debug("Initial filesystem detection failed; proceeding with head detection")
+
+        has_second_head = self._check_second_head(temp_profile)
+        filtered_formats = self._filter_known_formats(drive_size, has_second_head)
+        matching_profile = self._find_matching_format(filtered_formats)
+        if matching_profile:
+            self.set_format(matching_profile)
+            return True
+
+        default_heads = 2 if has_second_head else 1
+        fallback_geometry = DiskGeometry(
+            cylinders=temp_geometry.cylinders,
             heads=default_heads,
-            sectors_per_track=temp_profile.geometry.sectors_per_track,
-            sector_size=temp_profile.geometry.sector_size
+            sectors_per_track=temp_geometry.sectors_per_track,
+            sector_size=temp_geometry.sector_size
         )
-        final_physical = PhysicalFormat(
-            encoding=temp_profile.physical_format.encoding,
-            rate=temp_profile.physical_format.rate,
-            rpm=temp_profile.physical_format.rpm,
-            gap3=temp_profile.physical_format.gap3,
-            cskew=temp_profile.physical_format.cskew,
-            interleave=temp_profile.physical_format.interleave,
-            sectors_per_track=final_geometry.sectors_per_track,
-            heads=final_geometry.heads,
-            sector_size=final_geometry.sector_size
+        fallback_physical = PhysicalFormat(
+            encoding=temp_physical.encoding,
+            rate=temp_physical.rate,
+            rpm=temp_physical.rpm,
+            sectors_per_track=fallback_geometry.sectors_per_track,
+            heads=fallback_geometry.heads,
+            sector_size=fallback_geometry.sector_size
         )
-        final_profile = FormatProfile(
-            name="fallback_detected", description="Fallback based on detection",
-            geometry=final_geometry, physical_format=final_physical
+        fallback_profile = FormatProfile(
+            name="fallback_detected",
+            description="Fallback based on detection",
+            geometry=fallback_geometry,
+            physical_format=fallback_physical
         )
-        self.set_format(final_profile)
+        self.set_format(fallback_profile)
         return True
 
     def _detect_image_file_format(self, file_path: str) -> bool:
