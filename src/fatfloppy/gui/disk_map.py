@@ -68,7 +68,7 @@ class DiskMapView:
         """Draw a visual representation of the disk's layout"""
         self.scene.clear()
 
-        if not controller or not controller.disk:
+        if not controller:
             view_width = self.view.width()
             view_height = self.view.height()
             text = self.scene.addText("No disk image loaded")
@@ -80,7 +80,7 @@ class DiskMapView:
 
         try:
             # Check if the current head is valid for the disk
-            if controller.disk.geometry and current_head >= controller.disk.geometry.heads:
+            if controller.geometry and current_head >= controller.geometry.heads:
                 self.scene.addText("No data for this head").setPos(10, 10)
                 return
 
@@ -92,11 +92,11 @@ class DiskMapView:
             r_max = min(view_width, view_height) * 0.45
 
             # Get disk geometry
-            if not controller.disk.geometry:
+            if not controller.geometry:
                 self.scene.addText("Disk geometry not available").setPos(10, 10)
                 return
 
-            geometry = controller.disk.geometry
+            geometry = controller.geometry
             sectors_per_track = max(1, geometry.sectors_per_track)  # Ensure non-zero
             num_heads = max(1, geometry.heads)  # Ensure non-zero
             sector_size = max(128, geometry.sector_size)  # Ensure non-zero
@@ -105,8 +105,8 @@ class DiskMapView:
 
             # Extract filesystem parameters needed for drawing
             bpb = None
-            if controller.filesystem and hasattr(controller.filesystem, "boot_sector"):
-                bpb = controller.filesystem.boot_sector
+            if controller.boot_sector:
+                bpb = controller.boot_sector
 
             # Set FAT filesystem parameters with safe defaults
             reserved_sectors = 1

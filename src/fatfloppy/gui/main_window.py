@@ -268,7 +268,7 @@ class FileBrowserApp(QMainWindow):
                 self.refresh_filesystem_ui()
 
                 # Check if disk has multiple heads
-                if self.controller.disk and self.controller.disk.geometry and self.controller.disk.geometry.heads > 1:
+                if self.controller.geometry and self.controller.geometry.heads > 1:
                     self.head_action.setEnabled(True)
                     self.head_action.setText(f"Switch to Head {1 - self.current_head}")
                 else:
@@ -300,7 +300,7 @@ class FileBrowserApp(QMainWindow):
                 self.refresh_filesystem_ui()
 
                 # Check if disk has multiple heads
-                if self.controller.disk and self.controller.disk.geometry and self.controller.disk.geometry.heads > 1:
+                if self.controller.geometry and self.controller.geometry.heads > 1:
                     self.head_action.setEnabled(True)
                     self.head_action.setText(f"Switch to Head {1 - self.current_head}")
                 else:
@@ -329,11 +329,11 @@ class FileBrowserApp(QMainWindow):
 
     def update_geometry_info(self):
         """Update physical geometry information"""
-        if not self.controller or not self.controller.disk or not self.controller.disk.geometry:
+        if not self.controller.geometry:
             self.geometry_info.setText("Disk geometry not available")
             return
 
-        geometry = self.controller.disk.geometry
+        geometry = self.controller.geometry
         total_sectors = geometry.total_sectors
         total_bytes = total_sectors * geometry.sector_size
 
@@ -395,8 +395,8 @@ class FileBrowserApp(QMainWindow):
 
         # Get additional BPB info if available
         bpb_info = ""
-        if self.controller.filesystem and hasattr(self.controller.filesystem, 'boot_sector'):
-            bs = self.controller.filesystem.boot_sector
+        if self.controller.boot_sector:
+            bs = self.controller.boot_sector
             if hasattr(bs, 'sectors_per_cluster'):
                 bpb_info += f"Sectors per Cluster: {bs.sectors_per_cluster}\n"
             if hasattr(bs, 'root_entries'):
@@ -810,7 +810,7 @@ class FileBrowserApp(QMainWindow):
 
     def toggle_head(self):
         """Toggle between disk heads/sides"""
-        if self.controller and self.controller.disk and self.controller.disk.geometry and self.controller.disk.geometry.heads > 1:
+        if self.controller and self.controller.geometry.heads > 1:
             self.current_head = 1 - self.current_head
             self.head_action.setText(f"Switch to Head {1 - self.current_head}")
             self.draw_disk_map()
@@ -834,11 +834,11 @@ class FileBrowserApp(QMainWindow):
             if space_info:
                 free_bytes, total_bytes = space_info
                 # Convert to clusters for visualization
-                if self.controller.disk and self.controller.disk.geometry:
-                    sector_size = self.controller.disk.geometry.sector_size
+                if self.controller.geometry:
+                    sector_size = self.controller.geometry.sector_size
                     sectors_per_cluster = 1
-                    if self.controller.filesystem and hasattr(self.controller.filesystem, "boot_sector"):
-                        sectors_per_cluster = self.controller.filesystem.boot_sector.sectors_per_cluster
+                    if self.controller.boot_sector:
+                        sectors_per_cluster = self.controller.boot_sector.sectors_per_cluster
 
                     self.free_space = free_bytes // (sector_size * sectors_per_cluster)
                     self.total_space = total_bytes // (sector_size * sectors_per_cluster)
@@ -847,16 +847,16 @@ class FileBrowserApp(QMainWindow):
                     self.total_space = total_bytes // 512
             else:
                 # If free space info not available, calculate from busy clusters
-                if self.controller.disk and self.controller.disk.geometry:
-                    geometry = self.controller.disk.geometry
+                if self.controller.geometry:
+                    geometry = self.controller.geometry
                     total_sectors = geometry.total_sectors
                     sectors_per_cluster = 1
-                    if self.controller.filesystem and hasattr(self.controller.filesystem, "boot_sector"):
-                        sectors_per_cluster = self.controller.filesystem.boot_sector.sectors_per_cluster
+                    if self.controller.boot_sector:
+                        sectors_per_cluster = self.controller.boot_sector.sectors_per_cluster
 
                     # Calculate total data clusters (exclude boot, FAT, root dir)
-                    if hasattr(self.controller.filesystem, "boot_sector"):
-                        bpb = self.controller.filesystem.boot_sector
+                    if self.controller.boot_sector:
+                        bpb = self.controller.boot_sector
                         reserved = bpb.reserved_sectors
                         fat_size = bpb.sectors_per_fat * bpb.num_fats
                         root_dir_sectors = (bpb.root_entries * 32 + bpb.bytes_per_sector - 1) // bpb.bytes_per_sector

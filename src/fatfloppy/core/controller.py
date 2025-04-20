@@ -20,6 +20,8 @@ class DiskController:
         self.known_formats = FLOPPY_FORMATS
         self.driver: Optional[DiskIODriver] = None
         self.explicit_format_set = False
+        self.geometry = None
+        self.boot_sector = None
         self.logger.debug(f"DiskController initialized with {len(self.known_formats)} known formats")
 
     def _create_physical_driver(self, source: str, drive_letter: str, drive_size: str) -> GreaseweazleDriver:
@@ -98,6 +100,9 @@ class DiskController:
                     return False
             else:
                 raise ValueError(f"Unsupported disk type: {disk_type}")
+
+            self.geometry = self.disk.geometry if self.disk else None
+            self.boot_sector = self.filesystem.boot_sector if self.filesystem else None
 
             return True
 
