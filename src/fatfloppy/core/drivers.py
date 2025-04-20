@@ -405,6 +405,12 @@ class RawImageDriver(DiskIODriver):
         except Exception as e:
             raise IOError("Failed to write to image buffer") from e
 
+    def flush(self) -> None:
+        if self.dirty:
+            with open(self.file_path, "wb") as f:
+                f.write(self.image_data)
+            self.dirty = False
+
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
         if not isinstance(physical_format, PhysicalFormat):
             raise TypeError("physical_format must be a PhysicalFormat object")
@@ -426,12 +432,6 @@ class RawImageDriver(DiskIODriver):
             raise ValueError(f"Invalid CHS values for offset calculation (H={head}, S={sector})")
         lba = (cylinder * heads + head) * sectors_per_track + (sector - 1)
         return lba * sector_size
-
-    def flush(self) -> None:
-        if self.dirty:
-            with open(self.file_path, "wb") as f:
-                f.write(self.image_data)
-            self.dirty = False
 
     def read_bytes_direct(self, offset: int, length: int) -> bytes:
         if offset + length <= len(self.image_data):

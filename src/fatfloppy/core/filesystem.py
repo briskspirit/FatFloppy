@@ -54,6 +54,35 @@ class FATBootSector(BootSector):
         super().__init__(sector_data)
         self._parse_bpb()
 
+    def is_valid(self) -> bool:
+        if not super().is_valid():
+            return False
+        return (
+            self.bytes_per_sector in [512, 1024, 2048, 4096]
+            and self.sectors_per_cluster in [1, 2, 4, 8, 16, 32, 64, 128]
+            and self.total_sectors > 0
+            and self.sectors_per_fat > 0
+            and self.num_fats in [1, 2]
+            and self.reserved_sectors >= 1
+        )
+
+    def calculate_fat_type(self) -> str:
+        if self.bytes_per_sector == 0 or self.sectors_per_cluster == 0:
+            return "UNKNOWN"
+        root_dir_bytes = self.root_entries * 32
+        root_dir_sectors = (root_dir_bytes + self.bytes_per_sector - 1) // self.bytes_per_sector
+        fat_sectors = self.num_fats * self.sectors_per_fat
+        first_data_sector = self.reserved_sectors + fat_sectors + root_dir_sectors
+        data_sectors = self.total_sectors - first_data_sector
+        if data_sectors <= 0:
+            return "UNKNOWN"
+        total_clusters = data_sectors // self.sectors_per_cluster
+        if total_clusters <= FAT12_MAX_CLUSTERS:
+            return "FAT12"
+        elif total_clusters < 65525:
+            return "FAT16"
+        return "FAT32"
+
     def _parse_bpb(self) -> None:
         try:
             self.bytes_per_sector = struct.unpack_from("<H", self.data, 0x00B)[0]
@@ -88,35 +117,6 @@ class FATBootSector(BootSector):
             self.num_heads = 0
             self.sectors_per_track = 0
             raise ValueError("Failed to parse BPB.") from e
-
-    def is_valid(self) -> bool:
-        if not super().is_valid():
-            return False
-        return (
-            self.bytes_per_sector in [512, 1024, 2048, 4096]
-            and self.sectors_per_cluster in [1, 2, 4, 8, 16, 32, 64, 128]
-            and self.total_sectors > 0
-            and self.sectors_per_fat > 0
-            and self.num_fats in [1, 2]
-            and self.reserved_sectors >= 1
-        )
-
-    def calculate_fat_type(self) -> str:
-        if self.bytes_per_sector == 0 or self.sectors_per_cluster == 0:
-            return "UNKNOWN"
-        root_dir_bytes = self.root_entries * 32
-        root_dir_sectors = (root_dir_bytes + self.bytes_per_sector - 1) // self.bytes_per_sector
-        fat_sectors = self.num_fats * self.sectors_per_fat
-        first_data_sector = self.reserved_sectors + fat_sectors + root_dir_sectors
-        data_sectors = self.total_sectors - first_data_sector
-        if data_sectors <= 0:
-            return "UNKNOWN"
-        total_clusters = data_sectors // self.sectors_per_cluster
-        if total_clusters <= FAT12_MAX_CLUSTERS:
-            return "FAT12"
-        elif total_clusters < 65525:
-            return "FAT16"
-        return "FAT32"
 
 
 class Filesystem:
