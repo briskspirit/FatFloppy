@@ -1529,19 +1529,17 @@ class FATFilesystem(Filesystem):
 
     def _write_bytes(self, offset: int, data: bytes) -> None:
         """
-        Writes a sequence of bytes to the disk, handling partial sector writes
-        by using the Disk object's read_sector and write_sector methods for
+        Writes a sequence of bytes to the disk using Disk.read_sector and Disk.write_sectors,
+        optimizing full sector writes with write_sectors and handling partial sectors with
         read-modify-write operations.
         """
         if not data:
             self.logger.debug("Write requested with 0 bytes, nothing to do.")
             return
         if not self.boot_sector or self.boot_sector.bytes_per_sector == 0:
-             raise ValueError("Cannot write bytes: Invalid boot sector or bytes_per_sector is zero.")
-        if not self.disk:
-             raise ValueError("Cannot write bytes: Disk object not available.")
-        if not self.disk.geometry: # Geometry is needed for LBA->CHS and validation
-             raise ValueError("Cannot write bytes: Disk geometry not set.")
+            raise ValueError("Invalid boot sector or sector size")
+        if not self.disk or not self.disk.geometry:
+            raise ValueError("Disk or geometry not available")
 
         sector_size = self.boot_sector.bytes_per_sector
         length = len(data)
@@ -1550,55 +1548,49 @@ class FATFilesystem(Filesystem):
 
         self.logger.debug(f"Writing {length} bytes to offset {offset} (LBA {start_lba} to {end_lba})")
 
-        # Iterate sector by sector, performing read-modify-write if needed
-        current_offset = offset
-        data_written = 0
         try:
-            while data_written < length:
-                lba = current_offset // sector_size
-                offset_in_sector = current_offset % sector_size
-                bytes_to_write_this_sector = min(length - data_written, sector_size - offset_in_sector)
+            # Handle partial first sector
+            data_written = 0
+            if offset % sector_size != 0:
+                cyl, head, sec = self.disk.lba_to_chs(start_lba)
+                sector_data = bytearray(self.disk.read_sector(cyl, head, sec))
+                start_offset = offset % sector_size
+                bytes_to_write = min(length, sector_size - start_offset)
+                sector_data[start_offset:start_offset + bytes_to_write] = data[:bytes_to_write]
+                self.disk.write_sector(cyl, head, sec, bytes(sector_data))
+                data_written = bytes_to_write
+                self.logger.debug(f"Wrote {bytes_to_write} bytes to partial first sector at LBA {start_lba}")
 
-                # Calculate CHS using the Disk object
-                cyl, head, sec = self.disk.lba_to_chs(lba)
-                # self.logger.debug(f"Processing write for LBA {lba} (C:{cyl} H:{head} S:{sec})")
+            # Calculate full sectors
+            full_start_lba = start_lba if offset % sector_size == 0 else start_lba + 1
+            bytes_remaining = length - data_written
+            num_full_sectors = bytes_remaining // sector_size
 
-                # If the write is partial within this sector, need read-modify-write
-                if offset_in_sector > 0 or bytes_to_write_this_sector < sector_size:
-                    # self.logger.debug(f"Partial write for LBA {lba}: offset={offset_in_sector}, len={bytes_to_write_this_sector}")
-                    try:
-                         # Disk.read_sector handles padding if driver reads short
-                         sector_data = bytearray(self.disk.read_sector(cyl, head, sec))
-                    except Exception as read_err:
-                         # If read fails (e.g., unformatted), assume a blank sector for modification
-                         self.logger.warning(f"Read failed before partial write to LBA {lba} (C:{cyl} H:{head} S:{sec}), using blank sector: {read_err}")
-                         sector_data = bytearray(sector_size) # Zero-filled
+            if num_full_sectors > 0:
+                full_data = data[data_written:data_written + num_full_sectors * sector_size]
+                full_start_cyl, full_start_head, full_start_sec = self.disk.lba_to_chs(full_start_lba)
+                self.disk.write_sectors(full_start_cyl, full_start_head, full_start_sec, full_data)
+                data_written += num_full_sectors * sector_size
+                self.logger.debug(f"Wrote {num_full_sectors} full sectors starting at LBA {full_start_lba}")
 
-                    # Modify the portion
-                    data_chunk = data[data_written : data_written + bytes_to_write_this_sector]
-                    sector_data[offset_in_sector : offset_in_sector + bytes_to_write_this_sector] = data_chunk
+            # Handle partial last sector
+            if (offset + length) % sector_size != 0 and data_written < length:
+                last_lba = end_lba
+                cyl, head, sec = self.disk.lba_to_chs(last_lba)
+                sector_data = bytearray(self.disk.read_sector(cyl, head, sec))
+                bytes_to_write = length - data_written
+                sector_data[0:bytes_to_write] = data[data_written:data_written + bytes_to_write]
+                self.disk.write_sector(cyl, head, sec, bytes(sector_data))
+                self.logger.debug(f"Wrote {bytes_to_write} bytes to partial last sector at LBA {last_lba}")
 
-                    # Write the whole modified sector back using Disk.write_sector
-                    # This call handles data size validation against geometry.
-                    self.disk.write_sector(cyl, head, sec, bytes(sector_data))
-                else:
-                    # Write the full sector directly using Disk.write_sector
-                    # self.logger.debug(f"Full sector write for LBA {lba} (C:{cyl} H:{head} S:{sec})")
-                    data_chunk = data[data_written : data_written + sector_size]
-                    # This call handles data size validation against geometry.
-                    self.disk.write_sector(cyl, head, sec, data_chunk)
+            self.logger.debug(f"Completed writing {length} bytes")
 
-                data_written += bytes_to_write_this_sector
-                current_offset += bytes_to_write_this_sector
-
-            self.logger.debug(f"Completed writing {length} bytes.")
-
-        except ValueError as e: # Catch LBA/CHS or address validation errors
-            self.logger.error(f"Error calculating CHS or validating address during write: {e}", exc_info=True)
-            raise IOError(f"Failed to write data starting at offset {offset}") from e
+        except ValueError as e:
+            self.logger.error(f"CHS or validation error: {e}", exc_info=True)
+            raise IOError(f"Failed to write at offset {offset}") from e
         except Exception as e:
-            self.logger.error(f"Error writing bytes starting at offset {offset}: {e}", exc_info=True)
-            raise IOError(f"Failed to write data starting at offset {offset}") from e
+            self.logger.error(f"Write error at offset {offset}: {e}", exc_info=True)
+            raise IOError(f"Failed to write at offset {offset}") from e
 
     def _read_cluster_chain_data(self, cluster_chain: List[int]) -> bytes:
         """Reads the data content of a cluster chain."""
