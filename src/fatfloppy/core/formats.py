@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple # Keep Tuple here
 
 from .disk import Disk, DiskGeometry
-from .drivers import PhysicalFormat
+from .physical_format import PhysicalFormat
 
 # --- BootSectorData class remains unchanged ---
 @dataclass

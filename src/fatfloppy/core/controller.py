@@ -4,7 +4,8 @@ from typing import List, Optional, Tuple
 
 from .utils.logging_config import get_logger
 from .disk import Disk, DiskGeometry
-from .drivers import DiskIODriver, GreaseweazleDriver, RawImageDriver, PhysicalFormat
+from .drivers import DiskIODriver, GreaseweazleDriver, RawImageDriver
+from .physical_format import PhysicalFormat
 # Removed FormatManager import
 from .formats import BootSectorData, FormatProfile # Keep these
 from .filesystem import Filesystem, FATFilesystem

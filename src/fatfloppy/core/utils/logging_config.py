@@ -1,4 +1,4 @@
-# src/fatfloppy/utils/logging_config.py
+# src/fatfloppy/core/utils/logging_config.py
 import os
 import sys
 import inspect

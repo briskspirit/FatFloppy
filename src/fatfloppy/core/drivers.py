@@ -1,26 +1,15 @@
 # src/fatfloppy/core/drivers.py
 import copy
-from dataclasses import dataclass
 from typing import List, Optional
 
+from .physical_format import PhysicalFormat
+from .utils import greaseweazle_utils
 from .utils.logging_config import get_logger
 from greaseweazle.tools import util
 from greaseweazle.codec import codec
 from greaseweazle.tools import read
 
 logger = get_logger()
-
-@dataclass
-class PhysicalFormat:
-    encoding: str  # FM/MFM
-    rate: int      # Data rate (kbps)
-    rpm: int       # Rotations per minute
-    gap3: int = 84 # Gap3 size
-    cskew: int = 0 # Sector skew
-    interleave: int = 1
-    sectors_per_track: int = 18
-    heads: int = 2
-    sector_size: int = 512
 
 class DiskIODriver:
     def __init__(self):
@@ -242,82 +231,23 @@ class GreaseweazleDriver(DiskIODriver):
         """Create and set a custom disk definition based on detected parameters or explicit values"""
         if not self.physical_format:
             self.logger.warning("Cannot create custom diskdef: physical format not set")
+            self.fmt_cls = None
+            self.using_custom_diskdef = False
             return
 
-        self.logger.debug("Creating custom disk definition")
+        disk_def = greaseweazle_utils.create_greaseweazle_diskdef(
+            physical_format=self.physical_format,
+            logger=self.logger,
+            cylinders=cylinders,
+            drive_size=getattr(self, 'drive_size', None) # Pass drive_size if available
+        )
 
-        # --- UPDATED CYLINDER LOGIC ---
-        # Prioritize explicitly passed cylinders
-        if cylinders is not None:
-            final_cylinders = cylinders
-            self.logger.debug(f"Using explicitly provided cylinder count: {final_cylinders}")
-        else:
-            # Fallback to internal logic if not provided
-            self.logger.debug("Determining cylinder count internally based on drive size/rate...")
-            final_cylinders = 80  # Default for 3.5" disks
-            if hasattr(self, 'drive_size') and self.drive_size == "5.25":
-                # For 5.25" disks, DD is typically 40 cylinders, HD is 80
-                # Determine based on data rate - 250Kbps is DD, 500Kbps is HD
-                if self.physical_format.rate == 250:
-                    final_cylinders = 40
-            # TODO: Add logic for 8" drives if needed
-            self.logger.debug(f"Internally determined cylinder count: {final_cylinders}")
-        # --- END UPDATED CYLINDER LOGIC ---
-
-        params = {
-            'cyls': final_cylinders, # Use the determined cylinder count
-            'heads': self.physical_format.heads,
-            'sectors_per_track': self.physical_format.sectors_per_track,
-            'sector_size': self.physical_format.sector_size,
-            'encoding': self.physical_format.encoding,
-            'rate': self.physical_format.rate,
-            'gap3': self.physical_format.gap3
-        }
-
-        # Create the custom disk definition
-        try:
-            from greaseweazle.codec import codec
-            from greaseweazle.codec.ibm import ibm
-
-            disk_def = codec.DiskDef()
-            disk_def.cyls = params['cyls']
-            disk_def.heads = params['heads']
-
-            if params['encoding'] == "MFM":
-                format_name = "ibm.mfm"
-            elif params['encoding'] == "FM":
-                 format_name = "ibm.fm"
-            else:
-                 self.logger.warning(f"Unsupported encoding '{params['encoding']}' for custom diskdef, defaulting to ibm.mfm")
-                 format_name = "ibm.mfm"
-
-
-            track_def = ibm.IBMTrack_FixedDef(format_name)
-
-            # Set track parameters
-            track_def.add_param("secs", str(params['sectors_per_track']))
-            track_def.add_param("bps", str(params['sector_size']))
-            track_def.add_param("gap3", str(params['gap3']))
-            track_def.add_param("rate", str(params['rate']))
-
-            # Finalize the track definition
-            track_def.finalise()
-
-            # Add the track definition to all cylinders and heads
-            for c in range(disk_def.cyls):
-                for h in range(disk_def.heads):
-                    disk_def.track_map[(c, h)] = track_def
-
-            # Finalize the disk definition
-            disk_def.finalise()
-
+        if disk_def:
             self.fmt_cls = disk_def
             self.using_custom_diskdef = True
-            self.logger.info(f"Custom disk definition created: Cyls={params['cyls']}, Heads={params['heads']}, "
-                        f"{params['sectors_per_track']} sectors, {params['sector_size']} bytes/sector, {params['encoding']} encoding")
-        except Exception as e:
-            self.logger.error(f"Failed to create custom disk definition: {e}", exc_info=True)
-            self.fmt_cls = None # Ensure fmt_cls is None on failure
+        else:
+            # Creation failed, ensure internal state reflects this
+            self.fmt_cls = None
             self.using_custom_diskdef = False
 
     def _read_track(self, cylinder: int, head: int) -> bool:
@@ -327,7 +257,9 @@ class GreaseweazleDriver(DiskIODriver):
 
         self.logger.info(f"Reading track C:{cylinder} H:{head}")
         import types
+        # Keep codec import here as it's used for get_diskdef and potentially other things
         from greaseweazle.codec import codec
+        # Remove greaseweazle.codec.ibm import if no longer directly used here
 
         # List of formats to try
         formats_to_try = []
@@ -360,22 +292,28 @@ class GreaseweazleDriver(DiskIODriver):
 
         # Try each format until we find one that works
         for format_tuple in formats_to_try:
+            fmt_cls_to_try = None # Use a temporary variable for the format class
             if format_tuple[0] == "custom":
-                fmt_cls = self.fmt_cls
+                fmt_cls_to_try = self.fmt_cls
                 self.logger.debug("Trying custom disk definition")
             else:
                 format_name, rate = format_tuple
                 self.logger.debug(f"Trying format: {format_name}")
                 try:
-                    fmt_cls = codec.get_diskdef(format_name)
+                    fmt_cls_to_try = codec.get_diskdef(format_name)
                 except Exception as e:
                     self.logger.error(f"Failed to get disk definition for {format_name}: {e}")
                     continue
 
+            # Ensure we actually got a format class before proceeding
+            if fmt_cls_to_try is None:
+                self.logger.warning(f"Skipping format {format_tuple[0]} as no format class was obtained.")
+                continue
+
             args = types.SimpleNamespace(
                 revs=3,
                 raw=False,
-                fmt_cls=fmt_cls,
+                fmt_cls=fmt_cls_to_try, # Use the format class for this attempt
                 tracks=util.TrackSet(f'c={cylinder}:h={head}'),
                 retries=2,
                 seek_retries=0,
@@ -420,7 +358,8 @@ class GreaseweazleDriver(DiskIODriver):
                         self.logger.info(f"Found {num_sectors} sectors on track C:{cylinder} H:{head}")
                         # Use this data
                         self.track_data[(cylinder, head)] = sector_data
-                        self.fmt_cls = fmt_cls
+                        # --- Set self.fmt_cls only on success ---
+                        self.fmt_cls = fmt_cls_to_try
 
                         # Important: Update physical format with the actual detected sector count
                         if self.physical_format:
@@ -468,65 +407,79 @@ class GreaseweazleDriver(DiskIODriver):
                         # Create a custom disk definition if we detected sectors using ibm.scan
                         # and don't already have a custom definition
                         if format_tuple[0] == "ibm.scan" and not self.using_custom_diskdef and self.physical_format:
-                            self._create_and_set_custom_diskdef()
+                            self._create_and_set_custom_diskdef() # This will now use the utility internally
 
                         success = True
 
             try:
                 util.with_drive_selected(read_track_wrapper, self.usb, self.drive_obj)
                 if success:
-                    return True
+                    return True # Exit loop on first successful read
             except Exception as e:
                 self.logger.error(f"Error reading track with format {format_tuple[0]}: {e}")
-                continue
+                # Continue to the next format
 
-        # If we couldn't read any sectors, log it
-        if not self.track_data[(cylinder, head)]:
+        # If we couldn't read any sectors after trying all formats
+        if not self.track_data.get((cylinder, head), {}):
             self.logger.warning(f"No sectors found on track C:{cylinder} H:{head} after trying all formats")
+            return False # Indicate failure to read the track
 
-        return False
+        return False # Should not be reached if success=True returns, but added for clarity
 
     def _convert_to_flux(self, cylinder: int, head: int) -> List[int]:
         self.logger.debug(f"Converting track C:{cylinder} H:{head} to flux")
 
         # Make sure we have a format definition
         if not self.fmt_cls:
-            if not self.physical_format:
-                error_msg = "No physical format defined for writing"
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
-
-            if self.physical_format.encoding == "MFM":
-                format_name = "ibm.mfm"
+            if self.physical_format:
+                 # Try creating the custom def if we have physical format info but no fmt_cls yet
+                 self.logger.info("fmt_cls not set, attempting to create custom disk definition for writing.")
+                 self._create_and_set_custom_diskdef()
+                 if not self.fmt_cls: # Check if creation succeeded
+                     error_msg = "Failed to create necessary disk definition for writing."
+                     self.logger.error(error_msg)
+                     raise ValueError(error_msg)
             else:
-                format_name = "ibm.fm"
-            try:
-                self.logger.debug(f"Getting disk definition for format: {format_name}")
-                self.fmt_cls = codec.get_diskdef(format_name)
-            except Exception as e:
-                error_msg = f"Failed to get disk definition: {e}"
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
+                 # Still no physical format
+                 error_msg = "No physical format defined and no existing format class, cannot write."
+                 self.logger.error(error_msg)
+                 raise ValueError(error_msg)
 
-        # Get the track definition
+
+        # Get the track definition from the potentially just created self.fmt_cls
         track_def = None
         track_coords = (cylinder, head)
+
+        # Check if fmt_cls is actually a DiskDef (it should be)
+        if not hasattr(self.fmt_cls, 'track_map'):
+             error_msg = f"Internal error: self.fmt_cls is not a valid DiskDef object (type: {type(self.fmt_cls)})."
+             self.logger.error(error_msg)
+             raise TypeError(error_msg)
+
 
         if track_coords in self.fmt_cls.track_map:
             track_def = self.fmt_cls.track_map[track_coords]
             self.logger.debug(f"Found specific track definition for C:{cylinder} H:{head}")
         else:
-            # Fallback to any track definition
-            for key, value in self.fmt_cls.track_map.items():
-                track_def = value
-                self.logger.debug(f"Using generic track definition")
-                break
+            # Fallback to any track definition if specific one not found
+            if self.fmt_cls.track_map:
+                 # Get the first available track definition as a generic fallback
+                 track_def = next(iter(self.fmt_cls.track_map.values()))
+                 self.logger.debug(f"Using generic track definition as fallback for C:{cylinder} H:{head}")
+            else:
+                 # This case should be unlikely if _create_and_set_custom_diskdef worked
+                 error_msg = f"No track definitions found in self.fmt_cls.track_map for C:{cylinder} H:{head}"
+                 self.logger.error(error_msg)
+                 raise ValueError(error_msg)
+
 
         if not track_def:
+            # This check is slightly redundant due to the logic above, but keeps the original structure
             error_msg = "No track definition found"
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
+        # --- The rest of the _convert_to_flux method remains the same ---
         # Create the track with the proper definition
         track = track_def.mk_track(cylinder, head)
         track_id = (cylinder, head)
@@ -603,10 +556,11 @@ class GreaseweazleDriver(DiskIODriver):
 
         try:
             # Make sure the custom format is properly set up before writing
-            if not self.fmt_cls and self.physical_format:
-                self._create_and_set_custom_diskdef()
+            # _convert_to_flux now handles creating this if needed
+            # if not self.fmt_cls and self.physical_format:
+            #    self._create_and_set_custom_diskdef() # Calls utility
 
-            # Generate flux list for the track
+            # Generate flux list for the track (this will also ensure fmt_cls is set)
             flux_list = self._convert_to_flux(cylinder, head)
 
             # Seek to the track
@@ -625,13 +579,21 @@ class GreaseweazleDriver(DiskIODriver):
                 # Clear track cache to force a fresh read
                 if track_id in self.track_data:
                     del self.track_data[track_id]
+                # Also clear related dirty flags *before* read, otherwise read might skip
                 if track_id in self.dirty_tracks:
                     self.dirty_tracks.remove(track_id)
+                if track_id in self.dirty_sectors:
+                    del self.dirty_sectors[track_id]
+
                 # Read the track back and verify
                 success = self._read_track(cylinder, head)
                 if not success:
                     self.logger.error(f"Track verification failed for C:{cylinder} H:{head}")
+                    # Add back to dirty list? Or just report failure? Report failure for now.
                     return False
+                else:
+                    self.logger.debug(f"Track verification successful for C:{cylinder} H:{head}")
+
 
             self.logger.info(f"Successfully wrote track C:{cylinder} H:{head}")
             return True

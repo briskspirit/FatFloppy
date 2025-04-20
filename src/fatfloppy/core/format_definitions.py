@@ -1,6 +1,6 @@
 # src/fatfloppy/core/format_definitions.py
 from .disk import DiskGeometry
-from .drivers import PhysicalFormat
+from .physical_format import PhysicalFormat
 from .formats import FormatProfile, BootSectorData
 
 # TODO: Adjust gap3 based on doc: https://www.isdaman.com/alsos/hardware/fdc/floppy.htm
