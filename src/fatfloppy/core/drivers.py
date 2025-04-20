@@ -1,6 +1,6 @@
 # src/fatfloppy/core/drivers.py
 import copy
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict
 
 from .physical_format import PhysicalFormat
 from .utils import greaseweazle_utils
@@ -165,108 +165,127 @@ class GreaseweazleDriver(DiskIODriver):
             self.fmt_cls = None
             self.using_custom_diskdef = False
 
-    def _read_track(self, cylinder: int, head: int) -> bool:
-        self.initialize()
-        import types
-        from greaseweazle.codec import codec
+    def _get_formats_to_try(self) -> List[Tuple[str, Optional[int]]]:
+        """Determine the list of formats to attempt for reading a track."""
         formats_to_try = []
         if self.fmt_cls and self.using_custom_diskdef:
             formats_to_try.append(("custom", None))
-        elif self.last_successful_format:
+        if self.last_successful_format:
             formats_to_try.append(self.last_successful_format)
         if not self.fmt_cls or not self.using_custom_diskdef:
             formats_to_try.append(("ibm.scan", None))
-            if not self.last_successful_format and self.physical_format:
-                rate = self.physical_format.rate
-                if self.physical_format.encoding == "MFM":
-                    formats_to_try.append(("ibm.mfm", rate))
-                else:
-                    formats_to_try.append(("ibm.fm", rate))
-        self.track_data[(cylinder, head)] = {}
-        for format_tuple in formats_to_try:
-            fmt_cls_to_try = self.fmt_cls if format_tuple[0] == "custom" else None
-            if not fmt_cls_to_try:
-                format_name, rate = format_tuple
-                try:
-                    fmt_cls_to_try = codec.get_diskdef(format_name)
-                except Exception as e:
-                    self.logger.error(f"Failed to get disk definition for {format_name}: {e}")
-                    continue
-            if not fmt_cls_to_try:
-                continue
-            args = types.SimpleNamespace(
-                revs=3,
-                raw=False,
-                fmt_cls=fmt_cls_to_try,
-                tracks=util.TrackSet(f"c={cylinder}:h={head}"),
-                retries=2,
-                seek_retries=0,
-                reverse=False,
-                adjust_speed=None,
-                fake_index=None,
-                hard_sectors=False,
-                drive=self.drive_obj,
-                ticks=0,
-                drive_ticks_per_rev=self.drive_ticks_per_rev,
+        if not self.last_successful_format and self.physical_format:
+            rate = self.physical_format.rate
+            if self.physical_format.encoding == "MFM":
+                formats_to_try.append(("ibm.mfm", rate))
+            else:
+                formats_to_try.append(("ibm.fm", rate))
+        return formats_to_try
+
+    def _update_physical_format(self, dat, num_sectors: int) -> None:
+        """Update physical format based on scan track data."""
+        if not hasattr(dat, "track") or not hasattr(dat.track, "mode"):
+            return
+        mode = dat.track.mode
+        encoding = "MFM" if str(mode) == "IBM MFM" else "FM"
+        if not hasattr(dat.track, "clock"):
+            return
+        rate = int(1.0 / (dat.track.clock * (2000 if encoding == "MFM" else 1000)))
+        if not self.physical_format:
+            self.physical_format = PhysicalFormat(
+                encoding=encoding,
+                rate=rate,
+                rpm=300,
+                gap3=84,
+                sectors_per_track=num_sectors,
+                heads=2,
+                sector_size=512,
             )
-            success = False
-            def read_track_wrapper():
-                nonlocal success
-                track_iterator = util.TrackSet.TrackIter(args.tracks)
-                next(track_iterator)
-                flux, dat = read.read_with_retry(self.usb, args, track_iterator)
-                if dat is None:
-                    return
-                self.scan_track_object = dat
-                sectors = getattr(getattr(dat, "track", None), "sectors", None) or getattr(dat, "sectors", None)
-                if not sectors:
-                    return
-                sector_data = {
-                    s.idam.r: bytes(s.dam.data)
-                    for s in sectors
-                    if hasattr(s, "idam") and hasattr(s, "dam") and hasattr(s.dam, "data")
-                }
-                if not sector_data:
-                    return
-                self.track_data[(cylinder, head)] = sector_data
-                self.fmt_cls = fmt_cls_to_try
-                if self.physical_format:
-                    num_sectors = len(sector_data)
-                    if self.physical_format.sectors_per_track != num_sectors:
-                        self.physical_format.sectors_per_track = num_sectors
-                if format_tuple[0] == "ibm.scan" and hasattr(dat, "track"):
-                    track_obj = dat.track
-                    if hasattr(track_obj, "mode"):
-                        mode = track_obj.mode
-                        encoding = "MFM" if str(mode) == "IBM MFM" else "FM"
-                        if hasattr(track_obj, "clock"):
-                            rate = int(1.0 / (track_obj.clock * (2000 if encoding == "MFM" else 1000)))
-                            if not self.physical_format:
-                                self.physical_format = PhysicalFormat(
-                                    encoding=encoding,
-                                    rate=rate,
-                                    rpm=300,
-                                    gap3=84,
-                                    sectors_per_track=num_sectors,
-                                    heads=2,
-                                    sector_size=512,
-                                )
-                            else:
-                                self.physical_format.encoding = encoding
-                                self.physical_format.rate = rate
-                                self.physical_format.sectors_per_track = num_sectors
-                if format_tuple[0] != "custom":
-                    self.last_successful_format = format_tuple
-                if format_tuple[0] == "ibm.scan" and not self.using_custom_diskdef and self.physical_format:
-                    self._create_and_set_custom_diskdef()
-                success = True
+        else:
+            self.physical_format.encoding = encoding
+            self.physical_format.rate = rate
+            self.physical_format.sectors_per_track = num_sectors
+
+    def _read_track_with_format(self, cylinder: int, head: int, format_tuple: Tuple[str, Optional[int]]) -> Optional[Dict[int, bytes]]:
+        """Attempt to read a track with a specific format and return sector data."""
+        from greaseweazle.codec import codec
+        import types
+
+        format_name, rate = format_tuple
+        fmt_cls_to_try = self.fmt_cls if format_name == "custom" else None
+        if not fmt_cls_to_try:
             try:
-                util.with_drive_selected(read_track_wrapper, self.usb, self.drive_obj)
-                if success:
-                    return True
+                fmt_cls_to_try = codec.get_diskdef(format_name)
             except Exception as e:
-                self.logger.error(f"Error reading track with format {format_tuple[0]}: {e}")
-        return bool(self.track_data.get((cylinder, head), {}))
+                self.logger.error(f"Failed to get disk definition for {format_name}: {e}")
+                return None
+
+        args = types.SimpleNamespace(
+            revs=3,
+            raw=False,
+            fmt_cls=fmt_cls_to_try,
+            tracks=util.TrackSet(f"c={cylinder}:h={head}"),
+            retries=2,
+            seek_retries=0,
+            reverse=False,
+            adjust_speed=None,
+            fake_index=None,
+            hard_sectors=False,
+            drive=self.drive_obj,
+            ticks=0,
+            drive_ticks_per_rev=self.drive_ticks_per_rev,
+        )
+
+        success = False
+
+        def read_track_wrapper():
+            nonlocal success
+            track_iterator = util.TrackSet.TrackIter(args.tracks)
+            next(track_iterator)
+            flux, dat = read.read_with_retry(self.usb, args, track_iterator)
+            if dat is None:
+                return
+            self.scan_track_object = dat
+            sectors = getattr(getattr(dat, "track", None), "sectors", None) or getattr(dat, "sectors", None)
+            if not sectors:
+                return
+            sector_data = {
+                s.idam.r: bytes(s.dam.data)
+                for s in sectors
+                if hasattr(s, "idam") and hasattr(s, "dam") and hasattr(s.dam, "data")
+            }
+            if not sector_data:
+                return
+            self.track_data[(cylinder, head)] = sector_data
+            self.fmt_cls = fmt_cls_to_try
+            if self.physical_format and self.physical_format.sectors_per_track != len(sector_data):
+                self.physical_format.sectors_per_track = len(sector_data)
+            if format_tuple[0] == "ibm.scan":
+                self._update_physical_format(dat, len(sector_data))
+            if format_tuple[0] != "custom":
+                self.last_successful_format = format_tuple
+            if format_tuple[0] == "ibm.scan" and not self.using_custom_diskdef and self.physical_format:
+                self._create_and_set_custom_diskdef()
+            success = True
+
+        try:
+            util.with_drive_selected(read_track_wrapper, self.usb, self.drive_obj)
+            if success:
+                return self.track_data[(cylinder, head)]
+        except Exception as e:
+            self.logger.error(f"Error reading track with format {format_tuple[0]}: {e}")
+        return None
+
+    def _read_track(self, cylinder: int, head: int) -> bool:
+        """Read a track by trying various formats and parsing sector data."""
+        self.initialize()
+        self.track_data[(cylinder, head)] = {}  # Reset track data
+        formats_to_try = self._get_formats_to_try()
+        for format_tuple in formats_to_try:
+            sector_data = self._read_track_with_format(cylinder, head, format_tuple)
+            if sector_data:
+                return True
+        return False
 
     def _convert_to_flux(self, cylinder: int, head: int) -> List[int]:
         if not self.fmt_cls:
