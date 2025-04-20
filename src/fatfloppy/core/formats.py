@@ -1,11 +1,12 @@
 # src/fatfloppy/core/formats.py
 import struct
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple # Keep Tuple here
 
 from .disk import Disk, DiskGeometry
 from .drivers import PhysicalFormat
 
+# --- BootSectorData class remains unchanged ---
 @dataclass
 class BootSectorData:
     oem_id: str = "MSDOS5.0"
@@ -27,6 +28,7 @@ class BootSectorData:
 
     def to_bytes(self) -> bytes:
         boot_sector = bytearray(512)
+        # ... (implementation unchanged)
         boot_sector[0:3] = b'\xEB\xFE\x90'  # Jump instruction
         boot_sector[3:11] = self.oem_id.encode('cp437').ljust(8)
         struct.pack_into('<H', boot_sector, 0x00B, self.bytes_per_sector)
@@ -53,87 +55,75 @@ class BootSectorData:
         struct.pack_into('<I', boot_sector, 0x027, self.volume_serial)
         boot_sector[0x02B:0x036] = self.volume_label.encode('cp437').ljust(11)
         boot_sector[0x036:0x03E] = self.fs_type.encode('cp437').ljust(8)
+        # Add some common boot code placeholder if desired
+        # boot_sector[0x03E:0x1FE] = ...
         struct.pack_into('<H', boot_sector, 0x1FE, 0xAA55)  # Boot signature
 
         return bytes(boot_sector)
+
 
     @classmethod
     def from_bytes(cls, data: bytes) -> 'BootSectorData':
         if len(data) < 512:
             raise ValueError("Boot sector data too short")
 
+        # Check signature, but maybe make it a warning instead of error?
         boot_sig = struct.unpack_from('<H', data, 0x1FE)[0]
-        # TODO: make it soft check, don't fail as some don't have
-        # valid signature for some reason even having valid BPB
-        # if boot_sig != 0xAA55:
-            # raise ValueError("Invalid boot signature")
+        if boot_sig != 0xAA55:
+             # Log a warning instead?
+             # print("Warning: Boot signature 0xAA55 not found, but parsing anyway.")
+             pass # Allow parsing even without signature for flexibility
+             # raise ValueError("Invalid boot signature")
 
         result = cls()
-        result.oem_id = data[3:11].decode('cp437').strip()
-        result.bytes_per_sector = struct.unpack_from('<H', data, 0x00B)[0]
-        result.sectors_per_cluster = data[0x00D]
-        result.reserved_sectors = struct.unpack_from('<H', data, 0x00E)[0]
-        result.num_fats = data[0x010]
-        result.root_entries = struct.unpack_from('<H', data, 0x011)[0]
-        result.total_sectors = struct.unpack_from('<H', data, 0x013)[0]
-        if result.total_sectors == 0:
-            result.total_sectors = struct.unpack_from('<I', data, 0x020)[0]
-        result.media_descriptor = data[0x015]
-        result.sectors_per_fat = struct.unpack_from('<H', data, 0x016)[0]
-        result.sectors_per_track = struct.unpack_from('<H', data, 0x018)[0]
-        result.num_heads = struct.unpack_from('<H', data, 0x01A)[0]
-        result.hidden_sectors = struct.unpack_from('<I', data, 0x01C)[0]
-        result.drive_number = data[0x024]
-        result.volume_serial = struct.unpack_from('<I', data, 0x027)[0]
-        result.volume_label = data[0x02B:0x036].decode('cp437').strip()
-        result.fs_type = data[0x036:0x03E].decode('cp437').strip()
+        try:
+            result.oem_id = data[3:11].decode('cp437', errors='replace').strip()
+            result.bytes_per_sector = struct.unpack_from('<H', data, 0x00B)[0]
+            result.sectors_per_cluster = data[0x00D]
+            result.reserved_sectors = struct.unpack_from('<H', data, 0x00E)[0]
+            result.num_fats = data[0x010]
+            result.root_entries = struct.unpack_from('<H', data, 0x011)[0]
+            total_sectors_16 = struct.unpack_from('<H', data, 0x013)[0]
+            total_sectors_32 = struct.unpack_from('<I', data, 0x020)[0]
+            result.total_sectors = total_sectors_32 if total_sectors_16 == 0 else total_sectors_16
+            result.media_descriptor = data[0x015]
+            result.sectors_per_fat = struct.unpack_from('<H', data, 0x016)[0] # Assume FAT12/16 for now
+            result.sectors_per_track = struct.unpack_from('<H', data, 0x018)[0]
+            result.num_heads = struct.unpack_from('<H', data, 0x01A)[0]
+            result.hidden_sectors = struct.unpack_from('<I', data, 0x01C)[0]
+
+            # Extended BPB fields (check signature 0x28 or 0x29)
+            ext_sig = data[0x026] if len(data) > 0x26 else 0
+            if ext_sig in [0x28, 0x29]:
+                result.drive_number = data[0x024] if len(data) > 0x24 else 0
+                result.volume_serial = struct.unpack_from('<I', data, 0x027)[0] if len(data) > 0x2A else 0
+                result.volume_label = data[0x02B:0x036].decode('cp437', errors='replace').strip() if len(data) > 0x35 else "NO NAME"
+                result.fs_type = data[0x036:0x03E].decode('cp437', errors='replace').strip() if len(data) > 0x3D else "FAT12" # Default guess
+            else:
+                 # If no extended signature, these fields might be garbage
+                 result.volume_label = "NO NAME"
+                 result.fs_type = "FAT12" # Default guess
+
+            # Basic sanity checks
+            if result.bytes_per_sector == 0 or result.sectors_per_track == 0 or result.num_heads == 0:
+                raise ValueError(f"Invalid geometry in BPB: BPS={result.bytes_per_sector}, SPT={result.sectors_per_track}, Heads={result.num_heads}")
+
+        except (struct.error, IndexError) as e:
+            raise ValueError(f"Failed to parse boot sector BPB: {e}") from e
 
         return result
 
+
+# --- FormatProfile class remains unchanged ---
 @dataclass
 class FormatProfile:
     name: str
     description: str
     geometry: DiskGeometry
     physical_format: PhysicalFormat
-    boot_sector: BootSectorData = None
-    media_descriptor: int = 0xF0
+    boot_sector: Optional[BootSectorData] = None # Made optional
+    media_descriptor: int = 0xF0 # Keep default
 
     @property
     def capacity_kb(self) -> float:
         return self.geometry.total_bytes / 1024
-
-class FormatManager:
-    def __init__(self):
-        from .format_definitions import FLOPPY_FORMATS
-        self.known_formats = FLOPPY_FORMATS
-
-    def detect_format(self, disk: Disk) -> Optional[str]:
-        try:
-            # Try direct read if driver supports it
-            if hasattr(disk.driver, 'read_bytes_direct'):
-                boot_sector = disk.driver.read_bytes_direct(0, 512)
-            else:
-                # Fall back to regular sector read
-                boot_sector = disk.read_sector(0, 0, 1)
-
-            boot_data = BootSectorData.from_bytes(boot_sector)
-
-            for format_name, profile in self.known_formats.items():
-                if (profile.boot_sector and
-                    profile.boot_sector.sectors_per_track == boot_data.sectors_per_track and
-                    profile.boot_sector.num_heads == boot_data.num_heads and
-                    profile.boot_sector.total_sectors == boot_data.total_sectors and
-                    profile.boot_sector.media_descriptor == boot_data.media_descriptor):
-                    return format_name
-
-            return None
-        except Exception as e:
-            print(f"Format detection error: {e}")
-            return None
-
-    def list_known_formats(self) -> List[Tuple[str, str]]:
-        return [(name, profile.description) for name, profile in self.known_formats.items()]
-
-    def get_format_by_name(self, name: str) -> Optional[FormatProfile]:
-        return self.known_formats.get(name)

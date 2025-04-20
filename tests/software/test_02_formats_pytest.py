@@ -7,53 +7,63 @@ from pathlib import Path
 # Ensure src is in path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
-from fatfloppy.core.formats import FormatManager, BootSectorData, FormatProfile
+from fatfloppy.core.formats import BootSectorData, FormatProfile
 from fatfloppy.core.disk import Disk, DiskGeometry
 from fatfloppy.core.drivers import RawImageDriver
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
+# Import DiskController instead of FormatManager
+from fatfloppy.core.controller import DiskController
+from fatfloppy.core.drivers import PhysicalFormat
 
 # --- Constants ---
 RESOURCE_DIR = Path(__file__).parent.parent / 'resources'
 EMPTY_IMG_SRC = RESOURCE_DIR / 'empty_formatted_144m.img'
 FMT_144 = FLOPPY_FORMATS['ibm_3.5_1.44m']
 
-# --- Fixture for FormatManager ---
+# --- Fixture for DiskController ---
 @pytest.fixture(scope="module")
-def format_manager():
-    """Provides a FormatManager instance."""
-    return FormatManager()
+def disk_controller():
+    """Provides a DiskController instance."""
+    # DiskController now loads formats internally
+    return DiskController()
 
-# --- Tests for FormatManager ---
+# --- Tests for Format Detection in DiskController ---
 
-def test_01_list_known_formats(format_manager):
-    formats = format_manager.list_known_formats()
+def test_01_list_known_formats(disk_controller):
+    # Use the controller's method
+    formats = disk_controller.list_formats()
     assert isinstance(formats, list)
     assert len(formats) > 0
     assert isinstance(formats[0], tuple)
     assert len(formats[0]) == 2 # Name, Description
 
-def test_02_get_format_by_name(format_manager):
-    profile = format_manager.get_format_by_name("ibm_3.5_1.44m")
+def test_02_get_format_by_name(disk_controller):
+    # Use the controller's internal method (prefixed with _)
+    profile = disk_controller.get_format_by_name("ibm_3.5_1.44m")
     assert profile is not None
     assert isinstance(profile, FormatProfile)
     assert profile.name == "ibm_3.5_1.44m"
     assert profile.geometry.total_bytes == 1440 * 1024
 
-    profile_none = format_manager.get_format_by_name("non_existent_format")
+    profile_none = disk_controller.get_format_by_name("non_existent_format")
     assert profile_none is None
 
-def test_03_detect_format_144mb(format_manager):
+def test_03_detect_format_144mb(disk_controller):
     if not EMPTY_IMG_SRC.exists():
         pytest.skip(f"{EMPTY_IMG_SRC} not found.")
 
-    driver = RawImageDriver(str(EMPTY_IMG_SRC))
-    disk = Disk(driver)
-    # No geometry needed for format detection via direct read
+    # Open the disk using the controller, which sets up driver and disk
+    success = disk_controller.open_disk(str(EMPTY_IMG_SRC), disk_type="image")
+    assert success is True
+    assert disk_controller.disk is not None
+    assert disk_controller.driver is not None
 
-    detected_format = format_manager.detect_format(disk)
-    assert detected_format == "ibm_3.5_1.44m"
+    # Call the controller's detection method AFTER opening the disk
+    detected_format_name = disk_controller.detect_format()
+    assert detected_format_name == "ibm_3.5_1.44m"
+    disk_controller.close_disk() # Clean up
 
-def test_04_detect_format_no_match(format_manager):
+def test_04_detect_format_no_match(disk_controller):
      # Create dummy disk with non-matching boot sector data
     dummy_boot = bytearray(512)
     dummy_boot[0:3] = b'\xEB\xFE\x90'
@@ -70,11 +80,22 @@ def test_04_detect_format_no_match(format_manager):
     struct.pack_into('<H', dummy_boot, 0x1A, 3)   # Heads (unusual)
     struct.pack_into('<H', dummy_boot, 0x1FE, 0xAA55) # Boot Signature
 
+    # Use RawImageDriver directly with the image data
     driver = RawImageDriver("dummy", image_data=bytes(dummy_boot) + b'\x00'*1024*100)
-    disk = Disk(driver)
+    # Assign the driver and disk manually to the controller for this test
+    disk_controller.driver = driver
+    disk_controller.disk = Disk(driver)
+    # Need to set *some* geometry for detect_format to try reading sector 0
+    # A temporary one is fine here as the boot sector data itself is the focus
+    temp_geom = DiskGeometry(80, 2, 18, 512)
+    temp_phys = PhysicalFormat(encoding="MFM", rate=500, rpm=300, sectors_per_track=18, heads=2, sector_size=512)
+    disk_controller.disk.set_geometry(temp_geom)
+    disk_controller.driver.set_physical_format(temp_phys)
 
-    detected_format = format_manager.detect_format(disk)
+
+    detected_format = disk_controller.detect_format()
     assert detected_format is None, "Should not detect a standard format"
+    disk_controller.close_disk() # Clean up
 
 # --- Tests for BootSectorData ---
 

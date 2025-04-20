@@ -341,7 +341,7 @@ class FileBrowserApp(QMainWindow):
         format_info = "Unknown"
         format_name = self.controller.detect_format()
         if format_name:
-            format_profile = self.controller.format_manager.get_format_by_name(format_name)
+            format_profile = self.controller.get_format_by_name(format_name)
             if format_profile:
                 format_info = format_profile.description
 

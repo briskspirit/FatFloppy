@@ -1,7 +1,7 @@
 # src/fatfloppy/core/drivers.py
 import copy
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from .utils.logging_config import get_logger
 from greaseweazle.tools import util
@@ -238,25 +238,34 @@ class GreaseweazleDriver(DiskIODriver):
         self.using_custom_diskdef = False # Reset custom definition flag
         self.last_successful_format = None # Clear last successful format
 
-    def _create_and_set_custom_diskdef(self):
-        """Create and set a custom disk definition based on detected parameters"""
+    def _create_and_set_custom_diskdef(self, cylinders: Optional[int] = None): # Added optional cylinders arg
+        """Create and set a custom disk definition based on detected parameters or explicit values"""
         if not self.physical_format:
             self.logger.warning("Cannot create custom diskdef: physical format not set")
             return
 
         self.logger.debug("Creating custom disk definition")
-        # Get geometry information from physical format
 
-        # Determine appropriate cylinder count based on drive size and density
-        cylinders = 80  # Default for 3.5" disks
-        if hasattr(self, 'drive_size') and self.drive_size == "5.25":
-            # For 5.25" disks, DD is typically 40 cylinders, HD is 80
-            # Determine based on data rate - 250Kbps is DD, 500Kbps is HD
-            if self.physical_format.rate == 250:
-                cylinders = 40
+        # --- UPDATED CYLINDER LOGIC ---
+        # Prioritize explicitly passed cylinders
+        if cylinders is not None:
+            final_cylinders = cylinders
+            self.logger.debug(f"Using explicitly provided cylinder count: {final_cylinders}")
+        else:
+            # Fallback to internal logic if not provided
+            self.logger.debug("Determining cylinder count internally based on drive size/rate...")
+            final_cylinders = 80  # Default for 3.5" disks
+            if hasattr(self, 'drive_size') and self.drive_size == "5.25":
+                # For 5.25" disks, DD is typically 40 cylinders, HD is 80
+                # Determine based on data rate - 250Kbps is DD, 500Kbps is HD
+                if self.physical_format.rate == 250:
+                    final_cylinders = 40
+            # TODO: Add logic for 8" drives if needed
+            self.logger.debug(f"Internally determined cylinder count: {final_cylinders}")
+        # --- END UPDATED CYLINDER LOGIC ---
 
         params = {
-            'cyls': cylinders,
+            'cyls': final_cylinders, # Use the determined cylinder count
             'heads': self.physical_format.heads,
             'sectors_per_track': self.physical_format.sectors_per_track,
             'sector_size': self.physical_format.sector_size,
@@ -276,8 +285,12 @@ class GreaseweazleDriver(DiskIODriver):
 
             if params['encoding'] == "MFM":
                 format_name = "ibm.mfm"
+            elif params['encoding'] == "FM":
+                 format_name = "ibm.fm"
             else:
-                format_name = "ibm.fm"
+                 self.logger.warning(f"Unsupported encoding '{params['encoding']}' for custom diskdef, defaulting to ibm.mfm")
+                 format_name = "ibm.mfm"
+
 
             track_def = ibm.IBMTrack_FixedDef(format_name)
 
@@ -300,10 +313,12 @@ class GreaseweazleDriver(DiskIODriver):
 
             self.fmt_cls = disk_def
             self.using_custom_diskdef = True
-            self.logger.info(f"Custom disk definition created: {params['sectors_per_track']} sectors, "
-                        f"{params['sector_size']} bytes/sector, {params['encoding']} encoding")
+            self.logger.info(f"Custom disk definition created: Cyls={params['cyls']}, Heads={params['heads']}, "
+                        f"{params['sectors_per_track']} sectors, {params['sector_size']} bytes/sector, {params['encoding']} encoding")
         except Exception as e:
             self.logger.error(f"Failed to create custom disk definition: {e}", exc_info=True)
+            self.fmt_cls = None # Ensure fmt_cls is None on failure
+            self.using_custom_diskdef = False
 
     def _read_track(self, cylinder: int, head: int) -> bool:
         """Read a track and detect its format"""
