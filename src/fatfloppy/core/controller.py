@@ -38,6 +38,14 @@ class DiskController:
             raise FileNotFoundError(f"Image file not found: {source}")
         return RawImageDriver(file_path=source)
 
+    def _create_driver(self, disk_type: str, source: str, drive_letter: str, drive_size: str) -> DiskIODriver:
+        if disk_type == "physical":
+            return self._create_physical_driver(source, drive_letter, drive_size)
+        elif disk_type == "image":
+            return self._create_image_driver(source)
+        else:
+            raise ValueError(f"Unsupported disk type: {disk_type}")
+
     def _apply_user_format(self, format_info: dict) -> None:
         self.explicit_format_set = True
         format_name = format_info.get("format_name")
@@ -67,29 +75,29 @@ class DiskController:
         if isinstance(self.driver, GreaseweazleDriver) and hasattr(self.driver, '_create_and_set_custom_diskdef'):
             self.driver._create_and_set_custom_diskdef(geometry.cylinders)
 
+    def _handle_format(self, format_info: dict, drive_size: str) -> bool:
+        if format_info:
+            self._apply_user_format(format_info)
+            self.detect_filesystem()
+            return True
+        else:
+            if isinstance(self.driver, GreaseweazleDriver):
+                return self._detect_physical_disk_format(drive_size)
+            elif isinstance(self.driver, RawImageDriver):
+                return self._detect_image_file_format(self.driver.file_path)
+            return False
+
     def open_disk(self, source: str, disk_type: str = "image", drive_letter: str = "A", drive_size: str = "3.5", format_info: dict = None) -> bool:
         if self.disk:
             self.close_disk()
         self.explicit_format_set = False
+
         try:
-            if disk_type == "physical":
-                self.driver = self._create_physical_driver(source, drive_letter, drive_size)
-                self.disk = Disk(self.driver)
-                if format_info:
-                    self._apply_user_format(format_info)
-                    self.detect_filesystem()
-                else:
-                    result = self._detect_physical_disk_format(drive_size)
-                    if not result:
-                        return False
-            elif disk_type == "image":
-                self.driver = self._create_image_driver(source)
-                self.disk = Disk(self.driver)
-                result = self._detect_image_file_format(source)
-                if not result:
-                    return False
-            else:
-                raise ValueError(f"Unsupported disk type: {disk_type}")
+            self.driver = self._create_driver(disk_type, source, drive_letter, drive_size)
+            self.disk = Disk(self.driver)
+            success = self._handle_format(format_info, drive_size)
+            if not success:
+                return False
             self.geometry = self.disk.geometry if self.disk else None
             self.boot_sector = self.filesystem.boot_sector if self.filesystem else None
             return True
