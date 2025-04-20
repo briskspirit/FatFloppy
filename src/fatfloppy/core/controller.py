@@ -319,7 +319,8 @@ class DiskController:
                     "size": item.size,
                     "is_dir": item.is_dir,
                     "datetime": item.datetime,
-                    "attributes": item.attributes
+                    "attributes": item.attributes,
+                    "starting_cluster": item.starting_cluster
                 }
                 for item in items
             ]

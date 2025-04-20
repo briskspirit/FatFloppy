@@ -1,4 +1,5 @@
 # src/fatfloppy/core/drivers.py
+import copy
 from dataclasses import dataclass
 from typing import List
 
@@ -230,7 +231,9 @@ class GreaseweazleDriver(DiskIODriver):
                         f"RPM={physical_format.rpm}, SPT={physical_format.sectors_per_track}, "
                         f"Heads={physical_format.heads}, SectorSize={physical_format.sector_size}, "
                         f"Gap3={physical_format.gap3}")
-        self.physical_format = physical_format
+        # --- Store a DEEP COPY to prevent modifying the original shared object ---
+        self.physical_format = copy.deepcopy(physical_format)
+        # --- END CHANGE ---
         self.fmt_cls = None # Reset cached format class
         self.using_custom_diskdef = False # Reset custom definition flag
         self.last_successful_format = None # Clear last successful format
@@ -740,7 +743,9 @@ class RawImageDriver(DiskIODriver):
             raise TypeError("physical_format must be a PhysicalFormat object")
         self.logger.info(f"Setting physical format for image: Enc={physical_format.encoding}, Rate={physical_format.rate}kbps, "
                        f"SPT={physical_format.sectors_per_track}, Heads={physical_format.heads}, SectorSize={physical_format.sector_size}")
-        self.physical_format = physical_format
+        # --- Store a DEEP COPY to prevent modifying the original shared object ---
+        self.physical_format = copy.deepcopy(physical_format)
+        # --- END CHANGE ---
         # Mark geometry as set if format is valid? Or rely on Disk.set_geometry?
         # Disk.set_geometry calls this, so setting self.physical_format is sufficient.
         # self.geometry_set = True # Maybe not needed here, Disk manages geometry object
