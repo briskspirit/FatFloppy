@@ -11,6 +11,9 @@ __pycache__/
 BCKP/
 BACKUP/
 
+# Tests temporary files
+tests/dummy
+
 # C extensions
 *.so
 
