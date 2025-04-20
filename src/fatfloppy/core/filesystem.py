@@ -1460,17 +1460,22 @@ class FATFilesystem(Filesystem):
     # --- Data Read/Write ---
 
     def _read_bytes(self, offset: int, length: int) -> bytes:
-        """Reads a sequence of bytes from the disk, potentially spanning sectors, using optimized read."""
+        """
+        Reads a sequence of bytes from the disk by calculating the required
+        sectors and using Disk.read_sectors.
+        """
         if length <= 0:
-             return b''
+            return b''
         if not self.boot_sector or self.boot_sector.bytes_per_sector == 0:
-             raise ValueError("Cannot read bytes: Invalid boot sector or bytes_per_sector is zero.")
-        if not self.disk: # Added check for disk
-             raise ValueError("Cannot read bytes: Disk object not available.")
+            raise ValueError("Cannot read bytes: Invalid boot sector or bytes_per_sector is zero.")
+        if not self.disk:
+            raise ValueError("Cannot read bytes: Disk object not available.")
+        if not self.disk.geometry: # Geometry is needed for LBA->CHS
+            raise ValueError("Cannot read bytes: Disk geometry not set.")
 
         sector_size = self.boot_sector.bytes_per_sector
         start_lba = offset // sector_size
-        end_lba = (offset + length - 1) // sector_size
+        end_lba = (offset + length - 1) // sector_size # Inclusive LBA of the last sector needed
         num_sectors = end_lba - start_lba + 1
 
         self.logger.debug(f"Reading {length} bytes from offset {offset} (LBA {start_lba} to {end_lba}, {num_sectors} sectors)")
@@ -1480,45 +1485,63 @@ class FATFilesystem(Filesystem):
             start_cyl, start_head, start_sec = self.disk.lba_to_chs(start_lba)
 
             # Read all necessary sectors at once using disk.read_sectors
+            # This method already handles potential short reads from the driver by padding.
             self.logger.debug(f"Calling disk.read_sectors: C={start_cyl} H={start_head} S={start_sec}, Num={num_sectors}")
             all_data_read = self.disk.read_sectors(start_cyl, start_head, start_sec, num_sectors)
             self.logger.debug(f"disk.read_sectors returned {len(all_data_read)} bytes")
 
-            if len(all_data_read) < num_sectors * sector_size:
-                 self.logger.warning(f"Read fewer bytes ({len(all_data_read)}) than expected ({num_sectors * sector_size}). Padding with zeros.")
-                 all_data_read += bytes(num_sectors * sector_size - len(all_data_read))
-
             # Calculate the offset within the first sector read
             start_offset_in_read_data = offset % sector_size
 
+            # Calculate the end index for slicing
+            end_index_in_read_data = start_offset_in_read_data + length
+
+            # Ensure the end index doesn't exceed the data read
+            if end_index_in_read_data > len(all_data_read):
+                self.logger.warning(f"Requested read range ({start_offset_in_read_data} to {end_index_in_read_data}) "
+                                    f"exceeds data returned by read_sectors ({len(all_data_read)}). Truncating.")
+                end_index_in_read_data = len(all_data_read)
+
             # Extract the requested slice
-            result = all_data_read[start_offset_in_read_data : start_offset_in_read_data + length]
+            result = all_data_read[start_offset_in_read_data : end_index_in_read_data]
+
+            # Handle case where even after slicing, the result is shorter than requested
+            # This might happen if the offset + length pointed past the end of the disk geometry
+            if len(result) < length:
+                self.logger.warning(f"Final extracted data ({len(result)} bytes) is shorter than requested ({length})."
+                                    f" Offset: {offset}, Start LBA: {start_lba}")
+                # Optionally pad with zeros if strict length is expected, but usually returning less is correct here.
+                # result += bytes(length - len(result))
+
             self.logger.debug(f"Extracted {len(result)} bytes for requested range.")
             return result
 
-        except ValueError as e: # Catch potential LBA/CHS conversion errors
+        except ValueError as e: # Catch potential LBA/CHS conversion errors or invalid addresses
             self.logger.error(f"Error calculating CHS or reading sectors: {e}", exc_info=True)
-            raise IOError(f"Failed to read data at offset {offset}") from e
-        except IndexError as e: # Catch potential slicing errors if read was short
-             self.logger.error(f"Error slicing read data (read likely short): {e}", exc_info=True)
-             # Return what we could slice, potentially less than requested
-             # Re-calculate safe end point
-             safe_end = min(start_offset_in_read_data + length, len(all_data_read))
-             return all_data_read[start_offset_in_read_data : safe_end]
+            raise IOError(f"Failed to read data at offset {offset} (length {length})") from e
+        except IndexError as e: # Catch potential slicing errors (should be less likely now)
+             self.logger.error(f"Error slicing read data: {e}", exc_info=True)
+             raise IOError(f"Failed to process data read at offset {offset} (length {length})") from e
         except Exception as e:
-            self.logger.error(f"Unexpected error reading bytes from offset {offset}: {e}", exc_info=True)
-            raise IOError(f"Failed to read data at offset {offset}") from e
+            self.logger.error(f"Unexpected error reading bytes from offset {offset} (length {length}): {e}", exc_info=True)
+            raise IOError(f"Failed to read data at offset {offset} (length {length})") from e
 
 
     def _write_bytes(self, offset: int, data: bytes) -> None:
-        """Writes a sequence of bytes to the disk, handling partial sector writes."""
+        """
+        Writes a sequence of bytes to the disk, handling partial sector writes
+        by using the Disk object's read_sector and write_sector methods for
+        read-modify-write operations.
+        """
         if not data:
             self.logger.debug("Write requested with 0 bytes, nothing to do.")
             return
         if not self.boot_sector or self.boot_sector.bytes_per_sector == 0:
              raise ValueError("Cannot write bytes: Invalid boot sector or bytes_per_sector is zero.")
-        if not self.disk: # Added check for disk
+        if not self.disk:
              raise ValueError("Cannot write bytes: Disk object not available.")
+        if not self.disk.geometry: # Geometry is needed for LBA->CHS and validation
+             raise ValueError("Cannot write bytes: Disk geometry not set.")
 
         sector_size = self.boot_sector.bytes_per_sector
         length = len(data)
@@ -1527,7 +1550,7 @@ class FATFilesystem(Filesystem):
 
         self.logger.debug(f"Writing {length} bytes to offset {offset} (LBA {start_lba} to {end_lba})")
 
-        # --- Simpler approach: Iterate and write sector by sector ---
+        # Iterate sector by sector, performing read-modify-write if needed
         current_offset = offset
         data_written = 0
         try:
@@ -1537,32 +1560,32 @@ class FATFilesystem(Filesystem):
                 bytes_to_write_this_sector = min(length - data_written, sector_size - offset_in_sector)
 
                 # Calculate CHS using the Disk object
-                cyl, head, sec = self.disk.lba_to_chs(lba) # CHANGED HERE
+                cyl, head, sec = self.disk.lba_to_chs(lba)
                 # self.logger.debug(f"Processing write for LBA {lba} (C:{cyl} H:{head} S:{sec})")
 
                 # If the write is partial within this sector, need read-modify-write
                 if offset_in_sector > 0 or bytes_to_write_this_sector < sector_size:
                     # self.logger.debug(f"Partial write for LBA {lba}: offset={offset_in_sector}, len={bytes_to_write_this_sector}")
                     try:
+                         # Disk.read_sector handles padding if driver reads short
                          sector_data = bytearray(self.disk.read_sector(cyl, head, sec))
-                         # Check read length
-                         if len(sector_data) != sector_size:
-                              self.logger.warning(f"Read for modify returned {len(sector_data)} bytes, expected {sector_size}. Padding.")
-                              sector_data.extend(bytes(sector_size - len(sector_data)))
                     except Exception as read_err:
-                         # If read fails, maybe disk is unformatted? Create blank sector.
-                         self.logger.warning(f"Read failed before partial write to LBA {lba}, using blank sector: {read_err}")
+                         # If read fails (e.g., unformatted), assume a blank sector for modification
+                         self.logger.warning(f"Read failed before partial write to LBA {lba} (C:{cyl} H:{head} S:{sec}), using blank sector: {read_err}")
                          sector_data = bytearray(sector_size) # Zero-filled
 
                     # Modify the portion
                     data_chunk = data[data_written : data_written + bytes_to_write_this_sector]
                     sector_data[offset_in_sector : offset_in_sector + bytes_to_write_this_sector] = data_chunk
-                    # Write the whole modified sector back
+
+                    # Write the whole modified sector back using Disk.write_sector
+                    # This call handles data size validation against geometry.
                     self.disk.write_sector(cyl, head, sec, bytes(sector_data))
                 else:
-                    # Write the full sector directly
-                    # self.logger.debug(f"Full sector write for LBA {lba}")
+                    # Write the full sector directly using Disk.write_sector
+                    # self.logger.debug(f"Full sector write for LBA {lba} (C:{cyl} H:{head} S:{sec})")
                     data_chunk = data[data_written : data_written + sector_size]
+                    # This call handles data size validation against geometry.
                     self.disk.write_sector(cyl, head, sec, data_chunk)
 
                 data_written += bytes_to_write_this_sector
@@ -1570,9 +1593,12 @@ class FATFilesystem(Filesystem):
 
             self.logger.debug(f"Completed writing {length} bytes.")
 
+        except ValueError as e: # Catch LBA/CHS or address validation errors
+            self.logger.error(f"Error calculating CHS or validating address during write: {e}", exc_info=True)
+            raise IOError(f"Failed to write data starting at offset {offset}") from e
         except Exception as e:
             self.logger.error(f"Error writing bytes starting at offset {offset}: {e}", exc_info=True)
-            raise IOError(f"Failed to write data at offset {offset}") from e
+            raise IOError(f"Failed to write data starting at offset {offset}") from e
 
     def _read_cluster_chain_data(self, cluster_chain: List[int]) -> bytes:
         """Reads the data content of a cluster chain."""
@@ -1587,11 +1613,20 @@ class FATFilesystem(Filesystem):
             try:
                 cluster_offset = self._cluster_to_offset(cluster)
                 # self.logger.debug(f"Reading cluster {cluster} at offset {cluster_offset}")
-                # Read the whole cluster using the optimized _read_bytes
+
+                # Read the whole cluster using the refactored _read_bytes
+                # This implicitly uses Disk.read_sectors
                 cluster_data = self._read_bytes(cluster_offset, self.cluster_size)
+
+                # _read_bytes (via Disk.read_sectors -> Disk.read_sector) should handle padding
+                # But double-check length for safety
                 if len(cluster_data) < self.cluster_size:
                      self.logger.warning(f"Read short data for cluster {cluster} ({len(cluster_data)} bytes), padding.")
                      cluster_data += bytes(self.cluster_size - len(cluster_data))
+                elif len(cluster_data) > self.cluster_size:
+                     self.logger.warning(f"Read long data for cluster {cluster} ({len(cluster_data)} bytes), truncating.")
+                     cluster_data = cluster_data[:self.cluster_size]
+
                 result.extend(cluster_data)
             except ValueError as e: # Catch offset errors
                 self.logger.error(f"Error getting offset or reading cluster {cluster}: {e}")
@@ -1599,7 +1634,6 @@ class FATFilesystem(Filesystem):
             except Exception as e:
                 self.logger.error(f"Unexpected error reading cluster {cluster} data: {e}", exc_info=True)
                 raise IOError(f"Failed to read data for cluster {cluster}") from e
-
 
         self.logger.debug(f"Read total {len(result)} bytes from cluster chain")
         return bytes(result)
@@ -1629,10 +1663,13 @@ class FATFilesystem(Filesystem):
                 if chunk_size < self.cluster_size:
                     # self.logger.debug(f"Padding last chunk from {chunk_size} to {self.cluster_size} bytes")
                     padded_chunk = chunk + bytes(self.cluster_size - chunk_size)
+                    # Use the refactored _write_bytes, which uses Disk methods
                     self._write_bytes(cluster_offset, padded_chunk)
                 else:
+                     # Use the refactored _write_bytes
                      self._write_bytes(cluster_offset, chunk)
-                data_pos += chunk_size
+
+                data_pos += chunk_size # Increment by actual data bytes written in this chunk
                 # Stop if all data is written (e.g., if chain was longer than needed)
                 if data_pos >= len(data):
                     break
@@ -1642,7 +1679,6 @@ class FATFilesystem(Filesystem):
             except Exception as e:
                 self.logger.error(f"Unexpected error writing cluster {cluster} data: {e}", exc_info=True)
                 raise IOError(f"Failed to write data for cluster {cluster}") from e
-
 
         if data_pos < len(data):
             self.logger.warning(f"Finished writing to cluster chain, but only {data_pos} of {len(data)} bytes were written. Chain too short?")
