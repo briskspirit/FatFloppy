@@ -357,23 +357,23 @@ class DiskController:
         return geometry, physical
 
     def _check_second_head(self, temp_profile: FormatProfile) -> bool:
+        if self.filesystem and hasattr(self.filesystem, 'boot_sector'):
+            bs = self.filesystem.boot_sector
+            if hasattr(bs, 'num_heads') and bs.num_heads > 0:
+                return bs.num_heads > 1
         self.set_format(temp_profile)
         if hasattr(self.driver, '_read_track') and isinstance(self.driver, GreaseweazleDriver):
             try:
                 success = self.driver._read_track(0, 1)
-                if success:
-                    track_data = self.driver.track_data.get((0, 1), {})
-                    return bool(track_data)
-                return False
+                return bool(success and self.driver.track_data.get((0, 1), {}))
             except Exception:
-                self.logger.warning("Error reading track; assuming double-sided as fallback")
-                return True  # Fallback to double-sided on error, consistent with original
-        else:
-            try:
-                self.disk.read_sector(0, 1, 1)
-                return True
-            except Exception:
+                self.logger.warning("Error reading track; assuming single-sided")
                 return False
+        try:
+            self.disk.read_sector(0, 1, 1)
+            return True
+        except Exception:
+            return False
 
     def _filter_known_formats(self, drive_size: str, has_second_head: bool) -> List[FormatProfile]:
         filtered = []
