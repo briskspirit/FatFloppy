@@ -560,11 +560,13 @@ class FATFilesystem(Filesystem):
         self._write_fat_sectors()
 
     def _read_fat_entry_cached(self, cluster: int, load_if_missing: bool = True) -> int:
-        if self.fat_cache is None:
-            if load_if_missing and not self._load_fat_cache():
+        if not self._init_completed:
+            raise ValueError("Filesystem not initialized")
+        if self.fat_cache is None and load_if_missing:
+            if not self._load_fat_cache():
                 raise IOError("Failed to load FAT cache")
-            else:
-                raise ValueError("FAT Cache not loaded")
+        if self.fat_cache is None:
+            raise ValueError("FAT cache not loaded")
         if not (0 <= cluster < self.num_clusters + 2):
             return FAT12_BAD_CLUSTER
         byte_offset = int(cluster * 1.5)
