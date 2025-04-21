@@ -138,16 +138,13 @@ class DiskController:
             self.logger.error("No disk opened to detect format")
             return None
         try:
-            if hasattr(self.driver, 'read_bytes_direct'):
-                boot_sector_bytes = self.driver.read_bytes_direct(0, 512)
-            else:
-                if not self.disk.geometry:
-                    temp_geom = DiskGeometry(80, 2, 9, 512)
-                    self.disk.set_geometry(temp_geom)
-                    if hasattr(self.driver, "set_physical_format") and not getattr(self.driver, "physical_format", None):
-                        temp_phys = PhysicalFormat(encoding="MFM", rate=250, rpm=300, sectors_per_track=9, heads=2, sector_size=512)
-                        self.driver.set_physical_format(temp_phys)
-                boot_sector_bytes = self.disk.read_sector(0, 0, 1)
+            if not self.disk.geometry:
+                temp_geom = DiskGeometry(80, 2, 9, 512)
+                self.disk.set_geometry(temp_geom)
+                if hasattr(self.driver, "set_physical_format") and not getattr(self.driver, "physical_format", None):
+                    temp_phys = PhysicalFormat(encoding="MFM", rate=250, rpm=300, sectors_per_track=9, heads=2, sector_size=512)
+                    self.driver.set_physical_format(temp_phys)
+            boot_sector_bytes = self.disk.read_sector(0, 0, 1)
             if not boot_sector_bytes or len(boot_sector_bytes) < 512:
                 self.logger.warning(f"Failed to read valid boot sector (read {len(boot_sector_bytes or b'')} bytes). Cannot detect format.")
                 return None

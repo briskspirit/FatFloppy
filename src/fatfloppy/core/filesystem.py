@@ -356,10 +356,7 @@ class FATFilesystem(Filesystem):
 
     def _load_boot_sector(self) -> None:
         try:
-            if hasattr(self.disk.driver, "read_bytes_direct"):
-                boot_sector_data = self.disk.driver.read_bytes_direct(0, 512)
-            else:
-                boot_sector_data = self.disk.read_sector(0, 0, 1)
+            boot_sector_data = self.disk.read_sector(0, 0, 1)
             if not boot_sector_data:
                 self.boot_sector = None
                 return

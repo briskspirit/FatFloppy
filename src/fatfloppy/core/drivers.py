@@ -428,13 +428,6 @@ class RawImageDriver(DiskIODriver):
             raise TypeError("physical_format must be a PhysicalFormat object")
         self.physical_format = copy.deepcopy(physical_format)
 
-    def read_bytes_direct(self, offset: int, length: int) -> bytes:
-        if offset < 0 or length < 0:
-            raise ValueError("Offset and length must be non-negative")
-        if offset + length > len(self.image_data):
-            raise IOError("Read request exceeds image bounds")
-        return bytes(self.image_data[offset:offset + length])
-
     def _calculate_sector_offset(self, cylinder: int, head: int, sector: int, sector_size: int) -> int:
         if not self.physical_format:
             raise ValueError("Physical format not set")
