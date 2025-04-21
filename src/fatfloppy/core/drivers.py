@@ -98,7 +98,7 @@ class GreaseweazleDriver(DiskIODriver):
             try:
                 self._create_and_set_custom_diskdef()
             except Exception as e:
-                self.logger.error(f"Failed to create disk definition for writing: {e}")
+                self.logger.error(f"Failed to create disk definition: {e}")
                 return
         tracks_to_read = [
             track_id for track_id in self.dirty_tracks
@@ -129,15 +129,20 @@ class GreaseweazleDriver(DiskIODriver):
                     successfully_written.append(track_id)
                 else:
                     self.logger.warning(f"Failed to write track C:{cylinder} H:{head}")
+                    if track_id in self.track_data:
+                        del self.track_data[track_id]  # Invalidate only failed tracks
             except Exception as e:
                 self.logger.error(f"Drive selection error for track C:{cylinder} H:{head}: {e}", exc_info=True)
         for track_id in successfully_written:
+            if track_id in self.dirty_sectors:
+                if len(self.dirty_sectors[track_id]) == self.physical_format.sectors_per_track:
+                    self.track_data[track_id] = self.dirty_sectors[track_id].copy()
+                elif track_id in self.track_data:
+                    for sector, data in self.dirty_sectors[track_id].items():
+                        self.track_data[track_id][sector] = data
+                del self.dirty_sectors[track_id]
             if track_id in self.dirty_tracks:
                 self.dirty_tracks.remove(track_id)
-                if track_id in self.dirty_sectors:
-                    del self.dirty_sectors[track_id]
-            if track_id in self.track_data:
-                del self.track_data[track_id]
 
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
         if not isinstance(physical_format, PhysicalFormat):

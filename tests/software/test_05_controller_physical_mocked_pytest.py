@@ -413,7 +413,6 @@ def test_06_physical_write_sector_and_flush_success_mocked(mocked_controller):
         mock_convert.return_value = [100.0, 200.0, 150.0]
         mock_read.read_with_retry.reset_mock()
         mock_read.read_with_retry.return_value = (create_mock_flux(sample_freq=mock_usb.sample_freq), create_mock_track_data(cyl, head, test_format))
-        mock_util.with_drive_selected.side_effect = lambda func, usb, drive, motor=ANY: func()
         controller.disk.write_sector(cyl, head, sect, write_data)
         controller.driver.flush()
         mock_convert.assert_called_once_with(controller.driver, cyl, head)
@@ -422,7 +421,9 @@ def test_06_physical_write_sector_and_flush_success_mocked(mocked_controller):
         mock_usb.write_track.assert_called_once_with(flux_list=mock_convert.return_value, cue_at_index=True, terminate_at_index=True)
         assert (cyl, head) not in controller.driver.dirty_sectors
         assert len(controller.driver.dirty_tracks) == 0
-        assert (cyl, head) not in controller.driver.track_data
+        read_data = controller.disk.read_sector(cyl, head, sect)
+        assert read_data == write_data
+        mock_read.read_with_retry.assert_called_once()  # Called once during flush
 
 def test_07_physical_flush_write_error_mocked(mocked_controller):
     controller, mocks_bundle = mocked_controller
@@ -489,25 +490,19 @@ def test_10_gw_cache_invalidation_mocked(mocked_controller):
     write_data = b'\xAA' * 512
     test_format = FMT_144
     open_disk_for_rw_tests(controller, mocks_bundle, test_format)
-    mock_read.read_with_retry.side_effect = MagicMock(return_value=(create_mock_flux(sample_freq=mock_usb.sample_freq), create_mock_track_data(cyl, head, test_format)))
     controller.disk.read_sector(cyl, head, sect)
     assert (cyl, head) in controller.driver.track_data, "Cache not populated"
-    mock_read.read_with_retry.assert_called_once()
+    assert mock_read.read_with_retry.call_count == 1  # First call for initial read
     controller.disk.write_sector(cyl, head, sect, write_data)
     controller.driver.verify_writes = False
     with patch.object(GreaseweazleDriver, '_convert_to_flux', autospec=True) as mock_convert:
         mock_convert.return_value = [1.0]
-        mock_read_retry_flush = MagicMock(return_value=(create_mock_flux(sample_freq=mock_usb.sample_freq), create_mock_track_data(cyl, head, test_format)))
-        mock_read.read_with_retry.side_effect = mock_read_retry_flush
-        mock_util.with_drive_selected.side_effect = lambda func, usb, drive, motor=ANY: func()
+        mock_read.read_with_retry.return_value = (create_mock_flux(sample_freq=mock_usb.sample_freq), create_mock_track_data(cyl, head, test_format))
         controller.driver.flush()
-        if test_format.geometry.sectors_per_track > 1: mock_read_retry_flush.assert_called_once()
-        else: mock_read_retry_flush.assert_not_called()
-    assert (cyl, head) not in controller.driver.track_data, "Cache should be invalidated"
-    mock_read_retry_2 = MagicMock(return_value=(create_mock_flux(sample_freq=mock_usb.sample_freq), create_mock_track_data(cyl, head, test_format)))
-    mock_read.read_with_retry.side_effect = mock_read_retry_2
-    controller.disk.read_sector(cyl, head, sect)
-    mock_read_retry_2.assert_called_once()
+        assert mock_read.read_with_retry.call_count == 2  # Second call during flush
+    read_data = controller.disk.read_sector(cyl, head, sect)
+    assert read_data == write_data, "Cache should contain the written data"
+    assert mock_read.read_with_retry.call_count == 2  # No additional calls
 
 def test_11_gw_write_verify_success_mocked(mocked_controller):
     controller, mocks_bundle = mocked_controller
