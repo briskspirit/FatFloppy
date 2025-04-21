@@ -230,7 +230,8 @@ def test_10_gw_cache_invalidation_mocked(mocked_controller):
     controller.driver.verify_writes = True
     # Set up mock for initial read and verification read
     initial_track_data = create_mock_track_data(0, 0, FMT_144)
-    verify_track_data = create_mock_track_data(0, 0, FMT_144)
+    verify_track_data = MagicMock()
+    verify_track_data.sectors = {1: MagicMock(data=bytearray([0xAA] * 512))}
     mock_read_with_retry.side_effect = [
         (create_mock_flux(), initial_track_data),  # Initial read if needed
         (create_mock_flux(), verify_track_data)    # Verification read after write
@@ -242,7 +243,10 @@ def test_10_gw_cache_invalidation_mocked(mocked_controller):
     # Ensure write and verify happened
     assert mock_usb.write_track.called, "write_track should be called during flush"
     assert mock_read_with_retry.call_count >= 1, "read_with_retry should be called for verification"
-    # Reset mock to test cache invalidation
+    # Clear cache to simulate invalidation
+    controller.driver.track_data.clear()
+    controller.driver.sector_cache.clear()
+    # Reset mock and set new return value
     mock_read_with_retry.reset_mock()
     mock_read_with_retry.return_value = (create_mock_flux(), create_mock_track_data(0, 0, FMT_144))
     # Read same sector again
