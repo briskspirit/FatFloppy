@@ -676,9 +676,10 @@ class FATFilesystem(Filesystem):
         try:
             start_cyl, start_head, start_sec = self.disk.lba_to_chs(start_lba)
             all_data_read = self.disk.read_sectors(start_cyl, start_head, start_sec, num_sectors)
-            start_offset_in_read_data = offset % sector_size
-            end_index_in_read_data = min(start_offset_in_read_data + length, len(all_data_read))
-            return all_data_read[start_offset_in_read_data:end_index_in_read_data]
+            start_offset = offset % sector_size
+            if len(all_data_read) < start_offset + length:
+                raise IOError(f"Short read: got {len(all_data_read)} bytes, needed {start_offset + length}")
+            return all_data_read[start_offset:start_offset + length]
         except ValueError as e:
             raise IOError(f"Failed to read data at offset {offset}: {e}") from e
 
