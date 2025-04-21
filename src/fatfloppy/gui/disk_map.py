@@ -104,9 +104,9 @@ class DiskMapView:
             num_cylinders = max(1, geometry.cylinders)  # Ensure non-zero
 
             # Extract filesystem parameters needed for drawing
-            bpb = None
+            fs_info = None
             if controller.boot_sector:
-                bpb = controller.boot_sector
+                fs_info = controller.boot_sector
 
             # Set FAT filesystem parameters with safe defaults
             reserved_sectors = 1
@@ -120,13 +120,13 @@ class DiskMapView:
             first_data_sector = data_area_start
 
             # Override with actual values if available
-            if bpb and hasattr(bpb, "reserved_sectors"):
+            if fs_info and hasattr(fs_info, "reserved_sectors"):
                 try:
-                    reserved_sectors = max(1, bpb.reserved_sectors)
-                    num_fats = max(1, bpb.num_fats)
-                    fat_size = max(1, bpb.sectors_per_fat)
-                    root_entries = max(16, bpb.root_entries)
-                    sectors_per_cluster = max(1, bpb.sectors_per_cluster)
+                    reserved_sectors = max(1, fs_info.reserved_sectors)
+                    num_fats = max(1, fs_info.num_fats)
+                    fat_size = max(1, fs_info.sectors_per_fat)
+                    root_entries = max(16, fs_info.root_entries)
+                    sectors_per_cluster = max(1, fs_info.sectors_per_cluster)
                     root_dir_sectors = (root_entries * 32 + sector_size - 1) // sector_size
                     fat_start = reserved_sectors
                     root_dir_start = fat_start + (num_fats * fat_size)

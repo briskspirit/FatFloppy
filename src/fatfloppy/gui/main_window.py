@@ -394,30 +394,30 @@ class FileBrowserApp(QMainWindow):
             percent_free = 0
 
         # Get additional BPB info if available
-        bpb_info = ""
+        fs_info = ""
         if self.controller.boot_sector:
             bs = self.controller.boot_sector
             if hasattr(bs, 'sectors_per_cluster'):
-                bpb_info += f"Sectors per Cluster: {bs.sectors_per_cluster}\n"
+                fs_info += f"Sectors per Cluster: {bs.sectors_per_cluster}\n"
             if hasattr(bs, 'root_entries'):
-                bpb_info += f"Root Directory Entries: {bs.root_entries}\n"
+                fs_info += f"Root Directory Entries: {bs.root_entries}\n"
             if hasattr(bs, 'reserved_sectors'):
-                bpb_info += f"Reserved Sectors: {bs.reserved_sectors}\n"
+                fs_info += f"Reserved Sectors: {bs.reserved_sectors}\n"
             if hasattr(bs, 'num_fats'):
-                bpb_info += f"Number of FATs: {bs.num_fats}\n"
+                fs_info += f"Number of FATs: {bs.num_fats}\n"
             if hasattr(bs, 'sectors_per_fat'):
-                bpb_info += f"Sectors per FAT: {bs.sectors_per_fat}\n"
+                fs_info += f"Sectors per FAT: {bs.sectors_per_fat}\n"
             if hasattr(bs, 'media_descriptor'):
-                bpb_info += f"Media Descriptor: 0x{bs.media_descriptor:02X}\n"
+                fs_info += f"Media Descriptor: 0x{bs.media_descriptor:02X}\n"
             if hasattr(bs, 'volume_label') and bs.volume_label.strip():
-                bpb_info += f"Volume Label: {bs.volume_label}\n"
+                fs_info += f"Volume Label: {bs.volume_label}\n"
             if hasattr(bs, 'fs_type') and bs.fs_type.strip():
-                bpb_info += f"Filesystem Type: {bs.fs_type}\n"
+                fs_info += f"Filesystem Type: {bs.fs_type}\n"
 
         # Build filesystem info text
         info = (
             f"Filesystem: {fs_type}\n"
-            f"{bpb_info}"
+            f"{fs_info}"
             f"Free Space: {free_kb:.1f} KB / {total_kb:.1f} KB ({percent_free:.1f}%)"
         )
 
@@ -856,10 +856,10 @@ class FileBrowserApp(QMainWindow):
 
                     # Calculate total data clusters (exclude boot, FAT, root dir)
                     if self.controller.boot_sector:
-                        bpb = self.controller.boot_sector
-                        reserved = bpb.reserved_sectors
-                        fat_size = bpb.sectors_per_fat * bpb.num_fats
-                        root_dir_sectors = (bpb.root_entries * 32 + bpb.bytes_per_sector - 1) // bpb.bytes_per_sector
+                        fs_info = self.controller.boot_sector
+                        reserved = fs_info.reserved_sectors
+                        fat_size = fs_info.sectors_per_fat * fs_info.num_fats
+                        root_dir_sectors = (fs_info.root_entries * 32 + fs_info.bytes_per_sector - 1) // fs_info.bytes_per_sector
                         data_sectors = total_sectors - reserved - fat_size - root_dir_sectors
                         self.total_space = data_sectors // sectors_per_cluster
                     else:
