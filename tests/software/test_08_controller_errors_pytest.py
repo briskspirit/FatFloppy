@@ -34,7 +34,7 @@ def test_01_ops_before_open(error_controller):
         mock_profile.geometry = DiskGeometry(1, 1, 1, 1)
         mock_profile.physical_format = MagicMock()
         controller.set_format(mock_profile)
-    assert controller.detect_filesystem() is None
+    assert controller.filesystem is None
     assert controller.list_directory("/") == []
     assert controller.read_file("/file.txt") is None
     assert not controller.write_file("/file.txt", b"data")
@@ -65,7 +65,7 @@ def test_02_ops_after_close(error_controller):
         mock_profile.geometry = DiskGeometry(1, 1, 1, 1)
         mock_profile.physical_format = MagicMock()
         controller.set_format(mock_profile)
-    assert controller.detect_filesystem() is None
+    assert controller.filesystem is None
     assert controller.list_directory("/") == []
     assert controller.read_file("/file.txt") is None
     assert not controller.write_file("/file.txt", b"data")

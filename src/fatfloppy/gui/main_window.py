@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
                              QWidget, QVBoxLayout, QGroupBox)
 
 from ..core.controller import DiskController
+from ..core.filesystem import FATFilesystem
 from .dialogs import DriveSelectionDialog
 from .disk_map import DiskMapView
 from .file_browser import DragDropTreeWidget
@@ -375,53 +376,46 @@ class FileBrowserApp(QMainWindow):
             self.filesystem_info.setText("No disk loaded")
             return
 
-        # Get filesystem type
-        fs_type = self.controller.detect_filesystem() or "Unknown"
-        if fs_type == "Unknown":
-            self.filesystem_info.setText("No filesystem detected")
-            return
+        # Check if a filesystem is detected
+        if self.controller.filesystem:
+            fs_type = type(self.controller.filesystem).__name__.replace("Filesystem", "")
+            # Get free space
+            space_info = self.controller.get_free_space()
+            if space_info:
+                free_bytes, total_bytes = space_info
+                free_kb = free_bytes / 1024
+                total_kb = total_bytes / 1024
+                percent_free = (free_bytes / total_bytes * 100) if total_bytes > 0 else 0
+            else:
+                free_kb = 0
+                total_kb = 0
+                percent_free = 0
 
-        # Try to get free space
-        space_info = self.controller.get_free_space()
-        if space_info:
-            free_bytes, total_bytes = space_info
-            free_kb = free_bytes / 1024
-            total_kb = total_bytes / 1024
-            percent_free = (free_bytes / total_bytes * 100) if total_bytes > 0 else 0
+            # Get additional BPB info if available
+            fs_info = ""
+            if isinstance(self.controller.filesystem, FATFilesystem):
+                bs = self.controller.filesystem.boot_sector
+                if bs:
+                    fs_info += f"Sectors per Cluster: {bs.sectors_per_cluster}\n"
+                    fs_info += f"Root Directory Entries: {bs.root_entries}\n"
+                    fs_info += f"Reserved Sectors: {bs.reserved_sectors}\n"
+                    fs_info += f"Number of FATs: {bs.num_fats}\n"
+                    fs_info += f"Sectors per FAT: {bs.sectors_per_fat}\n"
+                    fs_info += f"Media Descriptor: 0x{bs.media_descriptor:02X}\n"
+                    if bs.volume_label.strip():
+                        fs_info += f"Volume Label: {bs.volume_label}\n"
+                    if bs.fs_type.strip():
+                        fs_info += f"Filesystem Type: {bs.fs_type}\n"
+
+            # Build filesystem info text
+            info = (
+                f"Filesystem: {fs_type}\n"
+                f"{fs_info}"
+                f"Free Space: {free_kb:.1f} KB / {total_kb:.1f} KB ({percent_free:.1f}%)"
+            )
+            self.filesystem_info.setText(info)
         else:
-            free_kb = 0
-            total_kb = 0
-            percent_free = 0
-
-        # Get additional BPB info if available
-        fs_info = ""
-        if self.controller.boot_sector:
-            bs = self.controller.boot_sector
-            if hasattr(bs, 'sectors_per_cluster'):
-                fs_info += f"Sectors per Cluster: {bs.sectors_per_cluster}\n"
-            if hasattr(bs, 'root_entries'):
-                fs_info += f"Root Directory Entries: {bs.root_entries}\n"
-            if hasattr(bs, 'reserved_sectors'):
-                fs_info += f"Reserved Sectors: {bs.reserved_sectors}\n"
-            if hasattr(bs, 'num_fats'):
-                fs_info += f"Number of FATs: {bs.num_fats}\n"
-            if hasattr(bs, 'sectors_per_fat'):
-                fs_info += f"Sectors per FAT: {bs.sectors_per_fat}\n"
-            if hasattr(bs, 'media_descriptor'):
-                fs_info += f"Media Descriptor: 0x{bs.media_descriptor:02X}\n"
-            if hasattr(bs, 'volume_label') and bs.volume_label.strip():
-                fs_info += f"Volume Label: {bs.volume_label}\n"
-            if hasattr(bs, 'fs_type') and bs.fs_type.strip():
-                fs_info += f"Filesystem Type: {bs.fs_type}\n"
-
-        # Build filesystem info text
-        info = (
-            f"Filesystem: {fs_type}\n"
-            f"{fs_info}"
-            f"Free Space: {free_kb:.1f} KB / {total_kb:.1f} KB ({percent_free:.1f}%)"
-        )
-
-        self.filesystem_info.setText(info)
+            self.filesystem_info.setText("No filesystem detected")
 
     def build_fs_tree(self):
         """Builds a tree representation of the filesystem."""

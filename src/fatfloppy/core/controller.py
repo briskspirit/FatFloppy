@@ -9,6 +9,7 @@ from .physical_format import PhysicalFormat
 from .formats import BootSectorData, FormatProfile
 from .filesystem import Filesystem, FATFilesystem
 from .format_definitions import FLOPPY_FORMATS
+from .filesystem_factory import create_filesystem
 
 logger = get_logger()
 
@@ -75,10 +76,39 @@ class DiskController:
         if isinstance(self.driver, GreaseweazleDriver) and hasattr(self.driver, '_create_and_set_custom_diskdef'):
             self.driver._create_and_set_custom_diskdef(geometry.cylinders)
 
+    def _adjust_geometry_after_filesystem(self) -> None:
+        if self.filesystem and isinstance(self.filesystem, FATFilesystem):
+            bs = self.filesystem.boot_sector
+            if hasattr(self.driver, 'physical_format') and self.driver.physical_format:
+                actual_sectors = self.driver.physical_format.sectors_per_track
+                if actual_sectors != self.disk.geometry.sectors_per_track:
+                    updated_geometry = DiskGeometry(
+                        cylinders=self.disk.geometry.cylinders,
+                        heads=self.disk.geometry.heads,
+                        sectors_per_track=actual_sectors,
+                        sector_size=self.disk.geometry.sector_size
+                    )
+                    self.set_geometry(updated_geometry)
+            elif (not self.explicit_format_set and bs and 
+                  hasattr(bs, 'sectors_per_track') and bs.sectors_per_track > 0 and 
+                  hasattr(bs, 'num_heads') and bs.num_heads > 0):
+                sectors_per_track = bs.sectors_per_track
+                heads = bs.num_heads
+                if (self.disk.geometry.sectors_per_track != sectors_per_track or 
+                    self.disk.geometry.heads != heads):
+                    updated_geometry = DiskGeometry(
+                        cylinders=self.disk.geometry.cylinders,
+                        heads=heads,
+                        sectors_per_track=sectors_per_track,
+                        sector_size=self.disk.geometry.sector_size
+                    )
+                    self.set_geometry(updated_geometry)
+
     def _handle_format(self, format_info: dict, drive_size: str) -> bool:
         if format_info:
             self._apply_user_format(format_info)
-            self.detect_filesystem()
+            self.filesystem = create_filesystem(self.disk)
+            self._adjust_geometry_after_filesystem()
             return True
         else:
             if isinstance(self.driver, GreaseweazleDriver):
@@ -179,49 +209,6 @@ class DiskController:
         self.driver.set_physical_format(physical_format_copy)
         if isinstance(self.driver, GreaseweazleDriver) and hasattr(self.driver, '_create_and_set_custom_diskdef'):
             self.driver._create_and_set_custom_diskdef(profile.geometry.cylinders)
-
-    def detect_filesystem(self) -> Optional[str]:
-        if not self.disk:
-            self.logger.error("No disk opened to detect filesystem")
-            return None
-        try:
-            if not self.disk.geometry:
-                return None
-            boot_sector = self.disk.read_sector(0, 0, 1)
-            if not boot_sector or all(b == 0 for b in boot_sector):
-                return None
-            self.filesystem = FATFilesystem(self.disk)
-            if self.filesystem.is_valid():
-                if hasattr(self.driver, 'physical_format') and self.driver.physical_format:
-                    actual_sectors = self.driver.physical_format.sectors_per_track
-                    if actual_sectors != self.disk.geometry.sectors_per_track:
-                        updated_geometry = DiskGeometry(
-                            cylinders=self.disk.geometry.cylinders,
-                            heads=self.disk.geometry.heads,
-                            sectors_per_track=actual_sectors,
-                            sector_size=self.disk.geometry.sector_size
-                        )
-                        self.set_geometry(updated_geometry)
-                elif not self.explicit_format_set and hasattr(self.filesystem, 'boot_sector'):
-                    bs = self.filesystem.boot_sector
-                    if (hasattr(bs, 'sectors_per_track') and bs.sectors_per_track > 0 and
-                        hasattr(bs, 'num_heads') and bs.num_heads > 0):
-                        sectors_per_track = bs.sectors_per_track
-                        heads = bs.num_heads
-                        if (self.disk.geometry.sectors_per_track != sectors_per_track or
-                            self.disk.geometry.heads != heads):
-                            updated_geometry = DiskGeometry(
-                                cylinders=self.disk.geometry.cylinders,
-                                heads=heads,
-                                sectors_per_track=sectors_per_track,
-                                sector_size=self.disk.geometry.sector_size
-                            )
-                            self.set_geometry(updated_geometry)
-                return "FAT12"
-        except Exception as e:
-            self.logger.exception(f"Error detecting filesystem: {e}")
-            self.filesystem = None
-        return None
 
     def get_allocated_clusters(self) -> List[int]:
         if not self.filesystem or not hasattr(self.filesystem, "get_allocated_clusters"):
@@ -387,7 +374,9 @@ class DiskController:
         for profile in filtered_formats:
             try:
                 self.set_format(profile)
-                if self.detect_filesystem():
+                self.filesystem = create_filesystem(self.disk)
+                if self.filesystem:
+                    self._adjust_geometry_after_filesystem()
                     return profile
             except Exception:
                 continue
@@ -406,8 +395,8 @@ class DiskController:
             self.driver.initialize()
 
         try:
-            fs_type = self.detect_filesystem()
-            if fs_type and self.filesystem and hasattr(self.filesystem, 'boot_sector'):
+            self.filesystem = create_filesystem(self.disk)
+            if self.filesystem and isinstance(self.filesystem, FATFilesystem):
                 bs = self.filesystem.boot_sector
                 if hasattr(bs, 'num_heads') and bs.num_heads > 0:
                     heads = bs.num_heads
@@ -459,10 +448,9 @@ class DiskController:
             profile = self.get_format_by_name(format_name)
             if profile:
                 self.set_format(profile)
-                if self.detect_filesystem():
-                    return True
-                else:
-                    return True
+                self.filesystem = create_filesystem(self.disk)
+                self._adjust_geometry_after_filesystem()
+                return True
         try:
             file_size = os.path.getsize(file_path)
             matched_profiles = []
@@ -471,7 +459,9 @@ class DiskController:
                     matched_profiles.append(profile)
             for profile in matched_profiles:
                 self.set_format(profile)
-                if self.detect_filesystem():
+                self.filesystem = create_filesystem(self.disk)
+                self._adjust_geometry_after_filesystem()
+                if self.filesystem:
                     return True
             if not matched_profiles:
                 default_geometries = [
@@ -494,7 +484,9 @@ class DiskController:
                     )
                     self.set_format(temp_profile)
                     if file_size >= geometry.total_bytes:
-                        if self.detect_filesystem():
+                        self.filesystem = create_filesystem(self.disk)
+                        self._adjust_geometry_after_filesystem()
+                        if self.filesystem:
                             return True
             if not self.disk.geometry:
                 default_profile = self.get_format_by_name("ibm_3.5_1.44m")
