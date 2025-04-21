@@ -51,12 +51,7 @@ class Disk:
                 self.logger.error(f"Failed to set physical format: {e}", exc_info=True)
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
-        if not self.geometry:
-            raise ValueError("Disk geometry not set")
-        if not (0 <= cylinder < self.geometry.cylinders and
-                0 <= head < self.geometry.heads and
-                1 <= sector <= self.geometry.sectors_per_track):
-            raise ValueError(f"Invalid sector address: C:{cylinder} H:{head} S:{sector}")
+        self._validate_chs(cylinder, head, sector)
         try:
             data = self.driver.read_sector(cylinder, head, sector)
             if len(data) < self.geometry.sector_size:
@@ -68,12 +63,7 @@ class Disk:
             raise IOError(f"Failed to read sector C:{cylinder} H:{head} S:{sector}") from e
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
-        if not self.geometry:
-            raise ValueError("Disk geometry not set")
-        if not (0 <= cylinder < self.geometry.cylinders and
-                0 <= head < self.geometry.heads and
-                1 <= sector <= self.geometry.sectors_per_track):
-            raise ValueError(f"Invalid sector address: C:{cylinder} H:{head} S:{sector}")
+        self._validate_chs(cylinder, head, sector)
         if len(data) != self.geometry.sector_size:
             raise ValueError(f"Data size {len(data)} != sector size {self.geometry.sector_size}")
         try:
@@ -153,3 +143,11 @@ class Disk:
         head = temp % geom.heads
         cylinder = temp // geom.heads
         return cylinder, head, sector
+
+    def _validate_chs(self, cylinder: int, head: int, sector: int) -> None:
+        if not self.geometry:
+            raise ValueError("Disk geometry not set")
+        if not (0 <= cylinder < self.geometry.cylinders and
+                0 <= head < self.geometry.heads and
+                1 <= sector <= self.geometry.sectors_per_track):
+            raise ValueError(f"Invalid sector address: C:{cylinder} H:{head} S:{sector}")
