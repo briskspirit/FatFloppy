@@ -141,11 +141,17 @@ class DriveSelectionDialog(QDialog):
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
 
         main_layout.addStretch()
         main_layout.addWidget(buttons)
 
         self.setLayout(main_layout)
+
+        if not self.is_greaseweazle_connected():
+            self.ok_button.setEnabled(False)
+            no_device_label = QLabel("No Greaseweazle device found")
+            main_layout.addWidget(no_device_label)
 
     def update_drive_options(self, checked):
         self.drive_combo.clear()
@@ -325,3 +331,12 @@ class DriveSelectionDialog(QDialog):
                 print(f"Error getting format parameters: {e}")
 
         return drive, size, format_info
+
+    def is_greaseweazle_connected(self):
+        try:
+            from greaseweazle.tools.util import usb_open
+            usb = usb_open(None)  # Attempt to open default device
+            usb.ser.close()  # Close the serial connection immediately
+            return True
+        except Exception:
+            return False

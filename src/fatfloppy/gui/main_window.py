@@ -27,6 +27,12 @@ class FileBrowserApp(QMainWindow):
         self.free_space = 0
         self.total_space = 0
         self.controller = None
+        # TODO: Should check for version too?
+        try:
+            import greaseweazle
+            self.greaseweazle_available = True
+        except ImportError:
+            self.greaseweazle_available = False
 
         self.initUI()
         self.setup_fonts()
@@ -46,6 +52,8 @@ class FileBrowserApp(QMainWindow):
 
         open_floppy_action = QAction("Open Physical Floppy", self)
         open_floppy_action.triggered.connect(self.open_physical_floppy)
+        if not self.greaseweazle_available:
+            open_floppy_action.setEnabled(False)
         file_menu.addAction(open_floppy_action)
 
         exit_action = QAction("Exit", self)
