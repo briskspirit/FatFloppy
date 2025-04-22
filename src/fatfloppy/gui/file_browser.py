@@ -1,8 +1,5 @@
-# src/fatfloppy/gui/file_browser.py
 import os
-import tempfile
-from PyQt6.QtCore import Qt, QUrl, QMimeData, QTimer
-from PyQt6.QtGui import QDrag
+from PyQt6.QtCore import Qt, QUrl, QMimeData
 from PyQt6.QtWidgets import QInputDialog, QMessageBox, QTreeWidget
 
 class DragDropTreeWidget(QTreeWidget):
@@ -64,49 +61,3 @@ class DragDropTreeWidget(QTreeWidget):
                 except Exception as e:
                     QMessageBox.critical(self.parent, "Error", f"Failed to add file: {str(e)}")
         import_files()
-
-    def mouseMoveEvent(self, event):
-        if not (event.buttons() & Qt.MouseButton.LeftButton):
-            return
-
-        items = self.selectedItems()
-        if not items:
-            return
-
-        files_to_drag = [item for item in items if not item.node.is_dir]
-        if not files_to_drag:
-            return
-
-        total_files = len(files_to_drag)
-        temp_dir = tempfile.mkdtemp()
-        urls = []
-
-        for idx, item in enumerate(files_to_drag):
-            node = item.node
-            try:
-                file_path = self.parent.build_full_path(node.name)
-                file_data = self.parent.controller.read_file(file_path)
-                temp_path = os.path.join(temp_dir, node.name)
-                with open(temp_path, 'wb') as f:
-                    f.write(file_data)
-                urls.append(QUrl.fromLocalFile(temp_path))
-            except Exception as e:
-                QMessageBox.critical(self.parent, "Error", f"Failed to prepare file for dragging: {str(e)}")
-
-        if urls:
-            drag = QDrag(self)
-            mime_data = QMimeData()
-            mime_data.setUrls(urls)
-            drag.setMimeData(mime_data)
-            drag.exec(Qt.DropAction.CopyAction)
-
-            # Cleanup temporary files after a delay
-            def cleanup_temp_files():
-                try:
-                    import shutil
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                except:
-                    pass
-            QTimer.singleShot(10000, cleanup_temp_files)
-
-        super().mouseMoveEvent(event)
