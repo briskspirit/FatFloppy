@@ -1,7 +1,5 @@
 # Testing Drive B (360K)
 export TEST_HW=true
-export TEST_DRIVE=B
-export TEST_FORMAT=360K
-# export GW_DEVICE=/dev/ttyACM0
+export TEST_DRIVE_B=true
 
 pytest -s -v --hw-auto hardware/

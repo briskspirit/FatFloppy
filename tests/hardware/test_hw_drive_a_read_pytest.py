@@ -11,8 +11,7 @@ TARGET_DRIVE_SIZE = "3.5"
 
 pytestmark = [
     pytest.mark.hardware,
-    pytest.mark.skipif(
-        not (os.getenv('TEST_DRIVE') == TARGET_DRIVE and os.getenv('TEST_FORMAT') == TARGET_FORMAT_KEY),
+    pytest.mark.skipif(not os.getenv('TEST_DRIVE_A', 'false').lower() == 'true',
         reason=f"Requires TEST_DRIVE={TARGET_DRIVE} and TEST_FORMAT={TARGET_FORMAT_KEY}"
     )
 ]

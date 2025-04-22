@@ -1,7 +1,5 @@
 # Testing Drive A (1.44M)
 export TEST_HW=true
-export TEST_DRIVE=A
-export TEST_FORMAT=1.44M
-# export GW_DEVICE=/dev/ttyACM0
+export TEST_DRIVE_A=true
 
 pytest -s -v --hw-auto hardware/

@@ -1,0 +1,10 @@
+[run]
+source = ../src/fatfloppy
+omit =
+    */tests/*
+    */assets/*
+    */resources/*
+    */__pycache__/*
+    */__init__.py
+[report]
+show_missing = true

@@ -1,0 +1,4 @@
+export TEST_HW=true
+export TEST_DRIVE_A=true
+export TEST_DRIVE_B=true
+pytest -s -v --cov=../src/fatfloppy --cov-report=html
