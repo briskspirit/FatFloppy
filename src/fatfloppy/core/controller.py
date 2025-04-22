@@ -6,7 +6,7 @@ from .utils.logging_config import get_logger
 from .disk import Disk, DiskGeometry
 from .drivers import DiskIODriver, GreaseweazleDriver, RawImageDriver
 from .physical_format import PhysicalFormat
-from .formats import BootSectorData, FormatProfile
+from .formats import FATVolumeInfo, FormatProfile
 from .filesystem import Filesystem, FATFilesystem
 from .format_definitions import FLOPPY_FORMATS
 from .filesystem_factory import create_filesystem
@@ -179,7 +179,7 @@ class DiskController:
                 self.logger.warning(f"Failed to read valid boot sector (read {len(boot_sector_bytes or b'')} bytes). Cannot detect format.")
                 return None
             try:
-                boot_data = BootSectorData.from_bytes(boot_sector_bytes)
+                boot_data = FATVolumeInfo.from_bytes(boot_sector_bytes)
             except ValueError as e:
                 self.logger.warning(f"Could not parse boot sector data: {e}")
                 return None

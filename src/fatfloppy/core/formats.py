@@ -1,14 +1,23 @@
-# src/fatfloppy/core/formats.py
 import struct
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
 from .disk import DiskGeometry
 from .physical_format import PhysicalFormat
 
+class VolumeInfo(ABC):
+    @abstractmethod
+    def to_bytes(self) -> bytes:
+        pass
+
+    @classmethod
+    @abstractmethod
+    def from_bytes(cls, data: bytes) -> 'VolumeInfo':
+        pass
 
 @dataclass
-class BootSectorData:
+class FATVolumeInfo(VolumeInfo):
     oem_id: str = "MSDOS5.0"
     bytes_per_sector: int = 512
     sectors_per_cluster: int = 1
@@ -56,12 +65,12 @@ class BootSectorData:
         return bytes(boot_sector)
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> 'BootSectorData':
+    def from_bytes(cls, data: bytes) -> 'FATVolumeInfo':
         if len(data) < 512:
             raise ValueError("Boot sector data too short")
         boot_sig = struct.unpack_from('<H', data, 0x1FE)[0]
         if boot_sig != 0xAA55:
-            pass
+            pass  # Signature check relaxed for flexibility
         result = cls()
         try:
             result.oem_id = data[3:11].decode('cp437', errors='replace').strip()
@@ -96,14 +105,13 @@ class BootSectorData:
             raise ValueError(f"Failed to parse boot sector BPB: {e}") from e
         return result
 
-
 @dataclass
 class FormatProfile:
     name: str
     description: str
     geometry: DiskGeometry
     physical_format: PhysicalFormat
-    boot_sector: Optional[BootSectorData] = None
+    boot_sector: Optional[VolumeInfo] = None
     media_descriptor: int = 0xF0
 
     @property

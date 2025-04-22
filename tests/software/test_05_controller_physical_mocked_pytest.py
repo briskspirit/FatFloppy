@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 from fatfloppy.core.controller import DiskController
 from fatfloppy.core.drivers import GreaseweazleDriver
 from fatfloppy.core.filesystem import FATFilesystem, FATBootSector
-from fatfloppy.core.formats import BootSectorData
+from fatfloppy.core.formats import FATVolumeInfo
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 
 FMT_144 = FLOPPY_FORMATS['ibm_3.5_1.44m']
@@ -68,7 +68,7 @@ def open_disk_for_rw_tests(controller, mocks_bundle, test_format=FMT_144):
     mock_fs = MagicMock(spec=FATFilesystem)
     mock_fs.is_valid.return_value = True
     mock_fat_bs = MagicMock(spec=FATBootSector)
-    bsd = test_format.boot_sector or BootSectorData()
+    bsd = test_format.boot_sector or FATVolumeInfo()
     for attr, value in bsd.__dict__.items():
         setattr(mock_fat_bs, attr, value)
     mock_fat_bs.is_valid.return_value = True

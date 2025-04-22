@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
-from fatfloppy.core.formats import BootSectorData, FormatProfile
+from fatfloppy.core.formats import FATVolumeInfo, FormatProfile
 from fatfloppy.core.disk import Disk, DiskGeometry
 from fatfloppy.core.drivers import RawImageDriver
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
@@ -75,7 +75,7 @@ def test_04_detect_format_no_match(disk_controller):
     disk_controller.close_disk()
 
 def test_01_bsd_to_bytes_from_bytes_roundtrip():
-    bsd = BootSectorData(
+    bsd = FATVolumeInfo(
         oem_id="MYDOS6.2",
         bytes_per_sector=512,
         sectors_per_cluster=2,
@@ -95,7 +95,7 @@ def test_01_bsd_to_bytes_from_bytes_roundtrip():
     bs_bytes = bsd.to_bytes()
     assert len(bs_bytes) == 512
     assert bs_bytes[510:512] == b'\x55\xAA'
-    bsd_reloaded = BootSectorData.from_bytes(bs_bytes)
+    bsd_reloaded = FATVolumeInfo.from_bytes(bs_bytes)
     assert bsd_reloaded.oem_id == "MYDOS6.2"
     assert bsd_reloaded.bytes_per_sector == 512
     assert bsd_reloaded.sectors_per_cluster == 2
@@ -116,7 +116,7 @@ def test_02_bsd_from_bytes_real_image():
     if not EMPTY_IMG_SRC.exists():
         pytest.skip(f"{EMPTY_IMG_SRC} not found.")
     boot_sector_bytes = EMPTY_IMG_SRC.read_bytes()[:512]
-    bsd = BootSectorData.from_bytes(boot_sector_bytes)
+    bsd = FATVolumeInfo.from_bytes(boot_sector_bytes)
     assert bsd.bytes_per_sector == 512
     assert bsd.sectors_per_cluster == 1
     assert bsd.reserved_sectors == 1
@@ -129,14 +129,14 @@ def test_02_bsd_from_bytes_real_image():
     assert bsd.num_heads == 2
     assert bsd.fs_type.startswith("FAT12")
 
-@pytest.mark.skip(reason="Boot signature check is currently disabled in BootSectorData.from_bytes")
+@pytest.mark.skip(reason="Boot signature check is currently disabled in FATVolumeInfo.from_bytes")
 def test_03_bsd_from_bytes_invalid_signature():
     invalid_boot = bytearray(FMT_144.boot_sector.to_bytes())
     invalid_boot[510:512] = b'\x00\x00'
     with pytest.raises(ValueError, match="Invalid boot signature"):
-        BootSectorData.from_bytes(bytes(invalid_boot))
+        FATVolumeInfo.from_bytes(bytes(invalid_boot))
 
 def test_04_bsd_from_bytes_too_short():
     short_boot = b'\x00' * 500
     with pytest.raises(ValueError, match="too short"):
-        BootSectorData.from_bytes(short_boot)
+        FATVolumeInfo.from_bytes(short_boot)
