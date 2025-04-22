@@ -147,7 +147,7 @@ class GreaseweazleDriver(DiskIODriver):
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
         if not isinstance(physical_format, PhysicalFormat):
             raise TypeError("physical_format must be a PhysicalFormat object")
-        self.physical_format = copy.deepcopy(physical_format)
+        self.physical_format = copy.copy(physical_format)
         self.fmt_cls = None
         self.using_custom_diskdef = False
         self.last_successful_format = None
@@ -426,7 +426,7 @@ class RawImageDriver(DiskIODriver):
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
         if not isinstance(physical_format, PhysicalFormat):
             raise TypeError("physical_format must be a PhysicalFormat object")
-        self.physical_format = copy.deepcopy(physical_format)
+        self.physical_format = copy.copy(physical_format)
 
     def _calculate_sector_offset(self, cylinder: int, head: int, sector: int, sector_size: int) -> int:
         if not self.physical_format:
