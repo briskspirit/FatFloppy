@@ -5,6 +5,7 @@ import datetime
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+from .formats import FormatProfile, FATVolumeInfo
 from .utils.logging_config import get_logger
 from .disk import Disk
 
@@ -58,7 +59,7 @@ class FATBootSector(BootSector):
         if not super().is_valid():
             return False
         return (
-            self.bytes_per_sector in [512, 1024, 2048, 4096]
+            self.bytes_per_sector in [128, 256, 512, 1024, 2048, 4096]
             and self.sectors_per_cluster in [1, 2, 4, 8, 16, 32, 64, 128]
             and self.total_sectors > 0
             and self.sectors_per_fat > 0
@@ -323,6 +324,51 @@ class FATFilesystem(Filesystem):
         ]
         self._cached_allocated_clusters = allocated_clusters
         return allocated_clusters
+
+    def format_fs(self, profile: FormatProfile) -> None:
+        """Format the disk with a FAT12 filesystem based on the given FormatProfile."""
+        if not isinstance(profile, FormatProfile):
+            raise TypeError("profile must be a FormatProfile object")
+        if not profile.boot_sector or not isinstance(profile.boot_sector, FATVolumeInfo):
+            raise ValueError("Invalid boot_sector in FormatProfile")
+
+        boot_sector = profile.boot_sector
+        boot_sector_bytes = boot_sector.to_bytes()
+
+        self.disk.write_boot_sector(boot_sector_bytes)
+
+        bytes_per_sector = boot_sector.bytes_per_sector
+        logger.debug(f"Bytes per sector: {bytes_per_sector}")
+        sectors_per_fat = boot_sector.sectors_per_fat
+        num_fats = boot_sector.num_fats
+        root_entries = boot_sector.root_entries
+        reserved_sectors = boot_sector.reserved_sectors
+        media_descriptor = boot_sector.media_descriptor
+
+        fat_size_bytes = sectors_per_fat * bytes_per_sector
+        fat_data = bytearray(fat_size_bytes)
+        fat_data[0] = media_descriptor
+        fat_data[1] = 0xFF
+        fat_data[2] = 0xFF
+
+        for fat_num in range(num_fats):
+            start_lba = reserved_sectors + fat_num * sectors_per_fat
+            c, h, s = self.disk.lba_to_chs(start_lba)
+            self.disk.write_sectors(c, h, s, fat_data)
+
+        root_dir_bytes = root_entries * 32
+        root_dir_sectors = (root_dir_bytes + bytes_per_sector - 1) // bytes_per_sector
+        root_dir_data = bytearray(root_dir_sectors * bytes_per_sector)
+        root_dir_start_lba = reserved_sectors + num_fats * sectors_per_fat
+        c, h, s = self.disk.lba_to_chs(root_dir_start_lba)
+        self.disk.write_sectors(c, h, s, root_dir_data)
+
+        self.boot_sector = FATBootSector(boot_sector_bytes)
+        self.fat_cache = bytearray(fat_data)
+        self.fat_dirty = False
+        self._cached_allocated_clusters = []
+        self._initialize_filesystem_parameters()
+        self.disk.flush()
 
     def get_free_space(self) -> Tuple[int, int]:
         if not self.is_valid():

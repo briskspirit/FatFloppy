@@ -66,8 +66,8 @@ class FATVolumeInfo(VolumeInfo):
 
     @classmethod
     def from_bytes(cls, data: bytes) -> 'FATVolumeInfo':
-        if len(data) < 512:
-            raise ValueError("Boot sector data too short")
+        if len(data) != 512:
+            raise ValueError(f"Boot sector length must be 512 bytes, got {len(data)}")
         boot_sig = struct.unpack_from('<H', data, 0x1FE)[0]
         if boot_sig != 0xAA55:
             pass  # Signature check relaxed for flexibility

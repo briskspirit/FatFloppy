@@ -174,8 +174,8 @@ class DiskController:
                 if hasattr(self.driver, "set_physical_format") and not getattr(self.driver, "physical_format", None):
                     temp_phys = PhysicalFormat(encoding="MFM", rate=250, rpm=300, sectors_per_track=9, heads=2, sector_size=512)
                     self.driver.set_physical_format(temp_phys)
-            boot_sector_bytes = self.disk.read_sector(0, 0, 1)
-            if not boot_sector_bytes or len(boot_sector_bytes) < 512:
+            boot_sector_bytes = self.disk.read_boot_sector()
+            if not boot_sector_bytes or len(boot_sector_bytes) != 512:
                 self.logger.warning(f"Failed to read valid boot sector (read {len(boot_sector_bytes or b'')} bytes). Cannot detect format.")
                 return None
             try:
@@ -290,6 +290,34 @@ class DiskController:
             return True
         except Exception as e:
             self.logger.error(f"Error deleting item {path}: {e}")
+            return False
+
+    def format_disk(self, format_name: str, volume_label: str = "NO NAME") -> bool:
+        if format_name not in self.known_formats:
+            self.logger.error(f"Unknown format: {format_name}")
+            return False
+
+        profile = self.known_formats[format_name]
+        logger.debug(f"Bytes per sector: {profile.boot_sector.bytes_per_sector}")
+        if volume_label:
+            profile.boot_sector.volume_label = volume_label.ljust(11)[:11]
+
+        try:
+            self.disk.set_geometry(profile.geometry)
+
+            if hasattr(self.driver, "set_physical_format"):
+                self.driver.set_physical_format(profile.physical_format)
+
+            filesystem = FATFilesystem(self.disk)
+            filesystem.format_fs(profile)
+
+            self.filesystem = filesystem
+            self.geometry = self.disk.geometry
+            self.boot_sector = self.filesystem.boot_sector
+
+            return True
+        except Exception as e:
+            self.logger.error(f"Error formatting disk: {e}")
             return False
 
     def list_formats(self) -> List[Tuple[str, str]]:

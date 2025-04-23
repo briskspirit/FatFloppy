@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
 
 from ..core.controller import DiskController
 from ..core.filesystem import FATFilesystem
-from .dialogs import DriveSelectionDialog
+from .dialogs import DriveSelectionDialog, CreateImageDialog
 from .disk_map import DiskMapView
 from .file_browser import DragDropTreeWidget
 from .models import FileSystemNode
@@ -45,6 +45,10 @@ class FileBrowserApp(QMainWindow):
         menu_bar.setStyleSheet("QMenuBar { min-height: 20px; max-height: 25px; }")
         file_menu = menu_bar.addMenu("File")
         file_menu.setStyleSheet("QMenu { padding: 5px; }")
+
+        create_image_action = QAction("Create Disk Image", self)
+        create_image_action.triggered.connect(self.create_disk_image)
+        file_menu.addAction(create_image_action)
 
         open_image_action = QAction("Open Disk Image File", self)
         open_image_action.triggered.connect(self.open_disk_image_file)
@@ -214,6 +218,43 @@ class FileBrowserApp(QMainWindow):
         header_font = QFont(self.app_font)
         header_font.setBold(True)
 
+    def create_disk_image(self):
+        file_path, _ = QFileDialog.getSaveFileName(self, "Create Disk Image", "", "Disk Images (*.ima *.img)")
+        if not file_path:
+            return
+
+        dialog = CreateImageDialog(self)
+        if not dialog.exec():
+            return
+
+        format_info, volume_label = dialog.get_selection()
+
+        try:
+            profile = self.get_format_profile(format_info)
+            if not profile:
+                QMessageBox.critical(self, "Error", "Failed to create format profile")
+                return
+
+            total_bytes = profile.geometry.cylinders * profile.geometry.heads * profile.geometry.sectors_per_track * profile.geometry.sector_size
+            with open(file_path, 'wb') as f:
+                f.write(b'\0' * total_bytes)  # Create file with correct size
+
+            self.controller = DiskController()
+            if self.controller.open_disk(file_path, "image"):
+                self.controller.set_format(profile)
+                self.controller.format_disk(profile.name, volume_label)
+                self.root_node = self.build_fs_tree()
+                self.current_node = self.root_node
+                self.current_path = "/"
+                self.refresh_filesystem_ui()
+                self.statusBar().showMessage(f"Created and formatted disk image: {file_path}")
+            else:
+                self.reset_ui()
+                QMessageBox.critical(self, "Error", "Failed to open disk image")
+        except Exception as e:
+            self.reset_ui()
+            QMessageBox.critical(self, "Error", f"Failed to create disk image: {str(e)}")
+
     def open_disk_image_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img)")
         if not file_path:
@@ -274,6 +315,50 @@ class FileBrowserApp(QMainWindow):
         except Exception as e:
             self.reset_ui()
             QMessageBox.critical(self, "Error", f"Failed to open physical floppy: {str(e)}")
+
+    def get_format_profile(self, format_info):
+        if "profile_name" in format_info:
+            profile_name = format_info["profile_name"]
+            from ..core.format_definitions import FLOPPY_FORMATS
+            return FLOPPY_FORMATS.get(profile_name)
+        else:
+            from ..core.formats import FormatProfile, DiskGeometry, PhysicalFormat, FATVolumeInfo
+            geometry = DiskGeometry(
+                cylinders=format_info["cylinders"],
+                heads=format_info["heads"],
+                sectors_per_track=format_info["sectors_per_track"],
+                sector_size=format_info["sector_size"]
+            )
+            physical_format = PhysicalFormat(
+                encoding=format_info["encoding"],
+                rate=format_info["rate"],
+                rpm=format_info["rpm"],
+                gap3=format_info["gap3"],
+                cskew=format_info["cskew"],
+                interleave=format_info["interleave"],
+                sectors_per_track=format_info["sectors_per_track"],
+                heads=format_info["heads"],
+                sector_size=format_info["sector_size"]
+            )
+            total_sectors = geometry.cylinders * geometry.heads * geometry.sectors_per_track
+            # Calculate sectors_per_fat and root_entries based on total_sectors
+            boot_sector = FATVolumeInfo(
+                bytes_per_sector=format_info["sector_size"],
+                sectors_per_cluster=format_info["sector_size"],
+                sectors_per_track=format_info["sectors_per_track"],
+                num_heads=format_info["heads"],
+                total_sectors=total_sectors,
+                media_descriptor=format_info["media_descriptor"],
+                root_entries=format_info["root_entries"],
+                sectors_per_fat=format_info["sectors_per_fat"],
+            )
+            return FormatProfile(
+                name="custom",
+                description="Custom Format",
+                geometry=geometry,
+                physical_format=physical_format,
+                boot_sector=boot_sector
+            )
 
     def update_disk_info(self):
         self.update_geometry_info()

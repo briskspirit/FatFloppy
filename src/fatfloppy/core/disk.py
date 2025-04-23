@@ -50,6 +50,27 @@ class Disk:
             except Exception as e:
                 self.logger.error(f"Failed to set physical format: {e}", exc_info=True)
 
+    def read_boot_sector(self) -> bytes:
+        """Read the first 512 bytes of the disk as the boot sector."""
+        if not self.geometry:
+            raise ValueError("Disk geometry not set")
+        sector_size = self.geometry.sector_size
+        num_sectors = (512 + sector_size - 1) // sector_size  # Ceiling division
+        data = self.read_sectors(0, 0, 1, num_sectors)
+        return data[:512]  # Return exactly 512 bytes
+
+    def write_boot_sector(self, data: bytes) -> None:
+        """Write a 512-byte boot sector to the disk."""
+        if len(data) != 512:
+            raise ValueError("Boot sector must be 512 bytes")
+        if not self.geometry:
+            raise ValueError("Disk geometry not set")
+        sector_size = self.geometry.sector_size
+        num_sectors = (512 + sector_size - 1) // sector_size
+        # Pad data if needed to align with sector boundaries
+        padded_data = data + b'\0' * (num_sectors * sector_size - 512)
+        self.write_sectors(0, 0, 1, padded_data)
+
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         self._validate_chs(cylinder, head, sector)
         try:
