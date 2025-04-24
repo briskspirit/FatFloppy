@@ -349,11 +349,10 @@ class FATFilesystem(Filesystem):
         fat_data[0] = media_descriptor
         fat_data[1] = 0xFF
         fat_data[2] = 0xFF
-
-        for fat_num in range(num_fats):
-            start_lba = reserved_sectors + fat_num * sectors_per_fat
-            c, h, s = self.disk.lba_to_chs(start_lba)
-            self.disk.write_sectors(c, h, s, fat_data)
+        fat_combined = fat_data * num_fats  # Combine FAT copies
+        fat_start_lba = reserved_sectors
+        c, h, s = self.disk.lba_to_chs(fat_start_lba)
+        self.disk.write_sectors(c, h, s, fat_combined)
 
         root_dir_bytes = root_entries * 32
         root_dir_sectors = (root_dir_bytes + bytes_per_sector - 1) // bytes_per_sector
