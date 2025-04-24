@@ -312,6 +312,26 @@ class FATFilesystem(Filesystem):
         self.disk.flush()
         self._cached_allocated_clusters = None
 
+    def delete_recursive(self, path: str) -> bool:
+        try:
+            entry_info = self._find_path(path)
+            if entry_info.is_dir:
+                contents = self.list_directory(path)
+                for item in contents:
+                    if item.name not in [".", ".."]:
+                        item_path = f"{path}/{item.name}" if path != "/" else f"/{item.name}"
+                        if not self.delete_recursive(item_path):
+                            return False
+                # Now delete the directory itself
+                self.delete(path)
+            else:
+                # It's a file
+                self.delete(path)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error deleting {path}: {e}")
+            return False
+
     def get_allocated_clusters(self) -> List[int]:
         if not self.is_valid() or self.fat_cache is None:
             return []

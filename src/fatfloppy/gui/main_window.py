@@ -76,13 +76,13 @@ class FileBrowserApp(QMainWindow):
         self.toolbar.addSeparator()
 
         extract_action = QAction("Extract", self)
-        extract_action.setToolTip("Extract selected file to local filesystem")
-        extract_action.triggered.connect(self.extract_selected_file)
+        extract_action.setToolTip("Extract selected item(s) to local filesystem")
+        extract_action.triggered.connect(self.extract_selected_items)
         self.toolbar.addAction(extract_action)
 
         delete_action = QAction("Delete", self)
-        delete_action.setToolTip("Delete selected file or directory")
-        delete_action.triggered.connect(self.delete_selected_item)
+        delete_action.setToolTip("Delete selected file(s) or directory")
+        delete_action.triggered.connect(self.delete_selected_items)
         self.toolbar.addAction(delete_action)
 
         create_dir_action = QAction("New Folder", self)
@@ -561,58 +561,108 @@ class FileBrowserApp(QMainWindow):
             ])
             item.node = child
 
-    def extract_selected_file(self):
+    def extract_selected_items(self):
         selected_items = self.file_list.selectedItems()
         if not selected_items or not self.controller:
             return
 
-        item = selected_items[0]
-        node = item.node
-
-        if node.is_dir:
-            QMessageBox.information(self, "Info", "Cannot extract directories")
-            return
-
-        save_path, _ = QFileDialog.getSaveFileName(self, "Save File", node.name)
-        if not save_path:
-            return
-
-        try:
-            file_path = self.build_full_path(node.name)
-            file_data = self.controller.read_file(file_path)
-            if file_data:
-                with open(save_path, 'wb') as f:
-                    f.write(file_data)
-                self.statusBar().showMessage(f"Extracted {node.name} to {save_path}")
+        if len(selected_items) == 1:
+            item = selected_items[0]
+            node = item.node
+            source_path = self.build_full_path(node.name)
+            if node.is_dir:
+                # Extract directory
+                base_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Extract To")
+                if not base_dir:
+                    return
+                local_dir_path = os.path.join(base_dir, node.name)
+                self.extract_directory(source_path, local_dir_path)
             else:
-                QMessageBox.warning(self, "Warning", "Failed to read file data")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to extract file: {str(e)}")
+                # Extract single file
+                save_path, _ = QFileDialog.getSaveFileName(self, "Save File", node.name)
+                if not save_path:
+                    return
+                self.extract_file(source_path, save_path)
+        else:
+            # Multiple items selected
+            base_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Extract To")
+            if not base_dir:
+                return
+            for item in selected_items:
+                node = item.node
+                source_path = self.build_full_path(node.name)
+                if node.is_dir:
+                    local_dir_path = os.path.join(base_dir, node.name)
+                    self.extract_directory(source_path, local_dir_path)
+                else:
+                    local_file_path = os.path.join(base_dir, node.name)
+                    self.extract_file(source_path, local_file_path)
 
-    def delete_selected_item(self):
+    def extract_file(self, source_path, local_path):
+        try:
+            file_data = self.controller.read_file(source_path)
+            if file_data is not None:
+                with open(local_path, 'wb') as f:
+                    f.write(file_data)
+                self.statusBar().showMessage(f"Extracted {source_path} to {local_path}")
+            else:
+                QMessageBox.warning(self, "Warning", f"Failed to read file data for {source_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to extract file {source_path}: {str(e)}")
+
+    def extract_directory(self, source_dir_path, local_dir_path):
+        try:
+            os.makedirs(local_dir_path, exist_ok=True)
+            items = self.controller.list_directory(source_dir_path)
+            for item in items:
+                item_name = item["name"]
+                if item_name in [".", ".."]:
+                    continue
+                item_source_path = f"{source_dir_path}/{item_name}" if source_dir_path != "/" else f"/{item_name}"
+                item_local_path = os.path.join(local_dir_path, item_name)
+                if item["is_dir"]:
+                    self.extract_directory(item_source_path, item_local_path)
+                else:
+                    self.extract_file(item_source_path, item_local_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to extract directory {source_dir_path}: {str(e)}")
+
+    def delete_selected_items(self):
         selected_items = self.file_list.selectedItems()
         if not selected_items or not self.controller:
             return
 
-        item = selected_items[0]
-        node = item.node
+        # Collect paths to delete
+        paths_to_delete = [self.build_full_path(item.node.name) for item in selected_items]
 
-        try:
-            item_path = self.build_full_path(node.name)
-            msg_type = "directory" if node.is_dir else "file"
-            if QMessageBox.question(self, "Confirm Deletion",
-                                  f"Are you sure you want to delete the {msg_type} {node.name}?",
-                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
-                success = self.controller.delete_item(item_path)
+        # Confirmation dialog
+        if len(paths_to_delete) == 1:
+            msg = f"Are you sure you want to delete '{paths_to_delete[0]}'?"
+        else:
+            msg = f"Are you sure you want to delete {len(paths_to_delete)} items?"
+        reply = QMessageBox.question(self, "Confirm Deletion", msg,
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
 
-                if success:
-                    current_path = self.current_path
-                    self.refresh_filesystem_ui(current_path)
-                    self.statusBar().showMessage(f"Deleted {node.name}")
-                else:
-                    QMessageBox.warning(self, "Warning", f"Failed to delete {node.name}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to delete item: {str(e)}")
+        # Perform deletion
+        failed_paths = []
+        for path in paths_to_delete:
+            success = self.controller.delete_item_recursive(path)
+            if not success:
+                failed_paths.append(path)
+
+        # Refresh UI
+        current_path = self.current_path
+        self.refresh_filesystem_ui(current_path)
+
+        # Show message
+        if not failed_paths:
+            self.statusBar().showMessage(f"Deleted {len(paths_to_delete)} item(s)")
+        else:
+            failed_msg = "Failed to delete:\n" + "\n".join(failed_paths)
+            QMessageBox.warning(self, "Deletion Failed", failed_msg)
+            self.statusBar().showMessage(f"Deleted {len(paths_to_delete) - len(failed_paths)} item(s), {len(failed_paths)} failed")
 
     def navigate_to_path(self, path):
         if path == "/":

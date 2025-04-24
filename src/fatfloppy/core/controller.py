@@ -318,6 +318,16 @@ class DiskController:
             self.logger.error(f"Error deleting item {path}: {e}")
             return False
 
+    def delete_item_recursive(self, path: str) -> bool:
+        if not self.filesystem:
+            return False
+        try:
+            self.filesystem.delete_recursive(path)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error deleting item recursively {path}: {e}")
+            return False
+
     def format_disk(self, format_name: str, volume_label: str = "NO NAME") -> bool:
         if not self.disk or not self.driver:
              self.logger.error("Cannot format disk: Disk or driver not initialized.")
