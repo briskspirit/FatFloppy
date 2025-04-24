@@ -146,13 +146,16 @@ class DiskController:
 
     def close_disk(self) -> None:
         if self.disk and self.driver:
-            try:
-                self.driver.flush()
-            except Exception as e:
-                self.logger.error(f"Error flushing driver: {e}")
+            self.flush()
         self.disk = None
         self.filesystem = None
         self.driver = None
+
+    def flush(self) -> None:
+        try:
+            self.driver.flush()
+        except Exception as e:
+            self.logger.error(f"Error flushing driver: {e}")
 
     def detect_geometry(self) -> Optional[PhysicalFormat]:
         if not self.disk:
@@ -365,6 +368,7 @@ class DiskController:
             self.filesystem = filesystem
             self.geometry = self.disk.geometry # Geometry should match profile now
             self.boot_sector = self.filesystem.boot_sector # Get the actual BS written
+            self.flush()
 
             self.logger.info(f"Disk formatting complete for profile '{profile.name}'.")
             return True
@@ -596,3 +600,58 @@ class DiskController:
         self._adjust_geometry_after_filesystem()
         logger.debug(f"Adjusted geometry after filesystem: {self.disk.geometry}")
         return True
+
+    def create_custom_profile(self, format_info: dict) -> Optional[FormatProfile]:
+        from .formats import FormatProfile, PhysicalFormat, FATVolumeInfo
+        try:
+            physical_format = PhysicalFormat(
+                encoding=format_info["encoding"],
+                rate=format_info["rate"],
+                rpm=format_info["rpm"],
+                gap3=format_info["gap3"],
+                cskew=format_info["cskew"],
+                interleave=format_info["interleave"],
+                cylinders=format_info["cylinders"],
+                heads=format_info["heads"],
+                sectors_per_track=format_info["sectors_per_track"],
+                bytes_per_sector=format_info["bytes_per_sector"],
+            )
+            total_sectors = physical_format.total_sectors
+            bytes_per_sector = physical_format.bytes_per_sector
+            sectors_per_cluster = format_info.get("sectors_per_cluster", 1)
+            reserved_sectors = format_info.get("reserved_sectors", 1)
+            num_fats = format_info.get("num_fats", 2)
+            root_entries = format_info.get("root_entries", 224 if total_sectors > 1440 else 112)
+            root_dir_sectors = (root_entries * 32 + bytes_per_sector - 1) // bytes_per_sector
+            data_sectors = total_sectors - (reserved_sectors + num_fats + root_dir_sectors)
+            num_clusters = data_sectors // sectors_per_cluster
+            FAT12_MAX_CLUSTERS = 4084
+            if num_clusters > FAT12_MAX_CLUSTERS:
+                self.logger.error(f"Cluster count ({num_clusters}) exceeds FAT12 limit")
+                return None
+            bytes_per_fat = (num_clusters * 3 // 2) + 3
+            sectors_per_fat = (bytes_per_fat + bytes_per_sector - 1) // bytes_per_sector
+            boot_sector = FATVolumeInfo(
+                bytes_per_sector=bytes_per_sector,
+                sectors_per_cluster=sectors_per_cluster,
+                reserved_sectors=reserved_sectors,
+                num_fats=num_fats,
+                root_entries=root_entries,
+                total_sectors=total_sectors,
+                media_descriptor=format_info.get("media_descriptor", 0xF0),
+                sectors_per_fat=sectors_per_fat,
+                sectors_per_track=physical_format.sectors_per_track,
+                num_heads=physical_format.heads,
+                hidden_sectors=format_info.get("hidden_sectors", 0),
+                drive_number=format_info.get("drive_number", 0),
+                volume_serial=format_info.get("volume_serial", 0),
+            )
+            return FormatProfile(
+                name="custom",
+                description=f"Custom {physical_format.cylinders}x{physical_format.heads}x{physical_format.sectors_per_track}x{physical_format.bytes_per_sector}",
+                physical_format=physical_format,
+                boot_sector=boot_sector
+            )
+        except Exception as e:
+            self.logger.error(f"Error creating custom profile: {e}")
+            return None

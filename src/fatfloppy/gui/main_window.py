@@ -327,7 +327,6 @@ class FileBrowserApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to open physical floppy: {str(e)}")
 
     def get_format_profile(self, format_info):
-        # TODO: cleanup !!!
         if "profile_name" in format_info:
             profile_name = format_info["profile_name"]
             from ..core.format_definitions import FLOPPY_FORMATS
@@ -338,117 +337,9 @@ class FileBrowserApp(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Predefined format '{profile_name}' not found.")
                 return None
         else:
-            from ..core.formats import FormatProfile, PhysicalFormat, FATVolumeInfo
-            try:
-                physical_format = PhysicalFormat(
-                    encoding=format_info["encoding"],
-                    rate=format_info["rate"],
-                    rpm=format_info["rpm"],
-                    gap3=format_info["gap3"],
-                    cskew=format_info["cskew"],
-                    interleave=format_info["interleave"],
-                    cylinders=format_info["cylinders"],
-                    heads=format_info["heads"],
-                    sectors_per_track=format_info["sectors_per_track"],
-                    bytes_per_sector=format_info["bytes_per_sector"],
-                )
-
-                # Construct FATVolumeInfo (boot sector) from custom parameters
-                total_sectors = physical_format.total_sectors
-                bytes_per_sector = physical_format.bytes_per_sector
-                # Provide sensible defaults if parameters are missing, but log warnings
-                # These calculations are crucial for a valid FAT structure
-
-                sectors_per_cluster = format_info.get("sectors_per_cluster")
-                if sectors_per_cluster is None:
-                    # Default SPC based on size (very basic heuristic)
-                    if total_sectors <= 655360 // bytes_per_sector: # <= 640KB ish
-                         sectors_per_cluster = 1
-                    elif total_sectors <= 1.44 * 1024 * 1024 // bytes_per_sector: # <= 1.44MB ish
-                         sectors_per_cluster = 2
-                    else:
-                         sectors_per_cluster = 4 # Larger disks
-                    print(f"Warning: sectors_per_cluster not provided for custom format, defaulting to {sectors_per_cluster}")
-                if sectors_per_cluster <= 0: raise ValueError("sectors_per_cluster must be positive")
-
-
-                reserved_sectors = format_info.get("reserved_sectors", 1)
-                if reserved_sectors <= 0: raise ValueError("reserved_sectors must be positive")
-
-                num_fats = format_info.get("num_fats", 2)
-                if num_fats not in [1, 2]: raise ValueError("num_fats must be 1 or 2")
-
-                root_entries = format_info.get("root_entries")
-                if root_entries is None:
-                     # Default root entries (common values)
-                     if physical_format.total_bytes <= 360 * 1024: root_entries = 112
-                     elif physical_format.total_bytes <= 1.44 * 1024 * 1024 : root_entries = 224
-                     else: root_entries = 512 # Larger disks might use FAT16/32 conventions implicitly
-                     print(f"Warning: root_entries not provided for custom format, defaulting to {root_entries}")
-                if root_entries <= 0 or root_entries % 16 != 0: # Must align
-                    raise ValueError("root_entries must be positive and typically a multiple of 16")
-
-                sectors_per_fat = format_info.get("sectors_per_fat")
-                if sectors_per_fat is None:
-                     # Estimate sectors_per_fat (FAT12 specific calculation)
-                     root_dir_sectors = (root_entries * 32 + bytes_per_sector - 1) // bytes_per_sector
-                     first_data_sector_approx = reserved_sectors + (num_fats * 1) + root_dir_sectors # Initial guess
-                     if first_data_sector_approx >= total_sectors:
-                           raise ValueError("Calculated disk overhead exceeds total sectors.")
-                     data_sectors_approx = total_sectors - first_data_sector_approx
-                     if data_sectors_approx < 0 : data_sectors_approx = 0 # Handle edge case
-                     num_clusters = data_sectors_approx // sectors_per_cluster
-                     FAT12_MAX_CLUSTERS = 4084
-                     if num_clusters > FAT12_MAX_CLUSTERS:
-                         print(f"Warning: Calculated cluster count ({num_clusters}) exceeds FAT12 max. Filesystem might be FAT16.")
-                         # Adjust for FAT16 if needed (2 bytes per entry)
-                         bytes_per_fat_approx = (num_clusters * 2) + 4 # Rough estimate for FAT16/32 Boot sector
-                     else:
-                         # FAT12 entry = 1.5 bytes
-                         bytes_per_fat_approx = int(num_clusters * 1.5) + 3 # Rough estimate
-
-                     sectors_per_fat = (bytes_per_fat_approx + bytes_per_sector - 1) // bytes_per_sector
-                     print(f"Warning: sectors_per_fat not provided, estimated as {sectors_per_fat}")
-                if sectors_per_fat <= 0: raise ValueError("sectors_per_fat must be positive")
-
-                # Recalculate total_sectors based on geometry if not matching format_info
-                if total_sectors != format_info.get("total_sectors", total_sectors):
-                     print(f"Warning: total_sectors in format_info ({format_info.get('total_sectors')}) differs from geometry ({total_sectors}). Using geometry.")
-
-
-                boot_sector = FATVolumeInfo(
-                    bytes_per_sector=bytes_per_sector,
-                    sectors_per_cluster=sectors_per_cluster,
-                    reserved_sectors=reserved_sectors,
-                    num_fats=num_fats,
-                    root_entries=root_entries,
-                    total_sectors=total_sectors,
-                    media_descriptor=format_info.get("media_descriptor", 0xF0), # Default F0 for 3.5" HD
-                    sectors_per_fat=sectors_per_fat,
-                    sectors_per_track=physical_format.sectors_per_track,
-                    num_heads=physical_format.heads,
-                    hidden_sectors=format_info.get("hidden_sectors", 0),
-                    drive_number=format_info.get("drive_number", 0),
-                    volume_serial=format_info.get("volume_serial", 0), # Default 0, usually generated
-                    # volume_label and fs_type will be set during format
-                )
-
-                return FormatProfile(
-                    name="custom", # Use a consistent name for custom profiles
-                    description=f"Custom {physical_format.cylinders}x{physical_format.heads}x{physical_format.sectors_per_track}x{physical_format.bytes_per_sector}",
-                    physical_format=physical_format,
-                    boot_sector=boot_sector
-                )
-
-            except KeyError as e:
-                 QMessageBox.critical(self, "Error", f"Missing required parameter for custom format definition: {e}")
-                 return None
-            except ValueError as e:
-                 QMessageBox.critical(self, "Error", f"Invalid parameter for custom format definition: {e}")
-                 return None
-            except Exception as e:
-                 QMessageBox.critical(self, "Error", f"Error creating custom format profile: {e}")
-                 return None
+            if not self.controller:
+                self.controller = DiskController()
+            return self.controller.create_custom_profile(format_info)
 
     def update_disk_info(self):
         self.update_geometry_info()

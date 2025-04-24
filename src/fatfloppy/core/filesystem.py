@@ -367,8 +367,6 @@ class FATFilesystem(Filesystem):
         self.fat_dirty = False
         self._cached_allocated_clusters = []
         self._initialize_filesystem_parameters()
-        logger.debug("FAT filesystem formatted successfully, flushing")
-        self.disk.flush()
 
     def get_free_space(self) -> Tuple[int, int]:
         if not self.is_valid():
