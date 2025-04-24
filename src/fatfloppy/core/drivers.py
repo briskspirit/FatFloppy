@@ -10,7 +10,6 @@ from greaseweazle.tools import read
 
 logger = get_logger()
 
-
 class DiskIODriver:
     def __init__(self):
         self.logger = get_logger(self.__class__.__name__)
@@ -26,7 +25,6 @@ class DiskIODriver:
 
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
         raise NotImplementedError
-
 
 class GreaseweazleDriver(DiskIODriver):
     def __init__(self, device_name=None, drive="A", drive_size="3.5"):
@@ -130,7 +128,7 @@ class GreaseweazleDriver(DiskIODriver):
                 else:
                     self.logger.warning(f"Failed to write track C:{cylinder} H:{head}")
                     if track_id in self.track_data:
-                        del self.track_data[track_id]  # Invalidate only failed tracks
+                        del self.track_data[track_id]
             except Exception as e:
                 self.logger.error(f"Drive selection error for track C:{cylinder} H:{head}: {e}", exc_info=True)
         for track_id in successfully_written:
@@ -171,7 +169,6 @@ class GreaseweazleDriver(DiskIODriver):
             self.using_custom_diskdef = False
 
     def _get_formats_to_try(self) -> List[Tuple[str, Optional[int]]]:
-        """Determine the list of formats to attempt for reading a track."""
         formats_to_try = []
         if self.fmt_cls and self.using_custom_diskdef:
             formats_to_try.append(("custom", None))
@@ -188,7 +185,6 @@ class GreaseweazleDriver(DiskIODriver):
         return formats_to_try
 
     def _update_physical_format(self, dat, num_sectors: int) -> None:
-        """Update physical format based on scan track data."""
         if not hasattr(dat, "track") or not hasattr(dat.track, "mode"):
             return
         mode = dat.track.mode
@@ -212,7 +208,6 @@ class GreaseweazleDriver(DiskIODriver):
             self.physical_format.sectors_per_track = num_sectors
 
     def _read_track_with_format(self, cylinder: int, head: int, format_tuple: Tuple[str, Optional[int]]) -> Optional[Dict[int, bytes]]:
-        """Attempt to read a track with a specific format and return sector data."""
         from greaseweazle.codec import codec
         import types
 
@@ -282,9 +277,8 @@ class GreaseweazleDriver(DiskIODriver):
         return None
 
     def _read_track(self, cylinder: int, head: int) -> bool:
-        """Read a track by trying various formats and parsing sector data."""
         self.initialize()
-        self.track_data[(cylinder, head)] = {}  # Reset track data
+        self.track_data[(cylinder, head)] = {}
         formats_to_try = self._get_formats_to_try()
         for format_tuple in formats_to_try:
             sector_data = self._read_track_with_format(cylinder, head, format_tuple)
@@ -374,7 +368,6 @@ class GreaseweazleDriver(DiskIODriver):
             self.logger.error(f"Error writing track C:{cylinder} H:{head}: {e}", exc_info=True)
             return False
 
-
 class RawImageDriver(DiskIODriver):
     def __init__(self, file_path, image_data=None):
         super().__init__()
@@ -394,7 +387,6 @@ class RawImageDriver(DiskIODriver):
         bytes_per_sector = self.physical_format.bytes_per_sector
         try:
             offset = self._calculate_sector_offset(cylinder, head, sector, bytes_per_sector)
-            # self.logger.debug(f"read_sector: C:{cylinder} H:{head} S:{sector}, bytes_per_sector={bytes_per_sector}, offset={offset}")
         except ValueError as e:
             raise IOError(f"Invalid sector access: {e}")
         if offset + bytes_per_sector > len(self.image_data):
@@ -436,11 +428,6 @@ class RawImageDriver(DiskIODriver):
     def _calculate_sector_offset(self, cylinder: int, head: int, sector: int, bytes_per_sector: int) -> int:
         if not self.physical_format:
             raise ValueError("Physical format not set")
-        sectors_per_track = self.physical_format.sectors_per_track
-        heads = self.physical_format.heads
-        if sectors_per_track <= 0 or heads <= 0 or bytes_per_sector <= 0:
-            raise ValueError(f"Invalid geometry parameters (SPT={sectors_per_track}, Heads={heads}, Size={bytes_per_sector})")
-        if cylinder < 0 or head < 0 or head >= heads or sector < 1 or sector > sectors_per_track:
-            raise ValueError(f"Invalid CHS: C={cylinder}, H={head}, S={sector}")
-        lba = (cylinder * heads + head) * sectors_per_track + (sector - 1)
+        self.physical_format.validate_chs(cylinder, head, sector)
+        lba = (cylinder * self.physical_format.heads + head) * self.physical_format.sectors_per_track + (sector - 1)
         return lba * bytes_per_sector

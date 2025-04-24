@@ -21,7 +21,6 @@ class Disk:
             try:
                 existing_pf = getattr(self.driver, "physical_format", None)
                 if not existing_pf:
-                    # TODO: not sure that defaults are a good idea
                     physical_format = PhysicalFormat(
                         encoding="MFM", rate=500, rpm=300, gap3=84,
                         sectors_per_track=geometry.sectors_per_track,
@@ -39,16 +38,14 @@ class Disk:
                 self.logger.error(f"Failed to set physical format: {e}", exc_info=True)
 
     def read_boot_sector(self) -> bytes:
-        """Read the boot sector (first sector) of the disk."""
         if not self.geometry:
             raise ValueError("Disk geometry not set")
         bytes_per_sector = self.geometry.bytes_per_sector
-        sectors_to_read = 4096 // bytes_per_sector # TODO: always read max possible sector size before we know actual sector size from BPB?
-        data = self.read_sectors(0, 0, 1, sectors_to_read)  # Read exactly one sector
+        sectors_to_read = 4096 // bytes_per_sector
+        data = self.read_sectors(0, 0, 1, sectors_to_read)
         return data
 
     def write_boot_sector(self, data: bytes) -> None:
-        """Write the boot sector (first sector) to the disk."""
         if not self.geometry:
             raise ValueError("Disk geometry not set")
         bytes_per_sector = self.geometry.bytes_per_sector
@@ -60,7 +57,6 @@ class Disk:
         self._validate_chs(cylinder, head, sector)
         try:
             data = self.driver.read_sector(cylinder, head, sector)
-            # self.logger.debug(f"read_sector: starting C:{cylinder} H:{head} S:{sector}, bytes_per_sector={self.geometry.bytes_per_sector}")
             if len(data) < self.geometry.bytes_per_sector:
                 data += bytes(self.geometry.bytes_per_sector - len(data))
             elif len(data) > self.geometry.bytes_per_sector:
@@ -88,10 +84,7 @@ class Disk:
         cylinder, head, sector = start_cylinder, start_head, start_sector
         self.logger.debug(f"read_sectors: starting C:{cylinder} H:{head} S:{sector}, num_sectors={num_sectors}, bytes_per_sector={self.geometry.bytes_per_sector}")
         for _ in range(num_sectors):
-            if not (0 <= cylinder < self.geometry.cylinders and
-                    0 <= head < self.geometry.heads and
-                    1 <= sector <= self.geometry.sectors_per_track):
-                raise ValueError(f"Invalid address: C:{cylinder} H:{head} S:{sector}")
+            self.geometry.validate_chs(cylinder, head, sector)
             result.extend(self.read_sector(cylinder, head, sector))
             sector += 1
             if sector > self.geometry.sectors_per_track:
@@ -113,10 +106,7 @@ class Disk:
         cylinder, head, sector = start_cylinder, start_head, start_sector
         data_pos = 0
         for i in range(num_sectors):
-            if not (0 <= cylinder < self.geometry.cylinders and
-                    0 <= head < self.geometry.heads and
-                    1 <= sector <= self.geometry.sectors_per_track):
-                raise ValueError(f"Invalid address: C:{cylinder} H:{head} S:{sector}")
+            self.geometry.validate_chs(cylinder, head, sector)
             chunk = data[data_pos:data_pos + bytes_per_sector]
             if len(chunk) < bytes_per_sector:
                 chunk = chunk + bytes(bytes_per_sector - len(chunk))
@@ -155,7 +145,4 @@ class Disk:
     def _validate_chs(self, cylinder: int, head: int, sector: int) -> None:
         if not self.geometry:
             raise ValueError("Disk geometry not set")
-        if not (0 <= cylinder < self.geometry.cylinders and
-                0 <= head < self.geometry.heads and
-                1 <= sector <= self.geometry.sectors_per_track):
-            raise ValueError(f"Invalid sector address: C:{cylinder} H:{head} S:{sector}")
+        self.geometry.validate_chs(cylinder, head, sector)

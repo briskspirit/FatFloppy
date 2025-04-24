@@ -1,4 +1,3 @@
-# tests/software/test_01_drivers_pytest.py
 import pytest
 import sys
 import shutil
@@ -99,6 +98,7 @@ def test_07_write_within_bounds(driver_setup):
     driver, test_img_path, bytes_per_sector, geom = driver_setup
     test_data = b'LAST' * (bytes_per_sector // 4)
     assert len(test_data) == bytes_per_sector
+    # Write to the last valid sector
     last_cyl, last_head, last_sect = geom.cylinders - 1, geom.heads - 1, geom.sectors_per_track
     driver.write_sector(last_cyl, last_head, last_sect, test_data)
     driver.flush()
@@ -106,15 +106,15 @@ def test_07_write_within_bounds(driver_setup):
     driver2.set_physical_format(FMT_144.physical_format)
     read_data = driver2.read_sector(last_cyl, last_head, last_sect)
     assert read_data == test_data
-
-    invalid_cyl = geom.cylinders
-    with pytest.raises(IOError, match="Cannot write sector .* out of bounds"):
+    # Test writing to invalid cylinder (beyond max)
+    invalid_cyl = geom.cylinders  # e.g., 80 when max is 79
+    with pytest.raises(OSError, match=f"Invalid sector access: Invalid sector address: C:{invalid_cyl} H:0 S:1"):
         driver.write_sector(invalid_cyl, 0, 1, test_data)
-
-    invalid_head = geom.heads + 1
-    with pytest.raises(IOError, match="Invalid sector access"):
+    # Test writing to invalid head (beyond max)
+    invalid_head = geom.heads  # e.g., 2 when max is 1
+    with pytest.raises(OSError, match=f"Invalid sector access: Invalid sector address: C:0 H:{invalid_head} S:1"):
         driver.write_sector(0, invalid_head, 1, test_data)
-
-    invalid_sect = geom.sectors_per_track + 25
-    with pytest.raises(IOError, match="Invalid sector access"):
+    # Test writing to invalid sector (beyond max)
+    invalid_sect = geom.sectors_per_track + 25  # e.g., 43 when max is 18
+    with pytest.raises(OSError, match=f"Invalid sector access: Invalid sector address: C:0 H:0 S:{invalid_sect}"):
         driver.write_sector(0, 0, invalid_sect, test_data)
