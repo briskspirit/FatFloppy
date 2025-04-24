@@ -38,26 +38,9 @@ class DragDropTreeWidget(QTreeWidget):
             return
 
         current_path = self.parent.current_path
-        total_files = len(file_paths)
 
-        def import_files():
-            for idx, file_path in enumerate(file_paths):
-                if os.path.isdir(file_path):
-                    QMessageBox.information(self.parent, "Info",
-                                        f"Directory dropping is not yet supported: {os.path.basename(file_path)}")
-                    continue
-
-                base_name = os.path.basename(file_path)
-                base_name = self.parent.format_83_filename(base_name)
-
-                new_name, ok = QInputDialog.getText(self.parent, "File Name",
-                                                f"Enter file name for {base_name} (8.3 format):",
-                                                text=base_name)
-                if not ok or not new_name:
-                    continue
-
-                try:
-                    self.parent.add_file_to_disk(file_path, new_name, current_path)
-                except Exception as e:
-                    QMessageBox.critical(self.parent, "Error", f"Failed to add file: {str(e)}")
-        import_files()
+        if len(file_paths) == 1 and os.path.isfile(file_paths[0]):
+            self.parent.import_path(file_paths[0], current_path, auto_name=False)
+        else:
+            for file_path in file_paths:
+                self.parent.import_path(file_path, current_path, auto_name=True)

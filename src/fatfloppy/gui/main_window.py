@@ -1,5 +1,6 @@
 # src/fatfloppy/gui/main_window.py
 import os
+import re
 import copy
 import datetime
 
@@ -737,6 +738,96 @@ class FileBrowserApp(QMainWindow):
                 QMessageBox.warning(self, "Warning", f"Failed to create directory {dir_name}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create directory: {str(e)}")
+
+    def import_path(self, local_path, target_path, auto_name):
+        # Normalize the local path to remove trailing slashes
+        local_path = os.path.normpath(local_path)
+
+        if os.path.isfile(local_path):
+            if not auto_name:
+                # Prompt for name
+                base_name = os.path.basename(local_path)
+                base_name = self.format_83_filename(base_name)
+                new_name, ok = QInputDialog.getText(self, "File Name",
+                                                    f"Enter file name for {base_name} (8.3 format):",
+                                                    text=base_name)
+                if not ok or not new_name:
+                    return
+                # Check if the name already exists
+                existing_names = [item['name'].upper() for item in self.controller.list_directory(target_path)]
+                if new_name.upper() in existing_names:
+                    QMessageBox.warning(self, "Warning", f"File '{new_name}' already exists in {target_path}")
+                    return
+                try:
+                    self.add_file_to_disk(local_path, new_name, target_path)
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to add file: {str(e)}")
+            else:
+                # Auto generate name
+                original_name = os.path.basename(local_path)
+                new_name = self.generate_unique_83_name(original_name, target_path, is_dir=False)
+                try:
+                    self.add_file_to_disk(local_path, new_name, target_path)
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to add file: {str(e)}")
+        elif os.path.isdir(local_path):
+            # Extract the directory name from the normalized path
+            original_name = os.path.basename(local_path)
+            if not original_name:
+                QMessageBox.critical(self, "Error", f"Invalid directory name: empty name for path {local_path}")
+                return
+            new_dir_name = self.generate_unique_83_name(original_name, target_path, is_dir=True)
+            new_dir_path = f"{target_path}/{new_dir_name}" if target_path != "/" else f"/{new_dir_name}"
+            try:
+                success = self.controller.create_directory(new_dir_path)
+                if not success:
+                    raise Exception("Failed to create directory")
+                # Import contents
+                for item in os.listdir(local_path):
+                    item_path = os.path.join(local_path, item)
+                    self.import_path(item_path, new_dir_path, auto_name=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to import directory: {str(e)}")
+
+    def generate_unique_83_name(self, original_name, target_path, is_dir):
+        def to_83_name(name):
+            name = name.upper()
+            name = re.sub(r'[\\/:*?"<>|\s+]', '_', name)
+            if '.' in name and not is_dir:
+                base, ext = name.rsplit('.', 1)
+                base = base[:8]
+                ext = ext[:3]
+                return f"{base}.{ext}"
+            else:
+                return name[:8]
+
+        existing_names = [item['name'].upper() for item in self.controller.list_directory(target_path)]
+        base_name = to_83_name(original_name)
+        if base_name not in existing_names:
+            return base_name
+        # Generate a unique name
+        if '.' in base_name and not is_dir:
+            base, ext = base_name.rsplit('.', 1)
+            base = base[:6]
+            counter = 1
+            while True:
+                new_base = f"{base}~{counter}"
+                new_name = f"{new_base}.{ext}"
+                if new_name not in existing_names:
+                    return new_name
+                counter += 1
+                if counter > 999:
+                    raise ValueError("Cannot generate unique name")
+        else:
+            base = base_name[:6]
+            counter = 1
+            while True:
+                new_name = f"{base}~{counter}"
+                if new_name not in existing_names:
+                    return new_name
+                counter += 1
+                if counter > 999:
+                    raise ValueError("Cannot generate unique name")
 
     def format_83_filename(self, filename):
         if len(filename) > 12 or filename.count('.') > 1:
