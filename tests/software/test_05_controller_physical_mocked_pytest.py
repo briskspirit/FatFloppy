@@ -59,8 +59,8 @@ def open_disk_for_rw_tests(controller, mocks_bundle, test_format=FMT_144):
     mock_usb = mocks_bundle['mock_usb']
     mock_with_drive_selected = mocks_bundle['mock_with_drive_selected']
     format_info_dict = {
-        "cylinders": test_format.geometry.cylinders, "heads": test_format.geometry.heads,
-        "sectors_per_track": test_format.geometry.sectors_per_track, "sector_size": test_format.geometry.sector_size,
+        "cylinders": test_format.physical_format.cylinders, "heads": test_format.physical_format.heads,
+        "sectors_per_track": test_format.physical_format.sectors_per_track, "bytes_per_sector": test_format.physical_format.bytes_per_sector,
         "encoding": test_format.physical_format.encoding, "rate": test_format.physical_format.rate,
         "rpm": test_format.physical_format.rpm, "gap3": test_format.physical_format.gap3,
         "cskew": test_format.physical_format.cskew, "interleave": test_format.physical_format.interleave
@@ -73,9 +73,9 @@ def open_disk_for_rw_tests(controller, mocks_bundle, test_format=FMT_144):
         setattr(mock_fat_bs, attr, value)
     mock_fat_bs.is_valid.return_value = True
     mock_fat_bs.calculate_fat_type.return_value = "FAT12"
-    mock_fat_bs.sectors_per_track = test_format.geometry.sectors_per_track
-    mock_fat_bs.num_heads = test_format.geometry.heads
-    mock_fat_bs.total_sectors = test_format.geometry.total_sectors
+    mock_fat_bs.sectors_per_track = test_format.physical_format.sectors_per_track
+    mock_fat_bs.num_heads = test_format.physical_format.heads
+    mock_fat_bs.total_sectors = test_format.physical_format.total_sectors
     mock_fs.boot_sector = mock_fat_bs
 
     with patch('fatfloppy.core.controller.create_filesystem', return_value=mock_fs):
@@ -125,22 +125,22 @@ def test_01_open_physical_drive_A_35_auto_detect_mocked(mocked_controller):
 
     with patch('fatfloppy.core.controller.create_filesystem', return_value=mock_fs):
         success = controller.open_disk(source=None, disk_type="physical", drive_letter=drive_letter, drive_size=drive_size)
-        assert success is True, "controller.open_disk should return True"
-        assert isinstance(controller.driver, GreaseweazleDriver), "Driver type mismatch"
-        mock_usb_open.assert_called_with(None)
-        mock_drive.assert_called()
-        assert mock_usb.read_track.called, "mock_usb.read_track should be called for RPM"
-        assert controller.driver.initialized is True, "Driver should be initialized"
-        assert controller.disk is not None, "Disk object should be created"
-        assert controller.disk.geometry is not None, "Disk geometry should be set"
-        assert controller.filesystem == mock_fs, "Filesystem object should be set"
-        geom = controller.disk.geometry
-        assert geom.sectors_per_track == mock_fat_bs.sectors_per_track
-        assert geom.heads == mock_fat_bs.num_heads
-        pf = controller.driver.physical_format
-        assert pf is not None, "Physical format should be set"
-        assert pf.sectors_per_track == expected_format.physical_format.sectors_per_track
-        assert pf.heads == expected_format.physical_format.heads
+    assert success is True, "controller.open_disk should return True"
+    assert isinstance(controller.driver, GreaseweazleDriver), "Driver type mismatch"
+    mock_usb_open.assert_called_with(None)
+    mock_drive.assert_called()
+    assert mock_usb.read_track.called, "mock_usb.read_track should be called for RPM"
+    assert controller.driver.initialized is True, "Driver should be initialized"
+    assert controller.disk is not None, "Disk object should be created"
+    assert controller.disk.geometry is not None, "Disk geometry should be set"
+    geom = controller.disk.geometry
+    assert geom.sectors_per_track == mock_fat_bs.sectors_per_track
+    assert geom.heads == mock_fat_bs.num_heads
+    assert controller.filesystem == mock_fs, "Filesystem object should be set"
+    pf = controller.driver.physical_format
+    assert pf is not None, "Driver physical format should be set"
+    assert pf.sectors_per_track == expected_format.physical_format.sectors_per_track
+    assert pf.heads == expected_format.physical_format.heads
 
 def test_02_open_physical_with_explicit_format_mocked(mocked_controller):
     controller, mocks_bundle = mocked_controller
@@ -148,8 +148,8 @@ def test_02_open_physical_with_explicit_format_mocked(mocked_controller):
     mock_with_drive_selected = mocks_bundle['mock_with_drive_selected']
     expected_format = FMT_144
     format_info = {
-        "cylinders": expected_format.geometry.cylinders, "heads": expected_format.geometry.heads,
-        "sectors_per_track": expected_format.geometry.sectors_per_track, "sector_size": expected_format.geometry.sector_size,
+        "cylinders": expected_format.physical_format.cylinders, "heads": expected_format.physical_format.heads,
+        "sectors_per_track": expected_format.physical_format.sectors_per_track, "bytes_per_sector": expected_format.physical_format.bytes_per_sector,
         "encoding": expected_format.physical_format.encoding, "rate": expected_format.physical_format.rate,
         "rpm": expected_format.physical_format.rpm, "gap3": expected_format.physical_format.gap3,
         "cskew": expected_format.physical_format.cskew, "interleave": expected_format.physical_format.interleave
@@ -170,8 +170,12 @@ def test_02_open_physical_with_explicit_format_mocked(mocked_controller):
         success = controller.open_disk(None, "physical", "A", "3.5", format_info)
         assert success, "Failed to open disk with explicit format"
         assert controller.filesystem == mock_fs, "Filesystem not set correctly"
-        assert controller.disk.geometry.sectors_per_track == mock_fat_bs.sectors_per_track
-        assert controller.disk.geometry.heads == mock_fat_bs.num_heads
+        assert controller.disk.geometry is not None, "Disk geometry should be set"
+        geom = controller.disk.geometry
+        assert geom.sectors_per_track == mock_fat_bs.sectors_per_track # Or expected_format.physical_format.sectors_per_track
+        assert geom.heads == mock_fat_bs.num_heads # Or expected_format.physical_format.heads
+        assert controller.driver.physical_format is not None
+        assert controller.driver.physical_format.sectors_per_track == expected_format.physical_format.sectors_per_track
 
 def test_03_physical_read_sector_success_mocked(mocked_controller):
     controller, mocks_bundle = mocked_controller

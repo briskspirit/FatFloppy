@@ -33,7 +33,7 @@ def create_greaseweazle_diskdef(
         'cyls': final_cylinders,
         'heads': physical_format.heads,
         'sectors_per_track': physical_format.sectors_per_track,
-        'sector_size': physical_format.sector_size,
+        'bytes_per_sector': physical_format.bytes_per_sector,
         'encoding': physical_format.encoding,
         'rate': physical_format.rate,
         'gap3': physical_format.gap3
@@ -54,7 +54,7 @@ def create_greaseweazle_diskdef(
 
         track_def = ibm.IBMTrack_FixedDef(format_name)
         track_def.add_param("secs", str(params['sectors_per_track']))
-        track_def.add_param("bps", str(params['sector_size']))
+        track_def.add_param("bps", str(params['bytes_per_sector']))
         track_def.add_param("gap3", str(params['gap3']))
         track_def.add_param("rate", str(params['rate']))
         track_def.finalise()
@@ -67,7 +67,7 @@ def create_greaseweazle_diskdef(
 
         logger.info(
             f"Custom disk definition created: Cyls={params['cyls']}, Heads={params['heads']}, "
-            f"{params['sectors_per_track']} sectors, {params['sector_size']} bytes/sector, {params['encoding']} encoding"
+            f"{params['sectors_per_track']} sectors, {params['bytes_per_sector']} bytes/sector, {params['encoding']} encoding"
         )
         return disk_def
     except Exception as e:

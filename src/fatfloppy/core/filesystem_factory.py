@@ -13,6 +13,7 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
             return fs
         else:
             logger.info("FATFilesystem is not valid for this disk")
+            return None
     except Exception as e:
         logger.error(f"Error creating FATFilesystem: {e}")
     return None

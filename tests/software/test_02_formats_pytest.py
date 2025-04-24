@@ -1,13 +1,14 @@
 # tests/software/test_02_formats_pytest.py
 import pytest
 import sys
+import re
 import struct
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.formats import FATVolumeInfo, FormatProfile
-from fatfloppy.core.disk import Disk, DiskGeometry
+from fatfloppy.core.disk import Disk
 from fatfloppy.core.drivers import RawImageDriver
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 from fatfloppy.core.controller import DiskController
@@ -33,7 +34,7 @@ def test_02_get_format_by_name(disk_controller):
     assert profile is not None
     assert isinstance(profile, FormatProfile)
     assert profile.name == "ibm_3.5_1.44m"
-    assert profile.geometry.total_bytes == 1440 * 1024
+    assert profile.physical_format.total_bytes == 1440 * 1024
     profile_none = disk_controller.get_format_by_name("non_existent_format")
     assert profile_none is None
 
@@ -44,8 +45,10 @@ def test_03_detect_format_144mb(disk_controller):
     assert success is True
     assert disk_controller.disk is not None
     assert disk_controller.driver is not None
-    detected_format_name = disk_controller.detect_format()
-    assert detected_format_name == "ibm_3.5_1.44m"
+    detected_format_result = disk_controller.detect_format()
+    assert isinstance(detected_format_result, tuple), "detect_format should return a tuple"
+    assert detected_format_result[0] == "ibm_3.5_1.44m"
+    assert isinstance(detected_format_result[1], FATVolumeInfo), "Second element should be FATVolumeInfo"
     disk_controller.close_disk()
 
 def test_04_detect_format_no_match(disk_controller):
@@ -66,13 +69,21 @@ def test_04_detect_format_no_match(disk_controller):
     driver = RawImageDriver("dummy", image_data=bytes(dummy_boot) + b'\x00' * 1024 * 100)
     disk_controller.driver = driver
     disk_controller.disk = Disk(driver)
-    temp_geom = DiskGeometry(80, 2, 18, 512)
-    temp_phys = PhysicalFormat(encoding="MFM", rate=500, rpm=300, sectors_per_track=18, heads=2, sector_size=512)
+    temp_geom = PhysicalFormat(
+        encoding="MFM", rate=250, rpm=300, cylinders=80, heads=2,
+        sectors_per_track=18, bytes_per_sector=512
+    )
     disk_controller.disk.set_geometry(temp_geom)
-    disk_controller.driver.set_physical_format(temp_phys)
-    detected_format = disk_controller.detect_format()
-    assert detected_format is None, "Should not detect a standard format"
+    if hasattr(disk_controller.driver, "set_physical_format"):
+         disk_controller.driver.set_physical_format(temp_geom)
+
+    detected_format_result = disk_controller.detect_format()
+    assert isinstance(detected_format_result, tuple), "detect_format should return a tuple"
+    assert detected_format_result[0] is None, "Should not detect a standard format name"
+    assert isinstance(detected_format_result[1], FATVolumeInfo), "Should still parse BPB data even if no known format matches"
     disk_controller.close_disk()
+    disk_controller.driver = None
+    disk_controller.disk = None
 
 def test_01_bsd_to_bytes_from_bytes_roundtrip():
     bsd = FATVolumeInfo(
@@ -137,6 +148,12 @@ def test_03_bsd_from_bytes_invalid_signature():
         FATVolumeInfo.from_bytes(bytes(invalid_boot))
 
 def test_04_bsd_from_bytes_too_short():
-    short_boot = b'\x00' * 500
-    with pytest.raises(ValueError, match="too short"):
+    short_boot = b'\x00' * 100
+    try:
         FATVolumeInfo.from_bytes(short_boot)
+        pytest.fail("ValueError was not raised for short boot sector")
+    except ValueError as e:
+        assert "Boot sector is too short" in str(e), \
+            f"Expected 'Boot sector is too short' in exception message, but got: {str(e)}"
+    except Exception as e:
+        pytest.fail(f"Raised {type(e).__name__} instead of ValueError: {e}")

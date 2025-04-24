@@ -41,13 +41,12 @@ class FileInfo:
 class BootSector:
     def __init__(self, sector_data: bytes):
         self.logger = get_logger(f"{self.__class__.__name__}")
-        self.data = sector_data + bytes(512 - len(sector_data)) if len(sector_data) < 512 else sector_data
+        self.data = sector_data
 
     def is_valid(self) -> bool:
-        if len(self.data) < 512:
+        if len(self.data) < 128:
             return False
-        signature = struct.unpack_from("<H", self.data, 0x1FE)[0]
-        return signature == 0xAA55
+        return True
 
 
 class FATBootSector(BootSector):
@@ -368,6 +367,7 @@ class FATFilesystem(Filesystem):
         self.fat_dirty = False
         self._cached_allocated_clusters = []
         self._initialize_filesystem_parameters()
+        logger.debug("FAT filesystem formatted successfully, flushing")
         self.disk.flush()
 
     def get_free_space(self) -> Tuple[int, int]:
@@ -402,9 +402,10 @@ class FATFilesystem(Filesystem):
 
     def _load_boot_sector(self) -> None:
         try:
-            boot_sector_data = self.disk.read_sector(0, 0, 1)
+            boot_sector_data = self.disk.read_boot_sector()
             if not boot_sector_data:
                 self.boot_sector = None
+                logger.error("Boot sector data is empty")
                 return
             self.boot_sector = FATBootSector(boot_sector_data)
         except Exception as e:
@@ -706,20 +707,22 @@ class FATFilesystem(Filesystem):
             current_cluster = next_cluster
 
     def _read_bytes(self, offset: int, length: int) -> bytes:
+        if self.disk.geometry.bytes_per_sector != self.boot_sector.bytes_per_sector:
+            self.logger.error(f"Geometry mismatch: disk={self.disk.geometry.bytes_per_sector}, boot_sector={self.boot_sector.bytes_per_sector}")
         if length <= 0:
             return b""
         if not self.boot_sector or self.boot_sector.bytes_per_sector == 0:
             raise ValueError("Invalid boot sector")
         if not self.disk or not self.disk.geometry:
             raise ValueError("Disk or geometry not available")
-        sector_size = self.boot_sector.bytes_per_sector
-        start_lba = offset // sector_size
-        end_lba = (offset + length - 1) // sector_size
+        bytes_per_sector = self.boot_sector.bytes_per_sector
+        start_lba = offset // bytes_per_sector
+        end_lba = (offset + length - 1) // bytes_per_sector
         num_sectors = end_lba - start_lba + 1
         try:
             start_cyl, start_head, start_sec = self.disk.lba_to_chs(start_lba)
             all_data_read = self.disk.read_sectors(start_cyl, start_head, start_sec, num_sectors)
-            start_offset = offset % sector_size
+            start_offset = offset % bytes_per_sector
             if len(all_data_read) < start_offset + length:
                 raise IOError(f"Short read: got {len(all_data_read)} bytes, needed {start_offset + length}")
             return all_data_read[start_offset:start_offset + length]
@@ -733,29 +736,29 @@ class FATFilesystem(Filesystem):
             raise ValueError("Invalid boot sector")
         if not self.disk or not self.disk.geometry:
             raise ValueError("Disk or geometry not available")
-        sector_size = self.boot_sector.bytes_per_sector
+        bytes_per_sector = self.boot_sector.bytes_per_sector
         length = len(data)
-        start_lba = offset // sector_size
-        end_lba = (offset + length - 1) // sector_size
+        start_lba = offset // bytes_per_sector
+        end_lba = (offset + length - 1) // bytes_per_sector
         try:
             data_written = 0
-            if offset % sector_size != 0:
+            if offset % bytes_per_sector != 0:
                 cyl, head, sec = self.disk.lba_to_chs(start_lba)
                 sector_data = bytearray(self.disk.read_sector(cyl, head, sec))
-                start_offset = offset % sector_size
-                bytes_to_write = min(length, sector_size - start_offset)
+                start_offset = offset % bytes_per_sector
+                bytes_to_write = min(length, bytes_per_sector - start_offset)
                 sector_data[start_offset:start_offset + bytes_to_write] = data[:bytes_to_write]
                 self.disk.write_sector(cyl, head, sec, bytes(sector_data))
                 data_written = bytes_to_write
-            full_start_lba = start_lba if offset % sector_size == 0 else start_lba + 1
+            full_start_lba = start_lba if offset % bytes_per_sector == 0 else start_lba + 1
             bytes_remaining = length - data_written
-            num_full_sectors = bytes_remaining // sector_size
+            num_full_sectors = bytes_remaining // bytes_per_sector
             if num_full_sectors > 0:
-                full_data = data[data_written:data_written + num_full_sectors * sector_size]
+                full_data = data[data_written:data_written + num_full_sectors * bytes_per_sector]
                 full_start_cyl, full_start_head, full_start_sec = self.disk.lba_to_chs(full_start_lba)
                 self.disk.write_sectors(full_start_cyl, full_start_head, full_start_sec, full_data)
-                data_written += num_full_sectors * sector_size
-            if (offset + length) % sector_size != 0 and data_written < length:
+                data_written += num_full_sectors * bytes_per_sector
+            if (offset + length) % bytes_per_sector != 0 and data_written < length:
                 last_lba = end_lba
                 cyl, head, sec = self.disk.lba_to_chs(last_lba)
                 sector_data = bytearray(self.disk.read_sector(cyl, head, sec))

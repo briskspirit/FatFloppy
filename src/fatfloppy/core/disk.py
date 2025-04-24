@@ -1,5 +1,4 @@
 # src/fatfloppy/core/disk.py
-from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from .utils.logging_config import get_logger
@@ -7,86 +6,73 @@ from .drivers import DiskIODriver, PhysicalFormat
 
 logger = get_logger()
 
-@dataclass
-class DiskGeometry:
-    cylinders: int
-    heads: int
-    sectors_per_track: int
-    sector_size: int
-
-    @property
-    def total_sectors(self) -> int:
-        return self.cylinders * self.heads * self.sectors_per_track
-
-    @property
-    def total_bytes(self) -> int:
-        return self.total_sectors * self.sector_size
-
 class Disk:
     def __init__(self, driver: DiskIODriver):
         self.logger = get_logger(self.__class__.__name__)
         self.driver = driver
-        self.geometry: Optional[DiskGeometry] = None
+        self.geometry: Optional[PhysicalFormat] = None
 
-    def set_geometry(self, geometry: DiskGeometry) -> None:
-        if not isinstance(geometry, DiskGeometry):
-            raise TypeError("geometry must be a DiskGeometry object")
+    def set_geometry(self, geometry: PhysicalFormat) -> None:
+        if not isinstance(geometry, PhysicalFormat):
+            raise TypeError("geometry must be a PhysicalFormat object")
         self.geometry = geometry
+        self.logger.info(f"Setting geometry: bytes_per_sector={geometry.bytes_per_sector}")
         if hasattr(self.driver, "set_physical_format"):
             try:
                 existing_pf = getattr(self.driver, "physical_format", None)
                 if not existing_pf:
+                    # TODO: not sure that defaults are a good idea
                     physical_format = PhysicalFormat(
                         encoding="MFM", rate=500, rpm=300, gap3=84,
                         sectors_per_track=geometry.sectors_per_track,
-                        heads=geometry.heads, sector_size=geometry.sector_size,
+                        heads=geometry.heads, bytes_per_sector=geometry.bytes_per_sector,
+                        cskew=0, interleave=1, cylinders=geometry.cylinders
                     )
                     self.driver.set_physical_format(physical_format)
                 else:
                     existing_pf.sectors_per_track = geometry.sectors_per_track
                     existing_pf.heads = geometry.heads
-                    existing_pf.sector_size = geometry.sector_size
+                    existing_pf.bytes_per_sector = geometry.bytes_per_sector
+                    existing_pf.cylinders = geometry.cylinders
                     self.driver.set_physical_format(existing_pf)
             except Exception as e:
                 self.logger.error(f"Failed to set physical format: {e}", exc_info=True)
 
     def read_boot_sector(self) -> bytes:
-        """Read the first 512 bytes of the disk as the boot sector."""
+        """Read the boot sector (first sector) of the disk."""
         if not self.geometry:
             raise ValueError("Disk geometry not set")
-        sector_size = self.geometry.sector_size
-        num_sectors = (512 + sector_size - 1) // sector_size  # Ceiling division
-        data = self.read_sectors(0, 0, 1, num_sectors)
-        return data[:512]  # Return exactly 512 bytes
+        bytes_per_sector = self.geometry.bytes_per_sector
+        sectors_to_read = 4096 // bytes_per_sector # TODO: always read max possible sector size before we know actual sector size from BPB?
+        data = self.read_sectors(0, 0, 1, sectors_to_read)  # Read exactly one sector
+        return data
 
     def write_boot_sector(self, data: bytes) -> None:
-        """Write a 512-byte boot sector to the disk."""
-        if len(data) != 512:
-            raise ValueError("Boot sector must be 512 bytes")
+        """Write the boot sector (first sector) to the disk."""
         if not self.geometry:
             raise ValueError("Disk geometry not set")
-        sector_size = self.geometry.sector_size
-        num_sectors = (512 + sector_size - 1) // sector_size
-        # Pad data if needed to align with sector boundaries
-        padded_data = data + b'\0' * (num_sectors * sector_size - 512)
-        self.write_sectors(0, 0, 1, padded_data)
+        bytes_per_sector = self.geometry.bytes_per_sector
+        if len(data) != bytes_per_sector:
+            raise ValueError(f"Boot sector must be {bytes_per_sector} bytes, got {len(data)} bytes")
+        self.write_sectors(0, 0, 1, data)
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         self._validate_chs(cylinder, head, sector)
         try:
             data = self.driver.read_sector(cylinder, head, sector)
-            if len(data) < self.geometry.sector_size:
-                data += bytes(self.geometry.sector_size - len(data))
-            elif len(data) > self.geometry.sector_size:
-                data = data[:self.geometry.sector_size]
+            # self.logger.debug(f"read_sector: starting C:{cylinder} H:{head} S:{sector}, bytes_per_sector={self.geometry.bytes_per_sector}")
+            if len(data) < self.geometry.bytes_per_sector:
+                data += bytes(self.geometry.bytes_per_sector - len(data))
+            elif len(data) > self.geometry.bytes_per_sector:
+                data = data[:self.geometry.bytes_per_sector]
             return data
         except Exception as e:
             raise IOError(f"Failed to read sector C:{cylinder} H:{head} S:{sector}") from e
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
         self._validate_chs(cylinder, head, sector)
-        if len(data) != self.geometry.sector_size:
-            raise ValueError(f"Data size {len(data)} != sector size {self.geometry.sector_size}")
+        if len(data) != self.geometry.bytes_per_sector:
+            raise ValueError(f"Data size {len(data)} != sector size {self.geometry.bytes_per_sector}")
         try:
             self.driver.write_sector(cylinder, head, sector, data)
         except Exception as e:
@@ -100,6 +86,7 @@ class Disk:
             return b''
         result = bytearray()
         cylinder, head, sector = start_cylinder, start_head, start_sector
+        self.logger.debug(f"read_sectors: starting C:{cylinder} H:{head} S:{sector}, num_sectors={num_sectors}, bytes_per_sector={self.geometry.bytes_per_sector}")
         for _ in range(num_sectors):
             if not (0 <= cylinder < self.geometry.cylinders and
                     0 <= head < self.geometry.heads and
@@ -121,8 +108,8 @@ class Disk:
             raise ValueError("Disk geometry not set")
         if not data:
             return
-        sector_size = self.geometry.sector_size
-        num_sectors = (len(data) + sector_size - 1) // sector_size
+        bytes_per_sector = self.geometry.bytes_per_sector
+        num_sectors = (len(data) + bytes_per_sector - 1) // bytes_per_sector
         cylinder, head, sector = start_cylinder, start_head, start_sector
         data_pos = 0
         for i in range(num_sectors):
@@ -130,11 +117,11 @@ class Disk:
                     0 <= head < self.geometry.heads and
                     1 <= sector <= self.geometry.sectors_per_track):
                 raise ValueError(f"Invalid address: C:{cylinder} H:{head} S:{sector}")
-            chunk = data[data_pos:data_pos + sector_size]
-            if len(chunk) < sector_size:
-                chunk = chunk + bytes(sector_size - len(chunk))
+            chunk = data[data_pos:data_pos + bytes_per_sector]
+            if len(chunk) < bytes_per_sector:
+                chunk = chunk + bytes(bytes_per_sector - len(chunk))
             self.write_sector(cylinder, head, sector, chunk)
-            data_pos += sector_size
+            data_pos += bytes_per_sector
             sector += 1
             if sector > self.geometry.sectors_per_track:
                 sector = 1
@@ -156,9 +143,9 @@ class Disk:
         geom = self.geometry
         if geom.sectors_per_track == 0 or geom.heads == 0:
             raise ValueError(f"Invalid geometry: SPT={geom.sectors_per_track}, H={geom.heads}")
-        max_lba = geom.total_sectors - 1
-        if not (0 <= lba <= max_lba):
-            raise IndexError(f"LBA {lba} out of bounds (0-{max_lba})")
+        total_sectors = geom.cylinders * geom.heads * geom.sectors_per_track
+        if not (0 <= lba < total_sectors):
+            raise IndexError(f"LBA {lba} out of bounds (0-{total_sectors - 1})")
         sector = (lba % geom.sectors_per_track) + 1
         temp = lba // geom.sectors_per_track
         head = temp % geom.heads

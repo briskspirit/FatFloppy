@@ -87,10 +87,10 @@ class DiskMapView:
         geometry = controller.geometry
         sectors_per_track = max(1, geometry.sectors_per_track)
         num_heads = max(1, geometry.heads)
-        sector_size = max(128, geometry.sector_size)
+        bytes_per_sector = max(128, geometry.bytes_per_sector)
         total_sectors = max(1, geometry.total_sectors)
         num_cylinders = max(1, geometry.cylinders)
-        fs_params = self._get_filesystem_params(controller, sector_size)
+        fs_params = self._get_filesystem_params(controller, bytes_per_sector)
         angle_per_sector = 360 / sectors_per_track
         num_points = 20
         legend_x = 10
@@ -163,7 +163,7 @@ class DiskMapView:
             ellipse.setBrush(QBrush(Qt.BrushStyle.NoBrush))
             self.scene.addItem(ellipse)
 
-    def _get_filesystem_params(self, controller, sector_size):
+    def _get_filesystem_params(self, controller, bytes_per_sector):
         reserved_sectors = 1
         num_fats = 2
         fat_size = 9
@@ -178,7 +178,7 @@ class DiskMapView:
             root_entries = max(16, getattr(bs, 'root_entries', 224))
             sectors_per_cluster = max(1, getattr(bs, 'sectors_per_cluster', 1))
 
-        root_dir_sectors = (root_entries * 32 + sector_size - 1) // sector_size
+        root_dir_sectors = (root_entries * 32 + bytes_per_sector - 1) // bytes_per_sector
         first_data_sector = reserved_sectors + num_fats * fat_size + root_dir_sectors
 
         return {

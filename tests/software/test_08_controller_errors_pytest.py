@@ -1,4 +1,3 @@
-# tests/software/test_08_controller_errors_pytest.py
 import pytest
 import sys
 from pathlib import Path
@@ -7,7 +6,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.controller import DiskController
-from fatfloppy.core.disk import DiskGeometry
+from fatfloppy.core.drivers import PhysicalFormat
 
 @pytest.fixture(scope="function")
 def error_controller(request):
@@ -21,19 +20,31 @@ def error_controller(request):
 
 def test_01_ops_before_open(error_controller):
     controller = error_controller
-    assert controller.disk is None
+    assert controller.disk is None # Verify starting state
+
+    # Check operations before open
     assert controller.detect_geometry() is None
     with pytest.raises(ValueError, match="No disk opened"):
-        dummy_geom = DiskGeometry(1, 1, 1, 1)
+        dummy_geom = PhysicalFormat(
+            encoding="MFM", rate=500, rpm=300, cylinders=1,
+            heads=1, sectors_per_track=1, bytes_per_sector=512
+        )
         controller.set_geometry(dummy_geom)
-    assert controller.detect_format() is None
+
+    # <<< FIX: Check for the (None, None) tuple >>>
+    assert controller.detect_format() == (None, None), "detect_format should return (None, None) before open"
+
     with pytest.raises(ValueError, match="No disk opened"):
         mock_profile = MagicMock(name='mock_profile')
         mock_profile.name = "mock_fmt"
         mock_profile.description = "Mock Format"
-        mock_profile.geometry = DiskGeometry(1, 1, 1, 1)
-        mock_profile.physical_format = MagicMock()
+        mock_profile.physical_format = PhysicalFormat(
+             encoding="MFM", rate=500, rpm=300, cylinders=1,
+             heads=1, sectors_per_track=1, bytes_per_sector=512
+        )
         controller.set_format(mock_profile)
+
+    # Remaining assertions are likely correct
     assert controller.filesystem is None
     assert controller.list_directory("/") == []
     assert controller.read_file("/file.txt") is None
@@ -45,26 +56,43 @@ def test_01_ops_before_open(error_controller):
 
 def test_02_ops_after_close(error_controller):
     controller = error_controller
+    # Simulate an open state briefly to close it
     with patch.object(controller, '_detect_image_file_format', return_value=True):
         controller.driver = MagicMock()
         controller.disk = MagicMock()
         controller.filesystem = MagicMock()
-        controller.disk.geometry = DiskGeometry(1, 1, 1, 1)
+        controller.disk.geometry = PhysicalFormat(
+            encoding="MFM", rate=500, rpm=300, cylinders=1,
+            heads=1, sectors_per_track=1, bytes_per_sector=512
+        )
         assert controller.disk is not None
         assert controller.driver is not None
-    controller.close_disk()
+
+    controller.close_disk() # Close the simulated disk
     assert controller.disk is None
+
+    # Check operations after close
     assert controller.detect_geometry() is None
     with pytest.raises(ValueError, match="No disk opened"):
-        controller.set_geometry(DiskGeometry(1, 1, 1, 1))
-    assert controller.detect_format() is None
+        controller.set_geometry(PhysicalFormat(
+            encoding="MFM", rate=500, rpm=300, cylinders=1,
+            heads=1, sectors_per_track=1, bytes_per_sector=512
+        ))
+
+    # <<< FIX: Check for the (None, None) tuple >>>
+    assert controller.detect_format() == (None, None), "detect_format should return (None, None) after close"
+
     with pytest.raises(ValueError, match="No disk opened"):
         mock_profile = MagicMock(name='mock_profile')
         mock_profile.name = "mock_fmt"
         mock_profile.description = "Mock Format"
-        mock_profile.geometry = DiskGeometry(1, 1, 1, 1)
-        mock_profile.physical_format = MagicMock()
+        mock_profile.physical_format = PhysicalFormat(
+             encoding="MFM", rate=500, rpm=300, cylinders=1,
+             heads=1, sectors_per_track=1, bytes_per_sector=512
+        )
         controller.set_format(mock_profile)
+
+    # Remaining assertions are likely correct
     assert controller.filesystem is None
     assert controller.list_directory("/") == []
     assert controller.read_file("/file.txt") is None

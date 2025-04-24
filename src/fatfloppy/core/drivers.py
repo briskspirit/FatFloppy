@@ -77,8 +77,8 @@ class GreaseweazleDriver(DiskIODriver):
         if track_id in self.track_data and sector in self.track_data[track_id]:
             self.sector_cache[sector_key] = self.track_data[track_id][sector]
             return self.track_data[track_id][sector]
-        sector_size = 512 if not self.physical_format else self.physical_format.sector_size
-        return b"\x00" * sector_size
+        bytes_per_sector = 512 if not self.physical_format else self.physical_format.bytes_per_sector
+        return b"\x00" * bytes_per_sector
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
         self.initialize()
@@ -204,7 +204,7 @@ class GreaseweazleDriver(DiskIODriver):
                 gap3=84,
                 sectors_per_track=num_sectors,
                 heads=2,
-                sector_size=512,
+                bytes_per_sector=512,
             )
         else:
             self.physical_format.encoding = encoding
@@ -391,51 +391,56 @@ class RawImageDriver(DiskIODriver):
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         if not self.physical_format:
             raise ValueError("Physical format not set, cannot read sector")
-        sector_size = self.physical_format.sector_size
+        bytes_per_sector = self.physical_format.bytes_per_sector
         try:
-            offset = self._calculate_sector_offset(cylinder, head, sector, sector_size)
+            offset = self._calculate_sector_offset(cylinder, head, sector, bytes_per_sector)
+            # self.logger.debug(f"read_sector: C:{cylinder} H:{head} S:{sector}, bytes_per_sector={bytes_per_sector}, offset={offset}")
         except ValueError as e:
             raise IOError(f"Invalid sector access: {e}")
-        if offset + sector_size > len(self.image_data):
+        if offset + bytes_per_sector > len(self.image_data):
             raise IOError(f"Sector C:{cylinder} H:{head} S:{sector} is out of bounds")
-        return bytes(self.image_data[offset:offset + sector_size])
+        return bytes(self.image_data[offset:offset + bytes_per_sector])
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
         if not self.physical_format:
             raise ValueError("Physical format not set, cannot write sector")
-        sector_size = self.physical_format.sector_size
-        if sector_size <= 0:
-            raise ValueError(f"Invalid sector size ({sector_size}) in physical format.")
-        if len(data) != sector_size:
-            raise ValueError(f"Data length ({len(data)}) does not match sector size ({sector_size})")
+        bytes_per_sector = self.physical_format.bytes_per_sector
+        if bytes_per_sector <= 0:
+            raise ValueError(f"Invalid sector size ({bytes_per_sector}) in physical format.")
+        if len(data) != bytes_per_sector:
+            raise ValueError(f"Data length ({len(data)}) does not match sector size ({bytes_per_sector})")
         try:
-            offset = self._calculate_sector_offset(cylinder, head, sector, sector_size)
+            offset = self._calculate_sector_offset(cylinder, head, sector, bytes_per_sector)
         except ValueError as e:
             raise IOError(f"Invalid sector access: {e}")
-        if offset + sector_size > len(self.image_data):
+        if offset + bytes_per_sector > len(self.image_data):
             raise IOError(f"Cannot write sector C:{cylinder} H:{head} S:{sector}: out of bounds")
-        self.image_data[offset:offset + sector_size] = data
+        self.image_data[offset:offset + bytes_per_sector] = data
         self.dirty = True
 
     def flush(self) -> None:
         if self.dirty:
+            self.logger.debug(f"Flushing {len(self.image_data)} bytes to {self.file_path}")
             with open(self.file_path, "wb") as f:
                 f.write(self.image_data)
+            self.logger.debug("Flush completed")
             self.dirty = False
+        else:
+            self.logger.debug("No changes to flush")
 
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
         if not isinstance(physical_format, PhysicalFormat):
             raise TypeError("physical_format must be a PhysicalFormat object")
         self.physical_format = copy.copy(physical_format)
 
-    def _calculate_sector_offset(self, cylinder: int, head: int, sector: int, sector_size: int) -> int:
+    def _calculate_sector_offset(self, cylinder: int, head: int, sector: int, bytes_per_sector: int) -> int:
         if not self.physical_format:
             raise ValueError("Physical format not set")
         sectors_per_track = self.physical_format.sectors_per_track
         heads = self.physical_format.heads
-        if sectors_per_track <= 0 or heads <= 0 or sector_size <= 0:
-            raise ValueError(f"Invalid geometry parameters (SPT={sectors_per_track}, Heads={heads}, Size={sector_size})")
+        if sectors_per_track <= 0 or heads <= 0 or bytes_per_sector <= 0:
+            raise ValueError(f"Invalid geometry parameters (SPT={sectors_per_track}, Heads={heads}, Size={bytes_per_sector})")
         if cylinder < 0 or head < 0 or head >= heads or sector < 1 or sector > sectors_per_track:
             raise ValueError(f"Invalid CHS: C={cylinder}, H={head}, S={sector}")
         lba = (cylinder * heads + head) * sectors_per_track + (sector - 1)
-        return lba * sector_size
+        return lba * bytes_per_sector

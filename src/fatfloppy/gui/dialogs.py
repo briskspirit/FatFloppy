@@ -86,11 +86,11 @@ class DriveSelectionDialog(QDialog):
         format_params_layout.addRow("Sectors per track:", self.sectors_spin)
 
         # Sector size
-        self.sector_size_combo = QComboBox()
+        self.bytes_per_sector_combo = QComboBox()
         for size in [128, 256, 512, 1024, 2048, 4096, 8192]:
-            self.sector_size_combo.addItem(f"{size} bytes", size)
-        self.sector_size_combo.setCurrentIndex(2)  # 512 bytes
-        format_params_layout.addRow("Sector size:", self.sector_size_combo)
+            self.bytes_per_sector_combo.addItem(f"{size} bytes", size)
+        self.bytes_per_sector_combo.setCurrentIndex(2)  # 512 bytes
+        format_params_layout.addRow("Sector size:", self.bytes_per_sector_combo)
 
         # Encoding
         self.encoding_combo = QComboBox()
@@ -227,9 +227,9 @@ class DriveSelectionDialog(QDialog):
                     self.sectors_spin.setValue(profile.geometry.sectors_per_track)
 
                     # Set sector size
-                    index = self.sector_size_combo.findData(profile.geometry.sector_size)
+                    index = self.bytes_per_sector_combo.findData(profile.geometry.bytes_per_sector)
                     if index >= 0:
-                        self.sector_size_combo.setCurrentIndex(index)
+                        self.bytes_per_sector_combo.setCurrentIndex(index)
 
                     # Set encoding
                     index = self.encoding_combo.findData(profile.physical_format.encoding)
@@ -258,7 +258,7 @@ class DriveSelectionDialog(QDialog):
             self.cylinders_spin.setValue(80)
             self.heads_spin.setValue(2)
             self.sectors_spin.setValue(18)
-            self.sector_size_combo.setCurrentIndex(2)  # 512 bytes
+            self.bytes_per_sector_combo.setCurrentIndex(2)  # 512 bytes
             self.encoding_combo.setCurrentIndex(0)  # MFM
             self.rate_combo.setCurrentIndex(3)  # 500 kbps
             self.rpm_combo.setCurrentIndex(0)  # 300 RPM
@@ -269,7 +269,7 @@ class DriveSelectionDialog(QDialog):
             self.cylinders_spin.setValue(40)
             self.heads_spin.setValue(2)
             self.sectors_spin.setValue(9)
-            self.sector_size_combo.setCurrentIndex(2)  # 512 bytes
+            self.bytes_per_sector_combo.setCurrentIndex(2)  # 512 bytes
             self.encoding_combo.setCurrentIndex(0)  # MFM
             self.rate_combo.setCurrentIndex(1)  # 250 kbps
             self.rpm_combo.setCurrentIndex(0)  # 300 RPM
@@ -280,7 +280,7 @@ class DriveSelectionDialog(QDialog):
             self.cylinders_spin.setValue(77)
             self.heads_spin.setValue(2)
             self.sectors_spin.setValue(26)
-            self.sector_size_combo.setCurrentIndex(0)  # 128 bytes
+            self.bytes_per_sector_combo.setCurrentIndex(0)  # 128 bytes
             self.encoding_combo.setCurrentIndex(1)  # FM
             self.rate_combo.setCurrentIndex(1)  # 250 kbps
             self.rpm_combo.setCurrentIndex(1)  # 360 RPM
@@ -301,7 +301,7 @@ class DriveSelectionDialog(QDialog):
                 "cylinders": self.cylinders_spin.value(),
                 "heads": self.heads_spin.value(),
                 "sectors_per_track": self.sectors_spin.value(),
-                "sector_size": self.sector_size_combo.currentData(),
+                "bytes_per_sector": self.bytes_per_sector_combo.currentData(),
                 "encoding": self.encoding_combo.currentData(),
                 "rate": self.rate_combo.currentData(),
                 "rpm": self.rpm_combo.currentData(),
@@ -320,7 +320,7 @@ class DriveSelectionDialog(QDialog):
                         "cylinders": profile.geometry.cylinders,
                         "heads": profile.geometry.heads,
                         "sectors_per_track": profile.geometry.sectors_per_track,
-                        "sector_size": profile.geometry.sector_size,
+                        "bytes_per_sector": profile.geometry.bytes_per_sector,
                         "encoding": profile.physical_format.encoding,
                         "rate": profile.physical_format.rate,
                         "rpm": profile.physical_format.rpm,
@@ -402,11 +402,11 @@ class CreateImageDialog(QDialog):
         format_params_layout.addRow("Sectors per track:", self.sectors_spin)
 
         # Sector size
-        self.sector_size_combo = QComboBox()
+        self.bytes_per_sector_combo = QComboBox()
         for size in [128, 256, 512, 1024, 2048, 4096, 8192]:
-            self.sector_size_combo.addItem(f"{size} bytes", size)
-        self.sector_size_combo.setCurrentIndex(2)  # 512 bytes
-        format_params_layout.addRow("Sector size:", self.sector_size_combo)
+            self.bytes_per_sector_combo.addItem(f"{size} bytes", size)
+        self.bytes_per_sector_combo.setCurrentIndex(2)  # 512 bytes
+        format_params_layout.addRow("Sector size:", self.bytes_per_sector_combo)
 
         # Encoding
         self.encoding_combo = QComboBox()
@@ -507,12 +507,13 @@ class CreateImageDialog(QDialog):
                 from ..core.format_definitions import FLOPPY_FORMATS
                 profile = FLOPPY_FORMATS.get(format_key)
                 if profile:
-                    self.cylinders_spin.setValue(profile.geometry.cylinders)
-                    self.heads_spin.setValue(profile.geometry.heads)
-                    self.sectors_spin.setValue(profile.geometry.sectors_per_track)
-                    index = self.sector_size_combo.findData(profile.geometry.sector_size)
+                    # Use physical_format instead of geometry
+                    self.cylinders_spin.setValue(profile.physical_format.cylinders)
+                    self.heads_spin.setValue(profile.physical_format.heads)
+                    self.sectors_spin.setValue(profile.physical_format.sectors_per_track)
+                    index = self.bytes_per_sector_combo.findData(profile.physical_format.bytes_per_sector)
                     if index >= 0:
-                        self.sector_size_combo.setCurrentIndex(index)
+                        self.bytes_per_sector_combo.setCurrentIndex(index)
                     index = self.encoding_combo.findData(profile.physical_format.encoding)
                     if index >= 0:
                         self.encoding_combo.setCurrentIndex(index)
@@ -542,7 +543,7 @@ class CreateImageDialog(QDialog):
                 "cylinders": self.cylinders_spin.value(),
                 "heads": self.heads_spin.value(),
                 "sectors_per_track": self.sectors_spin.value(),
-                "sector_size": self.sector_size_combo.currentData(),
+                "bytes_per_sector": self.bytes_per_sector_combo.currentData(),
                 "encoding": self.encoding_combo.currentData(),
                 "rate": self.rate_combo.currentData(),
                 "rpm": self.rpm_combo.currentData(),

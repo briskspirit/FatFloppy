@@ -30,7 +30,6 @@ def prepared_controller(pytestconfig):
     controller = DiskController()
     gw_device = os.environ.get('GW_DEVICE', None)
     format_info_dict = {
-        **{k: v for k, v in FMT_PROFILE.geometry.__dict__.items() if not k.startswith('_')},
         **{k: v for k, v in FMT_PROFILE.physical_format.__dict__.items() if not k.startswith('_')}
     }
     success = controller.open_disk(

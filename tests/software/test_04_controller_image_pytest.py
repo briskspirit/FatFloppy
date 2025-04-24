@@ -58,11 +58,12 @@ def empty_controller(tmp_path):
 
 def test_01_open_image_auto_detect_format(populated_controller: DiskController):
     geom = populated_controller.disk.geometry
-    assert geom.sectors_per_track == FMT_144.geometry.sectors_per_track, \
+    assert geom is not None, "Disk geometry not set after opening image" # Add check
+    assert geom.sectors_per_track == FMT_144.physical_format.sectors_per_track, \
         f"SPT incorrect after image open. Expected 18, Got: {geom.sectors_per_track}"
-    assert geom.cylinders == FMT_144.geometry.cylinders
-    assert geom.heads == FMT_144.geometry.heads
-    assert geom.sector_size == FMT_144.geometry.sector_size
+    assert geom.cylinders == FMT_144.physical_format.cylinders
+    assert geom.heads == FMT_144.physical_format.heads
+    assert geom.bytes_per_sector == FMT_144.physical_format.bytes_per_sector
     assert populated_controller.filesystem.fat_type == "FAT12"
     print("test_01_open_image_auto_detect_format: PASSED")
 

@@ -3,7 +3,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
-from .disk import DiskGeometry
 from .physical_format import PhysicalFormat
 
 class VolumeInfo(ABC):
@@ -36,7 +35,7 @@ class FATVolumeInfo(VolumeInfo):
     fs_type: str = "FAT12   "
 
     def to_bytes(self) -> bytes:
-        boot_sector = bytearray(512)
+        boot_sector = bytearray(self.bytes_per_sector)
         boot_sector[0:3] = b'\xEB\xFE\x90'
         boot_sector[3:11] = self.oem_id.encode('cp437').ljust(8)
         struct.pack_into('<H', boot_sector, 0x00B, self.bytes_per_sector)
@@ -61,16 +60,13 @@ class FATVolumeInfo(VolumeInfo):
         struct.pack_into('<I', boot_sector, 0x027, self.volume_serial)
         boot_sector[0x02B:0x036] = self.volume_label.encode('cp437').ljust(11)
         boot_sector[0x036:0x03E] = self.fs_type.encode('cp437').ljust(8)
-        struct.pack_into('<H', boot_sector, 0x1FE, 0xAA55)
+        struct.pack_into('<H', boot_sector, self.bytes_per_sector - 2, 0xAA55)
         return bytes(boot_sector)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> 'FATVolumeInfo':
-        if len(data) != 512:
-            raise ValueError(f"Boot sector length must be 512 bytes, got {len(data)}")
-        boot_sig = struct.unpack_from('<H', data, 0x1FE)[0]
-        if boot_sig != 0xAA55:
-            pass  # Signature check relaxed for flexibility
+        if len(data) < 128:
+            raise ValueError(f"Boot sector is too short, got {len(data)}")
         result = cls()
         try:
             result.oem_id = data[3:11].decode('cp437', errors='replace').strip()
@@ -101,6 +97,9 @@ class FATVolumeInfo(VolumeInfo):
                     f"Invalid geometry in BPB: BPS={result.bytes_per_sector}, "
                     f"SPT={result.sectors_per_track}, Heads={result.num_heads}"
                 )
+            boot_sig = struct.unpack_from('<H', data, result.bytes_per_sector - 2)[0]
+            if boot_sig != 0xAA55:
+                pass  # TODO: Signature check relaxed for flexibility
         except (struct.error, IndexError) as e:
             raise ValueError(f"Failed to parse boot sector BPB: {e}") from e
         return result
@@ -109,10 +108,8 @@ class FATVolumeInfo(VolumeInfo):
 class FormatProfile:
     name: str
     description: str
-    geometry: DiskGeometry
     physical_format: PhysicalFormat
     boot_sector: Optional[VolumeInfo] = None
-    media_descriptor: int = 0xF0
 
     @property
     def capacity_kb(self) -> float:
