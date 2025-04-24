@@ -1,15 +1,15 @@
-# src/fatfloppy/gui/main_window.py
 import os
 import re
 import copy
 import datetime
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import (QAction, QFont)
+from PyQt6.QtGui import (QAction, QFont, QTextOption)
 from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
                              QMainWindow, QMessageBox, QToolBar,
                              QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
-                             QWidget, QVBoxLayout, QGroupBox, QApplication)
+                             QWidget, QVBoxLayout, QGroupBox, QApplication,
+                             QPlainTextEdit, QPushButton, QAbstractItemView)
 
 from ..core.controller import DiskController
 from ..core.filesystem import FATFilesystem
@@ -29,7 +29,7 @@ class FileBrowserApp(QMainWindow):
         self.free_space = 0
         self.total_space = 0
         self.controller = None
-        # TODO: Should check for version too?
+        self.current_file_path = None
         try:
             import greaseweazle
             self.greaseweazle_available = True
@@ -142,21 +142,55 @@ class FileBrowserApp(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_list_dock)
 
         header = self.file_list.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)          # Name column
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents) # Size column
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch) # Date/Time column
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch) # Attributes column
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
 
+        # Setup separate dock widgets for disk map and text viewer
         self.disk_map_dock = QDockWidget("Disk Map", self)
         self.disk_map = DiskMapView(self)
         self.disk_map_view = self.disk_map.view
         self.disk_map_dock.setWidget(self.disk_map_view)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.disk_map_dock)
 
-        self.splitDockWidget(self.file_list_dock, self.disk_map_dock, Qt.Orientation.Horizontal)
-        self.resizeDocks([self.file_list_dock, self.disk_map_dock], [480, 720], Qt.Orientation.Horizontal)
+        self.text_viewer_dock = QDockWidget("Text Viewer", self)
+        text_viewer_widget = QWidget()
+        text_viewer_layout = QVBoxLayout(text_viewer_widget)
+        self.text_viewer = QPlainTextEdit()
+        self.save_button = QPushButton("Save")
+        self.save_button.clicked.connect(self.save_file)
+
+        text_viewer_layout.addWidget(self.text_viewer)
+        text_viewer_layout.addWidget(self.save_button)
+        self.text_viewer_dock.setWidget(text_viewer_widget)
+
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.disk_map_dock)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.text_viewer_dock)
+        self.tabifyDockWidget(self.disk_map_dock, self.text_viewer_dock)
+        self.disk_map_dock.raise_()
+
+        # Connect selection changed signal
+        self.file_list.selectionModel().selectionChanged.connect(self.on_selection_changed)
+
         self.reset_ui()
         self.statusBar().showMessage("Ready")
+
+    def setup_fonts(self):
+        monospace_fonts = [
+            "Courier New", "DejaVu Sans Mono", "Consolas", "Menlo", "Liberation Mono", "Monaco"
+        ]
+        self.app_font = QFont()
+        self.app_font.setFamily(monospace_fonts[0])
+        self.app_font.setStyleHint(QFont.StyleHint.Monospace)
+        self.app_font.setFixedPitch(True)
+        self.app_font.setPointSize(12)
+        self.setFont(self.app_font)
+
+        self.tree_widget.setFont(self.app_font)
+        self.file_list.setFont(self.app_font)
+        self.geometry_info.setFont(self.app_font)
+        self.filesystem_info.setFont(self.app_font)
+        self.text_viewer.setFont(self.app_font)
 
     def reset_ui(self):
         self.root_node = None
@@ -166,6 +200,7 @@ class FileBrowserApp(QMainWindow):
         self.busy_clusters = []
         self.free_space = 0
         self.total_space = 0
+        self.current_file_path = None
 
         if self.controller:
             self.controller.close_disk()
@@ -179,6 +214,49 @@ class FileBrowserApp(QMainWindow):
         self.head_action.setEnabled(False)
         self.head_action.setText("Switch to Head 1")
         self.statusBar().showMessage("Ready")
+        self.text_viewer.clear()
+        self.disk_map_dock.raise_()
+
+    def on_selection_changed(self, selected, deselected):
+        selected_items = self.file_list.selectedItems()
+        if len(selected_items) == 1:
+            item = selected_items[0]
+            node = item.node
+            if not node.is_dir:
+                file_path = self.build_full_path(node.name)
+                if node.size <= 10240:  # Check file size limit
+                    content = self.controller.read_file(file_path)
+                    if content is not None and self.is_text_file(content):
+                        self.text_viewer.setPlainText(content.decode('cp437'))
+                        self.text_viewer_dock.raise_()
+                        self.current_file_path = file_path  # Store the current file path
+                        return
+
+        self.text_viewer.setPlainText("")
+        self.disk_map_dock.raise_()
+        self.current_file_path = None
+
+    def is_text_file(self, content, check_bytes=4096):
+        sample = content[:check_bytes]
+        try:
+            text = sample.decode('cp437')
+            return all(c.isprintable() or c in '\n\t' for c in text)
+        except UnicodeDecodeError:
+            return False
+
+    def save_file(self):
+        if self.current_file_path:
+            try:
+                content = self.text_viewer.toPlainText().encode('cp437')
+                success = self.controller.write_file(self.current_file_path, content)
+                if success:
+                    self.statusBar().showMessage(f"Saved changes to {self.current_file_path}")
+                else:
+                    QMessageBox.warning(self, "Warning", "Failed to save file")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
+        else:
+            QMessageBox.warning(self, "Warning", "No file selected to save")
 
     def refresh_filesystem_ui(self, preserve_path=None):
         self.root_node = self.build_fs_tree()
@@ -195,30 +273,6 @@ class FileBrowserApp(QMainWindow):
         self.update_disk_info()
         self.draw_disk_map()
         self.statusBar().showMessage(f"Current path: {self.current_path}")
-
-    def setup_fonts(self):
-        monospace_fonts = [
-            "Courier New",        # All platforms
-            "DejaVu Sans Mono",   # Linux
-            "Consolas",           # Windows
-            "Menlo",              # macOS
-            "Liberation Mono",    # Linux
-            "Monaco",             # macOS
-        ]
-        self.app_font = QFont()
-        self.app_font.setFamily(monospace_fonts[0])  # Start with first preference
-        self.app_font.setStyleHint(QFont.StyleHint.Monospace)  # Hint to use monospace if first choice unavailable
-        self.app_font.setFixedPitch(True)  # Ensure fixed pitch
-        self.app_font.setPointSize(12)     # Set reasonable size
-        self.setFont(self.app_font)
-
-        self.tree_widget.setFont(self.app_font)
-        self.file_list.setFont(self.app_font)
-        self.geometry_info.setFont(self.app_font)
-        self.filesystem_info.setFont(self.app_font)
-
-        header_font = QFont(self.app_font)
-        header_font.setBold(True)
 
     def create_disk_image(self):
         file_path, _ = QFileDialog.getSaveFileName(self, "Create Disk Image", "", "Disk Images (*.ima *.img)")
@@ -237,18 +291,18 @@ class FileBrowserApp(QMainWindow):
                 QMessageBox.critical(self, "Error", "Failed to determine format profile for creation.")
                 return
             if not profile.physical_format or not profile.boot_sector:
-                QMessageBox.critical(self, "Error", "Selected format profile is incomplete for creation (missing physical or boot sector details).")
+                QMessageBox.critical(self, "Error", "Selected format profile is incomplete for creation.")
                 return
 
             self.controller = DiskController()
             self.statusBar().showMessage(f"Creating and formatting disk image: {file_path}...")
-            QApplication.processEvents() # Update UI message
+            QApplication.processEvents()
 
             if self.controller.create_and_format_image(file_path, profile, volume_label):
                 self.root_node = self.build_fs_tree()
                 self.current_node = self.root_node
                 self.current_path = "/"
-                self.refresh_filesystem_ui() # This updates info, draws map, populates tree/list etc.
+                self.refresh_filesystem_ui()
 
                 if self.controller.geometry and self.controller.geometry.heads > 1:
                     self.head_action.setEnabled(True)
@@ -259,12 +313,11 @@ class FileBrowserApp(QMainWindow):
 
                 self.statusBar().showMessage(f"Created and formatted disk image: {file_path}")
             else:
-                self.reset_ui() # Reset UI as controller state is likely invalid or closed
-                QMessageBox.critical(self, "Error", "Failed to create and format disk image. Check logs for details.")
-
+                self.reset_ui()
+                QMessageBox.critical(self, "Error", "Failed to create and format disk image.")
         except Exception as e:
             self.reset_ui()
-            QMessageBox.critical(self, "Error", f"An unexpected error occurred during image creation: {str(e)}")
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {str(e)}")
 
     def open_disk_image_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img)")
@@ -315,10 +368,8 @@ class FileBrowserApp(QMainWindow):
 
                 format_name = self.controller.detect_format()
                 format_text = f" using {format_name}" if format_name else ""
-
                 if format_info and not format_info.get("profile_name"):
                     format_text += f" (Custom format: {format_info.get('cylinders')}x{format_info.get('heads')}x{format_info.get('sectors_per_track')})"
-
                 self.statusBar().showMessage(f"Loaded physical floppy{format_text} (Drive: {drive_letter}, Size: {drive_size}\")")
             else:
                 self.reset_ui()
@@ -356,8 +407,8 @@ class FileBrowserApp(QMainWindow):
         total_bytes = total_sectors * geometry.bytes_per_sector
         format_info = "Unknown"
         format_result = self.controller.detect_format()
-        if format_result:  # Check if tuple exists
-            format_name, boot_data = format_result  # Unpack it
+        if format_result:
+            format_name, boot_data = format_result
             format_profile = self.controller.get_format_by_name(format_name)
             if format_profile:
                 format_info = format_profile.description
@@ -374,7 +425,6 @@ class FileBrowserApp(QMainWindow):
             f"Total Sectors: {total_sectors}\n"
             f"Total Size: {total_bytes / 1024:.1f} KB"
         )
-
         self.geometry_info.setText(info)
 
     def update_filesystem_info(self):
@@ -482,7 +532,7 @@ class FileBrowserApp(QMainWindow):
 
             parent = node_dict.get(parent_path)
             if not parent:
-                continue  # Skip if parent not found
+                continue
 
             node = FileSystemNode(
                 name=name,
@@ -543,7 +593,7 @@ class FileBrowserApp(QMainWindow):
     def build_path_from_node(self, node):
         path_parts = []
         curr = node
-        while curr and curr.parent:  # Don't include "Root" in the path
+        while curr and curr.parent:
             path_parts.insert(0, curr.name)
             curr = curr.parent
         return "/" + "/".join(path_parts) if path_parts else "/"
@@ -572,20 +622,17 @@ class FileBrowserApp(QMainWindow):
             node = item.node
             source_path = self.build_full_path(node.name)
             if node.is_dir:
-                # Extract directory
                 base_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Extract To")
                 if not base_dir:
                     return
                 local_dir_path = os.path.join(base_dir, node.name)
                 self.extract_directory(source_path, local_dir_path)
             else:
-                # Extract single file
                 save_path, _ = QFileDialog.getSaveFileName(self, "Save File", node.name)
                 if not save_path:
                     return
                 self.extract_file(source_path, save_path)
         else:
-            # Multiple items selected
             base_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Extract To")
             if not base_dir:
                 return
@@ -633,10 +680,8 @@ class FileBrowserApp(QMainWindow):
         if not selected_items or not self.controller:
             return
 
-        # Collect paths to delete
         paths_to_delete = [self.build_full_path(item.node.name) for item in selected_items]
 
-        # Confirmation dialog
         if len(paths_to_delete) == 1:
             msg = f"Are you sure you want to delete '{paths_to_delete[0]}'?"
         else:
@@ -646,18 +691,15 @@ class FileBrowserApp(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # Perform deletion
         failed_paths = []
         for path in paths_to_delete:
             success = self.controller.delete_item_recursive(path)
             if not success:
                 failed_paths.append(path)
 
-        # Refresh UI
         current_path = self.current_path
         self.refresh_filesystem_ui(current_path)
 
-        # Show message
         if not failed_paths:
             self.statusBar().showMessage(f"Deleted {len(paths_to_delete)} item(s)")
         else:
@@ -740,12 +782,10 @@ class FileBrowserApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to create directory: {str(e)}")
 
     def import_path(self, local_path, target_path, auto_name):
-        # Normalize the local path to remove trailing slashes
         local_path = os.path.normpath(local_path)
 
         if os.path.isfile(local_path):
             if not auto_name:
-                # Prompt for name
                 base_name = os.path.basename(local_path)
                 base_name = self.format_83_filename(base_name)
                 new_name, ok = QInputDialog.getText(self, "File Name",
@@ -753,7 +793,6 @@ class FileBrowserApp(QMainWindow):
                                                     text=base_name)
                 if not ok or not new_name:
                     return
-                # Check if the name already exists
                 existing_names = [item['name'].upper() for item in self.controller.list_directory(target_path)]
                 if new_name.upper() in existing_names:
                     QMessageBox.warning(self, "Warning", f"File '{new_name}' already exists in {target_path}")
@@ -763,7 +802,6 @@ class FileBrowserApp(QMainWindow):
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Failed to add file: {str(e)}")
             else:
-                # Auto generate name
                 original_name = os.path.basename(local_path)
                 new_name = self.generate_unique_83_name(original_name, target_path, is_dir=False)
                 try:
@@ -771,7 +809,6 @@ class FileBrowserApp(QMainWindow):
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Failed to add file: {str(e)}")
         elif os.path.isdir(local_path):
-            # Extract the directory name from the normalized path
             original_name = os.path.basename(local_path)
             if not original_name:
                 QMessageBox.critical(self, "Error", f"Invalid directory name: empty name for path {local_path}")
@@ -782,7 +819,6 @@ class FileBrowserApp(QMainWindow):
                 success = self.controller.create_directory(new_dir_path)
                 if not success:
                     raise Exception("Failed to create directory")
-                # Import contents
                 for item in os.listdir(local_path):
                     item_path = os.path.join(local_path, item)
                     self.import_path(item_path, new_dir_path, auto_name=True)
@@ -805,7 +841,6 @@ class FileBrowserApp(QMainWindow):
         base_name = to_83_name(original_name)
         if base_name not in existing_names:
             return base_name
-        # Generate a unique name
         if '.' in base_name and not is_dir:
             base, ext = base_name.rsplit('.', 1)
             base = base[:6]
@@ -907,7 +942,7 @@ class FileBrowserApp(QMainWindow):
                     self.free_space = free_bytes // (bytes_per_sector * sectors_per_cluster)
                     self.total_space = total_bytes // (bytes_per_sector * sectors_per_cluster)
                 else:
-                    self.free_space = free_bytes // 512  # Fallback to default sector size
+                    self.free_space = free_bytes // 512
                     self.total_space = total_bytes // 512
             else:
                 if self.controller.geometry:
@@ -925,7 +960,7 @@ class FileBrowserApp(QMainWindow):
                         data_sectors = total_sectors - reserved - fat_size - root_dir_sectors
                         self.total_space = data_sectors // sectors_per_cluster
                     else:
-                        self.total_space = (total_sectors - 33) // sectors_per_cluster  # 33 is typical overhead
+                        self.total_space = (total_sectors - 33) // sectors_per_cluster
 
                     self.free_space = self.total_space - len(self.busy_clusters)
         except Exception as e:
