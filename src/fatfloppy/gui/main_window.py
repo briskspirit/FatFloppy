@@ -17,6 +17,7 @@ from .dialogs import DriveSelectionDialog, CreateImageDialog
 from .disk_map import DiskMapView
 from .file_browser import DragDropTreeWidget
 from .models import FileSystemNode
+from .themes import get_dark_theme, get_light_theme  # Import theme functions
 
 class FileBrowserApp(QMainWindow):
     def __init__(self):
@@ -38,15 +39,16 @@ class FileBrowserApp(QMainWindow):
 
         self.initUI()
         self.setup_fonts()
+        self.update_theme()  # Apply initial theme
+        # Connect to color scheme changes
+        QApplication.instance().styleHints().colorSchemeChanged.connect(self.update_theme)
 
     def initUI(self):
         self.setWindowTitle("FatFloppy Disk Browser")
         self.setGeometry(100, 100, 1200, 800)
 
         menu_bar = self.menuBar()
-        menu_bar.setStyleSheet("QMenuBar { min-height: 20px; max-height: 25px; }")
         file_menu = menu_bar.addMenu("File")
-        file_menu.setStyleSheet("QMenu { padding: 5px; }")
 
         create_image_action = QAction("Create Disk Image", self)
         create_image_action.triggered.connect(self.create_disk_image)
@@ -67,7 +69,6 @@ class FileBrowserApp(QMainWindow):
         file_menu.addAction(exit_action)
 
         self.toolbar = QToolBar("Main Toolbar", self)
-        self.toolbar.setStyleSheet("QToolBar { spacing: 5px; min-height: 25px; max-height: 30px; }")
         self.addToolBar(self.toolbar)
 
         self.head_action = QAction("Switch to head 1", self)
@@ -191,6 +192,16 @@ class FileBrowserApp(QMainWindow):
         self.geometry_info.setFont(self.app_font)
         self.filesystem_info.setFont(self.app_font)
         self.text_viewer.setFont(self.app_font)
+
+    def update_theme(self):
+        color_scheme = QApplication.styleHints().colorScheme()
+        if color_scheme == Qt.ColorScheme.Dark:
+            style_sheet = get_dark_theme()
+        elif color_scheme == Qt.ColorScheme.Light:
+            style_sheet = get_light_theme()
+        else:
+            style_sheet = get_dark_theme()
+        self.setStyleSheet(style_sheet)
 
     def reset_ui(self):
         self.root_node = None
