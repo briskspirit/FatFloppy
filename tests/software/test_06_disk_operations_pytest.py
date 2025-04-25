@@ -1,161 +1,209 @@
-# tests/software/test_02_formats_pytest.py
+# tests/software/test_06_disk_operations_pytest.py
 import pytest
 import sys
-import struct
+from unittest.mock import MagicMock, call
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
-from fatfloppy.core.formats import FATVolumeInfo, FormatProfile
+# Import the correct classes
 from fatfloppy.core.disk import Disk
-from fatfloppy.core.drivers import RawImageDriver
-from fatfloppy.core.format_definitions import FLOPPY_FORMATS
-from fatfloppy.core.controller import DiskController
-from fatfloppy.core.drivers import PhysicalFormat
+from fatfloppy.core.drivers import RawImageDriver, PhysicalFormat, TrackFormat
 
-RESOURCE_DIR = Path(__file__).parent.parent / 'resources'
-EMPTY_IMG_SRC = RESOURCE_DIR / 'empty_formatted_144m.img'
-FMT_144 = FLOPPY_FORMATS['ibm_3.5_1.44m']
+@pytest.fixture(scope="function")
+def disk_setup(tmp_path):
+    # Define geometry parameters clearly
+    cylinders = 2
+    heads = 2
+    sectors_per_track = 3
+    bytes_per_sector = 128
 
-@pytest.fixture(scope="module")
-def disk_controller():
-    return DiskController()
-
-def test_01_list_known_formats(disk_controller):
-    formats = disk_controller.list_formats()
-    assert isinstance(formats, list)
-    assert len(formats) > 0
-    assert isinstance(formats[0], tuple)
-    assert len(formats[0]) == 2
-
-def test_02_get_format_by_name(disk_controller):
-    profile = disk_controller.get_format_by_name("ibm_3.5_1.44m")
-    assert profile is not None
-    assert isinstance(profile, FormatProfile)
-    assert profile.name == "ibm_3.5_1.44m"
-    assert profile.physical_format.total_bytes == 1440 * 1024
-    profile_none = disk_controller.get_format_by_name("non_existent_format")
-    assert profile_none is None
-
-def test_03_detect_format_144mb(disk_controller):
-    if not EMPTY_IMG_SRC.exists():
-        pytest.skip(f"{EMPTY_IMG_SRC} not found.")
-    success = disk_controller.open_disk(str(EMPTY_IMG_SRC), disk_type="image")
-    assert success is True
-    assert disk_controller.disk is not None
-    assert disk_controller.driver is not None
-    detected_format_result = disk_controller.detect_format()
-    assert isinstance(detected_format_result, tuple), "detect_format should return a tuple"
-    assert detected_format_result[0] == "ibm_3.5_1.44m", "Detected format name mismatch"
-    assert isinstance(detected_format_result[1], FATVolumeInfo), "Second element should be FATVolumeInfo"
-    disk_controller.close_disk()
-
-def test_04_detect_format_no_match(disk_controller):
-    dummy_boot = bytearray(512)
-    dummy_boot[0:3] = b'\xEB\xFE\x90'
-    dummy_boot[3:11] = b'NONAME  '
-    struct.pack_into('<H', dummy_boot, 0x0B, 512) # bytes_per_sector
-    struct.pack_into('<B', dummy_boot, 0x0D, 1)   # sectors_per_cluster
-    struct.pack_into('<H', dummy_boot, 0x0E, 1)   # reserved_sectors
-    struct.pack_into('<B', dummy_boot, 0x10, 2)   # num_fats
-    struct.pack_into('<H', dummy_boot, 0x11, 224) # root_entries
-    struct.pack_into('<H', dummy_boot, 0x13, 1000)# total_sectors_16
-    struct.pack_into('<B', dummy_boot, 0x15, 0xF1) # media_descriptor
-    struct.pack_into('<H', dummy_boot, 0x16, 5)   # sectors_per_fat_16
-    struct.pack_into('<H', dummy_boot, 0x18, 10)  # sectors_per_track
-    struct.pack_into('<H', dummy_boot, 0x1A, 3)   # num_heads
-    struct.pack_into('<I', dummy_boot, 0x1C, 0)   # hidden_sectors
-    struct.pack_into('<I', dummy_boot, 0x20, 0)   # total_sectors_32
-    struct.pack_into('<H', dummy_boot, 0x1FE, 0xAA55) # boot_signature
-
-    driver = RawImageDriver("dummy", image_data=bytes(dummy_boot) + b'\x00' * 1024 * 100)
-    disk_controller.driver = driver
-    disk_controller.disk = Disk(driver)
-    temp_geom = PhysicalFormat(
-        encoding="MFM", rate=250, rpm=300,
-        cylinders=1000 // (10 * 3), # Calculate cylinders
-        heads=3, sectors_per_track=10, bytes_per_sector=512
+    # Create TrackFormat and PhysicalFormat
+    track_fmt = TrackFormat(
+        track_start=0,
+        track_end=cylinders - 1,
+        head_start=0,
+        head_end=heads - 1,
+        sectors_per_track=sectors_per_track,
+        encoding="MFM",
+        rate=500, # Example rate
+        gap3=42,  # Example gap
+        interleave=1
     )
-    disk_controller.disk.set_geometry(temp_geom)
-    if hasattr(disk_controller.driver, "set_physical_format"):
-         disk_controller.driver.set_physical_format(temp_geom)
-    detected_format_result = disk_controller.detect_format()
-    assert isinstance(detected_format_result, tuple), "detect_format should return a tuple"
-    assert detected_format_result[0] is None, "Should not detect a standard format name"
-    assert isinstance(detected_format_result[1], FATVolumeInfo), "Should still parse BPB data"
-    disk_controller.close_disk()
-    disk_controller.driver = None
-    disk_controller.disk = None
-
-def test_01_bsd_to_bytes_from_bytes_roundtrip():
-    bsd = FATVolumeInfo(
-        oem_id="MYDOS6.2",
-        bytes_per_sector=512,
-        sectors_per_cluster=2,
-        reserved_sectors=1,
-        num_fats=2,
-        root_entries=112,
-        total_sectors=1440,
-        media_descriptor=0xF9,
-        sectors_per_fat=3,
-        sectors_per_track=9,
-        num_heads=2,
-        hidden_sectors=0,
-        volume_serial=0x12345678,
-        volume_label="TEST DISK  ",
-        fs_type="FAT12   "
+    phys_fmt = PhysicalFormat(
+        cylinders=cylinders,
+        heads=heads,
+        rpm=300,
+        heads_inverted=False,
+        bytes_per_sector=bytes_per_sector,
+        track_formats=[track_fmt]
     )
-    bs_bytes = bsd.to_bytes()
-    assert len(bs_bytes) == 512
-    assert bs_bytes[510:512] == b'\x55\xAA'
-    bsd_reloaded = FATVolumeInfo.from_bytes(bs_bytes)
-    assert bsd_reloaded.oem_id == "MYDOS6.2"
-    assert bsd_reloaded.bytes_per_sector == 512
-    assert bsd_reloaded.sectors_per_cluster == 2
-    assert bsd_reloaded.reserved_sectors == 1
-    assert bsd_reloaded.num_fats == 2
-    assert bsd_reloaded.root_entries == 112
-    assert bsd_reloaded.total_sectors == 1440
-    assert bsd_reloaded.media_descriptor == 0xF9
-    assert bsd_reloaded.sectors_per_fat == 3
-    assert bsd_reloaded.sectors_per_track == 9
-    assert bsd_reloaded.num_heads == 2
-    assert bsd_reloaded.hidden_sectors == 0
-    assert bsd_reloaded.volume_serial == 0x12345678
-    assert bsd_reloaded.volume_label.strip() == "TEST DISK"
-    assert bsd_reloaded.fs_type.strip() == "FAT12"
 
-def test_02_bsd_from_bytes_real_image():
-    if not EMPTY_IMG_SRC.exists():
-        pytest.skip(f"{EMPTY_IMG_SRC} not found.")
-    boot_sector_bytes = EMPTY_IMG_SRC.read_bytes()[:512]
-    bsd = FATVolumeInfo.from_bytes(boot_sector_bytes)
-    assert bsd.bytes_per_sector == 512
-    assert bsd.sectors_per_cluster == 1
-    assert bsd.reserved_sectors == 1
-    assert bsd.num_fats == 2
-    assert bsd.root_entries == 224
-    assert bsd.total_sectors == 2880
-    assert bsd.media_descriptor == 0xF0
-    assert bsd.sectors_per_fat == 9
-    assert bsd.sectors_per_track == 18
-    assert bsd.num_heads == 2
-    assert bsd.fs_type.startswith("FAT12")
+    # Calculate total size and create initial data
+    total_sectors = phys_fmt.total_sectors
+    total_bytes = total_sectors * bytes_per_sector
+    initial_data = bytearray(total_bytes)
 
-@pytest.mark.skip(reason="Boot signature check is currently disabled in FATVolumeInfo.from_bytes")
-def test_03_bsd_from_bytes_invalid_signature():
-    invalid_boot = bytearray(FMT_144.boot_sector.to_bytes())
-    invalid_boot[510:512] = b'\x00\x00'
-    with pytest.raises(ValueError, match="Invalid boot signature"):
-        FATVolumeInfo.from_bytes(bytes(invalid_boot))
+    # Populate initial data based on CHS
+    for c in range(phys_fmt.cylinders):
+        for h in range(phys_fmt.heads):
+            spt = phys_fmt.get_sectors_per_track(c, h)
+            for s in range(1, spt + 1):
+                try:
+                    lba = phys_fmt.chs_to_lba(c, h, s)
+                    offset = lba * bytes_per_sector
+                    sector_val = c * 100 + h * 10 + s
+                    sector_byte = sector_val % 256
+                    sector_data = bytes([sector_byte] * bytes_per_sector)
+                    if offset + bytes_per_sector <= len(initial_data):
+                        initial_data[offset : offset + bytes_per_sector] = sector_data
+                    else:
+                         print(f"Warning: Calculated offset {offset} out of bounds for initial data (size {len(initial_data)}) for CHS={c},{h},{s} LBA={lba}")
+                except ValueError as e:
+                    print(f"Warning: Error calculating LBA/offset for CHS={c},{h},{s}: {e}")
+                except IndexError as e:
+                    print(f"Warning: Index error writing initial data for CHS={c},{h},{s}: {e}")
 
-def test_04_bsd_from_bytes_too_short():
-    short_boot = b'\x00' * 100
-    try:
-        FATVolumeInfo.from_bytes(short_boot)
-        pytest.fail("ValueError was not raised for short boot sector") # Fail if no exception occurs
-    except ValueError as e:
-        assert "Boot sector is too short" in str(e), \
-            f"Expected 'Boot sector is too short' in exception message, but got: {str(e)}"
-    except Exception as e:
-        pytest.fail(f"Raised {type(e).__name__} instead of ValueError: {e}")
+
+    img_path = tmp_path / "disk_ops.img"
+    # Instantiate driver and disk
+    driver = RawImageDriver(file_path=str(img_path), image_data=bytes(initial_data))
+    disk = Disk(driver)
+    # Set geometry on the disk (this also sets it on the driver if method exists)
+    disk.set_geometry(phys_fmt)
+
+    # Yield the disk and the PhysicalFormat object
+    yield disk, phys_fmt
+
+# --- Tests ---
+
+def test_01_read_sectors_single_track(disk_setup):
+    disk, phys_fmt = disk_setup
+    c, h, start_s, num_s = 0, 1, 1, 2
+    expected_len = num_s * phys_fmt.bytes_per_sector
+    # Sector values: C=0, H=1, S=1 -> 11; C=0, H=1, S=2 -> 12
+    expected_data = bytes([11] * phys_fmt.bytes_per_sector) + bytes([12] * phys_fmt.bytes_per_sector)
+    read_data = disk.read_sectors(c, h, start_s, num_s)
+    assert len(read_data) == expected_len
+    assert read_data == expected_data
+
+def test_02_read_sectors_span_track(disk_setup):
+    disk, phys_fmt = disk_setup
+    c, h, start_s, num_s = 0, 0, 2, 3 # Reads (0,0,2), (0,0,3), (0,1,1)
+    expected_len = num_s * phys_fmt.bytes_per_sector
+    # Sector values: C=0, H=0, S=2 -> 2; C=0, H=0, S=3 -> 3; C=0, H=1, S=1 -> 11
+    expected_data = bytes([2] * phys_fmt.bytes_per_sector) + bytes([3] * phys_fmt.bytes_per_sector) + bytes([11] * phys_fmt.bytes_per_sector)
+    read_data = disk.read_sectors(c, h, start_s, num_s)
+    assert len(read_data) == expected_len
+    assert read_data == expected_data
+
+def test_03_read_sectors_span_cylinder(disk_setup):
+    disk, phys_fmt = disk_setup
+    c, h, start_s, num_s = 0, 1, 3, 2 # Reads (0,1,3), (1,0,1)
+    expected_len = num_s * phys_fmt.bytes_per_sector
+    # Sector values: C=0, H=1, S=3 -> 13; C=1, H=0, S=1 -> 101
+    expected_data = bytes([13] * phys_fmt.bytes_per_sector) + bytes([101] * phys_fmt.bytes_per_sector)
+    read_data = disk.read_sectors(c, h, start_s, num_s)
+    assert len(read_data) == expected_len
+    assert read_data == expected_data
+
+def test_04_write_sectors_single_track(disk_setup):
+    disk, phys_fmt = disk_setup
+    c, h, start_s, num_s = 1, 0, 1, 2 # Writes (1,0,1), (1,0,2)
+    bytes_per_sector = phys_fmt.bytes_per_sector
+    write_data = bytes([0xAA] * bytes_per_sector) + bytes([0xBB] * bytes_per_sector)
+    disk.write_sector = MagicMock() # Mock the underlying single write
+    disk.write_sectors(c, h, start_s, write_data)
+    expected_calls = [
+        call(1, 0, 1, bytes([0xAA] * bytes_per_sector)),
+        call(1, 0, 2, bytes([0xBB] * bytes_per_sector)),
+    ]
+    disk.write_sector.assert_has_calls(expected_calls)
+    assert disk.write_sector.call_count == 2
+
+def test_05_write_sectors_span_track_cylinder(disk_setup):
+    disk, phys_fmt = disk_setup
+    c, h, start_s, num_s = 0, 1, 2, 3 # Writes (0,1,2), (0,1,3), (1,0,1)
+    bytes_per_sector = phys_fmt.bytes_per_sector
+    write_data = bytes([0x11] * bytes_per_sector) + bytes([0x22] * bytes_per_sector) + bytes([0x33] * bytes_per_sector)
+    disk.write_sector = MagicMock() # Mock the underlying single write
+    disk.write_sectors(c, h, start_s, write_data)
+    expected_calls = [
+        call(0, 1, 2, bytes([0x11] * bytes_per_sector)),
+        call(0, 1, 3, bytes([0x22] * bytes_per_sector)),
+        call(1, 0, 1, bytes([0x33] * bytes_per_sector)),
+    ]
+    disk.write_sector.assert_has_calls(expected_calls)
+    assert disk.write_sector.call_count == 3
+
+def test_06_write_sectors_padding(disk_setup):
+    disk, phys_fmt = disk_setup
+    c, h, start_s, num_s = 1, 1, 1, 2 # Writes (1,1,1), (1,1,2)
+    bytes_per_sector = phys_fmt.bytes_per_sector
+    partial_data_len = bytes_per_sector + 50 # Data spans into second sector
+    write_data = bytes([0xCC] * partial_data_len)
+    expected_s1_data = bytes([0xCC] * bytes_per_sector)
+    expected_s2_data = bytes([0xCC] * 50) + bytes([0x00] * (bytes_per_sector - 50)) # Padded second sector
+    disk.write_sector = MagicMock() # Mock the underlying single write
+    disk.write_sectors(c, h, start_s, write_data)
+    expected_calls = [
+        call(1, 1, 1, expected_s1_data),
+        call(1, 1, 2, expected_s2_data),
+    ]
+    disk.write_sector.assert_has_calls(expected_calls)
+    assert disk.write_sector.call_count == 2
+
+def test_07_disk_error_no_geometry_read(disk_setup):
+    # Create a disk without setting geometry
+    disk_no_geom = Disk(disk_setup[0].driver)
+    assert disk_no_geom.geometry is None
+    with pytest.raises(ValueError, match="Disk geometry not set"):
+        disk_no_geom.read_sector(0, 0, 1)
+    with pytest.raises(ValueError, match="Disk geometry not set"):
+        disk_no_geom.read_sectors(0, 0, 1, 1)
+
+def test_08_disk_error_no_geometry_write(disk_setup):
+    # Create a disk without setting geometry
+    disk_no_geom = Disk(disk_setup[0].driver)
+    assert disk_no_geom.geometry is None
+    with pytest.raises(ValueError, match="Disk geometry not set"):
+        disk_no_geom.write_sector(0, 0, 1, b'\x00' * 128) # Use correct size
+    with pytest.raises(ValueError, match="Disk geometry not set"):
+        disk_no_geom.write_sectors(0, 0, 1, b'\x00' * 128)
+
+def test_09_disk_error_invalid_address_read(disk_setup):
+    disk, phys_fmt = disk_setup
+    # Accessing via disk calls _validate_chs which raises ValueError
+    with pytest.raises(ValueError, match=f"Invalid CHS: {phys_fmt.cylinders}, 0, 1"):
+        disk.read_sector(phys_fmt.cylinders, 0, 1)
+    with pytest.raises(ValueError, match=f"Invalid CHS: 0, {phys_fmt.heads}, 1"):
+        disk.read_sector(0, phys_fmt.heads, 1)
+    with pytest.raises(ValueError, match="Sector 0 out of range"):
+        disk.read_sector(0, 0, 0)
+    max_spt = phys_fmt.get_sectors_per_track(0,0)
+    with pytest.raises(ValueError, match=f"Sector {max_spt + 1} out of range"):
+        disk.read_sector(0, 0, max_spt + 1)
+
+def test_10_disk_error_invalid_address_write(disk_setup):
+    disk, phys_fmt = disk_setup
+    data = b'\x00' * phys_fmt.bytes_per_sector
+    # Accessing via disk calls _validate_chs which raises ValueError
+    with pytest.raises(ValueError, match=f"Invalid CHS: {phys_fmt.cylinders}, 0, 1"):
+        disk.write_sector(phys_fmt.cylinders, 0, 1, data)
+    with pytest.raises(ValueError, match=f"Invalid CHS: 0, {phys_fmt.heads}, 1"):
+        disk.write_sector(0, phys_fmt.heads, 1, data)
+    with pytest.raises(ValueError, match="Sector 0 out of range"):
+        disk.write_sector(0, 0, 0, data)
+    max_spt = phys_fmt.get_sectors_per_track(0,0)
+    with pytest.raises(ValueError, match=f"Sector {max_spt + 1} out of range"):
+        disk.write_sector(0, 0, max_spt + 1, data)
+
+def test_11_disk_error_invalid_write_size(disk_setup):
+    disk, phys_fmt = disk_setup
+    with pytest.raises(ValueError, match="Data size .* != sector size .*"):
+        disk.write_sector(0, 0, 1, b'\x00' * (phys_fmt.bytes_per_sector - 1))
+    with pytest.raises(ValueError, match="Data size .* != sector size .*"):
+        disk.write_sector(0, 0, 1, b'\x00' * (phys_fmt.bytes_per_sector + 1))
+
+# Removed tests 12 and 13 as they tested outdated concepts.
+# set_geometry implicitly updates the driver format if the method exists.

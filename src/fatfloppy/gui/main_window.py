@@ -414,7 +414,7 @@ class FileBrowserApp(QMainWindow):
             return
 
         geometry = self.controller.geometry
-        total_sectors = geometry.cylinders * geometry.heads * geometry.sectors_per_track
+        total_sectors = geometry.total_sectors  # Use the provided total_sectors property
         total_bytes = total_sectors * geometry.bytes_per_sector
         format_info = "Unknown"
         format_result = self.controller.detect_format()
@@ -424,13 +424,27 @@ class FileBrowserApp(QMainWindow):
             if format_profile:
                 format_info = format_profile.description
 
+        # Handle track-specific parameters
+        if geometry.track_formats:
+            encodings = set(tf.encoding for tf in geometry.track_formats)
+            rates = set(tf.rate for tf in geometry.track_formats)
+            spts = set(tf.sectors_per_track for tf in geometry.track_formats)
+
+            encoding_text = list(encodings)[0] if len(encodings) == 1 else "variable"
+            rate_text = f"{list(rates)[0]} kbps" if len(rates) == 1 else "variable"
+            spt_text = str(list(spts)[0]) if len(spts) == 1 else "variable"
+        else:
+            encoding_text = "N/A"
+            rate_text = "N/A"
+            spt_text = "N/A"
+
         info = (
             f"Format: {format_info}\n"
-            f"Encoding: {geometry.encoding}\n"
-            f"Data Rate: {geometry.rate} kbps\n"
+            f"Encoding: {encoding_text}\n"
+            f"Data Rate: {rate_text}\n"
             f"Rotation Speed: {geometry.rpm} RPM\n"
             f"Bytes per Sector: {geometry.bytes_per_sector}\n"
-            f"Sectors per Track: {geometry.sectors_per_track}\n"
+            f"Sectors per Track: {spt_text}\n"
             f"Number of Heads: {geometry.heads}\n"
             f"Number of Cylinders: {geometry.cylinders}\n"
             f"Total Sectors: {total_sectors}\n"
@@ -958,7 +972,7 @@ class FileBrowserApp(QMainWindow):
             else:
                 if self.controller.geometry:
                     geometry = self.controller.geometry
-                    total_sectors = geometry.total_sectors
+                    total_sectors = geometry.total_sectors  # Use the provided total_sectors property
                     sectors_per_cluster = 1
                     if self.controller.boot_sector:
                         sectors_per_cluster = self.controller.boot_sector.sectors_per_cluster

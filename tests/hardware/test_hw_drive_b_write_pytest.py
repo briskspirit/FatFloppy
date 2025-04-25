@@ -9,10 +9,9 @@ from .conftest import _run_gw_write, EMPTY_360K_IMG, GW_FORMAT_360K
 TARGET_DRIVE = 'B'
 TARGET_FORMAT_KEY = '360K'
 TARGET_DRIVE_SIZE = "5.25"
-FMT_PROFILE = FLOPPY_FORMATS['ibm_5.25_360k']
+PROFILE_NAME = 'ibm_5.25_360k' # Define profile name
 
 pytestmark = [
-    pytest.mark.hardware,
     pytest.mark.hardware,
     pytest.mark.skipif(not os.getenv('TEST_DRIVE_B', 'false').lower() == 'true',
         reason=f"Requires TEST_DRIVE={TARGET_DRIVE} and TEST_FORMAT={TARGET_FORMAT_KEY}"
@@ -29,20 +28,26 @@ def prepared_controller(pytestconfig):
     print(f"Attempting to open Drive {TARGET_DRIVE}...")
     controller = DiskController()
     gw_device = os.environ.get('GW_DEVICE', None)
-    format_info_dict = {
-        **{k: v for k, v in FMT_PROFILE.physical_format.__dict__.items() if not k.startswith('_')}
-    }
+
+    # --- FIX: Pass profile name instead of manual dict ---
+    format_info_to_pass = {"format_name": PROFILE_NAME}
+    # --- End Fix ---
+
     success = controller.open_disk(
         source=gw_device,
         disk_type="physical",
         drive_letter=TARGET_DRIVE,
         drive_size=TARGET_DRIVE_SIZE,
-        format_info=format_info_dict
+        format_info=format_info_to_pass # Pass the corrected info
     )
     if not success:
         controller.close_disk()
-        pytest.skip(f"Failed to open physical drive {TARGET_DRIVE} after preparation.", allow_module_level=True)
-    print(f"Drive {TARGET_DRIVE} opened successfully.")
+        pytest.skip(f"Failed to open physical drive {TARGET_DRIVE} after preparation. Check connection/disk.", allow_module_level=True)
+    if not controller.filesystem or not controller.filesystem.is_valid():
+         controller.close_disk()
+         pytest.skip(f"Filesystem not valid after opening Drive {TARGET_DRIVE} with format {PROFILE_NAME}", allow_module_level=True)
+
+    print(f"Drive {TARGET_DRIVE} opened successfully with format '{PROFILE_NAME}'.")
     yield controller
     print(f"\n--- Tearing down Hardware Test Class for Drive {TARGET_DRIVE} (Write) ---")
     controller.close_disk()
@@ -50,25 +55,29 @@ def prepared_controller(pytestconfig):
 @pytest.mark.usefixtures("prepared_controller")
 class TestHardwareDriveBWrite:
     def _cleanup_item(self, controller, path):
+        # Check filesystem before accessing methods
+        if not controller or not controller.filesystem:
+             print(f"WARN: Controller or Filesystem not available during cleanup of {path}, skipping.")
+             return
+
         print(f"Attempting cleanup: delete '{path}'")
         try:
-            parent_path, name = controller.filesystem._split_path(path)
-            parent_cluster = controller.filesystem._get_directory_cluster(parent_path)
-            try:
-                entry, _ = controller.filesystem._find_entry_in_directory(parent_cluster, name)
+            # Use controller's list method to check existence first if possible
+            parent_path, name = controller.filesystem._split_path(path) # Assuming filesystem is valid now
+            parent_content = controller.list_directory(parent_path)
+            item_exists = any(item['name'].upper() == name.upper() for item in parent_content)
+
+            if item_exists:
                 deleted = controller.delete_item(path)
                 if deleted:
                     print(f"Cleanup: Successfully deleted '{path}'")
                 else:
                     print(f"WARN: Cleanup delete command failed for {path}")
-            except FileNotFoundError:
-                print(f"Cleanup: Item '{path}' not found.")
-            except Exception as e:
-                print(f"WARN: Exception during _find_entry_in_directory for cleanup of {path}: {e}")
-        except AttributeError:
-            print(f"WARN: Filesystem object not available during cleanup of {path}, skipping.")
+            else:
+                 print(f"Cleanup: Item '{path}' not found in listing, assuming already deleted.")
+
         except Exception as e:
-            print(f"WARN: Exception during cleanup path processing for {path}: {e}")
+            print(f"WARN: Exception during cleanup for {path}: {e}")
 
     def test_01_hw_B_create_write_read_delete_file(self, prepared_controller):
         print(f"\nRunning: HW Write: Create, write, read, delete file on Drive B")
@@ -81,6 +90,7 @@ class TestHardwareDriveBWrite:
             assert write_ok, f"write_file failed for {filepath}"
             print(f"  Reading back {filepath}...")
             read_content = controller.read_file(filepath)
+            assert read_content is not None, f"read_file returned None for {filepath}"
             assert read_content == content, f"Read content mismatch for {filepath}"
         finally:
             self._cleanup_item(controller, filepath)
@@ -109,8 +119,9 @@ class TestHardwareDriveBWrite:
         print(f"\nRunning: HW Write: Create file spanning multiple clusters on Drive B")
         controller = prepared_controller
         filepath = "/MULTI_B.BIN"
-        content = b"360K Cluster " * 160
-        assert len(content) > 1024 * 2, "Content length should be > 2 clusters"
+        # 360k has 1024 bytes/cluster (512 bytes/sector * 2 sectors/cluster)
+        content = b"360K Cluster Data! " * 160 # Approx 2720 bytes > 2 clusters
+        assert len(content) > 1024 * 2, "Content length should be > 2 clusters (360k)"
         try:
             print(f"  Writing {filepath} ({len(content)} bytes)...")
             write_ok = controller.write_file(filepath, content)

@@ -19,21 +19,7 @@ class Disk:
         self.logger.info(f"Setting geometry: bytes_per_sector={geometry.bytes_per_sector}")
         if hasattr(self.driver, "set_physical_format"):
             try:
-                existing_pf = getattr(self.driver, "physical_format", None)
-                if not existing_pf:
-                    physical_format = PhysicalFormat(
-                        encoding="MFM", rate=500, rpm=300, gap3=84,
-                        sectors_per_track=geometry.sectors_per_track,
-                        heads=geometry.heads, bytes_per_sector=geometry.bytes_per_sector,
-                        cskew=0, interleave=1, cylinders=geometry.cylinders
-                    )
-                    self.driver.set_physical_format(physical_format)
-                else:
-                    existing_pf.sectors_per_track = geometry.sectors_per_track
-                    existing_pf.heads = geometry.heads
-                    existing_pf.bytes_per_sector = geometry.bytes_per_sector
-                    existing_pf.cylinders = geometry.cylinders
-                    self.driver.set_physical_format(existing_pf)
+                self.driver.set_physical_format(geometry)
             except Exception as e:
                 self.logger.error(f"Failed to set physical format: {e}", exc_info=True)
 
@@ -56,7 +42,8 @@ class Disk:
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         self._validate_chs(cylinder, head, sector)
         try:
-            data = self.driver.read_sector(cylinder, head, sector)
+            physical_head = self.geometry.get_physical_head(head) if getattr(self.driver, 'uses_physical_heads', False) else head
+            data = self.driver.read_sector(cylinder, physical_head, sector)
             if len(data) < self.geometry.bytes_per_sector:
                 data += bytes(self.geometry.bytes_per_sector - len(data))
             elif len(data) > self.geometry.bytes_per_sector:
@@ -70,7 +57,8 @@ class Disk:
         if len(data) != self.geometry.bytes_per_sector:
             raise ValueError(f"Data size {len(data)} != sector size {self.geometry.bytes_per_sector}")
         try:
-            self.driver.write_sector(cylinder, head, sector, data)
+            physical_head = self.geometry.get_physical_head(head) if getattr(self.driver, 'uses_physical_heads', False) else head
+            self.driver.write_sector(cylinder, physical_head, sector, data)
         except Exception as e:
             raise IOError(f"Failed to write sector C:{cylinder} H:{head} S:{sector}") from e
 
@@ -87,7 +75,7 @@ class Disk:
             self.geometry.validate_chs(cylinder, head, sector)
             result.extend(self.read_sector(cylinder, head, sector))
             sector += 1
-            if sector > self.geometry.sectors_per_track:
+            if sector > self.geometry.get_sectors_per_track(cylinder, head):
                 sector = 1
                 head += 1
                 if head >= self.geometry.heads:
@@ -113,7 +101,7 @@ class Disk:
             self.write_sector(cylinder, head, sector, chunk)
             data_pos += bytes_per_sector
             sector += 1
-            if sector > self.geometry.sectors_per_track:
+            if sector > self.geometry.get_sectors_per_track(cylinder, head):
                 sector = 1
                 head += 1
                 if head >= self.geometry.heads:
@@ -130,17 +118,7 @@ class Disk:
     def lba_to_chs(self, lba: int) -> Tuple[int, int, int]:
         if not self.geometry:
             raise ValueError("Disk geometry not set")
-        geom = self.geometry
-        if geom.sectors_per_track == 0 or geom.heads == 0:
-            raise ValueError(f"Invalid geometry: SPT={geom.sectors_per_track}, H={geom.heads}")
-        total_sectors = geom.cylinders * geom.heads * geom.sectors_per_track
-        if not (0 <= lba < total_sectors):
-            raise IndexError(f"LBA {lba} out of bounds (0-{total_sectors - 1})")
-        sector = (lba % geom.sectors_per_track) + 1
-        temp = lba // geom.sectors_per_track
-        head = temp % geom.heads
-        cylinder = temp // geom.heads
-        return cylinder, head, sector
+        return self.geometry.lba_to_chs(lba)
 
     def _validate_chs(self, cylinder: int, head: int, sector: int) -> None:
         if not self.geometry:

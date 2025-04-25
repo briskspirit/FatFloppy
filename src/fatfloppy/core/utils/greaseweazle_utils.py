@@ -4,13 +4,11 @@ from typing import Optional
 
 from greaseweazle.codec import codec
 from greaseweazle.codec.ibm import ibm
-from ..physical_format import PhysicalFormat
+from ..physical_format import PhysicalFormat, TrackFormat
 
 def create_greaseweazle_diskdef(
     physical_format: PhysicalFormat,
     logger: logging.Logger,
-    cylinders: Optional[int] = None,
-    drive_size: Optional[str] = None,
 ) -> Optional[codec.DiskDef]:
     if not physical_format:
         logger.warning("Cannot create custom diskdef: physical format not provided")
@@ -18,56 +16,40 @@ def create_greaseweazle_diskdef(
 
     logger.debug("Creating custom disk definition")
 
-    if cylinders is not None:
-        final_cylinders = cylinders
-        logger.debug(f"Using explicitly provided cylinder count: {final_cylinders}")
-    else:
-        logger.debug("Determining cylinder count internally based on drive size/rate...")
-        final_cylinders = 80
-        if drive_size == "5.25":
-            if physical_format.rate == 250:
-                final_cylinders = 40
-        logger.debug(f"Internally determined cylinder count: {final_cylinders}")
-
-    params = {
-        'cyls': final_cylinders,
-        'heads': physical_format.heads,
-        'sectors_per_track': physical_format.sectors_per_track,
-        'bytes_per_sector': physical_format.bytes_per_sector,
-        'encoding': physical_format.encoding,
-        'rate': physical_format.rate,
-        'gap3': physical_format.gap3
-    }
-
     try:
         disk_def = codec.DiskDef()
-        disk_def.cyls = params['cyls']
-        disk_def.heads = params['heads']
+        disk_def.cyls = physical_format.cylinders
+        disk_def.heads = physical_format.heads
 
-        if params['encoding'] == "MFM":
-            format_name = "ibm.mfm"
-        elif params['encoding'] == "FM":
-            format_name = "ibm.fm"
-        else:
-            logger.warning(f"Unsupported encoding '{params['encoding']}' for custom diskdef, defaulting to ibm.mfm")
-            format_name = "ibm.mfm"
+        # Create track definitions for each TrackFormat
+        for tf in physical_format.track_formats:
+            # Determine format name based on encoding
+            if tf.encoding == "MFM":
+                format_name = "ibm.mfm"
+            elif tf.encoding == "FM":
+                format_name = "ibm.fm"
+            else:
+                logger.warning(f"Unsupported encoding '{tf.encoding}' for track format, defaulting to ibm.mfm")
+                format_name = "ibm.mfm"
 
-        track_def = ibm.IBMTrack_FixedDef(format_name)
-        track_def.add_param("secs", str(params['sectors_per_track']))
-        track_def.add_param("bps", str(params['bytes_per_sector']))
-        track_def.add_param("gap3", str(params['gap3']))
-        track_def.add_param("rate", str(params['rate']))
-        track_def.finalise()
+            # Create a track definition for this TrackFormat
+            track_def = ibm.IBMTrack_FixedDef(format_name)
+            track_def.add_param("secs", str(tf.sectors_per_track))
+            track_def.add_param("bps", str(physical_format.bytes_per_sector))
+            track_def.add_param("gap3", str(tf.gap3))
+            track_def.add_param("rate", str(tf.rate))
+            track_def.finalise()
 
-        for c in range(disk_def.cyls):
-            for h in range(disk_def.heads):
-                disk_def.track_map[(c, h)] = track_def
+            # Assign this track definition to the specified cylinder and head ranges
+            for c in range(tf.track_start, tf.track_end + 1):
+                for h in range(tf.head_start, tf.head_end + 1):
+                    disk_def.track_map[(c, h)] = track_def
 
         disk_def.finalise()
 
         logger.info(
-            f"Custom disk definition created: Cyls={params['cyls']}, Heads={params['heads']}, "
-            f"{params['sectors_per_track']} sectors, {params['bytes_per_sector']} bytes/sector, {params['encoding']} encoding"
+            f"Custom disk definition created: Cyls={physical_format.cylinders}, Heads={physical_format.heads}, "
+            f"with {len(physical_format.track_formats)} track formats"
         )
         return disk_def
     except Exception as e:

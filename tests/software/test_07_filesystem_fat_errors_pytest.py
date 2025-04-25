@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.filesystem import FATFilesystem, FATBootSector, FileInfo
 from fatfloppy.core.disk import Disk
-from fatfloppy.core.drivers import DiskIODriver, PhysicalFormat
+from fatfloppy.core.drivers import DiskIODriver, PhysicalFormat, TrackFormat # Import TrackFormat
 
 # Constants defined for clarity in the fixture
 bytes_per_sector = 512
@@ -18,7 +18,7 @@ SECTORS_PER_CLUSTER = 2
 RESERVED_SECTORS = 1
 NUM_FATS = 2
 ROOT_ENTRIES = 112
-TOTAL_SECTORS = 1440
+TOTAL_SECTORS = 1440 # Typically 720k
 SECTORS_PER_FAT = 3
 SECTORS_PER_TRACK = 9
 NUM_HEADS = 2
@@ -38,6 +38,13 @@ TOTAL_BYTES = TOTAL_SECTORS * bytes_per_sector
 DATA_AREA_BYTES = TOTAL_BYTES - DATA_AREA_START_OFFSET
 NUM_CLUSTERS = DATA_AREA_BYTES // CLUSTER_SIZE if CLUSTER_SIZE > 0 else 0
 
+# Derived constants for geometry
+CYLINDERS = TOTAL_SECTORS // (SECTORS_PER_TRACK * NUM_HEADS)
+RPM = 300 # Standard for 720k/1.44M
+RATE = 250 # Standard for 720k DD
+ENCODING = "MFM"
+GAP3 = 84 # Common default
+INTERLEAVE = 1
 
 # Attribute constants (copied from filesystem.py for test context)
 ATTR_READ_ONLY = 0x01
@@ -56,18 +63,29 @@ def mock_fs_setup(request):
     mock_disk = MagicMock(spec=Disk)
     mock_disk.driver = mock_driver
 
-    # Define the geometry based on constants
-    mock_disk_geometry = PhysicalFormat(
-        encoding="MFM",
-        rate=250, # Adjusted to match common 720k rate
-        rpm=300,
-        cylinders=TOTAL_SECTORS // (SECTORS_PER_TRACK * NUM_HEADS),
-        heads=NUM_HEADS,
+    # --- FIX: Define PhysicalFormat correctly with TrackFormat ---
+    mock_track_format = TrackFormat(
+        track_start=0,
+        track_end=CYLINDERS - 1,
+        head_start=0,
+        head_end=NUM_HEADS - 1,
         sectors_per_track=SECTORS_PER_TRACK,
+        encoding=ENCODING,
+        rate=RATE,
+        gap3=GAP3,
+        interleave=INTERLEAVE
+    )
+    mock_disk_geometry = PhysicalFormat(
+        cylinders=CYLINDERS,
+        heads=NUM_HEADS,
+        rpm=RPM,
+        heads_inverted=False,
         bytes_per_sector=bytes_per_sector,
+        track_formats=[mock_track_format] # Pass list of TrackFormat
     )
     # Use PropertyMock for geometry as it might be accessed multiple times
     type(mock_disk).geometry = PropertyMock(return_value=mock_disk_geometry)
+    # --- End Fix ---
 
     # Create initial in-memory representations
     boot_sector_data = bytearray(bytes_per_sector)
@@ -95,16 +113,19 @@ def mock_fs_setup(request):
     # Mock LBA to CHS conversion
     def mock_lba_to_chs(lba):
         geom = mock_disk_geometry # Use the defined geometry
-        if geom.sectors_per_track <= 0 or geom.heads <= 0:
+        # Access geometry via the object method now
+        spt = geom.get_sectors_per_track(0, 0) # Assume uniform for mock
+        heads = geom.heads
+        if spt <= 0 or heads <= 0:
             raise ValueError("Bad geom in mock_lba_to_chs")
         max_lba = geom.total_sectors - 1
         if not 0 <= lba <= max_lba:
             # Raising IndexError is more accurate than ValueError here
             raise IndexError(f"LBA {lba} out of bounds (0-{max_lba})")
-        sector = (lba % geom.sectors_per_track) + 1
-        temp = lba // geom.sectors_per_track
-        head = temp % geom.heads
-        cylinder = temp // geom.heads
+        sector = (lba % spt) + 1
+        temp = lba // spt
+        head = temp % heads
+        cylinder = temp // heads
         return cylinder, head, sector
 
     mock_disk.lba_to_chs.side_effect = mock_lba_to_chs
@@ -113,16 +134,19 @@ def mock_fs_setup(request):
     def mock_read_sectors(start_c, start_h, start_s, num_sectors):
         result = bytearray()
         geom = mock_disk_geometry
+        spt = geom.get_sectors_per_track(start_c, start_h)
+        heads = geom.heads
+        bps = geom.bytes_per_sector
         try:
             # Calculate starting LBA from CHS input
             start_lba = (
-                (start_c * geom.heads + start_h) * geom.sectors_per_track
+                (start_c * heads + start_h) * spt
                 + (start_s - 1)
             )
         except Exception as e:
              # Handle potential calculation errors gracefully
             print(f"DEBUG: Error calculating start LBA in mock_read_sectors: C={start_c} H={start_h} S={start_s}, Error: {e}")
-            return b"\x00" * num_sectors * bytes_per_sector # Return zeroed data on error
+            return b"\x00" * num_sectors * bps # Return zeroed data on error
 
         # Iterate through the requested number of sectors
         for i in range(num_sectors):
@@ -130,10 +154,10 @@ def mock_fs_setup(request):
             # Check bounds
             if not 0 <= current_lba < geom.total_sectors:
                  print(f"DEBUG: mock_read_sectors attempted read beyond disk bounds: LBA {current_lba} (Max LBA: {geom.total_sectors - 1})")
-                 data_chunk = b"\x00" * bytes_per_sector # Return zeroed data for out-of-bounds reads
+                 data_chunk = b"\x00" * bps # Return zeroed data for out-of-bounds reads
             else:
                 # Calculate the byte offset for this LBA
-                current_offset = current_lba * bytes_per_sector
+                current_offset = current_lba * bps
 
                 # Prioritize recently written data
                 if current_lba in written_lba_data:
@@ -146,26 +170,26 @@ def mock_fs_setup(request):
                     rel_offset = current_offset - FAT_START_OFFSET
                     # Ensure reading within the bounds of fat_data
                     data_chunk = (
-                        fat_data[rel_offset : rel_offset + bytes_per_sector]
+                        fat_data[rel_offset : rel_offset + bps]
                         if 0 <= rel_offset < len(fat_data)
-                        else b"\x00" * bytes_per_sector # Pad if request goes beyond fat_data
+                        else b"\x00" * bps # Pad if request goes beyond fat_data
                     )
                 # Check if reading from the root directory area
                 elif ROOT_DIR_START_OFFSET <= current_offset < ROOT_DIR_END_OFFSET:
                     rel_offset = current_offset - ROOT_DIR_START_OFFSET
                     # Ensure reading within the bounds of root_dir_data
                     data_chunk = (
-                        root_dir_data[rel_offset : rel_offset + bytes_per_sector]
+                        root_dir_data[rel_offset : rel_offset + bps]
                         if 0 <= rel_offset < len(root_dir_data)
-                        else b"\x00" * bytes_per_sector # Pad if request goes beyond root_dir_data
+                        else b"\x00" * bps # Pad if request goes beyond root_dir_data
                     )
                 # Otherwise, it's the data area (or unused space), return zeros
                 else:
-                    data_chunk = b"\x00" * bytes_per_sector
+                    data_chunk = b"\x00" * bps
 
             # Ensure the chunk is exactly the sector size
-            data_chunk = data_chunk.ljust(bytes_per_sector, b"\x00")
-            result.extend(data_chunk[:bytes_per_sector]) # Append the correctly sized chunk
+            data_chunk = data_chunk.ljust(bps, b"\x00")
+            result.extend(data_chunk[:bps]) # Append the correctly sized chunk
 
         return bytes(result) # Return the combined data as bytes
 
@@ -179,17 +203,20 @@ def mock_fs_setup(request):
     # Mock writing sectors to in-memory data and written_lba_data cache
     def mock_write_sectors(start_c, start_h, start_s, data):
         geom = mock_disk_geometry
+        spt = geom.get_sectors_per_track(start_c, start_h)
+        heads = geom.heads
+        bps = geom.bytes_per_sector
         try:
              # Calculate starting LBA from CHS input
             start_lba = (
-                (start_c * geom.heads + start_h) * geom.sectors_per_track
+                (start_c * heads + start_h) * spt
                 + (start_s - 1)
             )
         except Exception as e:
             print(f"DEBUG: Error calculating start LBA in mock_write_sectors: C={start_c} H={start_h} S={start_s}, Error: {e}")
             return # Abort write on calculation error
 
-        num_sectors = (len(data) + bytes_per_sector - 1) // bytes_per_sector
+        num_sectors = (len(data) + bps - 1) // bps
 
         # Iterate through the sectors to be written
         for i in range(num_sectors):
@@ -200,22 +227,22 @@ def mock_fs_setup(request):
                 continue # Skip writing out-of-bounds sectors
 
             # Extract the data chunk for the current sector
-            chunk_start = i * bytes_per_sector
-            chunk_end = min(chunk_start + bytes_per_sector, len(data))
-            chunk = data[chunk_start:chunk_end].ljust(bytes_per_sector, b"\x00")
+            chunk_start = i * bps
+            chunk_end = min(chunk_start + bps, len(data))
+            chunk = data[chunk_start:chunk_end].ljust(bps, b"\x00")
 
             # Store the written data in the cache
             written_lba_data[current_lba] = chunk
 
             # Also update the in-memory representations for FAT and Root Dir if applicable
-            current_offset = current_lba * bytes_per_sector
+            current_offset = current_lba * bps
             # Update FAT area (both copies conceptually, though fat_data only holds one)
             if FAT_START_OFFSET <= current_offset < FAT_END_OFFSET:
                 # Update first FAT copy
                 fat1_start = FAT_START_OFFSET
                 rel_offset1 = current_offset - fat1_start
-                if rel_offset1 >= 0 and rel_offset1 + bytes_per_sector <= len(fat_data):
-                    fat_data[rel_offset1 : rel_offset1 + bytes_per_sector] = chunk
+                if rel_offset1 >= 0 and rel_offset1 + bps <= len(fat_data):
+                    fat_data[rel_offset1 : rel_offset1 + bps] = chunk
                 # Update second FAT copy (if it exists based on NUM_FATS > 1)
                 if NUM_FATS > 1:
                      fat2_start = FAT_START_OFFSET + FAT_SIZE_BYTES
@@ -231,8 +258,8 @@ def mock_fs_setup(request):
             # Update Root Directory area
             elif ROOT_DIR_START_OFFSET <= current_offset < ROOT_DIR_END_OFFSET:
                 rel_offset = current_offset - ROOT_DIR_START_OFFSET
-                if rel_offset >= 0 and rel_offset + bytes_per_sector <= len(root_dir_data):
-                    root_dir_data[rel_offset : rel_offset + bytes_per_sector] = chunk
+                if rel_offset >= 0 and rel_offset + bps <= len(root_dir_data):
+                    root_dir_data[rel_offset : rel_offset + bps] = chunk
 
     # Configure the mock disk object's write methods
     mock_disk.write_sector.side_effect = lambda c, h, s, data: mock_write_sectors(c, h, s, data)
@@ -258,7 +285,7 @@ def mock_fs_setup(request):
 
 
 # =========================================
-# Test Functions with Fixes Applied
+# Test Functions (No changes needed below)
 # =========================================
 
 def test_01_write_file_invalid_name(mock_fs_setup):
@@ -472,10 +499,10 @@ def test_17_find_free_cluster_none_free(mock_fs_setup):
 
 def test_18_fs_multi_sector_read_write_edge(mock_fs_setup):
     fs, mock_state = mock_fs_setup
-    bytes_per_sector = fs.boot_sector.bytes_per_sector
+    bps = fs.boot_sector.bytes_per_sector
     # Use an offset relative to the known data area start
     base_offset = fs.data_area_start_offset
-    test_offset = base_offset + bytes_per_sector - 50 # Crosses first sector boundary
+    test_offset = base_offset + bps - 50 # Crosses first sector boundary
     test_len = 150 # Crosses into the second sector
     test_data = bytes([i % 256 for i in range(test_len)])
 
@@ -487,11 +514,11 @@ def test_18_fs_multi_sector_read_write_edge(mock_fs_setup):
     assert read_back_data == test_data
 
     # Optional: Verify the mock state directly (less ideal but useful for debugging mock)
-    start_lba = test_offset // bytes_per_sector
-    end_lba = (test_offset + test_len - 1) // bytes_per_sector
+    start_lba = test_offset // bps
+    end_lba = (test_offset + test_len - 1) // bps
     assert start_lba in mock_state["written_lba_data"], f"LBA {start_lba} not found in mock write cache"
-    bytes_in_first_lba = bytes_per_sector - (test_offset % bytes_per_sector)
-    offset_in_lba = test_offset % bytes_per_sector
+    bytes_in_first_lba = bps - (test_offset % bps)
+    offset_in_lba = test_offset % bps
     assert mock_state["written_lba_data"][start_lba][offset_in_lba : offset_in_lba + bytes_in_first_lba] == test_data[:bytes_in_first_lba]
     if start_lba != end_lba:
         assert end_lba in mock_state["written_lba_data"], f"LBA {end_lba} not found in mock write cache"

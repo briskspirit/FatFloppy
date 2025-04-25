@@ -1,7 +1,6 @@
 # tests/software/test_02_formats_pytest.py
 import pytest
 import sys
-import re
 import struct
 from pathlib import Path
 
@@ -9,10 +8,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.formats import FATVolumeInfo, FormatProfile
 from fatfloppy.core.disk import Disk
-from fatfloppy.core.drivers import RawImageDriver
+from fatfloppy.core.drivers import RawImageDriver, PhysicalFormat, TrackFormat # Import TrackFormat
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 from fatfloppy.core.controller import DiskController
-from fatfloppy.core.drivers import PhysicalFormat
 
 RESOURCE_DIR = Path(__file__).parent.parent / 'resources'
 EMPTY_IMG_SRC = RESOURCE_DIR / 'empty_formatted_144m.img'
@@ -34,7 +32,10 @@ def test_02_get_format_by_name(disk_controller):
     assert profile is not None
     assert isinstance(profile, FormatProfile)
     assert profile.name == "ibm_3.5_1.44m"
-    assert profile.physical_format.total_bytes == 1440 * 1024
+    # --- FIX: Calculate total bytes ---
+    expected_total_bytes = profile.physical_format.total_sectors * profile.physical_format.bytes_per_sector
+    assert expected_total_bytes == 1440 * 1024
+    # --- End Fix ---
     profile_none = disk_controller.get_format_by_name("non_existent_format")
     assert profile_none is None
 
@@ -47,7 +48,7 @@ def test_03_detect_format_144mb(disk_controller):
     assert disk_controller.driver is not None
     detected_format_result = disk_controller.detect_format()
     assert isinstance(detected_format_result, tuple), "detect_format should return a tuple"
-    assert detected_format_result[0] == "ibm_3.5_1.44m"
+    assert detected_format_result[0] == "ibm_3.5_1.44m", "Detected format name mismatch"
     assert isinstance(detected_format_result[1], FATVolumeInfo), "Second element should be FATVolumeInfo"
     disk_controller.close_disk()
 
@@ -55,32 +56,55 @@ def test_04_detect_format_no_match(disk_controller):
     dummy_boot = bytearray(512)
     dummy_boot[0:3] = b'\xEB\xFE\x90'
     dummy_boot[3:11] = b'NONAME  '
-    struct.pack_into('<H', dummy_boot, 0x0B, 512)
-    struct.pack_into('<B', dummy_boot, 0x0D, 1)
-    struct.pack_into('<H', dummy_boot, 0x0E, 1)
-    struct.pack_into('<B', dummy_boot, 0x10, 2)
-    struct.pack_into('<H', dummy_boot, 0x11, 224)
-    struct.pack_into('<H', dummy_boot, 0x13, 1000)
-    struct.pack_into('<B', dummy_boot, 0x15, 0xF1)
-    struct.pack_into('<H', dummy_boot, 0x16, 5)
-    struct.pack_into('<H', dummy_boot, 0x18, 10)
-    struct.pack_into('<H', dummy_boot, 0x1A, 3)
-    struct.pack_into('<H', dummy_boot, 0x1FE, 0xAA55)
+    struct.pack_into('<H', dummy_boot, 0x0B, 512) # bytes_per_sector
+    struct.pack_into('<B', dummy_boot, 0x0D, 1)   # sectors_per_cluster
+    struct.pack_into('<H', dummy_boot, 0x0E, 1)   # reserved_sectors
+    struct.pack_into('<B', dummy_boot, 0x10, 2)   # num_fats
+    struct.pack_into('<H', dummy_boot, 0x11, 224) # root_entries
+    struct.pack_into('<H', dummy_boot, 0x13, 1000)# total_sectors_16
+    struct.pack_into('<B', dummy_boot, 0x15, 0xF1) # media_descriptor
+    struct.pack_into('<H', dummy_boot, 0x16, 5)   # sectors_per_fat_16
+    struct.pack_into('<H', dummy_boot, 0x18, 10)  # sectors_per_track
+    struct.pack_into('<H', dummy_boot, 0x1A, 3)   # num_heads
+    struct.pack_into('<I', dummy_boot, 0x1C, 0)   # hidden_sectors
+    struct.pack_into('<I', dummy_boot, 0x20, 0)   # total_sectors_32
+    struct.pack_into('<H', dummy_boot, 0x1FE, 0xAA55) # boot_signature
+
     driver = RawImageDriver("dummy", image_data=bytes(dummy_boot) + b'\x00' * 1024 * 100)
     disk_controller.driver = driver
     disk_controller.disk = Disk(driver)
-    temp_geom = PhysicalFormat(
-        encoding="MFM", rate=250, rpm=300, cylinders=80, heads=2,
-        sectors_per_track=18, bytes_per_sector=512
+
+    # Create PhysicalFormat correctly
+    temp_cylinders = 1000 // (10 * 3) # Calculate cylinders based on BPB
+    temp_heads = 3
+    temp_spt = 10
+    temp_track_format = TrackFormat(
+        track_start=0,
+        track_end=temp_cylinders - 1,
+        head_start=0,
+        head_end=temp_heads - 1,
+        sectors_per_track=temp_spt,
+        encoding="MFM",
+        rate=250,
+        gap3=84, # Assuming default
+        interleave=1 # Assuming default
     )
+    temp_geom = PhysicalFormat(
+        cylinders=temp_cylinders,
+        heads=temp_heads,
+        rpm=300,
+        heads_inverted=False,
+        bytes_per_sector=512,
+        track_formats=[temp_track_format] # Pass list
+    )
+
     disk_controller.disk.set_geometry(temp_geom)
     if hasattr(disk_controller.driver, "set_physical_format"):
          disk_controller.driver.set_physical_format(temp_geom)
-
     detected_format_result = disk_controller.detect_format()
     assert isinstance(detected_format_result, tuple), "detect_format should return a tuple"
     assert detected_format_result[0] is None, "Should not detect a standard format name"
-    assert isinstance(detected_format_result[1], FATVolumeInfo), "Should still parse BPB data even if no known format matches"
+    assert isinstance(detected_format_result[1], FATVolumeInfo), "Should still parse BPB data"
     disk_controller.close_disk()
     disk_controller.driver = None
     disk_controller.disk = None
@@ -151,7 +175,7 @@ def test_04_bsd_from_bytes_too_short():
     short_boot = b'\x00' * 100
     try:
         FATVolumeInfo.from_bytes(short_boot)
-        pytest.fail("ValueError was not raised for short boot sector")
+        pytest.fail("ValueError was not raised for short boot sector") # Fail if no exception occurs
     except ValueError as e:
         assert "Boot sector is too short" in str(e), \
             f"Expected 'Boot sector is too short' in exception message, but got: {str(e)}"

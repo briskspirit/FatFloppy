@@ -34,34 +34,26 @@ class DiskMapView:
             points.append(QPointF(x, y))
         return points
 
-    def get_sector_color(self, sector_num, sectors_per_cluster,
-                          reserved, fat_size, root_dir_sectors,
-                          first_data_sector, busy_clusters):
-        """Determine the color for a sector based on its role in FAT12 filesystem."""
-        # Safety checks to prevent division by zero
-        sectors_per_cluster = max(1, sectors_per_cluster)
-        first_data_sector = max(1, first_data_sector)
-
+    def get_sector_color(self, lba, sectors_per_cluster,
+                         reserved, fat_size, root_dir_sectors,
+                         first_data_sector, busy_clusters):
+        """Determine the color for a sector based on its role in FAT12 filesystem using LBA."""
         try:
-            if sector_num < reserved:
+            if lba < reserved:
                 return Qt.GlobalColor.red  # Boot sector and reserved
-            elif sector_num < reserved + fat_size:
+            elif lba < reserved + fat_size:
                 return Qt.GlobalColor.green  # FAT1
-            elif sector_num < reserved + 2 * fat_size:
+            elif lba < reserved + 2 * fat_size:
                 return Qt.GlobalColor.blue  # FAT2
-            elif sector_num < first_data_sector:
+            elif lba < first_data_sector:
                 return Qt.GlobalColor.yellow  # Root directory
             else:
                 # Data area: color based on cluster status
-                try:
-                    relative_sector = max(0, sector_num - first_data_sector)
-                    cluster = (relative_sector // sectors_per_cluster) + 2  # Cluster numbers start at 2
-                    return Qt.GlobalColor.magenta if cluster in busy_clusters else Qt.GlobalColor.gray
-                except Exception as e:
-                    print(f"Error determining cluster for sector {sector_num}: {e}")
-                    return Qt.GlobalColor.lightGray
+                relative_sector = max(0, lba - first_data_sector)
+                cluster = (relative_sector // sectors_per_cluster) + 2  # Cluster numbers start at 2
+                return Qt.GlobalColor.magenta if cluster in busy_clusters else Qt.GlobalColor.gray
         except Exception as e:
-            print(f"Error in get_sector_color: {e}")
+            print(f"Error in get_sector_color for LBA {lba}: {e}")
             return Qt.GlobalColor.lightGray
 
     def draw_disk_map(self, controller, current_head, busy_clusters, free_space, total_space, app_font):
@@ -75,7 +67,8 @@ class DiskMapView:
             text_height = text.boundingRect().height()
             text.setPos((view_width - text_width) / 2, (view_height - text_height) / 2)
             return
-        if controller.geometry and current_head >= controller.geometry.heads:
+        geometry = controller.geometry
+        if geometry is None or current_head >= geometry.heads:
             self.scene.addText("No data for this head").setPos(10, 10)
             return
         view_width = self.view.width()
@@ -84,15 +77,12 @@ class DiskMapView:
         y0 = view_height / 2
         r_min = min(view_width, view_height) * 0.1
         r_max = min(view_width, view_height) * 0.45
-        geometry = controller.geometry
-        sectors_per_track = max(1, geometry.sectors_per_track)
-        num_heads = max(1, geometry.heads)
-        bytes_per_sector = max(128, geometry.bytes_per_sector)
-        total_sectors = max(1, geometry.total_sectors)
         num_cylinders = max(1, geometry.cylinders)
+        bytes_per_sector = max(128, geometry.bytes_per_sector)
         fs_params = self._get_filesystem_params(controller, bytes_per_sector)
-        angle_per_sector = 360 / sectors_per_track
         num_points = 20
+
+        # Draw legend
         legend_x = 10
         legend_y = 10
         square_size = 10
@@ -119,6 +109,8 @@ class DiskMapView:
             text_height = text.boundingRect().height()
             y_offset = (square_size - text_height) / 2
             text.setPos(legend_x + square_size + 5, legend_y + i * vertical_spacing + y_offset)
+
+        # Draw stats
         stats_x = 10
         stats_y = view_height - 60
         stats_text = self.scene.addText(
@@ -129,19 +121,26 @@ class DiskMapView:
         )
         stats_text.setPos(stats_x, stats_y)
         stats_text.setFont(app_font)
+
+        # Draw each track (cylinder) for the current head
         for c in range(num_cylinders):
-            cyl_start_sector = c * sectors_per_track * num_heads + (current_head * sectors_per_track)
+            sectors_per_track = geometry.get_sectors_per_track(c, current_head)
+            if sectors_per_track <= 0:
+                continue  # Skip invalid tracks
+            angle_per_sector = 360 / sectors_per_track
+            r_outer = r_max - (r_max - r_min) * c / num_cylinders
+            r_inner = r_max - (r_max - r_min) * (c + 1) / num_cylinders
+
+            # Draw sectors for this track
             for i in range(sectors_per_track):
-                s = cyl_start_sector + i
-                if s < total_sectors:
-                    color = self.get_sector_color(s, fs_params['sectors_per_cluster'],
-                                                fs_params['reserved_sectors'], fs_params['fat_size'],
-                                                fs_params['root_dir_sectors'], fs_params['first_data_sector'],
-                                                busy_clusters)
+                try:
+                    lba = geometry.chs_to_lba(c, current_head, i + 1)
+                    color = self.get_sector_color(lba, fs_params['sectors_per_cluster'],
+                                                 fs_params['reserved_sectors'], fs_params['fat_size'],
+                                                 fs_params['root_dir_sectors'], fs_params['first_data_sector'],
+                                                 busy_clusters)
                     theta_start = math.radians(i * angle_per_sector)
                     theta_end = math.radians((i + 1) * angle_per_sector)
-                    r_outer = r_max - (r_max - r_min) * c / num_cylinders
-                    r_inner = r_max - (r_max - r_min) * (c + 1) / num_cylinders
                     inner_points = self.generate_arc_points(x0, y0, r_inner, theta_start, theta_end, num_points)
                     outer_points = self.generate_arc_points(x0, y0, r_outer, theta_end, theta_start, num_points)
                     points = inner_points + outer_points
@@ -149,13 +148,19 @@ class DiskMapView:
                     polygon.setBrush(QBrush(color))
                     polygon.setPen(QPen(Qt.GlobalColor.black, 0.5))
                     self.scene.addItem(polygon)
-        for sector in range(sectors_per_track):
-            theta = math.radians(sector * angle_per_sector)
-            p1 = QPointF(x0 + r_min * math.cos(theta), y0 + r_min * math.sin(theta))
-            p2 = QPointF(x0 + r_max * math.cos(theta), y0 + r_max * math.sin(theta))
-            line = QGraphicsLineItem(p1.x(), p1.y(), p2.x(), p2.y())
-            line.setPen(QPen(Qt.GlobalColor.black, 0.5))
-            self.scene.addItem(line)
+                except Exception as e:
+                    print(f"Error drawing sector {i} on cylinder {c}, head {current_head}: {e}")
+
+            # Draw sector dividers for this track
+            for sector in range(sectors_per_track):
+                theta = math.radians(sector * angle_per_sector)
+                p1 = QPointF(x0 + r_inner * math.cos(theta), y0 + r_inner * math.sin(theta))
+                p2 = QPointF(x0 + r_outer * math.cos(theta), y0 + r_outer * math.sin(theta))
+                line = QGraphicsLineItem(p1.x(), p1.y(), p2.x(), p2.y())
+                line.setPen(QPen(Qt.GlobalColor.black, 0.5))
+                self.scene.addItem(line)
+
+        # Draw cylinder rings
         for cylinder in range(1, num_cylinders):
             r = r_max - (r_max - r_min) * cylinder / num_cylinders
             ellipse = QGraphicsEllipseItem(x0 - r, y0 - r, 2 * r, 2 * r)

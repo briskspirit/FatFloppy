@@ -2,7 +2,7 @@
 import copy
 from typing import List, Optional, Tuple, Dict
 
-from .physical_format import PhysicalFormat
+from .physical_format import PhysicalFormat, TrackFormat
 from .utils import greaseweazle_utils
 from .utils.logging_config import get_logger
 from greaseweazle.tools import util
@@ -44,6 +44,7 @@ class GreaseweazleDriver(DiskIODriver):
         self.using_custom_diskdef = False
         self.scan_track_object = None
         self.verify_writes = True
+        self.uses_physical_heads = True  # Added to indicate physical head usage
 
     def initialize(self):
         if self.initialized:
@@ -100,7 +101,7 @@ class GreaseweazleDriver(DiskIODriver):
                 return
         tracks_to_read = [
             track_id for track_id in self.dirty_tracks
-            if len(self.dirty_sectors.get(track_id, {})) < self.physical_format.sectors_per_track
+            if len(self.dirty_sectors.get(track_id, {})) < self.physical_format.get_sectors_per_track(track_id[0], track_id[1])
         ]
         for track_id in tracks_to_read:
             cylinder, head = track_id
@@ -132,8 +133,9 @@ class GreaseweazleDriver(DiskIODriver):
             except Exception as e:
                 self.logger.error(f"Drive selection error for track C:{cylinder} H:{head}: {e}", exc_info=True)
         for track_id in successfully_written:
+            cylinder, head = track_id
             if track_id in self.dirty_sectors:
-                if len(self.dirty_sectors[track_id]) == self.physical_format.sectors_per_track:
+                if len(self.dirty_sectors[track_id]) == self.physical_format.get_sectors_per_track(cylinder, head):
                     self.track_data[track_id] = self.dirty_sectors[track_id].copy()
                 elif track_id in self.track_data:
                     for sector, data in self.dirty_sectors[track_id].items():
@@ -145,22 +147,17 @@ class GreaseweazleDriver(DiskIODriver):
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
         if not isinstance(physical_format, PhysicalFormat):
             raise TypeError("physical_format must be a PhysicalFormat object")
-        self.physical_format = copy.copy(physical_format)
+        self.physical_format = copy.deepcopy(physical_format)
         self.fmt_cls = None
         self.using_custom_diskdef = False
         self.last_successful_format = None
 
-    def _create_and_set_custom_diskdef(self, cylinders: Optional[int] = None):
+    def _create_and_set_custom_diskdef(self):
         if not self.physical_format:
             self.fmt_cls = None
             self.using_custom_diskdef = False
             return
-        disk_def = greaseweazle_utils.create_greaseweazle_diskdef(
-            physical_format=self.physical_format,
-            logger=self.logger,
-            cylinders=cylinders,
-            drive_size=getattr(self, "drive_size", None),
-        )
+        disk_def = greaseweazle_utils.create_greaseweazle_diskdef(self.physical_format, self.logger)
         if disk_def:
             self.fmt_cls = disk_def
             self.using_custom_diskdef = True
@@ -177,11 +174,8 @@ class GreaseweazleDriver(DiskIODriver):
         if not self.fmt_cls or not self.using_custom_diskdef:
             formats_to_try.append(("ibm.scan", None))
         if not self.last_successful_format and self.physical_format:
-            rate = self.physical_format.rate
-            if self.physical_format.encoding == "MFM":
-                formats_to_try.append(("ibm.mfm", rate))
-            else:
-                formats_to_try.append(("ibm.fm", rate))
+            # Default to a common rate since rate is now track-specific
+            formats_to_try.append(("ibm.mfm", 500))  # Default to MFM 500 kbps
         return formats_to_try
 
     def _update_physical_format(self, dat, num_sectors: int) -> None:
@@ -192,20 +186,25 @@ class GreaseweazleDriver(DiskIODriver):
         if not hasattr(dat.track, "clock"):
             return
         rate = int(1.0 / (dat.track.clock * (2000 if encoding == "MFM" else 1000)))
-        if not self.physical_format:
-            self.physical_format = PhysicalFormat(
-                encoding=encoding,
-                rate=rate,
-                rpm=300,
-                gap3=84,
-                sectors_per_track=num_sectors,
-                heads=2,
-                bytes_per_sector=512,
-            )
-        else:
-            self.physical_format.encoding = encoding
-            self.physical_format.rate = rate
-            self.physical_format.sectors_per_track = num_sectors
+        track_format = TrackFormat(
+            track_start=0,
+            track_end=79,  # Default cylinders - 1
+            head_start=0,
+            head_end=1,    # Default heads - 1
+            sectors_per_track=num_sectors,
+            encoding=encoding,
+            rate=rate,
+            gap3=84,
+            interleave=1
+        )
+        self.physical_format = PhysicalFormat(
+            cylinders=80,
+            heads=2,
+            rpm=300,
+            heads_inverted=False,
+            bytes_per_sector=512,
+            track_formats=[track_format]
+        )
 
     def _read_track_with_format(self, cylinder: int, head: int, format_tuple: Tuple[str, Optional[int]]) -> Optional[Dict[int, bytes]]:
         from greaseweazle.codec import codec
@@ -258,14 +257,11 @@ class GreaseweazleDriver(DiskIODriver):
                 return
             self.track_data[(cylinder, head)] = sector_data
             self.fmt_cls = fmt_cls_to_try
-            if self.physical_format and self.physical_format.sectors_per_track != len(sector_data):
-                self.physical_format.sectors_per_track = len(sector_data)
             if format_tuple[0] == "ibm.scan":
                 self._update_physical_format(dat, len(sector_data))
+                self._create_and_set_custom_diskdef()
             if format_tuple[0] != "custom":
                 self.last_successful_format = format_tuple
-            if format_tuple[0] == "ibm.scan" and not self.using_custom_diskdef and self.physical_format:
-                self._create_and_set_custom_diskdef()
             success = True
 
         try:
@@ -297,13 +293,9 @@ class GreaseweazleDriver(DiskIODriver):
         if not hasattr(self.fmt_cls, "track_map"):
             raise TypeError(f"Internal error: self.fmt_cls is not a valid DiskDef object (type: {type(self.fmt_cls)}).")
         track_coords = (cylinder, head)
-        track_def = (
-            self.fmt_cls.track_map[track_coords]
-            if track_coords in self.fmt_cls.track_map
-            else next(iter(self.fmt_cls.track_map.values())) if self.fmt_cls.track_map else None
-        )
+        track_def = self.fmt_cls.track_map.get(track_coords)
         if not track_def:
-            raise ValueError(f"No track definitions found in self.fmt_cls.track_map for C:{cylinder} H:{head}")
+            raise ValueError(f"No track definition found for C:{cylinder} H:{head}")
         track = track_def.mk_track(cylinder, head)
         track_id = (cylinder, head)
         if track_id in self.track_data:
@@ -423,11 +415,11 @@ class RawImageDriver(DiskIODriver):
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
         if not isinstance(physical_format, PhysicalFormat):
             raise TypeError("physical_format must be a PhysicalFormat object")
-        self.physical_format = copy.copy(physical_format)
+        self.physical_format = copy.deepcopy(physical_format)
 
     def _calculate_sector_offset(self, cylinder: int, head: int, sector: int, bytes_per_sector: int) -> int:
         if not self.physical_format:
             raise ValueError("Physical format not set")
         self.physical_format.validate_chs(cylinder, head, sector)
-        lba = (cylinder * self.physical_format.heads + head) * self.physical_format.sectors_per_track + (sector - 1)
+        lba = self.physical_format.chs_to_lba(cylinder, head, sector)
         return lba * bytes_per_sector

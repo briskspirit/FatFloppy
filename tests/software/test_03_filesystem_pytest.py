@@ -9,10 +9,10 @@ from pathlib import Path
 # Ensure src is in path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
-from fatfloppy.core.drivers import RawImageDriver
+from fatfloppy.core.drivers import RawImageDriver, PhysicalFormat, TrackFormat # Import TrackFormat
 from fatfloppy.core.disk import Disk
 # Import specific errors if needed for asserts
-from fatfloppy.core.filesystem import FATFilesystem, FileInfo, ATTR_VOLUME_ID, ATTR_LONG_NAME
+from fatfloppy.core.filesystem import FATFilesystem, FileInfo, FATBootSector, ATTR_VOLUME_ID, ATTR_LONG_NAME
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 
 # --- Constants ---
@@ -33,17 +33,15 @@ def fs_setup(tmp_path):
 
     driver = RawImageDriver(str(test_img_path))
     disk = Disk(driver)
-    # FIX: Use physical_format
+    # Use physical_format from the FormatProfile
     disk.set_geometry(FMT_144.physical_format)
-    # FIX: Use physical_format (Ensure driver knows format)
+    # Ensure driver knows format)
     driver.set_physical_format(FMT_144.physical_format)
 
     fs = FATFilesystem(disk)
     # Clear caches to ensure tests start fresh
     fs.fat_cache = None
     fs._cached_allocated_clusters = None
-    # Force load cache if needed (will be loaded on first access anyway by logic)
-    # fs._load_fat_cache()
 
     # Yield filesystem and disk (disk needed for some checks)
     yield fs, disk
@@ -58,10 +56,17 @@ def _read_test_fat_entry(fs: FATFilesystem, cluster: int):
      # Use fat_start_offset from the fs instance
      fat_offset = fs.fat_start_offset + int(cluster * 1.5)
      try:
-         value_bytes = fs._read_bytes(fat_offset, 2)
-         if len(value_bytes) < 2: return None # Handle short read
-         value = struct.unpack('<H', value_bytes)[0]
-     except (IOError, ValueError, struct.error) as e:
+         # Use the filesystem's cached read method for efficiency if available
+         if fs.fat_cache:
+             byte_offset = int(cluster * 1.5)
+             if byte_offset + 1 >= len(fs.fat_cache): return None
+             value = struct.unpack_from("<H", fs.fat_cache, byte_offset)[0]
+         else:
+             # Fallback to direct read if cache not loaded (less ideal)
+             value_bytes = fs._read_bytes(fat_offset, 2)
+             if len(value_bytes) < 2: return None # Handle short read
+             value = struct.unpack('<H', value_bytes)[0]
+     except (IOError, ValueError, struct.error, IndexError) as e: # Added IndexError
          print(f"Warning: Error reading test FAT entry for cluster {cluster}: {e}")
          return None # Return None on read error
 
@@ -547,7 +552,7 @@ def test_20_read_zero_byte_file(fs_setup):
 
 def test_21_init_with_different_geometry_720k(fs_setup):
     fs, disk = fs_setup
-    # FIX: Use physical_format
+    # Use physical_format
     disk.set_geometry(FMT_720.physical_format) # Change geometry on disk object
     # Re-init FS using the *same disk object*
     # The disk still wraps the original 1.44MB image file data
@@ -561,9 +566,10 @@ def test_21_init_with_different_geometry_720k(fs_setup):
     assert fs_reinit.boot_sector.num_heads == 2, "FS should read BPB from 1.44MB image"
     assert fs_reinit.cluster_size == 512, "Cluster size from 1.44MB BPB"
 
-    # Verify that the disk object's geometry itself *was* updated
-    assert disk.geometry.total_bytes == FMT_720.physical_format.total_bytes
-    assert disk.geometry.sectors_per_track == FMT_720.physical_format.sectors_per_track
+    # --- FIX: Verify disk object's geometry using total_sectors and get_sectors_per_track ---
+    assert disk.geometry.total_sectors == FMT_720.physical_format.total_sectors
+    assert disk.geometry.get_sectors_per_track(0, 0) == FMT_720.physical_format.get_sectors_per_track(0, 0)
+    # --- End Fix ---
 
 
 def test_22_invalid_83_filenames(fs_setup):
