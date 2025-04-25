@@ -168,6 +168,17 @@ class DiskMapView:
             ellipse.setBrush(QBrush(Qt.BrushStyle.NoBrush))
             self.scene.addItem(ellipse)
 
+        # Draw index hole on the innermost cylinder
+        if num_cylinders > 0:
+            r_inner = r_max - (r_max - r_min) * num_cylinders / num_cylinders
+            index_hole_radius = 5  # Radius of the index hole marker
+            theta = 0  # Angle for the first sector (0 degrees)
+            index_hole_x = x0 + r_inner * math.cos(math.radians(theta)) - index_hole_radius
+            index_hole_y = y0 + r_inner * math.sin(math.radians(theta)) - index_hole_radius
+            index_hole = QGraphicsEllipseItem(index_hole_x, index_hole_y, 2 * index_hole_radius, 2 * index_hole_radius)
+            index_hole.setBrush(QBrush(Qt.GlobalColor.darkCyan))
+            self.scene.addItem(index_hole)
+
     def _get_filesystem_params(self, controller, bytes_per_sector):
         reserved_sectors = 1
         num_fats = 2
