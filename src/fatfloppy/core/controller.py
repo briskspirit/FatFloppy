@@ -1,7 +1,7 @@
 # src/fatfloppy/core/controller.py
 import os
 import copy
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 
 from .utils.logging_config import get_logger
 from .disk import Disk
@@ -55,83 +55,64 @@ class DiskController:
         else:
             raise ValueError(f"Unsupported disk type: {disk_type}")
 
-    def _apply_user_format(self, format_info: dict) -> None:
+    def _create_physical_format(self, format_info: Dict[str, any], base_profile: Optional[FormatProfile] = None) -> PhysicalFormat:
+        """Create a PhysicalFormat object based on format_info and an optional base_profile."""
+        # Default values
+        default_track_format = TrackFormat(
+            track_start=0, track_end=79, head_start=0, head_end=1,
+            sectors_per_track=18, encoding="MFM", rate=500, gap3=84, interleave=1
+        )
+        default_phys = PhysicalFormat(
+            cylinders=80, heads=2, rpm=300, heads_inverted=False,
+            bytes_per_sector=512, track_formats=[default_track_format]
+        )
+        if base_profile and base_profile.physical_format:
+            default_phys = base_profile.physical_format
+            default_track_format = default_phys.track_formats[0]
+
+        # Construct TrackFormat with overrides
+        track_format = TrackFormat(
+            track_start=0,
+            track_end=format_info.get("cylinders", default_phys.cylinders) - 1,
+            head_start=0,
+            head_end=format_info.get("heads", default_phys.heads) - 1,
+            sectors_per_track=format_info.get("sectors_per_track", default_track_format.sectors_per_track),
+            encoding=format_info.get("encoding", default_track_format.encoding),
+            rate=format_info.get("rate", default_track_format.rate),
+            gap3=format_info.get("gap3", default_track_format.gap3),
+            interleave=format_info.get("interleave", default_track_format.interleave)
+        )
+
+        # Construct PhysicalFormat with overrides
+        return PhysicalFormat(
+            cylinders=format_info.get("cylinders", default_phys.cylinders),
+            heads=format_info.get("heads", default_phys.heads),
+            rpm=format_info.get("rpm", default_phys.rpm),
+            heads_inverted=format_info.get("heads_inverted", default_phys.heads_inverted),
+            bytes_per_sector=format_info.get("bytes_per_sector", default_phys.bytes_per_sector),
+            track_formats=[track_format]
+        )
+
+    def _apply_user_format(self, format_info: Dict[str, any]) -> None:
+        """Apply user-specified format to the disk and driver."""
         self.explicit_format_set = True
         format_name = format_info.get("format_name")
         base_profile = self.get_format_by_name(format_name) if format_name else None
 
-        physical_format_to_set: Optional[PhysicalFormat] = None # Variable to hold the final format
-
-        # --- REFINED LOGIC ---
-        # Case 1: Only format_name is provided, and profile is valid
-        if base_profile and base_profile.physical_format and len(format_info) == 1 and "format_name" in format_info:
-             self.logger.info(f"Applying physical format directly from profile: {format_name}")
-             # Deepcopy to avoid modifying the original profile definition
-             physical_format_to_set = copy.deepcopy(base_profile.physical_format)
-
-        # Case 2: Custom format or overrides provided
+        if base_profile and len(format_info) == 1 and "format_name" in format_info:
+            # Use the base profile's physical format directly
+            physical_format = copy.deepcopy(base_profile.physical_format)
         else:
-            self.logger.info("Constructing physical format from defaults and overrides.")
-            # Set defaults
-            default_track_format = TrackFormat(
-                track_start=0, track_end=79, head_start=0, head_end=1,
-                sectors_per_track=18, encoding="MFM", rate=500, gap3=84, interleave=1
-            )
-            default_phys = PhysicalFormat(
-                cylinders=80, heads=2, rpm=300, heads_inverted=False,
-                bytes_per_sector=512, track_formats=[default_track_format]
-            )
+            # Create a new physical format with overrides
+            physical_format = self._create_physical_format(format_info, base_profile)
 
-            # Apply base profile defaults if they exist and we're overriding
-            if base_profile and base_profile.physical_format:
-                default_phys = base_profile.physical_format
-                if default_phys.track_formats:
-                    default_track_format = default_phys.track_formats[0]
+        # Set the format on the driver and disk
+        self.driver.set_physical_format(physical_format)
+        self.disk.set_geometry(physical_format)
 
-            # Determine final parameters for construction
-            final_cylinders = format_info.get("cylinders", default_phys.cylinders)
-            final_heads = format_info.get("heads", default_phys.heads)
-            final_bytes_per_sector = format_info.get("bytes_per_sector", default_phys.bytes_per_sector)
-            final_rpm = format_info.get("rpm", default_phys.rpm)
-            final_heads_inverted = format_info.get("heads_inverted", default_phys.heads_inverted)
-
-            # Construct TrackFormat based on overrides or defaults
-            track_format = TrackFormat(
-                track_start=0,
-                track_end=final_cylinders - 1,
-                head_start=0,
-                head_end=final_heads - 1,
-                sectors_per_track=format_info.get("sectors_per_track", default_track_format.sectors_per_track),
-                encoding=format_info.get("encoding", default_track_format.encoding),
-                rate=format_info.get("rate", default_track_format.rate),
-                gap3=format_info.get("gap3", default_track_format.gap3),
-                interleave=format_info.get("interleave", default_track_format.interleave)
-            )
-
-            # Construct PhysicalFormat
-            physical_format_to_set = PhysicalFormat(
-                cylinders=final_cylinders,
-                heads=final_heads,
-                rpm=final_rpm,
-                heads_inverted=final_heads_inverted,
-                bytes_per_sector=final_bytes_per_sector,
-                track_formats=[track_format]
-            )
-
-        # --- Apply the final determined format ---
-        if physical_format_to_set:
-            self.driver.set_physical_format(physical_format_to_set)
-            self.disk.set_geometry(physical_format_to_set)
-            # Ensure the Greaseweazle driver's internal codec is updated
-            if isinstance(self.driver, GreaseweazleDriver) and hasattr(self.driver, '_create_and_set_custom_diskdef'):
-                 self.logger.debug("Applying custom diskdef after setting physical format.")
-                 self.driver._create_and_set_custom_diskdef()
-            else:
-                 self.logger.debug("Driver is not Greaseweazle or doesn't have _create_and_set_custom_diskdef.")
-        else:
-             # This case should ideally not happen if logic is correct, but log if it does
-             self.logger.error("Failed to determine a physical format to set in _apply_user_format.")
-             raise ValueError("Could not determine physical format to apply.")
+        # Update Greaseweazle driver's diskdef if applicable
+        if isinstance(self.driver, GreaseweazleDriver):
+            self.driver._create_and_set_custom_diskdef()
 
     def _adjust_geometry_after_filesystem(self) -> None:
         if self.filesystem and isinstance(self.filesystem, FATFilesystem):
@@ -926,7 +907,7 @@ class DiskController:
         return True
 
     def _detect_image_file_format(self, file_path: str) -> bool:
-        # Detect format and get BPB data
+        """Detect and set the format for an image file based on its boot sector."""
         format_name, boot_data = self.detect_format()
         self.logger.info(f"BPB: bytes_per_sector={boot_data.bytes_per_sector}, sectors_per_track={boot_data.sectors_per_track}, num_heads={boot_data.num_heads}, total_sectors={boot_data.total_sectors}")
 
@@ -935,28 +916,23 @@ class DiskController:
         total_sectors = file_size // boot_data.bytes_per_sector
         cylinders = total_sectors // (boot_data.num_heads * boot_data.sectors_per_track)
 
-        # Set geometry using BPB values
-        track_format = TrackFormat(
-            track_start=0,
-            track_end=cylinders - 1,
-            head_start=0,
-            head_end=boot_data.num_heads - 1,
-            sectors_per_track=boot_data.sectors_per_track,
-            encoding="MFM",  # Adjust as needed
-            rate=500,        # Adjust as needed
-            gap3=84,         # Default or adjust as needed
-            interleave=1     # Default or adjust as needed
-        )
-        physical_format = PhysicalFormat(
-            cylinders=cylinders,
-            heads=boot_data.num_heads,
-            rpm=360,         # Adjust as needed
-            heads_inverted=False,
-            bytes_per_sector=boot_data.bytes_per_sector,
-            track_formats=[track_format]
-        )
+        # Define format_info for PhysicalFormat construction
+        format_info = {
+            "cylinders": cylinders,
+            "heads": boot_data.num_heads,
+            "sectors_per_track": boot_data.sectors_per_track,
+            "bytes_per_sector": boot_data.bytes_per_sector,
+            "encoding": "MFM",
+            "rate": 500,
+            "rpm": 360,
+            "gap3": 84,
+            "interleave": 1
+        }
 
-        # Apply the geometry
+        # Create PhysicalFormat using shared method
+        physical_format = self._create_physical_format(format_info)
+
+        # Set geometry and physical format
         self.disk.set_geometry(physical_format)
         self.driver.set_physical_format(physical_format)
         self.logger.info(f"Geometry set: bytes_per_sector={physical_format.bytes_per_sector}, sectors_per_track={physical_format.track_formats[0].sectors_per_track}, heads={physical_format.heads}, cylinders={physical_format.cylinders}")
@@ -973,28 +949,11 @@ class DiskController:
         logger.debug(f"Adjusted geometry after filesystem: {self.disk.geometry}")
         return True
 
-    def create_custom_profile(self, format_info: dict) -> Optional[FormatProfile]:
-        from .formats import FormatProfile, PhysicalFormat, TrackFormat, FATVolumeInfo
+    def create_custom_profile(self, format_info: Dict[str, any]) -> Optional[FormatProfile]:
+        """Create a custom FormatProfile based on format_info."""
         try:
-            track_format = TrackFormat(
-                track_start=0,
-                track_end=format_info["cylinders"] - 1,
-                head_start=0,
-                head_end=format_info["heads"] - 1,
-                sectors_per_track=format_info["sectors_per_track"],
-                encoding=format_info["encoding"],
-                rate=format_info["rate"],
-                gap3=format_info["gap3"],
-                interleave=format_info["interleave"]
-            )
-            physical_format = PhysicalFormat(
-                cylinders=format_info["cylinders"],
-                heads=format_info["heads"],
-                rpm=format_info["rpm"],
-                heads_inverted=format_info.get("heads_inverted", False),
-                bytes_per_sector=format_info["bytes_per_sector"],
-                track_formats=[track_format]
-            )
+            # Create physical format using shared method
+            physical_format = self._create_physical_format(format_info)
             total_sectors = physical_format.total_sectors
             bytes_per_sector = physical_format.bytes_per_sector
             sectors_per_cluster = format_info.get("sectors_per_cluster", 1)
@@ -1004,12 +963,15 @@ class DiskController:
             root_dir_sectors = (root_entries * 32 + bytes_per_sector - 1) // bytes_per_sector
             data_sectors = total_sectors - (reserved_sectors + num_fats + root_dir_sectors)
             num_clusters = data_sectors // sectors_per_cluster
-            FAT12_MAX_CLUSTERS = 4084
+
             if num_clusters > FAT12_MAX_CLUSTERS:
                 self.logger.error(f"Cluster count ({num_clusters}) exceeds FAT12 limit")
                 return None
+
             bytes_per_fat = (num_clusters * 3 // 2) + 3
             sectors_per_fat = (bytes_per_fat + bytes_per_sector - 1) // bytes_per_sector
+
+            # Create FATVolumeInfo with calculated values
             boot_sector = FATVolumeInfo(
                 bytes_per_sector=bytes_per_sector,
                 sectors_per_cluster=sectors_per_cluster,
@@ -1019,15 +981,17 @@ class DiskController:
                 total_sectors=total_sectors,
                 media_descriptor=format_info.get("media_descriptor", 0xF0),
                 sectors_per_fat=sectors_per_fat,
-                sectors_per_track=track_format.sectors_per_track,
+                sectors_per_track=physical_format.track_formats[0].sectors_per_track,
                 num_heads=physical_format.heads,
                 hidden_sectors=format_info.get("hidden_sectors", 0),
                 drive_number=format_info.get("drive_number", 0),
                 volume_serial=format_info.get("volume_serial", 0),
             )
+
+            # Return the custom FormatProfile
             return FormatProfile(
                 name="custom",
-                description=f"Custom {physical_format.cylinders}x{physical_format.heads}x{track_format.sectors_per_track}x{physical_format.bytes_per_sector}",
+                description=f"Custom {physical_format.cylinders}x{physical_format.heads}x{physical_format.track_formats[0].sectors_per_track}x{physical_format.bytes_per_sector}",
                 physical_format=physical_format,
                 boot_sector=boot_sector
             )
