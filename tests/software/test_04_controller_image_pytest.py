@@ -57,7 +57,7 @@ def empty_controller(tmp_path):
     controller.close_disk()
 
 def test_01_open_image_auto_detect_format(populated_controller: DiskController):
-    geom = populated_controller.disk.geometry
+    geom = populated_controller.disk.physical_format
     assert geom is not None, "Disk geometry not set after opening image" # Add check
     # --- FIX: Use get_sectors_per_track method ---
     assert geom.get_sectors_per_track(0, 0) == FMT_144.physical_format.get_sectors_per_track(0, 0), \

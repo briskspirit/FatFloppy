@@ -724,13 +724,13 @@ class FATFilesystem(Filesystem):
             current_cluster = next_cluster
 
     def _read_bytes(self, offset: int, length: int) -> bytes:
-        if self.disk.geometry.bytes_per_sector != self.boot_sector.bytes_per_sector:
-            self.logger.error(f"Geometry mismatch: disk={self.disk.geometry.bytes_per_sector}, boot_sector={self.boot_sector.bytes_per_sector}")
+        if self.disk.physical_format.bytes_per_sector != self.boot_sector.bytes_per_sector:
+            self.logger.error(f"Geometry mismatch: disk={self.disk.physical_format.bytes_per_sector}, boot_sector={self.boot_sector.bytes_per_sector}")
         if length <= 0:
             return b""
         if not self.boot_sector or self.boot_sector.bytes_per_sector == 0:
             raise ValueError("Invalid boot sector")
-        if not self.disk or not self.disk.geometry:
+        if not self.disk or not self.disk.physical_format:
             raise ValueError("Disk or geometry not available")
         bytes_per_sector = self.boot_sector.bytes_per_sector
         start_lba = offset // bytes_per_sector
@@ -751,7 +751,7 @@ class FATFilesystem(Filesystem):
             return
         if not self.boot_sector or self.boot_sector.bytes_per_sector == 0:
             raise ValueError("Invalid boot sector")
-        if not self.disk or not self.disk.geometry:
+        if not self.disk or not self.disk.physical_format:
             raise ValueError("Disk or geometry not available")
         bytes_per_sector = self.boot_sector.bytes_per_sector
         length = len(data)

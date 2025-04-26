@@ -113,4 +113,4 @@ class FormatProfile:
 
     @property
     def capacity_kb(self) -> float:
-        return self.geometry.total_bytes / 1024
+        return self.physical_format.total_bytes / 1024

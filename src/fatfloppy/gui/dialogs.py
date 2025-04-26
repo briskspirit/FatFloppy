@@ -222,12 +222,12 @@ class DriveSelectionDialog(QDialog):
                 profile = FLOPPY_FORMATS.get(format_key)
                 if profile:
                     # Set parameters but keep the group disabled
-                    self.cylinders_spin.setValue(profile.geometry.cylinders)
-                    self.heads_spin.setValue(profile.geometry.heads)
-                    self.sectors_spin.setValue(profile.geometry.sectors_per_track)
+                    self.cylinders_spin.setValue(profile.physical_format.cylinders)
+                    self.heads_spin.setValue(profile.physical_format.heads)
+                    self.sectors_spin.setValue(profile.physical_format.sectors_per_track)
 
                     # Set sector size
-                    index = self.bytes_per_sector_combo.findData(profile.geometry.bytes_per_sector)
+                    index = self.bytes_per_sector_combo.findData(profile.physical_format.bytes_per_sector)
                     if index >= 0:
                         self.bytes_per_sector_combo.setCurrentIndex(index)
 
@@ -317,10 +317,10 @@ class DriveSelectionDialog(QDialog):
                 if profile:
                     format_info = {
                         "profile_name": format_key,
-                        "cylinders": profile.geometry.cylinders,
-                        "heads": profile.geometry.heads,
-                        "sectors_per_track": profile.geometry.sectors_per_track,
-                        "bytes_per_sector": profile.geometry.bytes_per_sector,
+                        "cylinders": profile.physical_format.cylinders,
+                        "heads": profile.physical_format.heads,
+                        "sectors_per_track": profile.physical_format.sectors_per_track,
+                        "bytes_per_sector": profile.physical_format.bytes_per_sector,
                         "encoding": profile.physical_format.encoding,
                         "rate": profile.physical_format.rate,
                         "rpm": profile.physical_format.rpm,

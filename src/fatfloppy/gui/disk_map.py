@@ -67,7 +67,7 @@ class DiskMapView:
             text_height = text.boundingRect().height()
             text.setPos((view_width - text_width) / 2, (view_height - text_height) / 2)
             return
-        geometry = controller.geometry
+        geometry = controller.physical_format
         if geometry is None or current_head >= geometry.heads:
             self.scene.addText("No data for this head").setPos(10, 10)
             return

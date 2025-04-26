@@ -85,7 +85,7 @@ def mock_fs_setup(request):
         track_formats=[mock_track_format] # Pass list of TrackFormat
     )
     # Use PropertyMock for geometry as it might be accessed multiple times
-    type(mock_disk).geometry = PropertyMock(return_value=mock_disk_geometry)
+    type(mock_disk).physical_format = PropertyMock(return_value=mock_disk_geometry)
     # --- End Fix ---
 
     # Create initial in-memory representations

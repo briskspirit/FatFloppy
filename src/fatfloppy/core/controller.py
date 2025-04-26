@@ -25,7 +25,7 @@ class DiskController:
         self.known_formats = FLOPPY_FORMATS
         self.driver: Optional[DiskIODriver] = None
         self.explicit_format_set = False
-        self.geometry = None
+        self.physical_format = None
         self.boot_sector = None
 
     def _create_physical_driver(self, source: str, drive_letter: str, drive_size: str) -> GreaseweazleDriver:
@@ -120,24 +120,24 @@ class DiskController:
             if hasattr(self.driver, 'physical_format') and self.driver.physical_format:
                 # Assuming uniform sectors_per_track for simplicity
                 actual_sectors = self.driver.physical_format.track_formats[0].sectors_per_track
-                if actual_sectors != self.disk.geometry.track_formats[0].sectors_per_track:
+                if actual_sectors != self.disk.physical_format.track_formats[0].sectors_per_track:
                     updated_track_format = TrackFormat(
                         track_start=0,
-                        track_end=self.disk.geometry.cylinders - 1,
+                        track_end=self.disk.physical_format.cylinders - 1,
                         head_start=0,
-                        head_end=self.disk.geometry.heads - 1,
+                        head_end=self.disk.physical_format.heads - 1,
                         sectors_per_track=actual_sectors,
-                        encoding=self.disk.geometry.track_formats[0].encoding,
-                        rate=self.disk.geometry.track_formats[0].rate,
-                        gap3=self.disk.geometry.track_formats[0].gap3,
-                        interleave=self.disk.geometry.track_formats[0].interleave
+                        encoding=self.disk.physical_format.track_formats[0].encoding,
+                        rate=self.disk.physical_format.track_formats[0].rate,
+                        gap3=self.disk.physical_format.track_formats[0].gap3,
+                        interleave=self.disk.physical_format.track_formats[0].interleave
                     )
                     updated_geometry = PhysicalFormat(
-                        cylinders=self.disk.geometry.cylinders,
-                        heads=self.disk.geometry.heads,
-                        rpm=self.disk.geometry.rpm,
-                        heads_inverted=self.disk.geometry.heads_inverted,
-                        bytes_per_sector=self.disk.geometry.bytes_per_sector,
+                        cylinders=self.disk.physical_format.cylinders,
+                        heads=self.disk.physical_format.heads,
+                        rpm=self.disk.physical_format.rpm,
+                        heads_inverted=self.disk.physical_format.heads_inverted,
+                        bytes_per_sector=self.disk.physical_format.bytes_per_sector,
                         track_formats=[updated_track_format]
                     )
                     self.set_geometry(updated_geometry)
@@ -146,25 +146,25 @@ class DiskController:
                   hasattr(bs, 'num_heads') and bs.num_heads > 0):
                 sectors_per_track = bs.sectors_per_track
                 heads = bs.num_heads
-                if (self.disk.geometry.track_formats[0].sectors_per_track != sectors_per_track or
-                    self.disk.geometry.heads != heads):
+                if (self.disk.physical_format.track_formats[0].sectors_per_track != sectors_per_track or
+                    self.disk.physical_format.heads != heads):
                     updated_track_format = TrackFormat(
                         track_start=0,
-                        track_end=self.disk.geometry.cylinders - 1,
+                        track_end=self.disk.physical_format.cylinders - 1,
                         head_start=0,
                         head_end=heads - 1,
                         sectors_per_track=sectors_per_track,
-                        encoding=self.disk.geometry.track_formats[0].encoding,
-                        rate=self.disk.geometry.track_formats[0].rate,
-                        gap3=self.disk.geometry.track_formats[0].gap3,
-                        interleave=self.disk.geometry.track_formats[0].interleave
+                        encoding=self.disk.physical_format.track_formats[0].encoding,
+                        rate=self.disk.physical_format.track_formats[0].rate,
+                        gap3=self.disk.physical_format.track_formats[0].gap3,
+                        interleave=self.disk.physical_format.track_formats[0].interleave
                     )
                     updated_geometry = PhysicalFormat(
-                        cylinders=self.disk.geometry.cylinders,
+                        cylinders=self.disk.physical_format.cylinders,
                         heads=heads,
-                        rpm=self.disk.geometry.rpm,
-                        heads_inverted=self.disk.geometry.heads_inverted,
-                        bytes_per_sector=self.disk.geometry.bytes_per_sector,
+                        rpm=self.disk.physical_format.rpm,
+                        heads_inverted=self.disk.physical_format.heads_inverted,
+                        bytes_per_sector=self.disk.physical_format.bytes_per_sector,
                         track_formats=[updated_track_format]
                     )
                     self.set_geometry(updated_geometry)
@@ -197,7 +197,7 @@ class DiskController:
                 self._apply_user_format(format_info)
                 self.filesystem = create_filesystem(self.disk)
                 self._adjust_geometry_after_filesystem() # Adjust based on FS if needed
-                self.logger.debug(f"Applied user format. Geometry: {self.disk.geometry}")
+                self.logger.debug(f"Applied user format. Geometry: {self.disk.physical_format}")
                 return True
             except Exception as e:
                 self.logger.error(f"Failed applying user format: {e}")
@@ -213,7 +213,7 @@ class DiskController:
             if success:
                  self.filesystem = create_filesystem(self.disk)
                  self._adjust_geometry_after_filesystem() # Final adjustment after detection/FS creation
-                 self.logger.debug(f"Auto-detected format. Geometry: {self.disk.geometry}")
+                 self.logger.debug(f"Auto-detected format. Geometry: {self.disk.physical_format}")
             return success
 
     def open_disk(self, source: str, disk_type: str = "image", drive_letter: str = "A", drive_size: str = "3.5", format_info: dict = None) -> bool:
@@ -239,16 +239,16 @@ class DiskController:
             # _handle_format now manages setting geometry based on driver type and format_info
             success = self._handle_format(format_info, drive_size)
 
-            if not success or not self.disk or not self.disk.geometry:
+            if not success or not self.disk or not self.disk.physical_format:
                 self.logger.error(f"Failed to establish valid format/geometry for {source}")
                 self.close_disk()
                 return False
 
             # Update controller's state mirrors *after* successful handling
-            self.geometry = self.disk.geometry
+            self.physical_format = self.disk.physical_format
             self.boot_sector = self.filesystem.boot_sector if self.filesystem and hasattr(self.filesystem, 'boot_sector') else None
 
-            self.logger.info(f"Disk '{source}' opened successfully. Type: {disk_type}. Geometry: {self.geometry}")
+            self.logger.info(f"Disk '{source}' opened successfully. Type: {disk_type}. Geometry: {self.physical_format}")
             return True
 
         except (FileNotFoundError, IMDFormatException, ValueError, TypeError, Exception) as e:
@@ -273,7 +273,7 @@ class DiskController:
         # if isinstance(self.driver, GreaseweazleDriver) and self.driver.usb:
         #     self.driver.usb.close()
         self.driver = None
-        self.geometry = None
+        self.physical_format = None
         self.boot_sector = None
         self.explicit_format_set = False
         self.logger.debug("Disk closed and controller state reset.")
@@ -341,7 +341,7 @@ class DiskController:
                                # We found a matching profile based on IMD content
                                self.logger.info(f"IMD content matches known format: {format_name}")
                                # Ensure controller geometry reflects the matched profile if consistent
-                               if self.disk.geometry != profile.physical_format:
+                               if self.disk.physical_format != profile.physical_format:
                                     self.logger.info(f"Updating geometry to match detected profile '{format_name}'")
                                     self.set_geometry(profile.physical_format) # This updates disk and driver
                                return format_name, boot_data
@@ -355,7 +355,7 @@ class DiskController:
              # --- Original Detection for Raw/Physical ---
              else:
                   # Set a temporary geometry if none exists (less likely now with open_disk changes)
-                  if not self.disk.geometry:
+                  if not self.disk.physical_format:
                        self.logger.warning("No geometry set, applying temporary default for detection.")
                        # Use a common default like 1.44MB
                        temp_profile = self.get_format_by_name("ibm_3.5_1.44m")
@@ -366,7 +366,7 @@ class DiskController:
                             temp_geom = PhysicalFormat(80, 2, 300, False, 512, [temp_track_format])
                             self.set_geometry(temp_geom)
 
-                  self.logger.debug(f"Detecting format using geometry: {self.disk.geometry}")
+                  self.logger.debug(f"Detecting format using geometry: {self.disk.physical_format}")
 
                   # Read the boot sector (handle potential read errors)
                   try:
@@ -390,36 +390,36 @@ class DiskController:
                       # Adjust geometry based on BPB values *if* it seems valid and differs significantly
                       # Only adjust if not explicitly set by user? Maybe always adjust based on BPB? Let's adjust.
                       adjust_geom = False
-                      if boot_data.bytes_per_sector > 0 and boot_data.bytes_per_sector != self.disk.geometry.bytes_per_sector:
-                           self.logger.info(f"Adjusting sector size based on BPB from {self.disk.geometry.bytes_per_sector} to {boot_data.bytes_per_sector}")
-                           self.disk.geometry.bytes_per_sector = boot_data.bytes_per_sector
+                      if boot_data.bytes_per_sector > 0 and boot_data.bytes_per_sector != self.disk.physical_format.bytes_per_sector:
+                           self.logger.info(f"Adjusting sector size based on BPB from {self.disk.physical_format.bytes_per_sector} to {boot_data.bytes_per_sector}")
+                           self.disk.physical_format.bytes_per_sector = boot_data.bytes_per_sector
                            adjust_geom = True
 
                       # Adjust heads/spt only if they seem valid in BPB
-                      if boot_data.num_heads > 0 and boot_data.num_heads != self.disk.geometry.heads:
-                           self.logger.info(f"Adjusting heads based on BPB from {self.disk.geometry.heads} to {boot_data.num_heads}")
-                           self.disk.geometry.heads = boot_data.num_heads
+                      if boot_data.num_heads > 0 and boot_data.num_heads != self.disk.physical_format.heads:
+                           self.logger.info(f"Adjusting heads based on BPB from {self.disk.physical_format.heads} to {boot_data.num_heads}")
+                           self.disk.physical_format.heads = boot_data.num_heads
                            # Update head_end in track formats too (assuming simple case)
-                           for tf in self.disk.geometry.track_formats:
+                           for tf in self.disk.physical_format.track_formats:
                                tf.head_end = boot_data.num_heads - 1
                            adjust_geom = True
-                      if boot_data.sectors_per_track > 0 and boot_data.sectors_per_track != self.disk.geometry.get_sectors_per_track(0,0): # Check against C=0,H=0
-                           self.logger.info(f"Adjusting sectors/track based on BPB from {self.disk.geometry.get_sectors_per_track(0,0)} to {boot_data.sectors_per_track}")
+                      if boot_data.sectors_per_track > 0 and boot_data.sectors_per_track != self.disk.physical_format.get_sectors_per_track(0,0): # Check against C=0,H=0
+                           self.logger.info(f"Adjusting sectors/track based on BPB from {self.disk.physical_format.get_sectors_per_track(0,0)} to {boot_data.sectors_per_track}")
                            # Update spt in track formats (assuming uniform)
-                           for tf in self.disk.geometry.track_formats:
+                           for tf in self.disk.physical_format.track_formats:
                                tf.sectors_per_track = boot_data.sectors_per_track
                            adjust_geom = True
 
                       if adjust_geom and hasattr(self.driver, "set_physical_format"):
                              self.logger.debug("Pushing adjusted geometry to driver.")
                              # Create a copy to avoid driver modifying controller's reference directly? Yes.
-                             self.driver.set_physical_format(copy.deepcopy(self.disk.geometry))
+                             self.driver.set_physical_format(copy.deepcopy(self.disk.physical_format))
 
 
                       # Match against known formats using the (potentially adjusted) geometry and parsed BPB
                       for format_name, profile in self.known_formats.items():
                           if (profile.physical_format and profile.boot_sector and
-                              profile.physical_format.cylinders == self.disk.geometry.cylinders and
+                              profile.physical_format.cylinders == self.disk.physical_format.cylinders and
                               profile.physical_format.heads == boot_data.num_heads and # Use BPB heads
                               profile.physical_format.bytes_per_sector == boot_data.bytes_per_sector and # Use BPB BPS
                               profile.physical_format.get_sectors_per_track(0,0) == boot_data.sectors_per_track and # Use BPB SPT
@@ -431,7 +431,7 @@ class DiskController:
                               self.logger.info(f"Detected known format: {format_name}")
                               # If geometry was adjusted, it should now match profile.physical_format
                               # If it wasn't adjusted but profile matches, ensure disk geometry is set to profile's
-                              if self.disk.geometry != profile.physical_format:
+                              if self.disk.physical_format != profile.physical_format:
                                    self.logger.info(f"Aligning geometry to matched profile '{format_name}'")
                                    self.set_geometry(profile.physical_format)
                               return format_name, boot_data
@@ -488,7 +488,7 @@ class DiskController:
              self.logger.warning(f"Driver type {type(self.driver).__name__} does not support set_physical_format.")
 
         # Update controller's geometry mirror
-        self.geometry = self.disk.geometry
+        self.physical_format = self.disk.physical_format
 
     def get_allocated_clusters(self) -> List[int]:
         if not self.filesystem or not hasattr(self.filesystem, "get_allocated_clusters"):
@@ -598,9 +598,9 @@ class DiskController:
         if not profile:
              # Attempt to find based on current geometry or get from driver if custom
              found_profile = False
-             if self.disk.geometry:
+             if self.disk.physical_format:
                   for name, prof in self.known_formats.items():
-                       if prof.physical_format == self.disk.geometry:
+                       if prof.physical_format == self.disk.physical_format:
                             profile = prof
                             format_name = name # Use the found name
                             found_profile = True
@@ -639,7 +639,7 @@ class DiskController:
 
         try:
             # Ensure disk geometry and driver format match the profile *before* formatting FS
-            if self.disk.geometry != profile.physical_format:
+            if self.disk.physical_format != profile.physical_format:
                 self.logger.warning(f"Disk geometry differs from profile '{profile.name}' before format. Setting format now.")
                 self.set_format(profile) # Use set_format to ensure consistency
             elif hasattr(self.driver, "physical_format") and self.driver.physical_format != profile.physical_format:
@@ -653,7 +653,7 @@ class DiskController:
 
             # Update controller state after successful format
             self.filesystem = filesystem
-            self.geometry = self.disk.geometry # Should match profile now
+            self.physical_format = self.disk.physical_format # Should match profile now
             self.boot_sector = self.filesystem.boot_sector # Get the actual BS written
             self.flush() # Ensure all driver buffers are written
 
@@ -824,7 +824,7 @@ class DiskController:
                 self.filesystem = create_filesystem(self.disk)
                 if self.filesystem:
                     self._adjust_geometry_after_filesystem()
-                    logger.debug(f"Adjusted geometry after filesystem: {self.disk.geometry}")
+                    logger.debug(f"Adjusted geometry after filesystem: {self.disk.physical_format}")
                     return profile
             except Exception:
                 continue
@@ -946,7 +946,7 @@ class DiskController:
         # Initialize filesystem and adjust geometry if needed
         self.filesystem = create_filesystem(self.disk)
         self._adjust_geometry_after_filesystem()
-        logger.debug(f"Adjusted geometry after filesystem: {self.disk.geometry}")
+        logger.debug(f"Adjusted geometry after filesystem: {self.disk.physical_format}")
         return True
 
     def create_custom_profile(self, format_info: Dict[str, any]) -> Optional[FormatProfile]:

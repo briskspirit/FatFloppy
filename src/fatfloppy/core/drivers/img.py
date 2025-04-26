@@ -14,7 +14,7 @@ class IMGImageDriver(DiskIODriver):
         super().__init__()
         self.file_path = file_path
         self.physical_format = None
-        self.geometry_set = False
+        self.physical_format_set = False
         self.uses_physical_heads = False  # Explicitly indicate logical heads are used
         if image_data is not None:
             self.image_data = bytearray(image_data)

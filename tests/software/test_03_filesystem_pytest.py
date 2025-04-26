@@ -567,8 +567,8 @@ def test_21_init_with_different_geometry_720k(fs_setup):
     assert fs_reinit.cluster_size == 512, "Cluster size from 1.44MB BPB"
 
     # --- FIX: Verify disk object's geometry using total_sectors and get_sectors_per_track ---
-    assert disk.geometry.total_sectors == FMT_720.physical_format.total_sectors
-    assert disk.geometry.get_sectors_per_track(0, 0) == FMT_720.physical_format.get_sectors_per_track(0, 0)
+    assert disk.physical_format.total_sectors == FMT_720.physical_format.total_sectors
+    assert disk.physical_format.get_sectors_per_track(0, 0) == FMT_720.physical_format.get_sectors_per_track(0, 0)
     # --- End Fix ---
 
 

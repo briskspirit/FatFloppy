@@ -80,7 +80,7 @@ def test_02_ops_after_close(error_controller):
         controller.driver = MagicMock()
         controller.disk = MagicMock()
         controller.filesystem = MagicMock()
-        controller.disk.geometry = dummy_geom # Assign the correctly created geometry
+        controller.disk.physical_format = dummy_geom # Assign the correctly created geometry
         assert controller.disk is not None
         assert controller.driver is not None
 

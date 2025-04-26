@@ -157,7 +157,7 @@ def test_06_write_sectors_padding(disk_setup):
 def test_07_disk_error_no_geometry_read(disk_setup):
     # Create a disk without setting geometry
     disk_no_geom = Disk(disk_setup[0].driver)
-    assert disk_no_geom.geometry is None
+    assert disk_no_geom.physical_format is None
     with pytest.raises(ValueError, match="Disk geometry not set"):
         disk_no_geom.read_sector(0, 0, 1)
     with pytest.raises(ValueError, match="Disk geometry not set"):
@@ -166,7 +166,7 @@ def test_07_disk_error_no_geometry_read(disk_setup):
 def test_08_disk_error_no_geometry_write(disk_setup):
     # Create a disk without setting geometry
     disk_no_geom = Disk(disk_setup[0].driver)
-    assert disk_no_geom.geometry is None
+    assert disk_no_geom.physical_format is None
     with pytest.raises(ValueError, match="Disk geometry not set"):
         disk_no_geom.write_sector(0, 0, 1, b'\x00' * 128) # Use correct size
     with pytest.raises(ValueError, match="Disk geometry not set"):

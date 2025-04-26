@@ -110,11 +110,11 @@ class FileBrowserApp(QMainWindow):
         disk_info_widget = QWidget()
         disk_info_layout = QVBoxLayout(disk_info_widget)
 
-        self.geometry_group = QGroupBox("Physical Geometry")
-        self.geometry_info = QLabel("No disk image loaded")
-        geometry_layout = QVBoxLayout(self.geometry_group)
-        geometry_layout.addWidget(self.geometry_info)
-        self.geometry_group.setLayout(geometry_layout)
+        self.physical_format_group = QGroupBox("Physical Geometry")
+        self.physical_format_info = QLabel("No disk image loaded")
+        geometry_layout = QVBoxLayout(self.physical_format_group)
+        geometry_layout.addWidget(self.physical_format_info)
+        self.physical_format_group.setLayout(geometry_layout)
 
         self.filesystem_group = QGroupBox("Filesystem")
         self.filesystem_info = QLabel("No filesystem detected")
@@ -122,7 +122,7 @@ class FileBrowserApp(QMainWindow):
         filesystem_layout.addWidget(self.filesystem_info)
         self.filesystem_group.setLayout(filesystem_layout)
 
-        disk_info_layout.addWidget(self.geometry_group)
+        disk_info_layout.addWidget(self.physical_format_group)
         disk_info_layout.addWidget(self.filesystem_group)
         disk_info_layout.setContentsMargins(2, 2, 2, 2)
         disk_info_layout.setSpacing(4)
@@ -191,7 +191,7 @@ class FileBrowserApp(QMainWindow):
 
         self.tree_widget.setFont(self.app_font)
         self.file_list.setFont(self.app_font)
-        self.geometry_info.setFont(self.app_font)
+        self.physical_format_info.setFont(self.app_font)
         self.filesystem_info.setFont(self.app_font)
         self.text_viewer.setFont(self.app_font)
 
@@ -220,7 +220,7 @@ class FileBrowserApp(QMainWindow):
         self.controller = None
         self.tree_widget.clear()
         self.file_list.clear()
-        self.geometry_info.setText("No disk image loaded")
+        self.physical_format_info.setText("No disk image loaded")
         self.filesystem_info.setText("No filesystem detected")
         self.disk_map.scene.clear()
         self.disk_map.scene.addText("No disk image loaded").setPos(10, 10)
@@ -317,7 +317,7 @@ class FileBrowserApp(QMainWindow):
                 self.current_path = "/"
                 self.refresh_filesystem_ui()
 
-                if self.controller.geometry and self.controller.geometry.heads > 1:
+                if self.controller.physical_format and self.controller.physical_format.heads > 1:
                     self.head_action.setEnabled(True)
                     self.head_action.setText(f"Switch to Head {1 - self.current_head}")
                 else:
@@ -355,7 +355,7 @@ class FileBrowserApp(QMainWindow):
                 # No need to call build_fs_tree here, refresh handles it
                 self.refresh_filesystem_ui() # Refresh UI based on loaded disk
 
-                if self.controller.geometry and self.controller.geometry.heads > 1:
+                if self.controller.physical_format and self.controller.physical_format.heads > 1:
                     self.head_action.setEnabled(True)
                     self.head_action.setText(f"Switch to Head {1 - self.current_head}")
                 else:
@@ -387,7 +387,7 @@ class FileBrowserApp(QMainWindow):
                 self.current_path = "/"
                 self.refresh_filesystem_ui()
 
-                if self.controller.geometry and self.controller.geometry.heads > 1:
+                if self.controller.physical_format and self.controller.physical_format.heads > 1:
                     self.head_action.setEnabled(True)
                     self.head_action.setText(f"Switch to Head {1 - self.current_head}")
                 else:
@@ -426,11 +426,11 @@ class FileBrowserApp(QMainWindow):
         self.update_filesystem_info()
 
     def update_geometry_info(self):
-        if not self.controller or not self.controller.geometry:
-            self.geometry_info.setText("Disk geometry not available")
+        if not self.controller or not self.controller.physical_format:
+            self.physical_format_info.setText("Disk geometry not available")
             return
 
-        geometry = self.controller.geometry
+        geometry = self.controller.physical_format
         total_sectors = geometry.total_sectors
         total_bytes = total_sectors * geometry.bytes_per_sector
 
@@ -483,7 +483,7 @@ class FileBrowserApp(QMainWindow):
             f"Total Sectors: {total_sectors}\n"
             f"Total Size: {total_bytes / 1024:.1f} KB"
         )
-        self.geometry_info.setText(info)
+        self.physical_format_info.setText(info)
 
     def update_filesystem_info(self):
         if not self.controller:
@@ -972,7 +972,7 @@ class FileBrowserApp(QMainWindow):
             QMessageBox.warning(self, "Warning", f"Failed to add file {dest_name}")
 
     def toggle_head(self):
-        if self.controller and self.controller.geometry.heads > 1:
+        if self.controller and self.controller.physical_format.heads > 1:
             self.current_head = 1 - self.current_head
             self.head_action.setText(f"Switch to Head {1 - self.current_head}")
             self.draw_disk_map()
@@ -991,8 +991,8 @@ class FileBrowserApp(QMainWindow):
             space_info = self.controller.get_free_space()
             if space_info:
                 free_bytes, total_bytes = space_info
-                if self.controller.geometry:
-                    bytes_per_sector = self.controller.geometry.bytes_per_sector
+                if self.controller.physical_format:
+                    bytes_per_sector = self.controller.physical_format.bytes_per_sector
                     sectors_per_cluster = 1
                     if self.controller.boot_sector:
                         sectors_per_cluster = self.controller.boot_sector.sectors_per_cluster
@@ -1003,8 +1003,8 @@ class FileBrowserApp(QMainWindow):
                     self.free_space = free_bytes // 512
                     self.total_space = total_bytes // 512
             else:
-                if self.controller.geometry:
-                    geometry = self.controller.geometry
+                if self.controller.physical_format:
+                    geometry = self.controller.physical_format
                     total_sectors = geometry.total_sectors  # Use the provided total_sectors property
                     sectors_per_cluster = 1
                     if self.controller.boot_sector:
