@@ -2,7 +2,8 @@
 from typing import Optional, Tuple
 
 from .utils.logging_config import get_logger
-from .drivers import DiskIODriver, PhysicalFormat
+from .drivers.base_driver import DiskIODriver
+from .physical_format import PhysicalFormat
 
 logger = get_logger()
 

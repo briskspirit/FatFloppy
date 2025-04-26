@@ -8,7 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.formats import FATVolumeInfo, FormatProfile
 from fatfloppy.core.disk import Disk
-from fatfloppy.core.drivers import RawImageDriver, PhysicalFormat, TrackFormat # Import TrackFormat
+from fatfloppy.core.drivers import IMGImageDriver
+from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 from fatfloppy.core.controller import DiskController
 
@@ -70,7 +71,7 @@ def test_04_detect_format_no_match(disk_controller):
     struct.pack_into('<I', dummy_boot, 0x20, 0)   # total_sectors_32
     struct.pack_into('<H', dummy_boot, 0x1FE, 0xAA55) # boot_signature
 
-    driver = RawImageDriver("dummy", image_data=bytes(dummy_boot) + b'\x00' * 1024 * 100)
+    driver = IMGImageDriver("dummy", image_data=bytes(dummy_boot) + b'\x00' * 1024 * 100)
     disk_controller.driver = driver
     disk_controller.disk = Disk(driver)
 

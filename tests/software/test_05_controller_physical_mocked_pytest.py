@@ -7,9 +7,9 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.controller import DiskController
-from fatfloppy.core.drivers import GreaseweazleDriver, PhysicalFormat, TrackFormat # Import TrackFormat
+from fatfloppy.core.drivers import GreaseweazleDriver
 from fatfloppy.core.filesystem import FATFilesystem, FATBootSector
-from fatfloppy.core.formats import FATVolumeInfo, FormatProfile # Import FormatProfile
+from fatfloppy.core.formats import FATVolumeInfo, FormatProfile
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 # Import Disk to patch its method correctly
 from fatfloppy.core.disk import Disk
@@ -44,7 +44,7 @@ def mocked_controller():
          patch('greaseweazle.tools.util.Drive') as mock_drive, \
          patch('greaseweazle.tools.util.with_drive_selected') as mock_with_drive_selected, \
          patch('greaseweazle.codec.codec.get_diskdef') as mock_get_diskdef, \
-         patch('fatfloppy.core.drivers.read.read_with_retry') as mock_read_with_retry:
+         patch('fatfloppy.core.drivers.greaseweazle.read.read_with_retry') as mock_read_with_retry:
 
         mock_usb = MagicMock()
         mock_usb.sample_freq = 96000000.0 # Example value

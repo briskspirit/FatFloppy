@@ -73,6 +73,13 @@ class PhysicalFormat:
                 total += self.get_sectors_per_track(c, h)
         return total
 
+    @property
+    def total_bytes(self) -> int:
+        """Calculate total bytes on the disk."""
+        if not self.bytes_per_sector or self.bytes_per_sector <= 0:
+            return 0
+        return self.total_sectors * self.bytes_per_sector
+
     def lba_to_chs(self, lba: int) -> Tuple[int, int, int]:
         """Convert LBA to CHS."""
         if lba >= self.total_sectors:

@@ -7,14 +7,14 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.controller import DiskController
-from fatfloppy.core.drivers import PhysicalFormat, TrackFormat # Import TrackFormat
-from fatfloppy.core.formats import FormatProfile # Import FormatProfile
+from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
+from fatfloppy.core.formats import FormatProfile
 
 @pytest.fixture(scope="function")
 def error_controller(request):
     print(f"\n--- [Fixture Setup] Creating controller for test: {request.node.name} ---")
     controller = DiskController()
-    with patch('fatfloppy.core.drivers.RawImageDriver') as MockRawDriver:
+    with patch('fatfloppy.core.drivers.IMGImageDriver') as MockRawDriver:
         yield controller
     print(f"--- [Fixture Teardown] Cleaning up controller for test: {request.node.name} ---")
     if controller.disk:

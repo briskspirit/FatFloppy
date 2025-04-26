@@ -10,7 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.filesystem import FATFilesystem, FATBootSector, FileInfo
 from fatfloppy.core.disk import Disk
-from fatfloppy.core.drivers import DiskIODriver, PhysicalFormat, TrackFormat # Import TrackFormat
+from fatfloppy.core.drivers import DiskIODriver
+from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
 
 # Constants defined for clarity in the fixture
 bytes_per_sector = 512

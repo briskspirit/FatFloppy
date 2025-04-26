@@ -9,7 +9,7 @@ from pathlib import Path
 # Ensure src is in path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
-from fatfloppy.core.drivers import RawImageDriver, PhysicalFormat, TrackFormat # Import TrackFormat
+from fatfloppy.core.drivers import IMGImageDriver
 from fatfloppy.core.disk import Disk
 # Import specific errors if needed for asserts
 from fatfloppy.core.filesystem import FATFilesystem, FileInfo, FATBootSector, ATTR_VOLUME_ID, ATTR_LONG_NAME
@@ -31,7 +31,7 @@ def fs_setup(tmp_path):
          pytest.skip(f"{EMPTY_IMG_SRC} not found, cannot run filesystem tests.")
     shutil.copy(EMPTY_IMG_SRC, test_img_path)
 
-    driver = RawImageDriver(str(test_img_path))
+    driver = IMGImageDriver(str(test_img_path))
     disk = Disk(driver)
     # Use physical_format from the FormatProfile
     disk.set_geometry(FMT_144.physical_format)

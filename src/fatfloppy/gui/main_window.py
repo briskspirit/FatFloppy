@@ -11,13 +11,18 @@ from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
                              QWidget, QVBoxLayout, QGroupBox, QApplication,
                              QPlainTextEdit, QPushButton, QAbstractItemView)
 
+# Core imports
 from ..core.controller import DiskController
 from ..core.filesystem import FATFilesystem
+# Add IMDFormatException if needed for specific error handling
+# TODO: remove from here, GUI should be abstracted from anything but the controller
+from ..core.drivers import IMDFormatException, GREASEWEAZLE_AVAILABLE
+# Dialogs, Views, Models, Themes
 from .dialogs import DriveSelectionDialog, CreateImageDialog
 from .disk_map import DiskMapView
 from .file_browser import DragDropTreeWidget
 from .models import FileSystemNode
-from .themes import get_dark_theme, get_light_theme  # Import theme functions
+from .themes import get_dark_theme, get_light_theme
 
 class FileBrowserApp(QMainWindow):
     def __init__(self):
@@ -31,11 +36,7 @@ class FileBrowserApp(QMainWindow):
         self.total_space = 0
         self.controller = None
         self.current_file_path = None
-        try:
-            import greaseweazle
-            self.greaseweazle_available = True
-        except ImportError:
-            self.greaseweazle_available = False
+        self.greaseweazle_available = GREASEWEAZLE_AVAILABLE
 
         self.initUI()
         self.setup_fonts()
@@ -55,6 +56,7 @@ class FileBrowserApp(QMainWindow):
         file_menu.addAction(create_image_action)
 
         open_image_action = QAction("Open Disk Image File", self)
+        open_image_action.setToolTip("Open a disk image file (.ima, .img, .imd)")
         open_image_action.triggered.connect(self.open_disk_image_file)
         file_menu.addAction(open_image_action)
 
@@ -286,7 +288,7 @@ class FileBrowserApp(QMainWindow):
         self.statusBar().showMessage(f"Current path: {self.current_path}")
 
     def create_disk_image(self):
-        file_path, _ = QFileDialog.getSaveFileName(self, "Create Disk Image", "", "Disk Images (*.ima *.img)")
+        file_path, _ = QFileDialog.getSaveFileName(self, "Create Raw Disk Image", "", "Raw Disk Images (*.ima *.img)")
         if not file_path:
             return
 
@@ -331,16 +333,27 @@ class FileBrowserApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"An unexpected error occurred: {str(e)}")
 
     def open_disk_image_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img)")
+        # --- Updated File Dialog Filter ---
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img *.imd);;All Files (*)")
+        # --- End Update ---
         if not file_path:
             return
+
+        # Determine disk type based on extension
+        _, ext = os.path.splitext(file_path)
+        disk_type = "image" # Default to raw image
+        if ext.lower() == ".imd":
+            disk_type = "imd"
+
         try:
+            self.reset_ui() # Clear previous state before opening new
             self.controller = DiskController()
-            if self.controller.open_disk(file_path, "image"):
-                self.root_node = self.build_fs_tree()
-                self.current_node = self.root_node
-                self.current_path = "/"
-                self.refresh_filesystem_ui()
+            self.statusBar().showMessage(f"Opening {disk_type} disk: {file_path}...")
+            QApplication.processEvents()
+
+            if self.controller.open_disk(file_path, disk_type):
+                # No need to call build_fs_tree here, refresh handles it
+                self.refresh_filesystem_ui() # Refresh UI based on loaded disk
 
                 if self.controller.geometry and self.controller.geometry.heads > 1:
                     self.head_action.setEnabled(True)
@@ -348,10 +361,14 @@ class FileBrowserApp(QMainWindow):
                 else:
                     self.head_action.setEnabled(False)
                     self.head_action.setText("Single-sided disk")
-                self.statusBar().showMessage(f"Loaded: {file_path}")
+                self.statusBar().showMessage(f"Loaded: {file_path} (Type: {disk_type})")
             else:
                 self.reset_ui()
-                QMessageBox.critical(self, "Error", "Failed to open disk image")
+                QMessageBox.critical(self, "Error", f"Failed to open {disk_type} disk image")
+        # Catch specific IMD errors if needed
+        except IMDFormatException as e:
+             self.reset_ui()
+             QMessageBox.critical(self, "IMD Error", f"Failed to parse IMD file: {str(e)}")
         except Exception as e:
             self.reset_ui()
             QMessageBox.critical(self, "Error", f"Failed to open disk image: {str(e)}")
@@ -414,17 +431,32 @@ class FileBrowserApp(QMainWindow):
             return
 
         geometry = self.controller.geometry
-        total_sectors = geometry.total_sectors  # Use the provided total_sectors property
+        total_sectors = geometry.total_sectors
         total_bytes = total_sectors * geometry.bytes_per_sector
-        format_info = "Unknown"
-        format_result = self.controller.detect_format()
-        if format_result:
-            format_name, boot_data = format_result
-            format_profile = self.controller.get_format_by_name(format_name)
-            if format_profile:
-                format_info = format_profile.description
 
-        # Handle track-specific parameters
+        # Attempt to get format description
+        # Use detect_format carefully as it might trigger reads/adjustments
+        # For now, just use the geometry info primarily
+        # TODO: Maybe store detected format name in controller state?
+        # format_info_str = "Unknown"
+        # format_result = self.controller.detect_format()
+        # if format_result:
+        #     format_name, boot_data = format_result
+        #     format_profile = self.controller.get_format_by_name(format_name)
+        #     if format_profile:
+        #         format_info_str = format_profile.description
+
+        # Display IMD comment if available
+        imd_comment = ""
+        if hasattr(self.controller.driver, 'comment'):
+            imd_comment = self.controller.driver.comment
+            if imd_comment:
+                 # Shorten if too long for display?
+                 display_comment = (imd_comment[:60] + '...') if len(imd_comment) > 63 else imd_comment
+                 imd_comment = f"IMD Comment: {display_comment}\n"
+
+
+         # Handle track-specific parameters
         if geometry.track_formats:
             encodings = set(tf.encoding for tf in geometry.track_formats)
             rates = set(tf.rate for tf in geometry.track_formats)
@@ -439,7 +471,8 @@ class FileBrowserApp(QMainWindow):
             spt_text = "N/A"
 
         info = (
-            f"Format: {format_info}\n"
+            f"{imd_comment}" # Show IMD comment first if present
+            # f"Format: {format_info_str}\n"
             f"Encoding: {encoding_text}\n"
             f"Data Rate: {rate_text}\n"
             f"Rotation Speed: {geometry.rpm} RPM\n"

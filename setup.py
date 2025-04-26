@@ -1,9 +1,11 @@
 # setup.py
 from setuptools import setup, find_packages
 
+from src.fatfloppy._version import __version__ as version
+
 setup(
     name="FatFloppy",
-    version="0.1.0-alpha",
+    version=version,
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     scripts=["scripts/fatfloppy"],

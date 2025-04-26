@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
-from fatfloppy.core.drivers import RawImageDriver, PhysicalFormat, TrackFormat # Import TrackFormat
+from fatfloppy.core.drivers import IMGImageDriver
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 from fatfloppy.core.disk import Disk
 
@@ -24,7 +24,7 @@ def driver_setup(tmp_path):
         shutil.copy(EMPTY_IMG_SRC, test_img_path)
     else:
         pytest.skip(f"Resource file not found: {EMPTY_IMG_SRC}")
-    driver = RawImageDriver(str(test_img_path))
+    driver = IMGImageDriver(str(test_img_path))
     driver.set_physical_format(test_format)
     yield driver, test_img_path, bytes_per_sector, test_format # Yield the full format object
     print(f"\n[Fixture Teardown] Driver test image {test_img_path} cleanup.")
@@ -38,7 +38,7 @@ def test_01_initialization_from_file(driver_setup):
 
 def test_02_initialization_from_bytes():
     initial_data = b'\xAA' * 512 * 10
-    driver_bytes = RawImageDriver("dummy_path_not_used.img", image_data=initial_data)
+    driver_bytes = IMGImageDriver("dummy_path_not_used.img", image_data=initial_data)
     driver_bytes.set_physical_format(FMT_144.physical_format)
     assert driver_bytes.image_data == bytearray(initial_data)
     assert driver_bytes.dirty is True
@@ -69,7 +69,7 @@ def test_05_write_sector_and_flush(driver_setup):
     assert driver.image_data[offset:offset + len(test_data)] == test_data
     driver.flush()
     assert driver.dirty is False
-    driver2 = RawImageDriver(str(test_img_path))
+    driver2 = IMGImageDriver(str(test_img_path))
     driver2.set_physical_format(geom) # Use the same geom
     read_data = driver2.read_sector(cyl, head, sect)
     assert read_data == test_data
@@ -101,7 +101,7 @@ def test_07_write_within_bounds(driver_setup):
     last_sect = geom.get_sectors_per_track(last_cyl, last_head)
     driver.write_sector(last_cyl, last_head, last_sect, test_data)
     driver.flush()
-    driver2 = RawImageDriver(str(test_img_path))
+    driver2 = IMGImageDriver(str(test_img_path))
     driver2.set_physical_format(geom) # Use the same geom
     read_data = driver2.read_sector(last_cyl, last_head, last_sect)
     assert read_data == test_data

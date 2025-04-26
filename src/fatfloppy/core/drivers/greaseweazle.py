@@ -1,34 +1,87 @@
-# src/fatfloppy/core/drivers.py
+# src/fatfloppy/core/drivers/greaseweazle.py
 import copy
+import types
+import logging
 from typing import List, Optional, Tuple, Dict
 
-from .physical_format import PhysicalFormat, TrackFormat
-from .utils import greaseweazle_utils
-from .utils.logging_config import get_logger
-from greaseweazle.tools import util
-from greaseweazle.tools import read
+from ..drivers.base_driver import DiskIODriver
+from ..physical_format import PhysicalFormat, TrackFormat
+from ..utils.logging_config import get_logger
+
+# Greaseweazle imports - keep them here as they are specific to GreaseweazleDriver
+try:
+    from greaseweazle.tools import util
+    from greaseweazle.tools import read
+    from greaseweazle.codec import codec
+    from greaseweazle.codec.ibm import ibm
+    GREASEWEAZLE_AVAILABLE = True
+except ImportError:
+    GREASEWEAZLE_AVAILABLE = False
+    util = None # Define placeholders if GW is not available
+    read = None
+    ibm = None
+    codec = None
+    types = None
+
 
 logger = get_logger()
 
-class DiskIODriver:
-    def __init__(self):
-        self.logger = get_logger(self.__class__.__name__)
 
-    def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
-        raise NotImplementedError
+def create_greaseweazle_diskdef(
+    physical_format: PhysicalFormat,
+    logger: logging.Logger,
+) -> Optional[codec.DiskDef]:
+    if not physical_format:
+        logger.warning("Cannot create custom diskdef: physical format not provided")
+        return None
 
-    def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
-        raise NotImplementedError
+    logger.debug("Creating custom disk definition")
 
-    def flush(self) -> None:
-        raise NotImplementedError
+    try:
+        disk_def = codec.DiskDef()
+        disk_def.cyls = physical_format.cylinders
+        disk_def.heads = physical_format.heads
 
-    def set_physical_format(self, physical_format: PhysicalFormat) -> None:
-        raise NotImplementedError
+        # Create track definitions for each TrackFormat
+        for tf in physical_format.track_formats:
+            # Determine format name based on encoding
+            if tf.encoding == "MFM":
+                format_name = "ibm.mfm"
+            elif tf.encoding == "FM":
+                format_name = "ibm.fm"
+            else:
+                logger.warning(f"Unsupported encoding '{tf.encoding}' for track format, defaulting to ibm.mfm")
+                format_name = "ibm.mfm"
+
+            # Create a track definition for this TrackFormat
+            track_def = ibm.IBMTrack_FixedDef(format_name)
+            track_def.add_param("secs", str(tf.sectors_per_track))
+            track_def.add_param("bps", str(physical_format.bytes_per_sector))
+            track_def.add_param("gap3", str(tf.gap3))
+            track_def.add_param("rate", str(tf.rate))
+            track_def.finalise()
+
+            # Assign this track definition to the specified cylinder and head ranges
+            for c in range(tf.track_start, tf.track_end + 1):
+                for h in range(tf.head_start, tf.head_end + 1):
+                    disk_def.track_map[(c, h)] = track_def
+
+        disk_def.finalise()
+
+        logger.info(
+            f"Custom disk definition created: Cyls={physical_format.cylinders}, Heads={physical_format.heads}, "
+            f"with {len(physical_format.track_formats)} track formats"
+        )
+        return disk_def
+    except Exception as e:
+        logger.error(f"Failed to create custom disk definition: {e}", exc_info=True)
+        return None
 
 class GreaseweazleDriver(DiskIODriver):
     def __init__(self, device_name=None, drive="A", drive_size="3.5"):
         super().__init__()
+        if not GREASEWEAZLE_AVAILABLE:
+            raise ImportError("Greaseweazle library not found. Physical drive access unavailable.")
         self.device_name = device_name
         self.drive = drive
         self.drive_size = drive_size
@@ -47,6 +100,9 @@ class GreaseweazleDriver(DiskIODriver):
         self.uses_physical_heads = True  # Added to indicate physical head usage
 
     def initialize(self):
+        if not GREASEWEAZLE_AVAILABLE:
+             self.logger.error("Cannot initialize GreaseweazleDriver: library not available.")
+             return # Or raise error
         if self.initialized:
             return
         self.usb = util.usb_open(self.device_name)
@@ -57,6 +113,8 @@ class GreaseweazleDriver(DiskIODriver):
                 self.drive_ticks_per_rev = flux.ticks_per_rev
             util.with_drive_selected(measure_rpm, self.usb, self.drive_obj)
         except Exception as e:
+            # TODO: If failed to measure RPM - we should stop initializing and quit/close disk, as this tells us that either drive isn't working or something is wrong with floppy disk itself. Or it's not there?) CRYTICAL!
+            # normally Greaseweazle CLI in this case will return something like "No index found"
             self.logger.warning(f"Failed to measure RPM: {e}")
             self.drive_ticks_per_rev = 0.2 * self.usb.sample_freq
         self.initialized = True
@@ -157,7 +215,7 @@ class GreaseweazleDriver(DiskIODriver):
             self.fmt_cls = None
             self.using_custom_diskdef = False
             return
-        disk_def = greaseweazle_utils.create_greaseweazle_diskdef(self.physical_format, self.logger)
+        disk_def = create_greaseweazle_diskdef(self.physical_format, self.logger)
         if disk_def:
             self.fmt_cls = disk_def
             self.using_custom_diskdef = True
@@ -359,67 +417,3 @@ class GreaseweazleDriver(DiskIODriver):
         except Exception as e:
             self.logger.error(f"Error writing track C:{cylinder} H:{head}: {e}", exc_info=True)
             return False
-
-class RawImageDriver(DiskIODriver):
-    def __init__(self, file_path, image_data=None):
-        super().__init__()
-        self.file_path = file_path
-        self.physical_format = None
-        self.geometry_set = False
-        if image_data is not None:
-            self.image_data = bytearray(image_data)
-            self.dirty = True
-        else:
-            self.image_data = bytearray(open(file_path, "rb").read())
-            self.dirty = False
-
-    def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
-        if not self.physical_format:
-            raise ValueError("Physical format not set, cannot read sector")
-        bytes_per_sector = self.physical_format.bytes_per_sector
-        try:
-            offset = self._calculate_sector_offset(cylinder, head, sector, bytes_per_sector)
-        except ValueError as e:
-            raise IOError(f"Invalid sector access: {e}")
-        if offset + bytes_per_sector > len(self.image_data):
-            raise IOError(f"Sector C:{cylinder} H:{head} S:{sector} is out of bounds")
-        return bytes(self.image_data[offset:offset + bytes_per_sector])
-
-    def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
-        if not self.physical_format:
-            raise ValueError("Physical format not set, cannot write sector")
-        bytes_per_sector = self.physical_format.bytes_per_sector
-        if bytes_per_sector <= 0:
-            raise ValueError(f"Invalid sector size ({bytes_per_sector}) in physical format.")
-        if len(data) != bytes_per_sector:
-            raise ValueError(f"Data length ({len(data)}) does not match sector size ({bytes_per_sector})")
-        try:
-            offset = self._calculate_sector_offset(cylinder, head, sector, bytes_per_sector)
-        except ValueError as e:
-            raise IOError(f"Invalid sector access: {e}")
-        if offset + bytes_per_sector > len(self.image_data):
-            raise IOError(f"Cannot write sector C:{cylinder} H:{head} S:{sector}: out of bounds")
-        self.image_data[offset:offset + bytes_per_sector] = data
-        self.dirty = True
-
-    def flush(self) -> None:
-        if self.dirty:
-            self.logger.debug(f"Flushing {len(self.image_data)} bytes to {self.file_path}")
-            with open(self.file_path, "wb") as f:
-                f.write(self.image_data)
-            self.logger.debug("Flush completed")
-            self.dirty = False
-        else:
-            self.logger.debug("No changes to flush")
-
-    def set_physical_format(self, physical_format: PhysicalFormat) -> None:
-        if not isinstance(physical_format, PhysicalFormat):
-            raise TypeError("physical_format must be a PhysicalFormat object")
-        self.physical_format = copy.deepcopy(physical_format)
-
-    def _calculate_sector_offset(self, cylinder: int, head: int, sector: int, bytes_per_sector: int) -> int:
-        if not self.physical_format:
-            raise ValueError("Physical format not set")
-        self.physical_format.validate_chs(cylinder, head, sector)
-        lba = self.physical_format.chs_to_lba(cylinder, head, sector)
-        return lba * bytes_per_sector

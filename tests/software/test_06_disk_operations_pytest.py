@@ -8,7 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 # Import the correct classes
 from fatfloppy.core.disk import Disk
-from fatfloppy.core.drivers import RawImageDriver, PhysicalFormat, TrackFormat
+from fatfloppy.core.drivers import IMGImageDriver
+from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
 
 @pytest.fixture(scope="function")
 def disk_setup(tmp_path):
@@ -67,7 +68,7 @@ def disk_setup(tmp_path):
 
     img_path = tmp_path / "disk_ops.img"
     # Instantiate driver and disk
-    driver = RawImageDriver(file_path=str(img_path), image_data=bytes(initial_data))
+    driver = IMGImageDriver(file_path=str(img_path), image_data=bytes(initial_data))
     disk = Disk(driver)
     # Set geometry on the disk (this also sets it on the driver if method exists)
     disk.set_geometry(phys_fmt)
