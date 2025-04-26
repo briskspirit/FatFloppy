@@ -415,11 +415,7 @@ class IMDImageDriver(DiskIODriver):
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         """Reads a single sector's data, checking the modification cache first."""
-        # Don't check file_loaded here, allow reads even if init was for format
-        # if not self.file_loaded:
-        #     raise IOError("IMD file not loaded or parsed.")
         if not self.physical_format:
-            # If format couldn't be derived, we can't know the expected size
             raise ValueError("Physical format not derived/available, cannot determine sector size to read")
 
         sector_key = (cylinder, head, sector)
@@ -428,43 +424,30 @@ class IMDImageDriver(DiskIODriver):
         if sector_key in self.modified_sector_data:
             return self.modified_sector_data[sector_key]
 
+        # Determine expected size using shared method
+        expected_size = self._get_sector_size(cylinder, head, sector)
+
         # Not in cache, read from original image_data structure
         track_key = (cylinder, head)
         track_info = self.tracks.get(track_key)
 
-        # Determine expected size (needed even if track/sector missing)
-        expected_size = self.physical_format.bytes_per_sector # Default
-        if track_info:
-             try:
-                  # Try to get specific size if track exists
-                  expected_size = track_info.get_sector_size(sector)
-             except (ValueError, IMDFormatException): # Sector not in map or size error
-                  try:
-                       # Fallback to size of first sector on that track
-                       if track_info.sector_num_map:
-                            expected_size = track_info.get_sector_size(track_info.sector_num_map[0])
-                       # Else: keep default physical_format.bytes_per_sector
-                  except (IndexError, ValueError, IMDFormatException): pass # Keep default
-
         if not track_info:
             self.logger.warning(f"Track C:{cylinder} H:{head} not found in IMD.")
-            return bytes(expected_size) # Return empty bytes of expected size
+            return bytes(expected_size)  # Return empty bytes of expected size
 
         if sector not in track_info.sector_data_info:
-             self.logger.warning(f"Sector S:{sector} not found in map for C:{cylinder} H:{head}. Available: {track_info.sector_num_map}")
-             return bytes(expected_size) # Return empty bytes of expected size
+            self.logger.warning(f"Sector S:{sector} not found in map for C:{cylinder} H:{head}. Available: {track_info.sector_num_map}")
+            return bytes(expected_size)  # Return empty bytes of expected size
 
         data_offset, data_type, data_size_on_disk = track_info.sector_data_info[sector]
-        # target_sector_size = expected_size # Already determined above
 
         if data_type == IMD_SECTOR_UNAVAILABLE:
             return bytes(expected_size)
 
         elif data_type in (IMD_SECTOR_COMPRESSED, IMD_SECTOR_COMPRESSED_DEL, IMD_SECTOR_COMPRESSED_ERR, IMD_SECTOR_COMPRESSED_DEL_ERR):
             if data_size_on_disk != 1:
-                 self.logger.error(f"Mismatch size for compressed sector C:{cylinder} H:{head} S:{sector}. Expected 1 byte, record size is {data_size_on_disk}")
-                 return bytes(expected_size) # Return empty on error
-            # Check bounds for reading the fill byte
+                self.logger.error(f"Mismatch size for compressed sector C:{cylinder} H:{head} S:{sector}. Expected 1 byte, record size is {data_size_on_disk}")
+                return bytes(expected_size)  # Return empty on error
             if data_offset >= len(self.image_data):
                 self.logger.error(f"Offset {data_offset} out of bounds for reading compressed fill byte C:{cylinder} H:{head} S:{sector}")
                 return bytes(expected_size)
@@ -472,23 +455,21 @@ class IMDImageDriver(DiskIODriver):
             return bytes([fill_byte] * expected_size)
 
         elif data_type in (IMD_SECTOR_NORMAL, IMD_SECTOR_NORMAL_DEL, IMD_SECTOR_NORMAL_ERR, IMD_SECTOR_NORMAL_DEL_ERR):
-             # Check bounds for reading normal data
-             if data_offset + data_size_on_disk > len(self.image_data):
-                 self.logger.error(f"Offset {data_offset} + size {data_size_on_disk} out of bounds for reading normal data C:{cylinder} H:{head} S:{sector}")
-                 # Return partial data if possible? Or just empty? Empty is safer.
-                 return bytes(expected_size)
+            if data_offset + data_size_on_disk > len(self.image_data):
+                self.logger.error(f"Offset {data_offset} + size {data_size_on_disk} out of bounds for reading normal data C:{cylinder} H:{head} S:{sector}")
+                return bytes(expected_size)
 
-             sector_bytes = self.image_data[data_offset : data_offset + data_size_on_disk]
+            sector_bytes = self.image_data[data_offset : data_offset + data_size_on_disk]
 
-             # Handle size mismatches (data_size_on_disk might not match expected_size if IMD is inconsistent)
-             if len(sector_bytes) != expected_size:
-                  self.logger.warning(f"Size mismatch for normal sector C:{cylinder} H:{head} S:{sector}. Expected {expected_size}, got {len(sector_bytes)}. Padding/truncating.")
-                  if len(sector_bytes) < expected_size:
-                       return bytes(sector_bytes) + bytes(expected_size - len(sector_bytes))
-                  else:
-                       return bytes(sector_bytes[:expected_size])
-             else:
-                 return bytes(sector_bytes)
+            # Handle size mismatches
+            if len(sector_bytes) != expected_size:
+                self.logger.warning(f"Size mismatch for normal sector C:{cylinder} H:{head} S:{sector}. Expected {expected_size}, got {len(sector_bytes)}. Padding/truncating.")
+                if len(sector_bytes) < expected_size:
+                    return bytes(sector_bytes) + bytes(expected_size - len(sector_bytes))
+                else:
+                    return bytes(sector_bytes[:expected_size])
+            else:
+                return bytes(sector_bytes)
         else:
             self.logger.error(f"Unexpected sector data type {data_type} encountered during read for C:{cylinder} H:{head} S:{sector}")
             return bytes(expected_size)
@@ -772,6 +753,24 @@ class IMDImageDriver(DiskIODriver):
             self.logger.warning(f"Could not read boot sector (C:{cylinder}, H:{head}, S:{sector}) from IMD: {e}")
             return None
 
+    def format_imd(self, profile: FormatProfile, fill_byte: int = 0xE5):
+        self._initialize_for_format(profile)
+        self._build_imd_header()
+        # --- Store the fill byte used ---
+        self.last_format_fill_byte = fill_byte
+        # --- End Store ---
+
+        if not self.physical_format:
+            raise IMDFormatException("Physical format missing after initialization in format_imd")
+
+        self.logger.debug(f"Starting format_imd loop with fill_byte=0x{fill_byte:02X}")
+        for c in range(self.physical_format.cylinders):
+             for h in range(self.physical_format.heads):
+                  self._build_imd_track(c, h, fill_byte)
+
+        self.logger.info(f"IMD structure created in memory ready for flush. Size: {len(self.image_data)} bytes.")
+
+
     def _initialize_for_format(self, profile: FormatProfile):
         """Resets internal state and prepares for creating a new IMD structure."""
         self.logger.info(f"Initializing IMD driver for formatting with profile: {profile.name}")
@@ -843,67 +842,66 @@ class IMDImageDriver(DiskIODriver):
 
     def _read_original_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         """Helper to read sector data from the original image_data, bypassing the cache."""
-        # (Keep implementation as before - it reads based on self.tracks and self.image_data)
+        # Determine expected size using shared method
+        expected_size = self._get_sector_size(cylinder, head, sector)
+
         track_key = (cylinder, head)
         track_info = self.tracks.get(track_key)
 
-        expected_size = self.physical_format.bytes_per_sector if self.physical_format else 512
-        if track_info:
-            try: expected_size = track_info.get_sector_size(sector)
-            except:
-                try:
-                     if track_info.sector_num_map: expected_size = track_info.get_sector_size(track_info.sector_num_map[0])
-                except: pass
+        if not track_info:
+            return bytes(expected_size)
 
-        if not track_info: return bytes(expected_size)
-        if sector not in track_info.sector_data_info: return bytes(expected_size)
+        if sector not in track_info.sector_data_info:
+            return bytes(expected_size)
 
         data_offset, data_type, data_size_on_disk = track_info.sector_data_info[sector]
-        target_sector_size = expected_size # Use determined size
 
-        if data_offset >= len(self.image_data): # Bounds check offset
+        if data_offset >= len(self.image_data):
             self.logger.error(f"_read_original: Offset {data_offset} out of bounds (size {len(self.image_data)})")
-            return bytes(target_sector_size)
+            return bytes(expected_size)
 
         if data_type == IMD_SECTOR_UNAVAILABLE:
-            return bytes(target_sector_size)
+            return bytes(expected_size)
         elif data_type in (IMD_SECTOR_COMPRESSED, IMD_SECTOR_COMPRESSED_DEL, IMD_SECTOR_COMPRESSED_ERR, IMD_SECTOR_COMPRESSED_DEL_ERR):
-            if data_size_on_disk != 1: return bytes(target_sector_size)
+            if data_size_on_disk != 1:
+                return bytes(expected_size)
             fill_byte = self.image_data[data_offset]
-            return bytes([fill_byte] * target_sector_size)
+            return bytes([fill_byte] * expected_size)
         elif data_type in (IMD_SECTOR_NORMAL, IMD_SECTOR_NORMAL_DEL, IMD_SECTOR_NORMAL_ERR, IMD_SECTOR_NORMAL_DEL_ERR):
             end_offset = data_offset + data_size_on_disk
-            if end_offset > len(self.image_data): # Bounds check end
+            if end_offset > len(self.image_data):
                 self.logger.error(f"_read_original: Read end offset {end_offset} out of bounds (size {len(self.image_data)})")
-                # Return what we can, padded
                 actual_data = self.image_data[data_offset:]
-                return bytes(actual_data).ljust(target_sector_size, b'\0')
+                return bytes(actual_data).ljust(expected_size, b'\0')
 
             sector_bytes = self.image_data[data_offset : end_offset]
-            if len(sector_bytes) != target_sector_size: # Final size check
-                if len(sector_bytes) < target_sector_size:
-                    return bytes(sector_bytes).ljust(target_sector_size, b'\0')
+            if len(sector_bytes) != expected_size:
+                if len(sector_bytes) < expected_size:
+                    return bytes(sector_bytes).ljust(expected_size, b'\0')
                 else:
-                    return bytes(sector_bytes[:target_sector_size])
+                    return bytes(sector_bytes[:expected_size])
             else:
                 return bytes(sector_bytes)
         else:
-            return bytes(target_sector_size)
+            return bytes(expected_size)
 
-
-    def format_imd(self, profile: FormatProfile, fill_byte: int = 0xE5):
-        self._initialize_for_format(profile)
-        self._build_imd_header()
-        # --- Store the fill byte used ---
-        self.last_format_fill_byte = fill_byte
-        # --- End Store ---
-
-        if not self.physical_format:
-            raise IMDFormatException("Physical format missing after initialization in format_imd")
-
-        self.logger.debug(f"Starting format_imd loop with fill_byte=0x{fill_byte:02X}")
-        for c in range(self.physical_format.cylinders):
-             for h in range(self.physical_format.heads):
-                  self._build_imd_track(c, h, fill_byte)
-
-        self.logger.info(f"IMD structure created in memory ready for flush. Size: {len(self.image_data)} bytes.")
+    def _get_sector_size(self, cylinder: int, head: int, sector: int) -> int:
+        """Helper method to determine the sector size for a given CHS."""
+        track_key = (cylinder, head)
+        track_info = self.tracks.get(track_key)
+        if track_info:
+            try:
+                return track_info.get_sector_size(sector)
+            except (ValueError, IMDFormatException):
+                # If specific sector size fails, try the first sector's size
+                if track_info.sector_num_map:
+                    try:
+                        return track_info.get_sector_size(track_info.sector_num_map[0])
+                    except (ValueError, IMDFormatException):
+                        pass
+        # Fallback to physical format's default bytes per sector
+        if self.physical_format and self.physical_format.bytes_per_sector > 0:
+            return self.physical_format.bytes_per_sector
+        # If no format is set, assume a default (e.g., 512 bytes)
+        self.logger.warning(f"No sector size found for C:{cylinder} H:{head} S:{sector}, assuming 512 bytes.")
+        return 512
