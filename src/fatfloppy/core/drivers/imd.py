@@ -111,32 +111,28 @@ class IMDImageDriver(DiskIODriver):
         self.file_loaded = False
         self.modified_sector_data: Dict[Tuple[int, int, int], bytes] = {}
         self.last_format_fill_byte: Optional[int] = None
+        self.uses_physical_heads = False  # Explicitly indicate logical heads are used
 
-        # --- Check if file exists before trying to load/parse ---
         if os.path.exists(self.file_path):
             try:
                 self._load_and_parse_imd_file()
                 self.file_loaded = True
-            except FileNotFoundError: # Should not happen due to os.path.exists, but defensive
+            except FileNotFoundError:
                 self.logger.error(f"IMD file not found during load: {self.file_path}")
                 raise
             except IMDFormatException as e:
                 self.logger.error(f"Error parsing IMD file {self.file_path}: {e}")
-                # Allow partial load? For now, fail.
                 raise
             except Exception as e:
                 self.logger.exception(f"Unexpected error loading IMD file {self.file_path}: {e}")
                 raise
         else:
-            # File doesn't exist, initialize empty state ready for format_imd
             self.logger.info(f"IMD file '{self.file_path}' not found. Initializing empty driver state.")
-            # Basic defaults, format_imd will override most
             self.creation_date = datetime.datetime.now()
             self.imd_version = "IMD 1.18"
             self.comment = f"{self.creation_date.strftime('%d/%m/%Y %H:%M:%S')}\r\nFatFloppy v{fatfloppy_version}"
-            self.file_loaded = False # Mark as not loaded from disk
-            self.dirty = False # Not dirty until formatted
-            # physical_format will be set by format_imd
+            self.file_loaded = False
+            self.dirty = False
 
     def _load_and_parse_imd_file(self):
         """Loads the entire IMD file and parses its structure."""

@@ -15,6 +15,7 @@ class IMGImageDriver(DiskIODriver):
         self.file_path = file_path
         self.physical_format = None
         self.geometry_set = False
+        self.uses_physical_heads = False  # Explicitly indicate logical heads are used
         if image_data is not None:
             self.image_data = bytearray(image_data)
             self.dirty = True
@@ -25,10 +26,8 @@ class IMGImageDriver(DiskIODriver):
                 self.dirty = False
             except FileNotFoundError:
                  self.logger.error(f"Image file not found: {file_path}")
-                 # Allow creation of empty driver for formatting?
                  self.image_data = bytearray()
-                 self.dirty = False # Nothing to save yet
-                 #raise # Re-raise if opening existing must succeed
+                 self.dirty = False
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         if not self.physical_format:
