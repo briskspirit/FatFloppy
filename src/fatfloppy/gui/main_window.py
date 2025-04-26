@@ -11,13 +11,9 @@ from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
                              QWidget, QVBoxLayout, QGroupBox, QApplication,
                              QPlainTextEdit, QPushButton, QAbstractItemView)
 
-# Core imports
 from ..core.controller import DiskController
 from ..core.filesystem import FATFilesystem
-# Add IMDFormatException if needed for specific error handling
-# TODO: remove from here, GUI should be abstracted from anything but the controller
-from ..core.drivers import IMDFormatException, GREASEWEAZLE_AVAILABLE
-# Dialogs, Views, Models, Themes
+from ..core.drivers import GREASEWEAZLE_AVAILABLE
 from .dialogs import DriveSelectionDialog, CreateImageDialog
 from .disk_map import DiskMapView
 from .file_browser import DragDropTreeWidget
@@ -366,7 +362,7 @@ class FileBrowserApp(QMainWindow):
                 self.reset_ui()
                 QMessageBox.critical(self, "Error", f"Failed to open {disk_type} disk image")
         # Catch specific IMD errors if needed
-        except IMDFormatException as e:
+        except ValueError as e:
              self.reset_ui()
              QMessageBox.critical(self, "IMD Error", f"Failed to parse IMD file: {str(e)}")
         except Exception as e:

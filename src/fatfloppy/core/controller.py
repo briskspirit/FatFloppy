@@ -6,8 +6,7 @@ from typing import List, Optional, Tuple, Dict
 from .utils.logging_config import get_logger
 from .disk import Disk
 from .drivers import (
-    DiskIODriver, GreaseweazleDriver, IMGImageDriver, IMDImageDriver,
-    IMDFormatException
+    DiskIODriver, GreaseweazleDriver, IMGImageDriver, IMDImageDriver
 )
 from .physical_format import PhysicalFormat, TrackFormat
 from .formats import FATVolumeInfo, FormatProfile
@@ -222,7 +221,7 @@ class DiskController:
             self.boot_sector = self.filesystem.boot_sector if self.filesystem and hasattr(self.filesystem, 'boot_sector') else None
             self.logger.info(f"Disk '{source}' opened successfully. Type: {disk_type}. Geometry: {self.physical_format}")
             return True
-        except (FileNotFoundError, IMDFormatException, ValueError, TypeError, Exception) as e:
+        except (FileNotFoundError, ValueError, TypeError, Exception) as e:
             self.logger.exception(f"Error opening disk '{source}' (Type: {disk_type}): {e}")
             self.close_disk()
             return False

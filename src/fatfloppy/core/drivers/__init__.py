@@ -6,7 +6,7 @@ Core Disk I/O Drivers Package
 
 from .base_driver import DiskIODriver
 from .img import IMGImageDriver
-from .imd import IMDImageDriver, IMDFormatException
+from .imd import IMDImageDriver
 
 # Conditionally import Greaseweazle to handle missing dependency
 try:
@@ -23,7 +23,6 @@ __all__ = [
     'DiskIODriver',
     'IMGImageDriver',
     'IMDImageDriver',
-    'IMDFormatException',
     'GreaseweazleDriver',
     'GREASEWEAZLE_AVAILABLE',
 ]

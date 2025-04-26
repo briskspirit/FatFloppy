@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock # Import patch for logger test
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
-from fatfloppy.core.drivers import IMDImageDriver, IMDFormatException
+from fatfloppy.core.drivers import IMDImageDriver
 from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat # Added imports
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 
@@ -155,7 +155,7 @@ def test_02_init_file_not_found(tmp_path): # Use tmp_path for clean test
 
 def test_03_init_corrupt_header_no_eof():
     bad_data = b"IMD Corrupt Header String Without EOF Mark"
-    with pytest.raises(IMDFormatException, match="IMD header terminator .* not found"):
+    with pytest.raises(ValueError, match="IMD header terminator .* not found"):
         # Need to write to file first for current __init__
         dummy_path = Path("./dummy_corrupt.imd")
         try:
@@ -173,7 +173,7 @@ def test_04_init_corrupt_track_header_incomplete(tmp_path):
     corrupt_data = imd_data[:valid_header_len + 1]
     test_imd_path.write_bytes(corrupt_data)
 
-    with pytest.raises(IMDFormatException, match="Incomplete track header"):
+    with pytest.raises(ValueError, match="Incomplete track header"):
         IMDImageDriver(str(test_imd_path))
 
 def test_05_read_sector_normal(simple_imd_driver):
@@ -213,7 +213,7 @@ def test_08_set_physical_format_warning(simple_imd_driver):
     mock_log_warning.assert_called_once()
     # Check the content of the warning message if needed
     args, _ = mock_log_warning.call_args
-    assert "Setting physical format externally" in args[0]
+    assert "External physical format set, may conflict with IMD data" in args[0]
     # Verify the format was actually set
     assert driver.physical_format is not None
     assert driver.physical_format.cylinders == FMT_720.physical_format.cylinders
