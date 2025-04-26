@@ -43,7 +43,7 @@ def test_02_get_format_by_name(disk_controller):
 def test_03_detect_format_144mb(disk_controller):
     if not EMPTY_IMG_SRC.exists():
         pytest.skip(f"{EMPTY_IMG_SRC} not found.")
-    success = disk_controller.open_disk(str(EMPTY_IMG_SRC), disk_type="image")
+    success = disk_controller.open_disk(str(EMPTY_IMG_SRC), disk_type="IMG")
     assert success is True
     assert disk_controller.disk is not None
     assert disk_controller.driver is not None

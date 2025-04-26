@@ -27,7 +27,7 @@ def populated_controller(tmp_path):
     print(f"\n[Fixture Setup] Copied populated image to {test_img_path}")
     controller = DiskController()
     print(f"[Fixture Setup] Opening populated image: {test_img_path}")
-    success = controller.open_disk(str(test_img_path), disk_type="image")
+    success = controller.open_disk(str(test_img_path), disk_type="IMG")
     assert success, f"Failed to open disk image {test_img_path}"
     assert controller.disk is not None
     assert controller.filesystem is not None
@@ -46,7 +46,7 @@ def empty_controller(tmp_path):
     print(f"\n[Fixture Setup] Copied empty image to {test_img_path}")
     controller = DiskController()
     print(f"[Fixture Setup] Opening empty image: {test_img_path}")
-    success = controller.open_disk(str(test_img_path), disk_type="image")
+    success = controller.open_disk(str(test_img_path), disk_type="IMG")
     assert success, f"Failed to open disk image {test_img_path}"
     assert controller.disk is not None
     assert controller.filesystem is not None
@@ -71,7 +71,7 @@ def test_01_open_image_auto_detect_format(populated_controller: DiskController):
 
 def test_02_open_image_non_existent():
     controller = DiskController()
-    success = controller.open_disk("/tmp/non_existent_image.img", disk_type="image")
+    success = controller.open_disk("/tmp/non_existent_image.img", disk_type="IMG")
     assert not success
     assert controller.disk is None
     print("test_02_open_image_non_existent: PASSED")
@@ -122,7 +122,7 @@ def test_08_write_new_file_and_verify(empty_controller):
     assert read_content == test_content
     controller.close_disk()
     controller_reopened = DiskController()
-    reopen_success = controller_reopened.open_disk(str(test_img_path), disk_type="image")
+    reopen_success = controller_reopened.open_disk(str(test_img_path), disk_type="IMG")
     assert reopen_success
     entries = controller_reopened.list_directory("/")
     assert any(e['name'] == 'NEWFILE.DAT' for e in entries)

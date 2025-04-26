@@ -288,15 +288,15 @@ class FileBrowserApp(QMainWindow):
         self.statusBar().showMessage(f"Current path: {self.current_path}")
 
     def create_disk_image(self):
-        file_path, _ = QFileDialog.getSaveFileName(self, "Create Raw Disk Image", "", "Raw Disk Images (*.ima *.img)")
-        if not file_path:
-            return
-
         dialog = CreateImageDialog(self)
         if not dialog.exec():
             return
 
-        format_info, volume_label = dialog.get_selection()
+        try:
+            file_path, format_info, volume_label, output_format = dialog.get_selection()
+        except ValueError as e:
+            QMessageBox.warning(self, "Warning", str(e))
+            return
 
         try:
             profile = self.get_format_profile(format_info)
@@ -311,7 +311,7 @@ class FileBrowserApp(QMainWindow):
             self.statusBar().showMessage(f"Creating and formatting disk image: {file_path}...")
             QApplication.processEvents()
 
-            if self.controller.create_and_format_image(file_path, profile, volume_label):
+            if self.controller.create_and_format_image(file_path, profile, volume_label, output_format):
                 self.root_node = self.build_fs_tree()
                 self.current_node = self.root_node
                 self.current_path = "/"
@@ -341,9 +341,9 @@ class FileBrowserApp(QMainWindow):
 
         # Determine disk type based on extension
         _, ext = os.path.splitext(file_path)
-        disk_type = "image" # Default to raw image
+        disk_type = "IMG" # Default to raw image
         if ext.lower() == ".imd":
-            disk_type = "imd"
+            disk_type = "IMD"
 
         try:
             self.reset_ui() # Clear previous state before opening new
