@@ -741,19 +741,36 @@ class IMDImageDriver(DiskIODriver):
         self.physical_format = copy.deepcopy(physical_format)
 
     def read_boot_sector_data(self) -> Optional[bytes]:
-        """Convenience method to read the typical boot sector (C:0, H:0, S:1)."""
-        # Allow reading even if only formatted, provided physical_format is set
+        """Convenience method to read the typical boot sector (C:0, H:0, S:1), with fallback."""
         if not self.physical_format:
-             self.logger.warning("Cannot read boot sector data: physical format not set.")
-             return None
-        try:
-            return self.read_sector(0, 0, 1)
-        except (IOError, ValueError, KeyError) as e: # Include KeyError just in case map access fails
-            self.logger.warning(f"Could not read boot sector (0,0,1) from IMD: {e}")
+            self.logger.warning("Cannot read boot sector data: physical format not set.")
             return None
 
-    # --- Methods required for formatting ---
-    # These methods will construct an IMD structure in memory based on a profile.
+        cylinder, head = 0, 0
+        track_key = (cylinder, head)
+        track_info = self.tracks.get(track_key)
+
+        if not track_info:
+            self.logger.warning(f"Track C:{cylinder} H:{head} not found in IMD.")
+            return None
+
+        # Check if sector 1 exists in the sector map
+        if 1 in track_info.sector_num_map:
+            sector = 1
+        else:
+            # Fallback to the first available sector
+            if track_info.sector_num_map:
+                sector = track_info.sector_num_map[0]
+                self.logger.info(f"Sector 1 not found for C:{cylinder} H:{head}, falling back to sector {sector}.")
+            else:
+                self.logger.warning(f"No sectors found for track C:{cylinder} H:{head}.")
+                return None
+
+        try:
+            return self.read_sector(cylinder, head, sector)
+        except (IOError, ValueError, KeyError) as e:
+            self.logger.warning(f"Could not read boot sector (C:{cylinder}, H:{head}, S:{sector}) from IMD: {e}")
+            return None
 
     def _initialize_for_format(self, profile: FormatProfile):
         """Resets internal state and prepares for creating a new IMD structure."""
