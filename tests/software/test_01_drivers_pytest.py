@@ -110,14 +110,14 @@ def test_07_write_within_bounds(driver_setup):
     # The driver's write_sector catches the initial ValueError from validate_chs
     # and re-raises it as IOError. This differs from Disk.read_sector.
     invalid_cyl = geom.cylinders
-    with pytest.raises(IOError, match=f"Invalid sector access: Invalid CHS: {invalid_cyl}, 0, 1"):
+    with pytest.raises(ValueError, match=f"Invalid sector access: Invalid CHS: {invalid_cyl}, 0, 1"):
         driver.write_sector(invalid_cyl, 0, 1, test_data)
 
     invalid_head = geom.heads
-    with pytest.raises(IOError, match=f"Invalid sector access: Invalid CHS: 0, {invalid_head}, 1"):
+    with pytest.raises(ValueError, match=f"Invalid sector access: Invalid CHS: 0, {invalid_head}, 1"):
         driver.write_sector(0, invalid_head, 1, test_data)
 
     max_spt = geom.get_sectors_per_track(0, 0)
     invalid_sect = max_spt + 1
-    with pytest.raises(IOError, match=f"Invalid sector access: Sector {invalid_sect} out of range"):
+    with pytest.raises(ValueError, match=f"Invalid sector access: Sector {invalid_sect} out of range"):
         driver.write_sector(0, 0, invalid_sect, test_data)
