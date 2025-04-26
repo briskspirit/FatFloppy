@@ -1,4 +1,5 @@
 export TEST_HW=true
 export TEST_DRIVE_A=true
 export TEST_DRIVE_B=true
-pytest -s -v --hw-auto --cov=../src/fatfloppy --cov-report=html
+pytest -v --cov=../src/fatfloppy --cov-report=html software
+pytest -s -v --hw-auto --cov=../src/fatfloppy --cov-append --cov-report=html hardware
