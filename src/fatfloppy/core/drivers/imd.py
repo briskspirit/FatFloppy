@@ -534,44 +534,32 @@ class IMDImageDriver(DiskIODriver):
         self.modified_sector_data[sector_key] = bytes(data) # Store a copy
         self.dirty = True
 
-    # --- Full flush Method ---
     def flush(self) -> None:
         """Writes the modified image data back to the file, rebuilding if necessary."""
-        # Allow flush even if file wasn't loaded (case after format_imd)
-        # if not self.file_loaded:
-        #     self.logger.warning("Cannot flush, IMD file was not loaded correctly.")
-        #     return
-
         if not self.dirty:
             self.logger.debug("No changes to flush.")
             return
-        # Need physical format to rebuild
         if not self.physical_format:
             self.logger.error("Cannot flush IMD: Physical format not set.")
-            # Don't clear dirty flag if flush fails pre-emptively
             return
 
         self.logger.info(f"Rebuilding and flushing modified IMD data to {self.file_path}")
 
         new_image_data = bytearray()
         current_offset_in_new_data = 0
-        updated_sector_infos = {}
+        new_tracks_metadata: Dict[Tuple[int, int], IMDTrackInfo] = {}
 
         # 1. Build Header
         header_str = f"{self.imd_version}: {self.comment}"
         header_bytes = header_str.encode('ascii', errors='ignore')
         new_image_data.extend(header_bytes)
-        new_image_data.append(0x1A) # Header terminator
+        new_image_data.append(0x1A)  # Header terminator
         current_offset_in_new_data = len(new_image_data)
 
-        # 2. Build Tracks (Iterate based on PHYSICAL FORMAT, not self.tracks)
-        # This ensures tracks created by format_imd but not yet 'parsed' are included.
-        new_tracks_metadata: Dict[Tuple[int, int], IMDTrackInfo] = {} # Store newly built metadata
-
+        # 2. Build Tracks
         for cylinder in range(self.physical_format.cylinders):
             for head in range(self.physical_format.heads):
                 track_key = (cylinder, head)
-                # Get existing track info if available (for maps etc.), otherwise create new
                 existing_track_info = self.tracks.get(track_key)
 
                 try:
@@ -582,60 +570,66 @@ class IMDImageDriver(DiskIODriver):
                     encoding = track_format.encoding
                 except ValueError as e:
                     self.logger.error(f"Skipping flush for track C:{cylinder} H:{head}: Cannot get track format - {e}")
-                    continue # Skip this track
+                    continue
 
                 # Determine IMD Mode
                 mode = -1
                 for m, (r, enc, _) in IMD_MODE_MAP.items():
-                    if r == rate and enc == encoding: mode = m; break
+                    if r == rate and enc == encoding:
+                        mode = m
+                        break
                 if mode == -1:
                     self.logger.error(f"Skipping flush for track C:{cylinder} H:{head}: Unsupported rate/encoding {rate}/{encoding}")
                     continue
 
-                # Determine Sector Size Code
-                size_code = -1
-                is_variable_size = False # TODO: Support variable size map creation if needed
-                if not is_variable_size:
-                    for code, size in IMD_SECTOR_SIZE_MAP.items():
-                        if size == bps: size_code = code; break
-                else:
-                    size_code = 0xFF
-                if size_code == -1 and not is_variable_size:
-                     self.logger.error(f"Skipping flush for track C:{cylinder} H:{head}: Unsupported BPS {bps}")
-                     continue
-
-                # Use existing maps if available, otherwise default
-                # This assumes standard sector numbering/mapping for newly formatted tracks
-                sector_num_map = list(range(1, spt + 1))
-                has_cyl_map = False
-                has_head_map = False
+                # Determine size_code and sector_size_map
                 if existing_track_info:
-                     sector_num_map = existing_track_info.sector_num_map
-                     # Retain map flags if they existed
-                     has_cyl_map = existing_track_info.has_cyl_map
-                     has_head_map = existing_track_info.has_head_map
-                     # Ensure map length matches current SPT
-                     if len(sector_num_map) != spt:
-                          self.logger.warning(f"Sector number map length mismatch for C:{cylinder} H:{head}. Using default map.")
-                          sector_num_map = list(range(1, spt + 1))
-                          has_cyl_map = False # Reset flags if map is rebuilt
-                          has_head_map = False
+                    size_code = existing_track_info.sector_size_code
+                    if size_code == 0xFF:
+                        sector_size_map = existing_track_info.sector_size_map
+                    else:
+                        sector_size_map = None
+                else:
+                    size_code = -1
+                    for code, size in IMD_SECTOR_SIZE_MAP.items():
+                        if size == bps:
+                            size_code = code
+                            break
+                    if size_code == -1:
+                        self.logger.error(f"Unsupported BPS {bps} for C:{cylinder} H:{head}")
+                        continue
+                    sector_size_map = None
 
+                # Determine head_flags, sector_num_map, etc.
+                if existing_track_info:
+                    sector_num_map = existing_track_info.sector_num_map
+                    has_cyl_map = existing_track_info.has_cyl_map
+                    has_head_map = existing_track_info.has_head_map
+                    if len(sector_num_map) != spt:
+                        self.logger.warning(f"Sector number map length mismatch for C:{cylinder} H:{head}. Using default map.")
+                        sector_num_map = list(range(1, spt + 1))
+                        has_cyl_map = False
+                        has_head_map = False
+                else:
+                    sector_num_map = list(range(1, spt + 1))
+                    has_cyl_map = False
+                    has_head_map = False
 
                 head_flags = head & 1
-                if has_cyl_map: head_flags |= 0x80
-                if has_head_map: head_flags |= 0x40
+                if has_cyl_map:
+                    head_flags |= 0x80
+                if has_head_map:
+                    head_flags |= 0x40
 
-                # Create metadata object for this rebuilt track
+                # Create rebuilt_track_info
                 rebuilt_track_info = IMDTrackInfo(mode, cylinder, head_flags, spt, size_code)
                 rebuilt_track_info.sector_num_map = sector_num_map
-                # Populate optional maps if needed (using existing info or defaults)
+                if size_code == 0xFF:
+                    rebuilt_track_info.sector_size_map = sector_size_map
                 if has_cyl_map:
                     rebuilt_track_info.sector_cyl_map = existing_track_info.sector_cyl_map if existing_track_info else {s: cylinder for s in sector_num_map}
                 if has_head_map:
                     rebuilt_track_info.sector_head_map = existing_track_info.sector_head_map if existing_track_info else {s: head for s in sector_num_map}
-                # TODO: Handle variable size map creation if needed
-
 
                 # Append track header
                 track_header = struct.pack("<BBBBB", mode, cylinder, head_flags, spt, size_code)
@@ -647,71 +641,78 @@ class IMDImageDriver(DiskIODriver):
                 new_image_data.extend(map_bytes)
                 current_offset_in_new_data += len(map_bytes)
 
-                # Append Optional Maps (using rebuilt_track_info state)
-                if rebuilt_track_info.has_cyl_map:
+                # Append Optional Maps
+                if has_cyl_map:
                     cyl_map_list = [rebuilt_track_info.sector_cyl_map.get(s_num, cylinder) for s_num in sector_num_map]
                     map_bytes = struct.pack(f"<{spt}B", *cyl_map_list)
                     new_image_data.extend(map_bytes)
                     current_offset_in_new_data += len(map_bytes)
-                if rebuilt_track_info.has_head_map:
+                if has_head_map:
                     head_map_list = [rebuilt_track_info.sector_head_map.get(s_num, head) for s_num in sector_num_map]
                     map_bytes = struct.pack(f"<{spt}B", *head_map_list)
                     new_image_data.extend(map_bytes)
                     current_offset_in_new_data += len(map_bytes)
-                # TODO: Append Variable Size Map if needed
+                if size_code == 0xFF:
+                    if not rebuilt_track_info.sector_size_map:
+                        self.logger.error(f"Missing sector size map for C:{cylinder} H:{head}")
+                        continue
+                    size_map_list = [rebuilt_track_info.sector_size_map[s_num] for s_num in sector_num_map]
+                    map_bytes = struct.pack(f"<{spt * 2}H", *size_map_list)
+                    new_image_data.extend(map_bytes)
+                    current_offset_in_new_data += spt * 2
 
-                for sector_num in sector_num_map: # Use the determined sector_num_map
+                # Process each sector
+                for sector_num in sector_num_map:
                     sector_key = (cylinder, head, sector_num)
                     if sector_key in self.modified_sector_data:
                         current_sector_data = self.modified_sector_data[sector_key]
                     else:
-                        if self.file_loaded: # Read from original image data if loaded
-                             current_sector_data = self._read_original_sector(cylinder, head, sector_num)
-                        else: # Recreating formatted sector
-                             # Use the fill byte stored during format_imd
-                             fill = self.last_format_fill_byte if self.last_format_fill_byte is not None else 0xE5 # Fallback just in case
-                             if self.last_format_fill_byte is None:
-                                 self.logger.warning(f"Flush: last_format_fill_byte is None for formatted sector {sector_key}, using default 0xE5")
-                             # --- FIX: Use stored fill byte ---
-                             current_sector_data = bytes([fill] * bps)
+                        if self.file_loaded:
+                            current_sector_data = self._read_original_sector(cylinder, head, sector_num)
+                        else:
+                            fill = self.last_format_fill_byte if self.last_format_fill_byte is not None else 0xE5
+                            if size_code == 0xFF:
+                                target_sector_size = rebuilt_track_info.sector_size_map[sector_num]
+                            else:
+                                target_sector_size = IMD_SECTOR_SIZE_MAP[size_code]
+                            current_sector_data = bytes([fill] * target_sector_size)
 
-                    # Determine compression, type, content
-                    new_data_type: int
-                    new_data_content: bytes
-                    data_size_on_disk: int
-                    target_sector_size = bps # From loop context
-
-                    if not current_sector_data or len(current_sector_data) != target_sector_size:
-                         # Handle empty/incorrect size data (default to compressed fill)
-                         self.logger.warning(f"Data for C:{cylinder} H:{head} S:{sector_num} missing or wrong size ({len(current_sector_data)} vs {target_sector_size}) during flush. Using compressed fill 0xE5.")
-                         new_data_type = IMD_SECTOR_COMPRESSED
-                         new_data_content = bytes([0xE5])
-                         data_size_on_disk = 1
+                    # Determine target_sector_size
+                    if size_code == 0xFF:
+                        target_sector_size = rebuilt_track_info.sector_size_map[sector_num]
                     else:
-                         fill_byte = current_sector_data[0]
-                         is_compressible = all(b == fill_byte for b in current_sector_data)
-                         if is_compressible:
-                             new_data_type = IMD_SECTOR_COMPRESSED
-                             new_data_content = bytes([fill_byte])
-                             data_size_on_disk = 1
-                         else:
-                             new_data_type = IMD_SECTOR_NORMAL
-                             new_data_content = current_sector_data
-                             data_size_on_disk = target_sector_size
+                        target_sector_size = IMD_SECTOR_SIZE_MAP[size_code]
+
+                    # Check data length
+                    if not current_sector_data or len(current_sector_data) != target_sector_size:
+                        self.logger.warning(f"Data for C:{cylinder} H:{head} S:{sector_num} wrong size ({len(current_sector_data)} vs {target_sector_size}). Using compressed fill 0xE5.")
+                        new_data_type = IMD_SECTOR_COMPRESSED
+                        new_data_content = bytes([0xE5])
+                        data_size_on_disk = 1
+                    else:
+                        fill_byte = current_sector_data[0]
+                        is_compressible = all(b == fill_byte for b in current_sector_data)
+                        if is_compressible:
+                            new_data_type = IMD_SECTOR_COMPRESSED
+                            new_data_content = bytes([fill_byte])
+                            data_size_on_disk = 1
+                        else:
+                            new_data_type = IMD_SECTOR_NORMAL
+                            new_data_content = current_sector_data
+                            data_size_on_disk = target_sector_size
 
                     # Append type byte and data/fill byte
                     new_image_data.append(new_data_type)
                     new_image_data.extend(new_data_content)
 
-                    # Store the NEW offset, type, and data size for metadata update
+                    # Update sector_data_info
                     new_data_start_offset = current_offset_in_new_data + 1
-                    # Use rebuilt_track_info to store the *new* metadata
                     rebuilt_track_info.sector_data_info[sector_num] = (new_data_start_offset, new_data_type, data_size_on_disk)
 
-                    # Update offset for the next sector record
+                    # Update offset
                     current_offset_in_new_data += (1 + data_size_on_disk)
 
-                # Store the fully populated metadata for this track
+                # Store the rebuilt track info
                 new_tracks_metadata[track_key] = rebuilt_track_info
 
         # 3. Write the rebuilt data to file
@@ -720,11 +721,11 @@ class IMDImageDriver(DiskIODriver):
                 f.write(new_image_data)
 
             # 4. Update internal state ONLY after successful write
-            self.image_data = new_image_data # Replace old data with rebuilt data
-            self.tracks = new_tracks_metadata # Replace old track metadata
-            self.modified_sector_data.clear() # Clear the modification cache
+            self.image_data = new_image_data
+            self.tracks = new_tracks_metadata
+            self.modified_sector_data.clear()
             self.dirty = False
-            self.file_loaded = True # Mark as effectively loaded now
+            self.file_loaded = True
             self.logger.info("IMD flush completed successfully.")
 
         except Exception as e:
