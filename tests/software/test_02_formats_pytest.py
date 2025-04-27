@@ -6,7 +6,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
-from fatfloppy.core.formats import FATVolumeInfo, FormatProfile
+from fatfloppy.core.format_profile import FormatProfile
+from fatfloppy.core.filesystem import FATVolumeInfo
 from fatfloppy.core.disk import Disk
 from fatfloppy.core.drivers import IMGImageDriver
 from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
@@ -178,7 +179,7 @@ def test_04_bsd_from_bytes_too_short():
         FATVolumeInfo.from_bytes(short_boot)
         pytest.fail("ValueError was not raised for short boot sector") # Fail if no exception occurs
     except ValueError as e:
-        assert "Boot sector is too short" in str(e), \
-            f"Expected 'Boot sector is too short' in exception message, but got: {str(e)}"
+        assert "Sector data too short" in str(e), \
+            f"Expected 'Sector data too short' in exception message, but got: {str(e)}"
     except Exception as e:
         pytest.fail(f"Raised {type(e).__name__} instead of ValueError: {e}")

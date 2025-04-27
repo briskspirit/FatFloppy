@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple, Dict, Any
 
 from .base_driver import DiskIODriver
 from ..physical_format import PhysicalFormat, TrackFormat
-from ..formats import FormatProfile
+from ..format_profile import FormatProfile
 from ..utils.logging_config import get_logger
 from ..._version import __version__ as fatfloppy_version
 

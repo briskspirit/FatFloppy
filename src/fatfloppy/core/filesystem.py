@@ -5,9 +5,110 @@ import datetime
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from .formats import FormatProfile, FATVolumeInfo
+from .format_profile import FormatProfile
 from .utils.logging_config import get_logger
 from .disk import Disk
+
+@dataclass
+class FATVolumeInfo:
+    logger = get_logger(__name__)
+    oem_id: str = "MSDOS5.0"
+    bytes_per_sector: int = 512
+    sectors_per_cluster: int = 1
+    reserved_sectors: int = 1
+    num_fats: int = 2
+    root_entries: int = 224
+    total_sectors: int = 2880
+    media_descriptor: int = 0xF0
+    sectors_per_fat: int = 9
+    sectors_per_track: int = 18
+    num_heads: int = 2
+    hidden_sectors: int = 0
+    drive_number: int = 0
+    volume_serial: int = 0
+    volume_label: str = "NO NAME    "
+    fs_type: str = "FAT12   "
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> 'FATVolumeInfo':
+        if len(data) < 128:
+            raise ValueError("Sector data too short")
+        instance = cls()
+        try:
+            instance.oem_id = data[3:11].decode('cp437', errors='replace').strip()
+            instance.bytes_per_sector = struct.unpack_from("<H", data, 0x00B)[0]
+            instance.sectors_per_cluster = data[0x00D]
+            instance.reserved_sectors = struct.unpack_from("<H", data, 0x00E)[0]
+            instance.num_fats = data[0x010]
+            instance.root_entries = struct.unpack_from("<H", data, 0x011)[0]
+            total_sectors_16 = struct.unpack_from("<H", data, 0x013)[0]
+            instance.media_descriptor = data[0x015]
+            instance.sectors_per_fat = struct.unpack_from("<H", data, 0x016)[0]
+            instance.sectors_per_track = struct.unpack_from("<H", data, 0x018)[0]
+            instance.num_heads = struct.unpack_from("<H", data, 0x01A)[0]
+            instance.hidden_sectors = struct.unpack_from("<I", data, 0x01C)[0]
+            total_sectors_32 = struct.unpack_from("<I", data, 0x020)[0]
+            instance.total_sectors = total_sectors_32 if total_sectors_16 == 0 else total_sectors_16
+            instance.drive_number = data[0x024]
+            boot_signature = data[0x026]
+            instance.volume_serial = struct.unpack_from("<I", data, 0x027)[0]
+            try:
+                instance.volume_label = data[0x02B:0x02B + 11].decode("cp437").strip()
+                instance.fs_type = data[0x036:0x036 + 8].decode("cp437").strip()
+            except UnicodeDecodeError:
+                instance.volume_label = "INVALID"
+                instance.fs_type = "INVALID"
+        except (struct.error, IndexError) as e:
+            cls.logger.error(f"BPB parsing error: {e}")
+            instance.bytes_per_sector = 0
+            instance.sectors_per_cluster = 0
+            instance.total_sectors = 0
+            instance.sectors_per_fat = 0
+            instance.num_heads = 0
+            instance.sectors_per_track = 0
+            raise ValueError("Failed to parse BPB.") from e
+        return instance
+
+    def is_valid(self) -> bool:
+        if self.bytes_per_sector == 0:  # Mimicking the behavior after parsing failure
+            return False
+        return (
+            self.bytes_per_sector in [128, 256, 512, 1024, 2048, 4096]
+            and self.sectors_per_cluster in [1, 2, 4, 8, 16, 32, 64, 128]
+            and self.total_sectors > 0
+            and self.sectors_per_fat > 0
+            and self.num_fats in [1, 2]
+            and self.reserved_sectors >= 1
+        )
+
+    def to_bytes(self) -> bytes:
+        boot_sector = bytearray(self.bytes_per_sector)
+        boot_sector[0:3] = b'\xEB\xFE\x90'
+        boot_sector[3:11] = self.oem_id.encode('cp437').ljust(8)
+        struct.pack_into('<H', boot_sector, 0x00B, self.bytes_per_sector)
+        struct.pack_into('<B', boot_sector, 0x00D, self.sectors_per_cluster)
+        struct.pack_into('<H', boot_sector, 0x00E, self.reserved_sectors)
+        struct.pack_into('<B', boot_sector, 0x010, self.num_fats)
+        struct.pack_into('<H', boot_sector, 0x011, self.root_entries)
+        if self.total_sectors < 65536:
+            struct.pack_into('<H', boot_sector, 0x013, self.total_sectors)
+            struct.pack_into('<I', boot_sector, 0x020, 0)
+        else:
+            struct.pack_into('<H', boot_sector, 0x013, 0)
+            struct.pack_into('<I', boot_sector, 0x020, self.total_sectors)
+        struct.pack_into('<B', boot_sector, 0x015, self.media_descriptor)
+        struct.pack_into('<H', boot_sector, 0x016, self.sectors_per_fat)
+        struct.pack_into('<H', boot_sector, 0x018, self.sectors_per_track)
+        struct.pack_into('<H', boot_sector, 0x01A, self.num_heads)
+        struct.pack_into('<I', boot_sector, 0x01C, self.hidden_sectors)
+        struct.pack_into('<B', boot_sector, 0x024, self.drive_number)
+        struct.pack_into('<B', boot_sector, 0x025, 0)
+        struct.pack_into('<B', boot_sector, 0x026, 0x29)
+        struct.pack_into('<I', boot_sector, 0x027, self.volume_serial)
+        boot_sector[0x02B:0x036] = self.volume_label.encode('cp437').ljust(11)
+        boot_sector[0x036:0x03E] = self.fs_type.encode('cp437').ljust(8)
+        struct.pack_into('<H', boot_sector, self.bytes_per_sector - 2, 0xAA55)
+        return bytes(boot_sector)
 
 logger = get_logger("FATFilesystem")
 
@@ -27,7 +128,6 @@ ATTR_LONG_NAME = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID
 ENTRY_DELETED = 0xE5
 ENTRY_UNUSED = 0x00
 
-
 @dataclass
 class FileInfo:
     name: str
@@ -36,71 +136,6 @@ class FileInfo:
     datetime: datetime.datetime
     attributes: str
     starting_cluster: int = 0
-
-
-class BootSector:
-    def __init__(self, sector_data: bytes):
-        self.logger = get_logger(f"{self.__class__.__name__}")
-        self.data = sector_data
-
-    def is_valid(self) -> bool:
-        if len(self.data) < 128:
-            return False
-        return True
-
-
-class FATBootSector(BootSector):
-    def __init__(self, sector_data: bytes):
-        super().__init__(sector_data)
-        self._parse_bpb()
-
-    def is_valid(self) -> bool:
-        if not super().is_valid():
-            return False
-        return (
-            self.bytes_per_sector in [128, 256, 512, 1024, 2048, 4096]
-            and self.sectors_per_cluster in [1, 2, 4, 8, 16, 32, 64, 128]
-            and self.total_sectors > 0
-            and self.sectors_per_fat > 0
-            and self.num_fats in [1, 2]
-            and self.reserved_sectors >= 1
-        )
-
-    def _parse_bpb(self) -> None:
-        try:
-            self.bytes_per_sector = struct.unpack_from("<H", self.data, 0x00B)[0]
-            self.sectors_per_cluster = self.data[0x00D]
-            self.reserved_sectors = struct.unpack_from("<H", self.data, 0x00E)[0]
-            self.num_fats = self.data[0x010]
-            self.root_entries = struct.unpack_from("<H", self.data, 0x011)[0]
-            self.total_sectors_16 = struct.unpack_from("<H", self.data, 0x013)[0]
-            self.media_descriptor = self.data[0x015]
-            self.sectors_per_fat_16 = struct.unpack_from("<H", self.data, 0x016)[0]
-            self.sectors_per_track = struct.unpack_from("<H", self.data, 0x018)[0]
-            self.num_heads = struct.unpack_from("<H", self.data, 0x01A)[0]
-            self.hidden_sectors = struct.unpack_from("<I", self.data, 0x01C)[0]
-            self.total_sectors_32 = struct.unpack_from("<I", self.data, 0x020)[0]
-            self.total_sectors = self.total_sectors_32 if self.total_sectors_16 == 0 else self.total_sectors_16
-            self.sectors_per_fat = self.sectors_per_fat_16
-            self.drive_number = self.data[0x024]
-            self.boot_signature = self.data[0x026]
-            self.volume_id = struct.unpack_from("<I", self.data, 0x027)[0]
-            try:
-                self.volume_label = self.data[0x02B:0x02B + 11].decode("cp437").strip()
-                self.fs_type = self.data[0x036:0x036 + 8].decode("cp437").strip()
-            except UnicodeDecodeError:
-                self.volume_label = "INVALID"
-                self.fs_type = "INVALID"
-        except (struct.error, IndexError) as e:
-            self.logger.error(f"BPB parsing error: {e}")
-            self.bytes_per_sector = 0
-            self.sectors_per_cluster = 0
-            self.total_sectors = 0
-            self.sectors_per_fat = 0
-            self.num_heads = 0
-            self.sectors_per_track = 0
-            raise ValueError("Failed to parse BPB.") from e
-
 
 class Filesystem:
     def __init__(self, disk: Disk):
@@ -131,13 +166,12 @@ class Filesystem:
     def get_free_space(self) -> Tuple[int, int]:
         raise NotImplementedError
 
-
 class FATFilesystem(Filesystem):
     def __init__(self, disk: Disk):
         super().__init__(disk)
         self.logger = get_logger(self.__class__.__name__)
         self._init_completed = False
-        self.boot_sector: Optional[FATBootSector] = None
+        self.boot_sector: Optional[FATVolumeInfo] = None
         self._cached_allocated_clusters: Optional[List[int]] = None
         self.fat_cache: Optional[bytearray] = None
         self.fat_dirty = False
@@ -305,10 +339,8 @@ class FATFilesystem(Filesystem):
                         item_path = f"{path}/{item.name}" if path != "/" else f"/{item.name}"
                         if not self.delete_recursive(item_path):
                             return False
-                # Now delete the directory itself
                 self.delete(path)
             else:
-                # It's a file
                 self.delete(path)
             return True
         except Exception as e:
@@ -364,7 +396,7 @@ class FATFilesystem(Filesystem):
         c, h, s = self.disk.lba_to_chs(root_dir_start_lba)
         self.disk.write_sectors(c, h, s, root_dir_data)
 
-        self.boot_sector = FATBootSector(boot_sector_bytes)
+        self.boot_sector = FATVolumeInfo.from_bytes(boot_sector_bytes)
         self.fat_cache = bytearray(fat_data)
         self.fat_dirty = False
         self._cached_allocated_clusters = []
@@ -407,7 +439,7 @@ class FATFilesystem(Filesystem):
                 self.boot_sector = None
                 logger.error("Boot sector data is empty")
                 return
-            self.boot_sector = FATBootSector(boot_sector_data)
+            self.boot_sector = FATVolumeInfo.from_bytes(boot_sector_data)
         except Exception as e:
             self.logger.error(f"Error reading boot sector: {e}")
             self.boot_sector = None

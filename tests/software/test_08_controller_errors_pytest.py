@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.controller import DiskController
 from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
-from fatfloppy.core.formats import FormatProfile
+from fatfloppy.core.format_profile import FormatProfile
 
 @pytest.fixture(scope="function")
 def error_controller(request):

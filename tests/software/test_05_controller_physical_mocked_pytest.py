@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.controller import DiskController
 from fatfloppy.core.drivers import GreaseweazleDriver
-from fatfloppy.core.filesystem import FATFilesystem, FATBootSector
-from fatfloppy.core.formats import FATVolumeInfo, FormatProfile
+from fatfloppy.core.filesystem import FATFilesystem, FATVolumeInfo
+from fatfloppy.core.format_profile import FormatProfile
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 # Import Disk to patch its method correctly
 from fatfloppy.core.disk import Disk
@@ -96,7 +96,7 @@ def open_disk_for_rw_tests(controller: DiskController, mocks_bundle: dict, test_
 
     mock_fs = MagicMock(spec=FATFilesystem)
     mock_fs.is_valid.return_value = True
-    mock_fat_bs = MagicMock(spec=FATBootSector)
+    mock_fat_bs = MagicMock(spec=FATVolumeInfo)
     bsd = test_format.boot_sector or FATVolumeInfo()
     for attr, value in bsd.__dict__.items():
         setattr(mock_fat_bs, attr, value)
@@ -157,7 +157,7 @@ def test_01_open_physical_drive_A_35_auto_detect_mocked(mocked_controller):
 
     mock_fs = MagicMock(spec=FATFilesystem)
     mock_fs.is_valid.return_value = True
-    mock_fat_bs = MagicMock(spec=FATBootSector)
+    mock_fat_bs = MagicMock(spec=FATVolumeInfo)
     bsd = expected_format.boot_sector
     for attr, value in bsd.__dict__.items():
         setattr(mock_fat_bs, attr, value)
@@ -215,7 +215,7 @@ def test_02_open_physical_with_explicit_format_mocked(mocked_controller):
 
     mock_fs = MagicMock(spec=FATFilesystem)
     mock_fs.is_valid.return_value = True
-    mock_fat_bs = MagicMock(spec=FATBootSector)
+    mock_fat_bs = MagicMock(spec=FATVolumeInfo)
     bsd = expected_format.boot_sector
     for attr, value in bsd.__dict__.items():
         setattr(mock_fat_bs, attr, value)

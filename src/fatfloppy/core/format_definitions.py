@@ -1,6 +1,7 @@
 # src/fatfloppy/core/format_definitions.py
 from .physical_format import PhysicalFormat, TrackFormat
-from .formats import FormatProfile, FATVolumeInfo
+from .format_profile import FormatProfile
+from .filesystem import FATVolumeInfo
 
 # TODO: Adjust gap3 based on doc: https://www.isdaman.com/alsos/hardware/fdc/floppy.htm
 # TODO: Verify against https://retrocmp.de/fdd/general/floppy-formats.htm
