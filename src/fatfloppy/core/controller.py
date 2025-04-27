@@ -16,7 +16,6 @@ from .filesystem_factory import create_filesystem
 
 logger = get_logger()
 
-
 class DiskController:
     def __init__(self):
         self.logger = get_logger(self.__class__.__name__)
@@ -33,16 +32,21 @@ class DiskController:
         driver = GreaseweazleDriver(device_name=device_name, drive=drive_letter, drive_size=drive_size)
         try:
             driver.initialize()
+            self.logger.debug(f"Initialized Greaseweazle driver for {source}")
         except Exception as e:
             self.logger.error(f"Error initializing Greaseweazle driver: {e}")
             raise
         return driver
 
     def _create_img_driver(self, source: str) -> IMGImageDriver:
-        return IMGImageDriver(file_path=source)
+        driver = IMGImageDriver(file_path=source)
+        self.logger.debug(f"Created IMG driver for {source}")
+        return driver
 
     def _create_imd_driver(self, source: str) -> IMDImageDriver:
-        return IMDImageDriver(file_path=source)
+        driver = IMDImageDriver(file_path=source)
+        self.logger.debug(f"Created IMD driver for {source}")
+        return driver
 
     def _create_driver(self, disk_type: str, source: str, drive_letter: str, drive_size: str) -> DiskIODriver:
         if disk_type == "physical":
@@ -103,6 +107,7 @@ class DiskController:
 
         if isinstance(self.driver, GreaseweazleDriver):
             self.driver._create_and_set_custom_diskdef()
+            self.logger.debug("Applied custom diskdef for Greaseweazle driver")
 
     def _adjust_geometry_after_filesystem(self) -> None:
         if self.filesystem and isinstance(self.filesystem, FATFilesystem):
@@ -130,6 +135,7 @@ class DiskController:
                         track_formats=[updated_track_format]
                     )
                     self.set_geometry(updated_geometry)
+                    self.logger.debug("Adjusted geometry based on driver physical format")
             elif (not self.explicit_format_set and bs and
                   hasattr(bs, 'sectors_per_track') and bs.sectors_per_track > 0 and
                   hasattr(bs, 'num_heads') and bs.num_heads > 0):
@@ -157,22 +163,23 @@ class DiskController:
                         track_formats=[updated_track_format]
                     )
                     self.set_geometry(updated_geometry)
+                    self.logger.debug("Adjusted geometry based on boot sector")
 
     def _handle_format(self, format_info: dict, drive_size: str) -> bool:
         if isinstance(self.driver, IMDImageDriver):
             if not self.driver.physical_format:
-                 self.logger.error("IMD driver loaded but failed to derive physical format.")
-                 return False
+                self.logger.error("IMD driver loaded but failed to derive physical format.")
+                return False
             self.disk.set_geometry(self.driver.physical_format)
             self.filesystem = create_filesystem(self.disk)
             if format_info:
-                 self.logger.warning("Applying user format_info to an IMD disk, this may override IMD metadata.")
-                 try:
-                      self._apply_user_format(format_info)
-                      self.filesystem = create_filesystem(self.disk)
-                 except Exception as e:
-                      self.logger.error(f"Failed to apply user format override to IMD: {e}")
-                      return False
+                self.logger.warning("Applying user format_info to an IMD disk, this may override IMD metadata.")
+                try:
+                    self._apply_user_format(format_info)
+                    self.filesystem = create_filesystem(self.disk)
+                except Exception as e:
+                    self.logger.error(f"Failed to apply user format override to IMD: {e}")
+                    return False
             return True
         elif format_info:
             try:
@@ -192,9 +199,9 @@ class DiskController:
             else:
                 success = False
             if success:
-                 self.filesystem = create_filesystem(self.disk)
-                 self._adjust_geometry_after_filesystem()
-                 self.logger.debug(f"Auto-detected format. Geometry: {self.disk.physical_format}")
+                self.filesystem = create_filesystem(self.disk)
+                self._adjust_geometry_after_filesystem()
+                self.logger.debug(f"Auto-detected format. Geometry: {self.disk.physical_format}")
             return success
 
     def open_disk(self, source: str, disk_type: str = "IMG", drive_letter: str = "A", drive_size: str = "3.5", format_info: dict = None) -> bool:
@@ -205,12 +212,12 @@ class DiskController:
         try:
             self.driver = self._create_driver(disk_type, source, drive_letter, drive_size)
             if isinstance(self.driver, (IMGImageDriver, IMDImageDriver)) and not self.driver.file_path and not self.driver.image_data:
-                 if disk_type == "IMG" and not os.path.exists(source):
-                      self.logger.info(f"Raw image file {source} doesn't exist. Proceeding for potential format operation.")
-                 else:
-                      self.logger.error(f"Driver initialization failed for {disk_type} at {source}")
-                      self.driver = None
-                      return False
+                if disk_type == "IMG" and not os.path.exists(source):
+                    self.logger.info(f"Raw image file {source} doesn't exist. Proceeding for potential format operation.")
+                else:
+                    self.logger.error(f"Driver initialization failed for {disk_type} at {source}")
+                    self.driver = None
+                    return False
             self.disk = Disk(self.driver)
             success = self._handle_format(format_info, drive_size)
             if not success or not self.disk or not self.disk.physical_format:
@@ -228,11 +235,11 @@ class DiskController:
 
     def close_disk(self) -> None:
         if self.disk and self.driver and hasattr(self.driver, 'dirty') and self.driver.dirty:
-             try:
-                  self.logger.info("Flushing changes before closing disk.")
-                  self.flush()
-             except Exception as e:
-                  self.logger.error(f"Error flushing driver during close: {e}")
+            try:
+                self.logger.info("Flushing changes before closing disk.")
+                self.flush()
+            except Exception as e:
+                self.logger.error(f"Error flushing driver during close: {e}")
         self.disk = None
         self.filesystem = None
         self.driver = None
@@ -245,10 +252,11 @@ class DiskController:
         if self.driver and hasattr(self.driver, "flush"):
             try:
                 self.driver.flush()
+                self.logger.debug("Driver flushed successfully")
             except Exception as e:
                 self.logger.error(f"Error flushing driver: {e}")
         else:
-             self.logger.warning("Flush called but no active driver or driver lacks flush method.")
+            self.logger.warning("Flush called but no active driver or driver lacks flush method.")
 
     def detect_geometry(self) -> Optional[PhysicalFormat]:
         if not self.disk:
@@ -266,123 +274,124 @@ class DiskController:
             self.logger.error("No disk opened to set geometry")
             raise ValueError("No disk opened")
         self.disk.set_geometry(geometry)
+        self.logger.debug(f"Geometry set: {geometry}")
 
     def detect_format(self) -> Optional[Tuple[str, FATVolumeInfo]]:
-         if not self.disk or not self.driver:
-             self.logger.error("No disk opened to detect format")
-             return None, None
-         try:
-             if isinstance(self.driver, IMDImageDriver):
-                  boot_sector_bytes = self.driver.read_boot_sector_data()
-                  if not boot_sector_bytes:
-                       self.logger.warning("IMD driver could not read boot sector data (0,0,1).")
-                       return None, None
-                  try:
-                       boot_data = FATVolumeInfo.from_bytes(boot_sector_bytes)
-                       for format_name, profile in self.known_formats.items():
-                           if (profile.boot_sector and self.driver.physical_format and
-                               profile.boot_sector.sectors_per_track == boot_data.sectors_per_track and
-                               profile.boot_sector.num_heads == boot_data.num_heads and
-                               profile.boot_sector.total_sectors == boot_data.total_sectors and
-                               profile.boot_sector.bytes_per_sector == boot_data.bytes_per_sector and
-                               profile.physical_format.cylinders == self.driver.physical_format.cylinders):
-                               if self.disk.physical_format != profile.physical_format:
-                                    self.logger.info(f"Updating geometry to match detected profile '{format_name}'")
-                                    self.set_geometry(profile.physical_format)
-                               return format_name, boot_data
-                       self.logger.info("Parsed BPB from IMD, but no exact known format match.")
-                       return None, boot_data
-                  except ValueError as e:
-                       self.logger.warning(f"Could not parse boot sector data from IMD: {e}")
-                       return None, None
-             else:
-                  if not self.disk.physical_format:
-                       self.logger.warning("No geometry set, applying temporary default for detection.")
-                       temp_profile = self.get_format_by_name("ibm_3.5_1.44m")
-                       if temp_profile:
-                            self.set_geometry(temp_profile.physical_format)
-                       else:
-                            temp_track_format = TrackFormat(0, 79, 0, 1, 18, "MFM", 500, 84, 1)
-                            temp_geom = PhysicalFormat(80, 2, 300, False, 512, [temp_track_format])
-                            self.set_geometry(temp_geom)
-                  self.logger.debug(f"Detecting format using geometry: {self.disk.physical_format}")
-                  try:
-                      boot_sector_bytes = self.disk.read_boot_sector()
-                  except Exception as read_e:
-                      self.logger.error(f"Failed to read boot sector for detection: {read_e}")
-                      return None, None
-                  if not boot_sector_bytes or len(boot_sector_bytes) < 62:
-                      self.logger.warning("Failed to read sufficient boot sector data for detection.")
-                      return None, None
-                  if len(boot_sector_bytes) < 512:
-                       boot_sector_bytes += bytes(512 - len(boot_sector_bytes))
-                  try:
-                      boot_data = FATVolumeInfo.from_bytes(boot_sector_bytes)
-                      adjust_geom = False
-                      if boot_data.bytes_per_sector > 0 and boot_data.bytes_per_sector != self.disk.physical_format.bytes_per_sector:
-                           self.logger.info(f"Adjusting sector size based on BPB from {self.disk.physical_format.bytes_per_sector} to {boot_data.bytes_per_sector}")
-                           self.disk.physical_format.bytes_per_sector = boot_data.bytes_per_sector
-                           adjust_geom = True
-                      if boot_data.num_heads > 0 and boot_data.num_heads != self.disk.physical_format.heads:
-                           self.logger.info(f"Adjusting heads based on BPB from {self.disk.physical_format.heads} to {boot_data.num_heads}")
-                           self.disk.physical_format.heads = boot_data.num_heads
-                           for tf in self.disk.physical_format.track_formats:
-                               tf.head_end = boot_data.num_heads - 1
-                           adjust_geom = True
-                      if boot_data.sectors_per_track > 0 and boot_data.sectors_per_track != self.disk.physical_format.get_sectors_per_track(0,0):
-                           self.logger.info(f"Adjusting sectors/track based on BPB from {self.disk.physical_format.get_sectors_per_track(0,0)} to {boot_data.sectors_per_track}")
-                           for tf in self.disk.physical_format.track_formats:
-                               tf.sectors_per_track = boot_data.sectors_per_track
-                           adjust_geom = True
-                      if adjust_geom and hasattr(self.driver, "set_physical_format"):
-                             self.logger.debug("Pushing adjusted geometry to driver.")
-                             self.driver.set_physical_format(copy.deepcopy(self.disk.physical_format))
-                      for format_name, profile in self.known_formats.items():
-                          if (profile.physical_format and profile.boot_sector and
-                              profile.physical_format.cylinders == self.disk.physical_format.cylinders and
-                              profile.physical_format.heads == boot_data.num_heads and
-                              profile.physical_format.bytes_per_sector == boot_data.bytes_per_sector and
-                              profile.physical_format.get_sectors_per_track(0,0) == boot_data.sectors_per_track and
-                              profile.boot_sector.total_sectors == boot_data.total_sectors and
-                              profile.boot_sector.sectors_per_fat == boot_data.sectors_per_fat and
-                              profile.boot_sector.root_entries == boot_data.root_entries):
-                              if self.disk.physical_format != profile.physical_format:
-                                   self.logger.info(f"Aligning geometry to matched profile '{format_name}'")
-                                   self.set_geometry(profile.physical_format)
-                              return format_name, boot_data
-                      self.logger.info("Parsed BPB data, but no exact known format profile match found.")
-                      return None, boot_data
-                  except ValueError as e:
-                      self.logger.warning(f"Could not parse boot sector data: {e}")
-                      return None, None
-         except Exception as e:
-             self.logger.exception(f"Error during format detection: {e}")
-             return None, None
+        if not self.disk or not self.driver:
+            self.logger.error("No disk opened to detect format")
+            return None, None
+        try:
+            if isinstance(self.driver, IMDImageDriver):
+                boot_sector_bytes = self.driver.read_boot_sector_data()
+                if not boot_sector_bytes:
+                    self.logger.warning("IMD driver could not read boot sector data (0,0,1).")
+                    return None, None
+                try:
+                    boot_data = FATVolumeInfo.from_bytes(boot_sector_bytes)
+                    for format_name, profile in self.known_formats.items():
+                        if (profile.boot_sector and self.driver.physical_format and
+                            profile.boot_sector.sectors_per_track == boot_data.sectors_per_track and
+                            profile.boot_sector.num_heads == boot_data.num_heads and
+                            profile.boot_sector.total_sectors == boot_data.total_sectors and
+                            profile.boot_sector.bytes_per_sector == boot_data.bytes_per_sector and
+                            profile.physical_format.cylinders == self.driver.physical_format.cylinders):
+                            if self.disk.physical_format != profile.physical_format:
+                                self.logger.info(f"Updating geometry to match detected profile '{format_name}'")
+                                self.set_geometry(profile.physical_format)
+                            return format_name, boot_data
+                    self.logger.info("Parsed BPB from IMD, but no exact known format match.")
+                    return None, boot_data
+                except ValueError as e:
+                    self.logger.warning(f"Could not parse boot sector data from IMD: {e}")
+                    return None, None
+            else:
+                if not self.disk.physical_format:
+                    self.logger.warning("No geometry set, applying temporary default for detection.")
+                    temp_profile = self.get_format_by_name("ibm_3.5_1.44m")
+                    if temp_profile:
+                        self.set_geometry(temp_profile.physical_format)
+                    else:
+                        temp_track_format = TrackFormat(0, 79, 0, 1, 18, "MFM", 500, 84, 1)
+                        temp_geom = PhysicalFormat(80, 2, 300, False, 512, [temp_track_format])
+                        self.set_geometry(temp_geom)
+                self.logger.debug(f"Detecting format using geometry: {self.disk.physical_format}")
+                try:
+                    boot_sector_bytes = self.disk.read_boot_sector()
+                except Exception as read_e:
+                    self.logger.error(f"Failed to read boot sector for detection: {read_e}")
+                    return None, None
+                if not boot_sector_bytes or len(boot_sector_bytes) < 62:
+                    self.logger.warning("Failed to read sufficient boot sector data for detection.")
+                    return None, None
+                if len(boot_sector_bytes) < 512:
+                    boot_sector_bytes += bytes(512 - len(boot_sector_bytes))
+                try:
+                    boot_data = FATVolumeInfo.from_bytes(boot_sector_bytes)
+                    adjust_geom = False
+                    if boot_data.bytes_per_sector > 0 and boot_data.bytes_per_sector != self.disk.physical_format.bytes_per_sector:
+                        self.logger.info(f"Adjusting sector size based on BPB from {self.disk.physical_format.bytes_per_sector} to {boot_data.bytes_per_sector}")
+                        self.disk.physical_format.bytes_per_sector = boot_data.bytes_per_sector
+                        adjust_geom = True
+                    if boot_data.num_heads > 0 and boot_data.num_heads != self.disk.physical_format.heads:
+                        self.logger.info(f"Adjusting heads based on BPB from {self.disk.physical_format.heads} to {boot_data.num_heads}")
+                        self.disk.physical_format.heads = boot_data.num_heads
+                        for tf in self.disk.physical_format.track_formats:
+                            tf.head_end = boot_data.num_heads - 1
+                        adjust_geom = True
+                    if boot_data.sectors_per_track > 0 and boot_data.sectors_per_track != self.disk.physical_format.get_sectors_per_track(0,0):
+                        self.logger.info(f"Adjusting sectors/track based on BPB from {self.disk.physical_format.get_sectors_per_track(0,0)} to {boot_data.sectors_per_track}")
+                        for tf in self.disk.physical_format.track_formats:
+                            tf.sectors_per_track = boot_data.sectors_per_track
+                        adjust_geom = True
+                    if adjust_geom and hasattr(self.driver, "set_physical_format"):
+                        self.logger.debug("Pushing adjusted geometry to driver.")
+                        self.driver.set_physical_format(copy.deepcopy(self.disk.physical_format))
+                    for format_name, profile in self.known_formats.items():
+                        if (profile.physical_format and profile.boot_sector and
+                            profile.physical_format.cylinders == self.disk.physical_format.cylinders and
+                            profile.physical_format.heads == boot_data.num_heads and
+                            profile.physical_format.bytes_per_sector == boot_data.bytes_per_sector and
+                            profile.physical_format.get_sectors_per_track(0,0) == boot_data.sectors_per_track and
+                            profile.boot_sector.total_sectors == boot_data.total_sectors and
+                            profile.boot_sector.sectors_per_fat == boot_data.sectors_per_fat and
+                            profile.boot_sector.root_entries == boot_data.root_entries):
+                            if self.disk.physical_format != profile.physical_format:
+                                self.logger.info(f"Aligning geometry to matched profile '{format_name}'")
+                                self.set_geometry(profile.physical_format)
+                            return format_name, boot_data
+                    self.logger.info("Parsed BPB data, but no exact known format profile match found.")
+                    return None, boot_data
+                except ValueError as e:
+                    self.logger.warning(f"Could not parse boot sector data: {e}")
+                    return None, None
+        except Exception as e:
+            self.logger.exception(f"Error during format detection: {e}")
+            return None, None
 
     def set_format(self, profile: FormatProfile) -> None:
         if not self.disk or not self.driver:
             self.logger.error("No disk opened to set format")
             raise ValueError("No disk opened")
         if not profile or not profile.physical_format:
-             raise ValueError("Invalid FormatProfile provided")
+            raise ValueError("Invalid FormatProfile provided")
         if isinstance(self.driver, IMDImageDriver):
-             self.logger.warning("Calling set_format with an IMD driver. This will overwrite the format derived from the file.")
+            self.logger.warning("Calling set_format with an IMD driver. This will overwrite the format derived from the file.")
         self.logger.info(f"Setting format using profile: {profile.name}")
         self.disk.set_geometry(profile.physical_format)
         if hasattr(self.driver, "set_physical_format"):
             physical_format_copy = copy.deepcopy(profile.physical_format)
             if profile.boot_sector:
-                 physical_format_copy._associated_boot_sector = profile.boot_sector
+                physical_format_copy._associated_boot_sector = profile.boot_sector
             try:
                 self.driver.set_physical_format(physical_format_copy)
             finally:
-                 if hasattr(physical_format_copy, '_associated_boot_sector'):
-                      delattr(physical_format_copy, '_associated_boot_sector')
+                if hasattr(physical_format_copy, '_associated_boot_sector'):
+                    delattr(physical_format_copy, '_associated_boot_sector')
             if isinstance(self.driver, GreaseweazleDriver) and hasattr(self.driver, '_create_and_set_custom_diskdef'):
                 self.logger.debug("Applying Greaseweazle custom diskdef after set_format.")
                 self.driver._create_and_set_custom_diskdef()
         else:
-             self.logger.warning(f"Driver type {type(self.driver).__name__} does not support set_physical_format.")
+            self.logger.warning(f"Driver type {type(self.driver).__name__} does not support set_physical_format.")
         self.physical_format = self.disk.physical_format
 
     def get_allocated_clusters(self) -> List[int]:
@@ -390,6 +399,7 @@ class DiskController:
             return []
         try:
             clusters = self.filesystem.get_allocated_clusters()
+            self.logger.debug(f"Retrieved {len(clusters)} allocated clusters")
             return clusters
         except Exception as e:
             self.logger.error(f"Error getting allocated clusters: {e}")
@@ -400,6 +410,7 @@ class DiskController:
             return None
         try:
             space_info = self.filesystem.get_free_space()
+            self.logger.debug(f"Free space: {space_info}")
             return space_info
         except Exception as e:
             self.logger.error(f"Error getting free space: {e}")
@@ -410,6 +421,7 @@ class DiskController:
             return []
         try:
             items = self.filesystem.list_directory(path)
+            self.logger.debug(f"Listed directory {path} with {len(items)} items")
             return [
                 {
                     "name": item.name,
@@ -430,8 +442,10 @@ class DiskController:
             return None
         try:
             data = self.filesystem.read_file(path)
+            self.logger.debug(f"Read file {path} with size {len(data)} bytes")
             return data
         except ValueError as e:
+            self.logger.error(f"ValueError reading file {path}: {e}")
             return None
         except Exception as e:
             self.logger.error(f"Error reading file {path}: {e}")
@@ -442,6 +456,7 @@ class DiskController:
             return False
         try:
             self.filesystem.write_file(path, data)
+            self.logger.debug(f"Wrote file {path} with size {len(data)} bytes")
             return True
         except Exception as e:
             self.logger.error(f"Error writing file {path}: {e}")
@@ -452,6 +467,7 @@ class DiskController:
             return False
         try:
             self.filesystem.create_directory(path)
+            self.logger.debug(f"Created directory {path}")
             return True
         except Exception as e:
             self.logger.error(f"Error creating directory {path}: {e}")
@@ -462,6 +478,7 @@ class DiskController:
             return False
         try:
             self.filesystem.delete(path)
+            self.logger.debug(f"Deleted item {path}")
             return True
         except Exception as e:
             self.logger.error(f"Error deleting item {path}: {e}")
@@ -471,8 +488,10 @@ class DiskController:
         if not self.filesystem:
             return False
         try:
-            self.filesystem.delete_recursive(path)
-            return True
+            success = self.filesystem.delete_recursive(path)
+            if success:
+                self.logger.debug(f"Deleted item recursively {path}")
+            return success
         except Exception as e:
             self.logger.error(f"Error deleting item recursively {path}: {e}")
             return False
@@ -486,27 +505,27 @@ class DiskController:
             return False
         profile = self.known_formats.get(format_name)
         if not profile:
-             found_profile = False
-             if self.disk.physical_format:
-                  for name, prof in self.known_formats.items():
-                       if prof.physical_format == self.disk.physical_format:
-                            profile = prof
-                            format_name = name
-                            found_profile = True
-                            self.logger.info(f"Using format profile '{format_name}' matching current geometry.")
-                            break
-             if not found_profile:
-                  if hasattr(self.driver, 'physical_format') and self.driver.physical_format:
-                       if hasattr(self.driver.physical_format, '_associated_boot_sector'):
-                            self.logger.info("Using custom format profile potentially set via set_format.")
-                            profile = FormatProfile(name="custom_runtime", description="Custom (Runtime)", physical_format=self.driver.physical_format, boot_sector=self.driver.physical_format._associated_boot_sector)
-                            format_name = "custom_runtime"
-                       else:
-                            self.logger.error(f"Cannot format with unknown/custom profile '{format_name}' without associated boot sector info attached to driver's format.")
-                            return False
-                  else:
-                       self.logger.error(f"Cannot format with unknown profile '{format_name}' and no geometry set or driver format available.")
-                       return False
+            found_profile = False
+            if self.disk.physical_format:
+                for name, prof in self.known_formats.items():
+                    if prof.physical_format == self.disk.physical_format:
+                        profile = prof
+                        format_name = name
+                        found_profile = True
+                        self.logger.info(f"Using format profile '{format_name}' matching current geometry.")
+                        break
+            if not found_profile:
+                if hasattr(self.driver, 'physical_format') and self.driver.physical_format:
+                    if hasattr(self.driver.physical_format, '_associated_boot_sector'):
+                        self.logger.info("Using custom format profile potentially set via set_format.")
+                        profile = FormatProfile(name="custom_runtime", description="Custom (Runtime)", physical_format=self.driver.physical_format, boot_sector=self.driver.physical_format._associated_boot_sector)
+                        format_name = "custom_runtime"
+                    else:
+                        self.logger.error(f"Cannot format with unknown/custom profile '{format_name}' without associated boot sector info attached to driver's format.")
+                        return False
+                else:
+                    self.logger.error(f"Cannot format with unknown profile '{format_name}' and no geometry set or driver format available.")
+                    return False
         if not profile or not profile.physical_format or not profile.boot_sector:
             self.logger.error(f"Format profile '{format_name}' is invalid or missing required information.")
             return False
@@ -514,14 +533,14 @@ class DiskController:
         if volume_label:
             profile.boot_sector.volume_label = volume_label.ljust(11)[:11]
         elif not profile.boot_sector.volume_label or not profile.boot_sector.volume_label.strip():
-             profile.boot_sector.volume_label = "NO NAME".ljust(11)
+            profile.boot_sector.volume_label = "NO NAME".ljust(11)
         try:
             if self.disk.physical_format != profile.physical_format:
                 self.logger.warning(f"Disk geometry differs from profile '{profile.name}' before format. Setting format now.")
                 self.set_format(profile)
             elif hasattr(self.driver, "physical_format") and self.driver.physical_format != profile.physical_format:
-                 self.logger.warning(f"Driver physical format differs from profile '{profile.name}'. Setting format now.")
-                 self.set_format(profile)
+                self.logger.warning(f"Driver physical format differs from profile '{profile.name}'. Setting format now.")
+                self.set_format(profile)
             filesystem = FATFilesystem(self.disk)
             filesystem.format_fs(profile)
             self.filesystem = filesystem
@@ -545,7 +564,7 @@ class DiskController:
         if volume_label:
             profile.boot_sector.volume_label = volume_label.ljust(11)[:11]
         elif not profile.boot_sector.volume_label or not profile.boot_sector.volume_label.strip():
-             profile.boot_sector.volume_label = "NO NAME".ljust(11)
+            profile.boot_sector.volume_label = "NO NAME".ljust(11)
         try:
             if disk_type == "IMG":
                 total_bytes = profile.physical_format.total_bytes
@@ -596,10 +615,16 @@ class DiskController:
 
     def list_formats(self) -> List[Tuple[str, str]]:
         formats = [(name, profile.description) for name, profile in self.known_formats.items()]
+        self.logger.debug(f"Listed {len(formats)} known formats")
         return formats
 
     def get_format_by_name(self, name: str) -> Optional[FormatProfile]:
-        return self.known_formats.get(name)
+        profile = self.known_formats.get(name)
+        if profile:
+            self.logger.debug(f"Retrieved format profile: {name}")
+        else:
+            self.logger.warning(f"Format profile not found: {name}")
+        return profile
 
     def _get_default_geometry_and_physical(self, drive_size: str) -> Tuple[PhysicalFormat, PhysicalFormat]:
         if drive_size == "3.5":
@@ -644,6 +669,7 @@ class DiskController:
             bytes_per_sector=bytes_per_sector,
             track_formats=[track_format]
         )
+        self.logger.debug(f"Created default geometry for drive size {drive_size}")
         return geometry, geometry
 
     def _check_second_head(self, temp_profile: FormatProfile) -> bool:
@@ -674,6 +700,7 @@ class DiskController:
             if not has_second_head and profile.physical_format.heads > 1:
                 continue
             filtered.append(profile)
+        self.logger.debug(f"Filtered {len(filtered)} formats for drive size {drive_size} and second head {has_second_head}")
         return filtered
 
     def _find_matching_format(self, filtered_formats: List[FormatProfile]) -> Optional[FormatProfile]:
@@ -683,7 +710,7 @@ class DiskController:
                 self.filesystem = create_filesystem(self.disk)
                 if self.filesystem:
                     self._adjust_geometry_after_filesystem()
-                    logger.debug(f"Adjusted geometry after filesystem: {self.disk.physical_format}")
+                    self.logger.debug(f"Adjusted geometry after filesystem: {self.disk.physical_format}")
                     return profile
             except Exception:
                 continue
@@ -824,12 +851,14 @@ class DiskController:
                 drive_number=format_info.get("drive_number", 0),
                 volume_serial=format_info.get("volume_serial", 0),
             )
-            return FormatProfile(
+            profile = FormatProfile(
                 name="custom",
                 description=f"Custom {physical_format.cylinders}x{physical_format.heads}x{physical_format.track_formats[0].sectors_per_track}x{physical_format.bytes_per_sector}",
                 physical_format=physical_format,
                 boot_sector=boot_sector
             )
+            self.logger.debug(f"Created custom format profile: {profile.description}")
+            return profile
         except Exception as e:
             self.logger.error(f"Error creating custom profile: {e}")
             return None
