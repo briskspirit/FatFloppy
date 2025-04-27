@@ -101,7 +101,6 @@ def open_disk_for_rw_tests(controller: DiskController, mocks_bundle: dict, test_
     for attr, value in bsd.__dict__.items():
         setattr(mock_fat_bs, attr, value)
     mock_fat_bs.is_valid.return_value = True
-    mock_fat_bs.calculate_fat_type.return_value = "FAT12"
     mock_fat_bs.sectors_per_track = track_fmt.sectors_per_track
     mock_fat_bs.num_heads = phys_fmt.heads
     mock_fat_bs.total_sectors = phys_fmt.total_sectors
@@ -163,7 +162,6 @@ def test_01_open_physical_drive_A_35_auto_detect_mocked(mocked_controller):
     for attr, value in bsd.__dict__.items():
         setattr(mock_fat_bs, attr, value)
     mock_fat_bs.is_valid.return_value = True
-    mock_fat_bs.calculate_fat_type.return_value = "FAT12"
     mock_fat_bs.sectors_per_track = expected_format.physical_format.track_formats[0].sectors_per_track
     mock_fat_bs.num_heads = expected_format.physical_format.heads
     mock_fat_bs.total_sectors = expected_format.physical_format.total_sectors
@@ -222,7 +220,6 @@ def test_02_open_physical_with_explicit_format_mocked(mocked_controller):
     for attr, value in bsd.__dict__.items():
         setattr(mock_fat_bs, attr, value)
     mock_fat_bs.is_valid.return_value = True
-    mock_fat_bs.calculate_fat_type.return_value = "FAT12"
     mock_fat_bs.sectors_per_track = track_fmt.sectors_per_track
     mock_fat_bs.num_heads = phys_fmt.heads
     mock_fat_bs.total_sectors = phys_fmt.total_sectors

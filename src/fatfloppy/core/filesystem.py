@@ -66,23 +66,6 @@ class FATBootSector(BootSector):
             and self.reserved_sectors >= 1
         )
 
-    def calculate_fat_type(self) -> str:
-        if self.bytes_per_sector == 0 or self.sectors_per_cluster == 0:
-            return "UNKNOWN"
-        root_dir_bytes = self.root_entries * 32
-        root_dir_sectors = (root_dir_bytes + self.bytes_per_sector - 1) // self.bytes_per_sector
-        fat_sectors = self.num_fats * self.sectors_per_fat
-        first_data_sector = self.reserved_sectors + fat_sectors + root_dir_sectors
-        data_sectors = self.total_sectors - first_data_sector
-        if data_sectors <= 0:
-            return "UNKNOWN"
-        total_clusters = data_sectors // self.sectors_per_cluster
-        if total_clusters <= FAT12_MAX_CLUSTERS:
-            return "FAT12"
-        elif total_clusters < 65525:
-            return "FAT16"
-        return "FAT32"
-
     def _parse_bpb(self) -> None:
         try:
             self.bytes_per_sector = struct.unpack_from("<H", self.data, 0x00B)[0]
@@ -444,7 +427,6 @@ class FATFilesystem(Filesystem):
         first_data_sector_lba = (self.data_area_start_offset + bpb.bytes_per_sector - 1) // bpb.bytes_per_sector
         total_data_sectors = max(bpb.total_sectors - first_data_sector_lba, 0)
         self.num_clusters = total_data_sectors // bpb.sectors_per_cluster
-        self.fat_type = bpb.calculate_fat_type()
         if self.data_area_start_offset > bpb.total_sectors * bpb.bytes_per_sector:
             raise ValueError("Data area offset exceeds disk size")
         self._init_completed = True

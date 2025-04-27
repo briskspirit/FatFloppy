@@ -66,7 +66,6 @@ def test_01_open_image_auto_detect_format(populated_controller: DiskController):
     assert geom.cylinders == FMT_144.physical_format.cylinders
     assert geom.heads == FMT_144.physical_format.heads
     assert geom.bytes_per_sector == FMT_144.physical_format.bytes_per_sector
-    assert populated_controller.filesystem.fat_type == "FAT12"
     print("test_01_open_image_auto_detect_format: PASSED")
 
 def test_02_open_image_non_existent():

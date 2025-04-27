@@ -100,7 +100,6 @@ def _check_fat_mirror(fs: FATFilesystem):
 def test_01_initialization_valid(fs_setup):
     fs, _ = fs_setup
     assert fs.is_valid()
-    assert fs.fat_type == "FAT12"
     assert fs.cluster_size > 0
     assert fs.num_clusters > 0
     # Check specific 1.44MB params
