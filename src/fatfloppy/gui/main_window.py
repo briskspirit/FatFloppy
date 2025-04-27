@@ -1,3 +1,4 @@
+# src/fatfloppy/gui/main_window.py
 import os
 import re
 import copy

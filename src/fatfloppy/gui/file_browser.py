@@ -1,3 +1,4 @@
+# src/fatfloppy/gui/file_browser.py
 import os
 from PyQt6.QtCore import Qt, QUrl, QMimeData
 from PyQt6.QtWidgets import QInputDialog, QMessageBox, QTreeWidget
