@@ -36,7 +36,7 @@ class DiskMapView:
 
     def get_sector_color(self, lba, sectors_per_cluster,
                          reserved, fat_size, root_dir_sectors,
-                         first_data_sector, busy_clusters):
+                         first_data_sector, busy_sectors):
         """Determine the color for a sector based on its role in FAT12 filesystem using LBA."""
         try:
             if lba < reserved:
@@ -51,12 +51,12 @@ class DiskMapView:
                 # Data area: color based on cluster status
                 relative_sector = max(0, lba - first_data_sector)
                 cluster = (relative_sector // sectors_per_cluster) + 2  # Cluster numbers start at 2
-                return Qt.GlobalColor.magenta if cluster in busy_clusters else Qt.GlobalColor.gray
+                return Qt.GlobalColor.magenta if cluster in busy_sectors else Qt.GlobalColor.gray
         except Exception as e:
             print(f"Error in get_sector_color for LBA {lba}: {e}")
             return Qt.GlobalColor.lightGray
 
-    def draw_disk_map(self, controller, current_head, busy_clusters, free_space, total_space, app_font):
+    def draw_disk_map(self, controller, current_head, busy_sectors, free_space, total_space, app_font):
         self.scene.clear()
         if not controller:
             view_width = self.view.width()
@@ -138,7 +138,7 @@ class DiskMapView:
                     color = self.get_sector_color(lba, fs_params['sectors_per_cluster'],
                                                  fs_params['reserved_sectors'], fs_params['fat_size'],
                                                  fs_params['root_dir_sectors'], fs_params['first_data_sector'],
-                                                 busy_clusters)
+                                                 busy_sectors)
                     theta_start = math.radians(i * angle_per_sector)
                     theta_end = math.radians((i + 1) * angle_per_sector)
                     inner_points = self.generate_arc_points(x0, y0, r_inner, theta_start, theta_end, num_points)

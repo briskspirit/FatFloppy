@@ -28,7 +28,7 @@ class FileBrowserApp(QMainWindow):
         self.current_node = None
         self.current_path = "/"
         self.current_head = 0
-        self.busy_clusters = []
+        self.busy_sectors = []
         self.free_space = 0
         self.total_space = 0
         self.controller = None
@@ -207,7 +207,7 @@ class FileBrowserApp(QMainWindow):
         self.current_node = None
         self.current_path = "/"
         self.current_head = 0
-        self.busy_clusters = []
+        self.busy_sectors = []
         self.free_space = 0
         self.total_space = 0
         self.current_file_path = None
@@ -279,7 +279,7 @@ class FileBrowserApp(QMainWindow):
             self.current_path = "/"
             self.update_file_list()
 
-        self.get_busy_clusters()
+        self.get_busy_sectors()
         self.update_disk_info()
         self.draw_disk_map()
         self.statusBar().showMessage(f"Current path: {self.current_path}")
@@ -976,15 +976,15 @@ class FileBrowserApp(QMainWindow):
         else:
             QMessageBox.information(self, "Info", "Head switching is not available for this disk.")
 
-    def get_busy_clusters(self):
+    def get_busy_sectors(self):
         if not self.controller:
-            self.busy_clusters = []
+            self.busy_sectors = []
             self.free_space = 0
             self.total_space = 0
             return
 
         try:
-            self.busy_clusters = self.controller.get_allocated_clusters()
+            self.busy_sectors = self.controller.get_allocated_clusters()
             space_info = self.controller.get_free_space()
             if space_info:
                 free_bytes, total_bytes = space_info
@@ -1017,9 +1017,9 @@ class FileBrowserApp(QMainWindow):
                     else:
                         self.total_space = (total_sectors - 33) // sectors_per_cluster
 
-                    self.free_space = self.total_space - len(self.busy_clusters)
+                    self.free_space = self.total_space - len(self.busy_sectors)
         except Exception as e:
-            self.busy_clusters = []
+            self.busy_sectors = []
             self.free_space = 0
             self.total_space = 0
             print(f"Error getting busy clusters: {e}")
@@ -1028,7 +1028,7 @@ class FileBrowserApp(QMainWindow):
         self.disk_map.draw_disk_map(
             self.controller,
             self.current_head,
-            self.busy_clusters,
+            self.busy_sectors,
             self.free_space,
             self.total_space,
             self.app_font
