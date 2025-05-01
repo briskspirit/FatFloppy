@@ -148,7 +148,7 @@ def open_disk_for_rw_tests(controller: DiskController, mocks_bundle: dict, test_
     mock_fat_bs.num_heads = phys_fmt.heads
     mock_fat_bs.total_sectors = phys_fmt.total_sectors
     mock_fs.boot_sector = mock_fat_bs
-    mock_fs.get_allocated_clusters.return_value = []
+    mock_fs.get_allocated_units.return_value = []
     mock_fs.get_free_space.return_value = (phys_fmt.total_bytes, phys_fmt.total_bytes)
 
     mock_usb.read_track.return_value = create_mock_flux()

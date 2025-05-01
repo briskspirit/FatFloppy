@@ -394,11 +394,11 @@ class DiskController:
             self.logger.warning(f"Driver type {type(self.driver).__name__} does not support set_physical_format.")
         self.physical_format = self.disk.physical_format
 
-    def get_allocated_clusters(self) -> List[int]:
-        if not self.filesystem or not hasattr(self.filesystem, "get_allocated_clusters"):
+    def get_allocated_units(self) -> List[int]:
+        if not self.filesystem or not hasattr(self.filesystem, "get_allocated_units"):
             return []
         try:
-            clusters = self.filesystem.get_allocated_clusters()
+            clusters = self.filesystem.get_allocated_units()
             self.logger.debug(f"Retrieved {len(clusters)} allocated clusters")
             return clusters
         except Exception as e:

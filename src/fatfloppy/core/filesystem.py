@@ -159,7 +159,7 @@ class Filesystem:
     def delete(self, path: str) -> None:
         raise NotImplementedError
 
-    def get_allocated_clusters(self) -> List[int]:
+    def get_allocated_units(self) -> List[int]:
         raise NotImplementedError
 
     def get_free_space(self) -> Tuple[int, int]:
@@ -352,7 +352,7 @@ class FATFilesystem(Filesystem):
             self.logger.error(f"Error deleting {path}: {e}")
             return False
 
-    def get_allocated_clusters(self) -> List[int]:
+    def get_allocated_units(self) -> List[int]:
         if not self.is_valid() or self.fat_cache is None:
             return []
         if self._cached_allocated_clusters is not None and not self.fat_dirty:
@@ -414,7 +414,7 @@ class FATFilesystem(Filesystem):
         if not self.is_valid():
             return 0, 0
         total_data_bytes = self.num_clusters * self.cluster_size
-        allocated_count = len(self.get_allocated_clusters())
+        allocated_count = len(self.get_allocated_units())
         free_clusters = max(self.num_clusters - allocated_count, 0)
         free_bytes = free_clusters * self.cluster_size
         self.logger.debug(f"Free space: {free_bytes} bytes, Total: {total_data_bytes} bytes")

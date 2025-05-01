@@ -362,7 +362,7 @@ def test_14_filesystem_info(fs_setup):
     fs, _ = fs_setup
     fs._cached_allocated_clusters = None # Ensure recalculation
     free_start, total_start = fs.get_free_space()
-    alloc_start = fs.get_allocated_clusters()
+    alloc_start = fs.get_allocated_units()
 
     expected_data_bytes = fs.num_clusters * fs.cluster_size
     assert total_start == expected_data_bytes
@@ -375,7 +375,7 @@ def test_14_filesystem_info(fs_setup):
 
     fs._cached_allocated_clusters = None # Ensure recalculation
     free_end, total_end = fs.get_free_space()
-    alloc_end = fs.get_allocated_clusters()
+    alloc_end = fs.get_allocated_units()
 
     assert total_end == total_start
     assert free_end < free_start

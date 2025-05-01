@@ -984,7 +984,7 @@ class FileBrowserApp(QMainWindow):
             return
 
         try:
-            self.busy_sectors = self.controller.get_allocated_clusters()
+            self.busy_sectors = self.controller.get_allocated_units()
             space_info = self.controller.get_free_space()
             if space_info:
                 free_bytes, total_bytes = space_info

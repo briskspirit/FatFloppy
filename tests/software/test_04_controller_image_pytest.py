@@ -175,10 +175,10 @@ def test_11_get_free_space(populated_controller: DiskController):
     assert free_bytes >= 0
     print("test_11_get_free_space: PASSED")
 
-def test_12_get_allocated_clusters(populated_controller: DiskController):
-    clusters = populated_controller.get_allocated_clusters()
+def test_12_get_allocated_units(populated_controller: DiskController):
+    clusters = populated_controller.get_allocated_units()
     assert clusters is not None
     assert isinstance(clusters, list)
     assert len(clusters) > 0
     assert all(isinstance(c, int) for c in clusters)
-    print("test_12_get_allocated_clusters: PASSED")
+    print("test_12_get_allocated_units: PASSED")

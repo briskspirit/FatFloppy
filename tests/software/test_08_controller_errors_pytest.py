@@ -59,7 +59,7 @@ def test_01_ops_before_open(error_controller):
     assert not controller.create_directory("/dir")
     assert not controller.delete_item("/item")
     assert controller.get_free_space() is None
-    assert controller.get_allocated_clusters() == []
+    assert controller.get_allocated_units() == []
 
 def test_02_ops_after_close(error_controller):
     controller = error_controller
@@ -111,7 +111,7 @@ def test_02_ops_after_close(error_controller):
     assert not controller.create_directory("/dir")
     assert not controller.delete_item("/item")
     assert controller.get_free_space() is None
-    assert controller.get_allocated_clusters() == []
+    assert controller.get_allocated_units() == []
 
 def test_03_read_dir_as_file(error_controller):
     controller = error_controller

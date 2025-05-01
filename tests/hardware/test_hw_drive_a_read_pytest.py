@@ -116,7 +116,7 @@ class TestHardwareDriveARead:
         print(f"\nRunning: {self.test_07_hw_A_get_disk_info.__doc__}")
         controller = prepared_controller
         free, total = controller.get_free_space()
-        clusters = controller.get_allocated_clusters()
+        clusters = controller.get_allocated_units()
         assert free is not None and total is not None and clusters is not None
         assert free < total
         assert len(clusters) == 7, f"Expected 7 allocated clusters for populated 1.44M disk, found {len(clusters)}"
