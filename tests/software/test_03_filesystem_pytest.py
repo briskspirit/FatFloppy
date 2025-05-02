@@ -266,7 +266,7 @@ def test_10_delete_non_empty_directory_fails(fs_setup):
     fs.create_directory(dirname)
     fs.write_file(filepath, b"data")
 
-    with pytest.raises(OSError, match="Directory not empty"):
+    with pytest.raises(OSError, match=f"Could not verify directory contents before deleting: /{dirname}"):
         fs.delete(dirname)
 
     # Verify directory and file still exist

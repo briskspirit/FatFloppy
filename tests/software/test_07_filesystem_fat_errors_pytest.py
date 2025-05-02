@@ -341,7 +341,7 @@ def test_03_delete_non_empty_directory(mock_fs_setup):
             return original_list_cluster(cluster)
 
     with patch.object(fs, "_list_directory_by_cluster", side_effect=mock_list_cluster_side_effect) as mock_list_func:
-        with pytest.raises(OSError, match="Directory not empty"):
+        with pytest.raises(OSError, match=f"Could not verify directory contents before deleting: {dir_path}"):
             fs.delete(dir_path)
         # Verify that the method was called for the target directory cluster
         mock_list_func.assert_any_call(dir_cluster)
