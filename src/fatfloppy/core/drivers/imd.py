@@ -4,7 +4,7 @@ import datetime
 import copy
 import os
 import re
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict
 
 from .base_driver import DiskIODriver
 from ..physical_format import PhysicalFormat, TrackFormat

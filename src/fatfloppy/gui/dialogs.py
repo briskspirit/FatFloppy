@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBo
                              QDialogButtonBox, QGroupBox, QRadioButton, QFormLayout,
                              QSpinBox, QLineEdit, QCheckBox, QPushButton, QFileDialog)
 
+
 class DriveSelectionDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)

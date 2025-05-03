@@ -1,10 +1,11 @@
 # src/fatfloppy/core/drivers/base_driver.py
-from typing import List, Optional, Tuple, Dict
+from typing import Optional
 
 from ..utils.logging_config import get_logger
 from ..physical_format import PhysicalFormat
 
 logger = get_logger()
+
 
 class DiskIODriver:
     def __init__(self):

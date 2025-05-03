@@ -1,4 +1,6 @@
 # src/fatfloppy/gui/models.py
+
+
 class FileSystemNode:
     def __init__(self, name, size=0, is_dir=False, modified="N/A", attributes="-", parent=None):
         self.name = name

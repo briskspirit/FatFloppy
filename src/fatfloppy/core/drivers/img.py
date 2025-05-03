@@ -1,6 +1,5 @@
 # src/fatfloppy/core/drivers/img.py
 import copy
-from typing import List, Optional, Tuple, Dict
 
 from .base_driver import DiskIODriver
 from ..physical_format import PhysicalFormat

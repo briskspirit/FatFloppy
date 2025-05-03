@@ -21,6 +21,7 @@ from .file_browser import DragDropTreeWidget
 from .models import FileSystemNode
 from .themes import get_dark_theme, get_light_theme
 
+
 class FileBrowserApp(QMainWindow):
     logger = get_logger(__name__)
 
@@ -465,9 +466,7 @@ class FileBrowserApp(QMainWindow):
             return
 
         if self.controller.filesystem:
-            fs_type = type(self.controller.filesystem).__name__.replace("Filesystem", "")
             fs_info_dict = self.controller.filesystem.get_display_info()
-
             fs_info_lines = []
             if "Filesystem Type" in fs_info_dict:
                  fs_info_lines.append(f"Filesystem Type: {fs_info_dict.pop('Filesystem Type')}")

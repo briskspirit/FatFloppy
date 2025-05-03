@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (QGraphicsEllipseItem, QGraphicsLineItem,
                              QGraphicsPolygonItem, QGraphicsScene, QGraphicsView,
                              QGraphicsSimpleTextItem)
 
+
 class ResizableGraphicsView(QGraphicsView):
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)

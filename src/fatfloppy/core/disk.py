@@ -7,6 +7,7 @@ from .physical_format import PhysicalFormat
 
 logger = get_logger()
 
+
 class Disk:
     def __init__(self, driver: DiskIODriver):
         self.logger = get_logger(self.__class__.__name__)

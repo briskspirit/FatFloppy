@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List, Tuple
 import logging
 
+
 @dataclass
 class TrackFormat:
     track_start: int

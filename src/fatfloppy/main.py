@@ -3,6 +3,7 @@ from src.fatfloppy.core.utils.logging_config import get_logger
 
 logger = get_logger()
 
+
 def main():
     logger.info("Starting FatFloppy application")
     try:

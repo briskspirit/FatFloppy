@@ -1,7 +1,8 @@
 # src/fatfloppy/gui/file_browser.py
 import os
-from PyQt6.QtCore import Qt, QUrl, QMimeData
-from PyQt6.QtWidgets import QInputDialog, QMessageBox, QTreeWidget
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QMessageBox, QTreeWidget
+
 
 class DragDropTreeWidget(QTreeWidget):
     def __init__(self, parent=None):

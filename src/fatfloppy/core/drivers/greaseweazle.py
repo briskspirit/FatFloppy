@@ -8,7 +8,6 @@ from ..drivers.base_driver import DiskIODriver
 from ..physical_format import PhysicalFormat, TrackFormat
 from ..utils.logging_config import get_logger
 
-# Greaseweazle imports - keep them here as they are specific to GreaseweazleDriver
 try:
     from greaseweazle.tools import util
     from greaseweazle.tools import read
@@ -17,7 +16,7 @@ try:
     GREASEWEAZLE_AVAILABLE = True
 except ImportError:
     GREASEWEAZLE_AVAILABLE = False
-    util = None  # Define placeholders if GW is not available
+    util = None
     read = None
     ibm = None
     codec = None
@@ -25,11 +24,7 @@ except ImportError:
 
 logger = get_logger()
 
-def create_greaseweazle_diskdef(
-    physical_format: PhysicalFormat,
-    logger: logging.Logger,
-) -> Optional[codec.DiskDef]:
-    """Create a Greaseweazle disk definition from a PhysicalFormat object."""
+def create_greaseweazle_diskdef(physical_format: PhysicalFormat, logger: logging.Logger) -> Optional[codec.DiskDef]:
     if not physical_format:
         logger.warning("Cannot create diskdef: No physical format provided")
         return None
@@ -63,6 +58,7 @@ def create_greaseweazle_diskdef(
     except Exception as e:
         logger.error(f"Failed to create disk definition: {e}", exc_info=True)
         return None
+
 
 class GreaseweazleDriver(DiskIODriver):
     def __init__(self, device_name=None, drive="A", drive_size="3.5"):
@@ -379,7 +375,6 @@ class GreaseweazleDriver(DiskIODriver):
             return False
 
     def _update_after_write(self, cylinder: int, head: int):
-        """Update internal state after a successful write."""
         track_id = (cylinder, head)
         if track_id in self.dirty_sectors:
             sectors_per_track = self.physical_format.get_sectors_per_track(cylinder, head)

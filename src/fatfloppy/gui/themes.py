@@ -1,5 +1,6 @@
 # src/fatfloppy/gui/themes.py
 
+
 def get_dark_theme():
     return """
     QMainWindow {
