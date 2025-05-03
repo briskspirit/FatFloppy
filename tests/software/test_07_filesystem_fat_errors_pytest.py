@@ -23,7 +23,7 @@ TOTAL_SECTORS = 1440 # Typically 720k
 SECTORS_PER_FAT = 3
 SECTORS_PER_TRACK = 9
 NUM_HEADS = 2
-CLUSTER_SIZE = bytes_per_sector * SECTORS_PER_CLUSTER
+allocation_unit_size = bytes_per_sector * SECTORS_PER_CLUSTER
 ROOT_DIR_SECTORS = (ROOT_ENTRIES * 32 + bytes_per_sector - 1) // bytes_per_sector
 FAT_SIZE_BYTES = SECTORS_PER_FAT * bytes_per_sector
 FAT_AREA_SIZE_BYTES = NUM_FATS * FAT_SIZE_BYTES
@@ -37,7 +37,7 @@ DATA_AREA_START_OFFSET = ROOT_DIR_END_OFFSET
 # Careful calculation for num_clusters based on total size and offsets
 TOTAL_BYTES = TOTAL_SECTORS * bytes_per_sector
 DATA_AREA_BYTES = TOTAL_BYTES - DATA_AREA_START_OFFSET
-NUM_CLUSTERS = DATA_AREA_BYTES // CLUSTER_SIZE if CLUSTER_SIZE > 0 else 0
+NUM_CLUSTERS = DATA_AREA_BYTES // allocation_unit_size if allocation_unit_size > 0 else 0
 
 # Derived constants for geometry
 CYLINDERS = TOTAL_SECTORS // (SECTORS_PER_TRACK * NUM_HEADS)

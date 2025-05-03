@@ -322,7 +322,7 @@ class FATFilesystem(Filesystem):
                 self.delete(path)
         except FileNotFoundError:
             pass
-        num_clusters_needed = (len(data) + self.cluster_size - 1) // self.cluster_size if len(data) > 0 else 0
+        num_clusters_needed = (len(data) + self.allocation_unit_size - 1) // self.allocation_unit_size if len(data) > 0 else 0
         start_cluster_for_entry = 0
         if num_clusters_needed > 0:
             clusters = self._allocate_cluster_chain(num_clusters_needed)
@@ -376,7 +376,7 @@ class FATFilesystem(Filesystem):
         self._set_fat_entry_cached(new_cluster, FAT12_EOC) # Mark cluster as end-of-chain
         cluster_offset = self._cluster_to_offset(new_cluster)
         try:
-            self._write_bytes(cluster_offset, b"\x00" * self.cluster_size)
+            self._write_bytes(cluster_offset, b"\x00" * self.allocation_unit_size)
             now = datetime.datetime.now()
             dot_entry = self._create_directory_entry_bytes(
                 name=".", is_dir=True, starting_cluster=new_cluster, size=0, dt=now
@@ -499,10 +499,10 @@ class FATFilesystem(Filesystem):
     def get_free_space(self) -> Tuple[int, int]:
         if not self.is_valid():
             return 0, 0
-        total_data_bytes = self.num_clusters * self.cluster_size
+        total_data_bytes = self.num_clusters * self.allocation_unit_size
         allocated_count = len(self.get_allocated_units())
         free_clusters = max(self.num_clusters - allocated_count, 0)
-        free_bytes = free_clusters * self.cluster_size
+        free_bytes = free_clusters * self.allocation_unit_size
         self.logger.debug(f"Free space: {free_bytes} bytes ({free_clusters} clusters), Total data space: {total_data_bytes} bytes ({self.num_clusters} clusters)")
         return free_bytes, total_data_bytes
 
@@ -674,7 +674,7 @@ class FATFilesystem(Filesystem):
         if not self.boot_sector or not self.boot_sector.is_valid():
             raise ValueError("Cannot initialize FAT parameters: Invalid Boot Sector / BPB")
         bpb = self.boot_sector
-        self.cluster_size = bpb.sectors_per_cluster * bpb.bytes_per_sector
+        self.allocation_unit_size = bpb.sectors_per_cluster * bpb.bytes_per_sector
         vbr_lba = bpb.hidden_sectors if bpb.hidden_sectors < bpb.total_sectors else 0
         self.fat_start_offset = (vbr_lba + bpb.reserved_sectors) * bpb.bytes_per_sector
         self.fat_size_bytes = bpb.sectors_per_fat * bpb.bytes_per_sector
@@ -689,7 +689,7 @@ class FATFilesystem(Filesystem):
         self.num_clusters = total_data_sectors // bpb.sectors_per_cluster
         self._init_completed = True
         self.logger.debug("FAT filesystem parameters initialized:")
-        self.logger.debug(f"  Cluster Size: {self.cluster_size} bytes")
+        self.logger.debug(f"  Cluster Size: {self.allocation_unit_size} bytes")
         self.logger.debug(f"  FAT Start Offset: {self.fat_start_offset}")
         self.logger.debug(f"  FAT Size: {self.fat_size_bytes} bytes")
         self.logger.debug(f"  Root Dir Start Offset: {self.root_dir_start_offset}")
@@ -701,7 +701,7 @@ class FATFilesystem(Filesystem):
         if not self._init_completed: raise ValueError("Filesystem not initialized")
         if cluster < 2:
             raise ValueError(f"Invalid cluster number: {cluster}")
-        return self.data_area_start_offset + (cluster - 2) * self.cluster_size
+        return self.data_area_start_offset + (cluster - 2) * self.allocation_unit_size
 
     def _get_directory_cluster(self, dir_path: str) -> int:
         if not self._init_completed: raise ValueError("Filesystem not initialized")
@@ -1139,13 +1139,13 @@ class FATFilesystem(Filesystem):
         result = bytearray()
         for cluster in cluster_chain:
             cluster_offset = self._cluster_to_offset(cluster)
-            cluster_data = self._read_bytes(cluster_offset, self.cluster_size)
-            if len(cluster_data) < self.cluster_size:
-                self.logger.warning(f"Short read for cluster {cluster}: got {len(cluster_data)}, expected {self.cluster_size}. Padding with zeros.")
-                cluster_data += bytes(self.cluster_size - len(cluster_data))
-            elif len(cluster_data) > self.cluster_size:
-                self.logger.warning(f"Over-read for cluster {cluster}: got {len(cluster_data)}, expected {self.cluster_size}. Truncating.")
-                cluster_data = cluster_data[:self.cluster_size]
+            cluster_data = self._read_bytes(cluster_offset, self.allocation_unit_size)
+            if len(cluster_data) < self.allocation_unit_size:
+                self.logger.warning(f"Short read for cluster {cluster}: got {len(cluster_data)}, expected {self.allocation_unit_size}. Padding with zeros.")
+                cluster_data += bytes(self.allocation_unit_size - len(cluster_data))
+            elif len(cluster_data) > self.allocation_unit_size:
+                self.logger.warning(f"Over-read for cluster {cluster}: got {len(cluster_data)}, expected {self.allocation_unit_size}. Truncating.")
+                cluster_data = cluster_data[:self.allocation_unit_size]
             result.extend(cluster_data)
         return bytes(result)
 
@@ -1157,10 +1157,10 @@ class FATFilesystem(Filesystem):
         for cluster in cluster_chain:
             cluster_offset = self._cluster_to_offset(cluster)
             bytes_remaining = len(data) - data_pos
-            chunk_size = min(bytes_remaining, self.cluster_size)
+            chunk_size = min(bytes_remaining, self.allocation_unit_size)
             chunk = data[data_pos:data_pos + chunk_size]
-            if chunk_size < self.cluster_size:
-                padded_chunk = chunk + bytes(self.cluster_size - chunk_size)
+            if chunk_size < self.allocation_unit_size:
+                padded_chunk = chunk + bytes(self.allocation_unit_size - chunk_size)
                 self._write_bytes(cluster_offset, padded_chunk)
             else:
                 self._write_bytes(cluster_offset, chunk)
@@ -1189,7 +1189,7 @@ class FATFilesystem(Filesystem):
                 raise FileNotFoundError(f"Directory cluster {dir_cluster} invalid or unreadable")
             for current_c in cluster_chain:
                 cluster_offset = self._cluster_to_offset(current_c)
-                cluster_data = self._read_bytes(cluster_offset, self.cluster_size)
+                cluster_data = self._read_bytes(cluster_offset, self.allocation_unit_size)
                 for i in range(0, len(cluster_data), 32):
                     entry_data = cluster_data[i:i + 32]
                     if len(entry_data) < 32 or entry_data[0] == ENTRY_UNUSED:
@@ -1223,7 +1223,7 @@ class FATFilesystem(Filesystem):
             for current_c in cluster_chain:
                 last_cluster_in_chain = current_c
                 cluster_offset = self._cluster_to_offset(current_c)
-                cluster_data = self._read_bytes(cluster_offset, self.cluster_size)
+                cluster_data = self._read_bytes(cluster_offset, self.allocation_unit_size)
                 for i in range(0, len(cluster_data), 32):
                     entry_data = cluster_data[i:i + 32]
                     if len(entry_data) < 32:
@@ -1238,7 +1238,7 @@ class FATFilesystem(Filesystem):
             self._set_fat_entry_cached(last_cluster_in_chain, new_cluster)
             self._set_fat_entry_cached(new_cluster, FAT12_EOC)
             new_cluster_offset = self._cluster_to_offset(new_cluster)
-            self._write_bytes(new_cluster_offset, bytes([ENTRY_UNUSED]) * self.cluster_size)
+            self._write_bytes(new_cluster_offset, bytes([ENTRY_UNUSED]) * self.allocation_unit_size)
             return new_cluster, 0
         raise ValueError(f"Invalid directory cluster specified: {dir_cluster}")
 

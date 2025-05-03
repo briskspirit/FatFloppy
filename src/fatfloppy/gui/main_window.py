@@ -5,7 +5,7 @@ import copy
 import datetime
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import (QAction, QFont, QTextOption)
+from PyQt6.QtGui import (QAction, QFont, QPalette)
 from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
                              QMainWindow, QMessageBox, QToolBar,
                              QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
@@ -13,8 +13,8 @@ from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
                              QPlainTextEdit, QPushButton, QAbstractItemView)
 
 from ..core.controller import DiskController
-from ..core.filesystem import FATFilesystem
 from ..core.drivers import GREASEWEAZLE_AVAILABLE
+from ..core.utils.logging_config import get_logger
 from .dialogs import DriveSelectionDialog, CreateImageDialog
 from .disk_map import DiskMapView
 from .file_browser import DragDropTreeWidget
@@ -22,13 +22,15 @@ from .models import FileSystemNode
 from .themes import get_dark_theme, get_light_theme
 
 class FileBrowserApp(QMainWindow):
+    logger = get_logger(__name__)
+
     def __init__(self):
         super().__init__()
         self.root_node = None
         self.current_node = None
         self.current_path = "/"
         self.current_head = 0
-        self.busy_sectors = []
+        self.busy_units = []
         self.free_space = 0
         self.total_space = 0
         self.controller = None
@@ -37,9 +39,9 @@ class FileBrowserApp(QMainWindow):
 
         self.initUI()
         self.setup_fonts()
-        self.update_theme()  # Apply initial theme
-        # Connect to color scheme changes
+        self.update_theme()
         QApplication.instance().styleHints().colorSchemeChanged.connect(self.update_theme)
+        self.reset_ui()
 
     def initUI(self):
         self.setWindowTitle("FatFloppy Disk Browser")
@@ -169,10 +171,8 @@ class FileBrowserApp(QMainWindow):
         self.tabifyDockWidget(self.disk_map_dock, self.text_viewer_dock)
         self.disk_map_dock.raise_()
 
-        # Connect selection changed signal
         self.file_list.selectionModel().selectionChanged.connect(self.on_selection_changed)
 
-        self.reset_ui()
         self.statusBar().showMessage("Ready")
 
     def setup_fonts(self):
@@ -207,7 +207,7 @@ class FileBrowserApp(QMainWindow):
         self.current_node = None
         self.current_path = "/"
         self.current_head = 0
-        self.busy_sectors = []
+        self.busy_units = []
         self.free_space = 0
         self.total_space = 0
         self.current_file_path = None
@@ -220,7 +220,7 @@ class FileBrowserApp(QMainWindow):
         self.physical_format_info.setText("No disk image loaded")
         self.filesystem_info.setText("No filesystem detected")
         self.disk_map.scene.clear()
-        self.disk_map.scene.addText("No disk image loaded").setPos(10, 10)
+        self.draw_disk_map()
         self.head_action.setEnabled(False)
         self.head_action.setText("Switch to Head 1")
         self.statusBar().showMessage("Ready")
@@ -234,12 +234,12 @@ class FileBrowserApp(QMainWindow):
             node = item.node
             if not node.is_dir:
                 file_path = self.build_full_path(node.name)
-                if node.size <= 10240:  # Check file size limit
+                if node.size <= 2048:
                     content = self.controller.read_file(file_path)
                     if content is not None and self.is_text_file(content):
                         self.text_viewer.setPlainText(content.decode('cp437'))
                         self.text_viewer_dock.raise_()
-                        self.current_file_path = file_path  # Store the current file path
+                        self.current_file_path = file_path
                         return
 
         self.text_viewer.setPlainText("")
@@ -279,7 +279,7 @@ class FileBrowserApp(QMainWindow):
             self.current_path = "/"
             self.update_file_list()
 
-        self.get_busy_sectors()
+        self.get_busy_units()
         self.update_disk_info()
         self.draw_disk_map()
         self.statusBar().showMessage(f"Current path: {self.current_path}")
@@ -330,27 +330,23 @@ class FileBrowserApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"An unexpected error occurred: {str(e)}")
 
     def open_disk_image_file(self):
-        # --- Updated File Dialog Filter ---
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img *.imd);;All Files (*)")
-        # --- End Update ---
         if not file_path:
             return
 
-        # Determine disk type based on extension
         _, ext = os.path.splitext(file_path)
-        disk_type = "IMG" # Default to raw image
+        disk_type = "IMG"
         if ext.lower() == ".imd":
             disk_type = "IMD"
 
         try:
-            self.reset_ui() # Clear previous state before opening new
+            self.reset_ui()
             self.controller = DiskController()
             self.statusBar().showMessage(f"Opening {disk_type} disk: {file_path}...")
             QApplication.processEvents()
 
             if self.controller.open_disk(file_path, disk_type):
-                # No need to call build_fs_tree here, refresh handles it
-                self.refresh_filesystem_ui() # Refresh UI based on loaded disk
+                self.refresh_filesystem_ui()
 
                 if self.controller.physical_format and self.controller.physical_format.heads > 1:
                     self.head_action.setEnabled(True)
@@ -362,7 +358,6 @@ class FileBrowserApp(QMainWindow):
             else:
                 self.reset_ui()
                 QMessageBox.critical(self, "Error", f"Failed to open {disk_type} disk image")
-        # Catch specific IMD errors if needed
         except ValueError as e:
              self.reset_ui()
              QMessageBox.critical(self, "IMD Error", f"Failed to parse IMD file: {str(e)}")
@@ -431,34 +426,17 @@ class FileBrowserApp(QMainWindow):
         total_sectors = geometry.total_sectors
         total_bytes = total_sectors * geometry.bytes_per_sector
 
-        # Attempt to get format description
-        # Use detect_format carefully as it might trigger reads/adjustments
-        # For now, just use the geometry info primarily
-        # TODO: Maybe store detected format name in controller state?
-        # format_info_str = "Unknown"
-        # format_result = self.controller.detect_format()
-        # if format_result:
-        #     format_name, boot_data = format_result
-        #     format_profile = self.controller.get_format_by_name(format_name)
-        #     if format_profile:
-        #         format_info_str = format_profile.description
-
-        # Display IMD comment if available
         imd_comment = ""
         if hasattr(self.controller.driver, 'comment'):
             imd_comment = self.controller.driver.comment
             if imd_comment:
-                 # Shorten if too long for display?
                  display_comment = (imd_comment[:60] + '...') if len(imd_comment) > 63 else imd_comment
                  imd_comment = f"IMD Comment: {display_comment}\n"
 
-
-         # Handle track-specific parameters
         if geometry.track_formats:
             encodings = set(tf.encoding for tf in geometry.track_formats)
             rates = set(tf.rate for tf in geometry.track_formats)
             spts = set(tf.sectors_per_track for tf in geometry.track_formats)
-
             encoding_text = list(encodings)[0] if len(encodings) == 1 else "variable"
             rate_text = f"{list(rates)[0]} kbps" if len(rates) == 1 else "variable"
             spt_text = str(list(spts)[0]) if len(spts) == 1 else "variable"
@@ -468,8 +446,7 @@ class FileBrowserApp(QMainWindow):
             spt_text = "N/A"
 
         info = (
-            f"{imd_comment}" # Show IMD comment first if present
-            # f"Format: {format_info_str}\n"
+            f"{imd_comment}"
             f"Encoding: {encoding_text}\n"
             f"Data Rate: {rate_text}\n"
             f"Rotation Speed: {geometry.rpm} RPM\n"
@@ -489,37 +466,29 @@ class FileBrowserApp(QMainWindow):
 
         if self.controller.filesystem:
             fs_type = type(self.controller.filesystem).__name__.replace("Filesystem", "")
+            fs_info_dict = self.controller.filesystem.get_display_info()
+
+            fs_info_lines = []
+            if "Filesystem Type" in fs_info_dict:
+                 fs_info_lines.append(f"Filesystem Type: {fs_info_dict.pop('Filesystem Type')}")
+            if "Volume Label" in fs_info_dict:
+                 fs_info_lines.append(f"Volume Label: {fs_info_dict.pop('Volume Label')}")
+            for key, value in fs_info_dict.items():
+                fs_info_lines.append(f"{key}: {value}")
+
+            fs_details = "\n".join(fs_info_lines)
+
             space_info = self.controller.get_free_space()
             if space_info:
                 free_bytes, total_bytes = space_info
                 free_kb = free_bytes / 1024
                 total_kb = total_bytes / 1024
                 percent_free = (free_bytes / total_bytes * 100) if total_bytes > 0 else 0
+                space_str = f"Free Space: {free_kb:.1f} KB / {total_kb:.1f} KB ({percent_free:.1f}%)"
             else:
-                free_kb = 0
-                total_kb = 0
-                percent_free = 0
+                space_str = "Free Space: N/A"
 
-            fs_info = ""
-            if isinstance(self.controller.filesystem, FATFilesystem):
-                bs = self.controller.filesystem.boot_sector
-                if bs:
-                    fs_info += f"Sectors per Cluster: {bs.sectors_per_cluster}\n"
-                    fs_info += f"Root Directory Entries: {bs.root_entries}\n"
-                    fs_info += f"Reserved Sectors: {bs.reserved_sectors}\n"
-                    fs_info += f"Number of FATs: {bs.num_fats}\n"
-                    fs_info += f"Sectors per FAT: {bs.sectors_per_fat}\n"
-                    fs_info += f"Media Descriptor: 0x{bs.media_descriptor:02X}\n"
-                    if bs.volume_label.strip():
-                        fs_info += f"Volume Label: {bs.volume_label}\n"
-                    if bs.fs_type.strip():
-                        fs_info += f"Filesystem Type: {bs.fs_type}\n"
-
-            info = (
-                f"Filesystem: {fs_type}\n"
-                f"{fs_info}"
-                f"Free Space: {free_kb:.1f} KB / {total_kb:.1f} KB ({percent_free:.1f}%)"
-            )
+            info = f"{fs_details}\n{space_str}"
             self.filesystem_info.setText(info)
         else:
             self.filesystem_info.setText("No filesystem detected")
@@ -976,62 +945,69 @@ class FileBrowserApp(QMainWindow):
         else:
             QMessageBox.information(self, "Info", "Head switching is not available for this disk.")
 
-    def get_busy_sectors(self):
+    def get_busy_units(self):
         if not self.controller:
-            self.busy_sectors = []
+            self.busy_units = []
             self.free_space = 0
             self.total_space = 0
             return
 
         try:
-            self.busy_sectors = self.controller.get_allocated_units()
-            space_info = self.controller.get_free_space()
-            if space_info:
-                free_bytes, total_bytes = space_info
-                if self.controller.physical_format:
-                    bytes_per_sector = self.controller.physical_format.bytes_per_sector
-                    sectors_per_cluster = 1
-                    if self.controller.boot_sector:
-                        sectors_per_cluster = self.controller.boot_sector.sectors_per_cluster
+            self.busy_units = self.controller.get_allocated_units()
+            unit_name = "units"
+            allocation_unit_size_bytes = 512
 
-                    self.free_space = free_bytes // (bytes_per_sector * sectors_per_cluster)
-                    self.total_space = total_bytes // (bytes_per_sector * sectors_per_cluster)
-                else:
-                    self.free_space = free_bytes // 512
-                    self.total_space = total_bytes // 512
-            else:
-                if self.controller.physical_format:
-                    geometry = self.controller.physical_format
-                    total_sectors = geometry.total_sectors  # Use the provided total_sectors property
-                    sectors_per_cluster = 1
-                    if self.controller.boot_sector:
-                        sectors_per_cluster = self.controller.boot_sector.sectors_per_cluster
+            if self.controller.filesystem:
+                if self.controller.filesystem.allocation_unit_size > 0:
+                    allocation_unit_size_bytes = self.controller.filesystem.allocation_unit_size
 
-                    if self.controller.boot_sector:
-                        fs_info = self.controller.boot_sector
-                        reserved = fs_info.reserved_sectors
-                        fat_size = fs_info.sectors_per_fat * fs_info.num_fats
-                        root_dir_sectors = (fs_info.root_entries * 32 + fs_info.bytes_per_sector - 1) // fs_info.bytes_per_sector
-                        data_sectors = total_sectors - reserved - fat_size - root_dir_sectors
-                        self.total_space = data_sectors // sectors_per_cluster
+                space_info = self.controller.get_free_space()
+                if space_info:
+                    free_bytes, total_bytes = space_info
+                    if allocation_unit_size_bytes > 0:
+                        self.free_space = free_bytes // allocation_unit_size_bytes
+                        self.total_space = total_bytes // allocation_unit_size_bytes
                     else:
-                        self.total_space = (total_sectors - 33) // sectors_per_cluster
+                        self.logger.warning("Allocation unit size is zero, cannot calculate space in units.")
+                        self.free_space = 0
+                        self.total_space = 0
 
-                    self.free_space = self.total_space - len(self.busy_sectors)
+                else:
+                    self.logger.warning("Could not retrieve free space information.")
+                    self.free_space = 0
+                    if allocation_unit_size_bytes > 0 and self.controller.physical_format:
+                        total_data_bytes_geom = self.controller.physical_format.total_bytes
+                        self.total_space = total_data_bytes_geom // allocation_unit_size_bytes
+                        self.free_space = max(0, self.total_space - len(self.busy_units))
+                    else:
+                        self.total_space = len(self.busy_units)
+                        self.free_space = 0
+
+            else:
+                self.logger.warning("No filesystem detected, cannot calculate accurate free/total space.")
+                self.busy_units = []
+                self.free_space = 0
+                self.total_space = 0
+
+
+            self.logger.debug(f"Busy {unit_name}: {len(self.busy_units)}, Free: {self.free_space}, Total: {self.total_space}")
+
         except Exception as e:
-            self.busy_sectors = []
+            self.logger.error(f"Error getting busy units/space info: {e}", exc_info=True)
+            self.busy_units = []
             self.free_space = 0
             self.total_space = 0
-            print(f"Error getting busy clusters: {e}")
 
     def draw_disk_map(self):
+        text_color = self.palette().color(QPalette.ColorRole.WindowText)
         self.disk_map.draw_disk_map(
             self.controller,
             self.current_head,
-            self.busy_sectors,
+            self.busy_units,
             self.free_space,
             self.total_space,
-            self.app_font
+            self.app_font,
+            text_color,
         )
 
 def run_gui():

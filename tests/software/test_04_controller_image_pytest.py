@@ -169,7 +169,7 @@ def test_11_get_free_space(populated_controller: DiskController):
     assert space_info is not None
     free_bytes, total_bytes_from_fs = space_info
     assert populated_controller.filesystem is not None
-    expected_data_area_bytes = populated_controller.filesystem.num_clusters * populated_controller.filesystem.cluster_size
+    expected_data_area_bytes = populated_controller.filesystem.num_clusters * populated_controller.filesystem.allocation_unit_size
     assert total_bytes_from_fs == expected_data_area_bytes
     assert free_bytes < total_bytes_from_fs
     assert free_bytes >= 0

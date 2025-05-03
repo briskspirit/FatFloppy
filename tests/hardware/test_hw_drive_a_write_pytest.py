@@ -143,8 +143,8 @@ class TestHardwareDriveAWrite:
                     assert file_size == 0, f"File '{filepath}' has starting_cluster 0 but reported size is {file_size} (expected 0)"
                     pytest.fail(f"File '{filepath}' unexpectedly has starting_cluster 0 despite writing {len(content)} bytes.")
                 else:
-                    assert fs.cluster_size > 0, "Cluster size is zero"
-                    expected_clusters = (len(content) + fs.cluster_size - 1) // fs.cluster_size
+                    assert fs.allocation_unit_size > 0, "Cluster size is zero"
+                    expected_clusters = (len(content) + fs.allocation_unit_size - 1) // fs.allocation_unit_size
                     try:
                         cluster_chain = fs._get_cluster_chain(start_cluster)
                         assert len(cluster_chain) == expected_clusters, f"Expected {expected_clusters} clusters, found {len(cluster_chain)}"

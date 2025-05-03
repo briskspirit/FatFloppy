@@ -1,9 +1,11 @@
 # src/fatfloppy/gui/disk_map.py
 import math
+from typing import List, Dict, Any, Optional, Callable
 from PyQt6.QtCore import Qt, QPointF
-from PyQt6.QtGui import (QBrush, QPen, QPolygonF, QPainter)
+from PyQt6.QtGui import (QBrush, QPen, QPolygonF, QPainter, QFont, QColor)
 from PyQt6.QtWidgets import (QGraphicsEllipseItem, QGraphicsLineItem,
-                             QGraphicsPolygonItem, QGraphicsScene, QGraphicsView)
+                             QGraphicsPolygonItem, QGraphicsScene, QGraphicsView,
+                             QGraphicsSimpleTextItem)
 
 class ResizableGraphicsView(QGraphicsView):
     def __init__(self, scene, parent=None):
@@ -14,7 +16,8 @@ class ResizableGraphicsView(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.setSceneRect(0, 0, self.width()-2, self.height()-2)
-        self.app.draw_disk_map()
+        if hasattr(self.app, 'draw_disk_map'):
+            self.app.draw_disk_map()
 
 class DiskMapView:
     def __init__(self, parent):
@@ -22,10 +25,13 @@ class DiskMapView:
         self.scene = QGraphicsScene()
         self.view = ResizableGraphicsView(self.scene, parent)
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def generate_arc_points(self, x0, y0, radius, theta_start, theta_end, num_points):
-        """Generate points along an arc for polygon drawing."""
         points = []
+        num_points = max(2, num_points)
+        if num_points <= 1: return [QPointF(x0 + radius*math.cos(theta_start), y0 + radius*math.sin(theta_start))]
         delta_theta = (theta_end - theta_start) / (num_points - 1)
         for i in range(num_points):
             theta = theta_start + i * delta_theta
@@ -34,113 +40,106 @@ class DiskMapView:
             points.append(QPointF(x, y))
         return points
 
-    def get_sector_color(self, lba, sectors_per_cluster,
-                         reserved, fat_size, root_dir_sectors,
-                         first_data_sector, busy_sectors):
-        """Determine the color for a sector based on its role in FAT12 filesystem using LBA."""
+    def get_sector_color(self, lba: int,
+                         layout_info: Optional[Dict[str, Any]],
+                         busy_units: List[int]) -> str:
+        """Determine the color hex string for a sector."""
+        default_color_hex = "#BEBEBE"; error_color_hex = "#8B0000"; unknown_type_color_hex = "#008B8B"
+        if not layout_info: return default_color_hex
+        get_sector_type_func: Optional[Callable[[int], str]] = layout_info.get('get_sector_type')
+        type_color_map: Dict[str, str] = layout_info.get('type_color_map', {})
+        allocation_unit_size: int = layout_info.get('allocation_unit_size_sectors', 1)
+        first_data_sector: int = layout_info.get('first_data_sector', 0)
+        if not get_sector_type_func: return unknown_type_color_hex
         try:
-            if lba < reserved:
-                return Qt.GlobalColor.red  # Boot sector and reserved
-            elif lba < reserved + fat_size:
-                return Qt.GlobalColor.green  # FAT1
-            elif lba < reserved + 2 * fat_size:
-                return Qt.GlobalColor.blue  # FAT2
-            elif lba < first_data_sector:
-                return Qt.GlobalColor.yellow  # Root directory
-            else:
-                # Data area: color based on cluster status
+            sector_type = get_sector_type_func(lba)
+            if sector_type == "data":
+                if allocation_unit_size <= 0:
+                    logger = getattr(getattr(self.parent, 'controller', None), 'logger', None)
+                    if logger: logger.warning("Allocation unit size is zero or negative.")
+                    return type_color_map.get("data_free", default_color_hex)
                 relative_sector = max(0, lba - first_data_sector)
-                cluster = (relative_sector // sectors_per_cluster) + 2  # Cluster numbers start at 2
-                return Qt.GlobalColor.magenta if cluster in busy_sectors else Qt.GlobalColor.gray
+                unit_number = (relative_sector // allocation_unit_size) + 2 # Assumes FAT units start at 2 FIXME ???
+                if unit_number in busy_units: return type_color_map.get("data_used", "#FF00FF")
+                else: return type_color_map.get("data_free", default_color_hex)
+            else: return type_color_map.get(sector_type, unknown_type_color_hex)
         except Exception as e:
-            print(f"Error in get_sector_color for LBA {lba}: {e}")
-            return Qt.GlobalColor.lightGray
+            logger = getattr(getattr(self.parent, 'controller', None), 'logger', None)
+            if logger: logger.error(f"Error in get_sector_color for LBA {lba}: {e}", exc_info=True)
+            else: print(f"Error in get_sector_color for LBA {lba}: {e}")
+            return error_color_hex
 
-    def draw_disk_map(self, controller, current_head, busy_sectors, free_space, total_space, app_font):
+    def draw_disk_map(self, controller, current_head, busy_units,
+                        free_space, total_space, app_font: QFont, text_color: QColor):
         self.scene.clear()
-        if not controller:
-            view_width = self.view.width()
-            view_height = self.view.height()
-            text = self.scene.addText("No disk image loaded")
-            text.setFont(app_font)
-            text_width = text.boundingRect().width()
-            text_height = text.boundingRect().height()
-            text.setPos((view_width - text_width) / 2, (view_height - text_height) / 2)
-            return
-        geometry = controller.physical_format
-        if geometry is None or current_head >= geometry.heads:
-            self.scene.addText("No data for this head").setPos(10, 10)
-            return
         view_width = self.view.width()
         view_height = self.view.height()
-        x0 = view_width / 2
-        y0 = view_height / 2
+
+        if not controller or not controller.disk or not controller.physical_format:
+            text = QGraphicsSimpleTextItem("No disk loaded or geometry unknown")
+            text.setFont(app_font); text.setBrush(QBrush(text_color))
+            text_rect = text.boundingRect()
+            text.setPos((view_width - text_rect.width()) / 2, (view_height - text_rect.height()) / 2)
+            self.scene.addItem(text); return
+
+        geometry = controller.physical_format
+        filesystem = controller.filesystem
+
+        if current_head >= geometry.heads:
+            text = QGraphicsSimpleTextItem(f"Invalid head selected: {current_head}")
+            text.setFont(app_font); text.setBrush(QBrush(text_color)); text.setPos(10, 10)
+            self.scene.addItem(text); return
+
+        layout_info = None
+        if filesystem and hasattr(filesystem, 'get_disk_map_layout'):
+            layout_info = filesystem.get_disk_map_layout()
+        else:
+            layout_info = { 'legend': [("Unknown/Data", "#BEBEBE")], 'get_sector_type': lambda lba: "unknown", 'allocation_unit_size_sectors': 1, 'first_data_sector': 0, 'type_color_map': {"unknown": "#BEBEBE"} }
+
+        x0 = view_width / 2; y0 = view_height / 2
         r_min = min(view_width, view_height) * 0.1
         r_max = min(view_width, view_height) * 0.45
         num_cylinders = max(1, geometry.cylinders)
-        bytes_per_sector = max(128, geometry.bytes_per_sector)
-        fs_params = self._get_filesystem_params(controller, bytes_per_sector)
         num_points = 20
 
-        # Draw legend
-        legend_x = 10
-        legend_y = 10
-        square_size = 10
-        vertical_spacing = 10
-        colors = [
-            ("Boot Sector", Qt.GlobalColor.red),
-            ("FAT1", Qt.GlobalColor.green),
-            ("FAT2", Qt.GlobalColor.blue),
-            ("Root Directory", Qt.GlobalColor.yellow),
-            ("Busy Data Sector", Qt.GlobalColor.magenta),
-            ("Free Data Sector", Qt.GlobalColor.gray),
-        ]
-        for i, (label, color) in enumerate(colors):
-            rect = QGraphicsPolygonItem(QPolygonF([
-                QPointF(legend_x, legend_y + i * vertical_spacing),
-                QPointF(legend_x + square_size, legend_y + i * vertical_spacing),
-                QPointF(legend_x + square_size, legend_y + i * vertical_spacing + square_size),
-                QPointF(legend_x, legend_y + i * vertical_spacing + square_size)
-            ]))
-            rect.setBrush(QBrush(color))
-            self.scene.addItem(rect)
-            text = self.scene.addText(label)
-            text.setFont(app_font)
-            text_height = text.boundingRect().height()
-            y_offset = (square_size - text_height) / 2
-            text.setPos(legend_x + square_size + 5, legend_y + i * vertical_spacing + y_offset)
+        legend_x = 10; legend_y = 10
+        square_size = 10; vertical_spacing = 15
+        legend_items = layout_info.get('legend', [])
+        if not legend_items:
+            legend_text = QGraphicsSimpleTextItem("Filesystem layout unknown")
+            legend_text.setFont(app_font); legend_text.setBrush(QBrush(text_color)); legend_text.setPos(legend_x, legend_y); self.scene.addItem(legend_text)
+        else:
+            for i, (label, color_hex) in enumerate(legend_items):
+                 color = QColor(color_hex)
+                 rect_item = QGraphicsPolygonItem(QPolygonF([ QPointF(legend_x, legend_y + i * vertical_spacing), QPointF(legend_x + square_size, legend_y + i * vertical_spacing), QPointF(legend_x + square_size, legend_y + i * vertical_spacing + square_size), QPointF(legend_x, legend_y + i * vertical_spacing + square_size) ]))
+                 rect_item.setBrush(QBrush(color)); rect_item.setPen(QPen(Qt.GlobalColor.black, 0.5)); self.scene.addItem(rect_item)
+                 text_item = QGraphicsSimpleTextItem(label); text_item.setFont(app_font); text_item.setBrush(QBrush(text_color))
+                 text_rect = text_item.boundingRect(); text_y_offset = (square_size - text_rect.height()) / 2
+                 text_item.setPos(legend_x + square_size + 5, legend_y + i * vertical_spacing + text_y_offset); self.scene.addItem(text_item)
 
-        # Draw stats
-        stats_x = 10
-        stats_y = view_height - 60
-        stats_text = self.scene.addText(
-            f"Head: {current_head}\n"
-            f"Total: {total_space} clusters\n"
-            f"Free: {free_space} clusters\n"
-            f"Used: {total_space - free_space} clusters"
-        )
-        stats_text.setPos(stats_x, stats_y)
-        stats_text.setFont(app_font)
+        stats_x = 10; stats_y = view_height - 60
+        unit_name = "units";
+        stats_content = ( f"Head: {current_head}\n" f"Total: {total_space} {unit_name}\n" f"Free: {free_space} {unit_name}\n" f"Used: {total_space - free_space} {unit_name}" )
+        stats_text = QGraphicsSimpleTextItem(stats_content)
+        stats_text.setPos(stats_x, stats_y); stats_text.setFont(app_font); stats_text.setBrush(QBrush(text_color))
+        self.scene.addItem(stats_text)
 
-        # Draw each track (cylinder) for the current head
         for c in range(num_cylinders):
-            sectors_per_track = geometry.get_sectors_per_track(c, current_head)
-            if sectors_per_track <= 0:
-                continue  # Skip invalid tracks
-            angle_per_sector = 360 / sectors_per_track
+            try: sectors_per_track = geometry.get_sectors_per_track(c, current_head)
+            except ValueError: continue
+            if sectors_per_track <= 0: continue
+
+            angle_per_sector_deg = 360.0 / sectors_per_track
             r_outer = r_max - (r_max - r_min) * c / num_cylinders
             r_inner = r_max - (r_max - r_min) * (c + 1) / num_cylinders
 
-            # Draw sectors for this track
             for i in range(sectors_per_track):
                 try:
                     lba = geometry.chs_to_lba(c, current_head, i + 1)
-                    color = self.get_sector_color(lba, fs_params['sectors_per_cluster'],
-                                                 fs_params['reserved_sectors'], fs_params['fat_size'],
-                                                 fs_params['root_dir_sectors'], fs_params['first_data_sector'],
-                                                 busy_sectors)
-                    theta_start = math.radians(i * angle_per_sector)
-                    theta_end = math.radians((i + 1) * angle_per_sector)
+                    color_hex = self.get_sector_color(lba, layout_info, busy_units)
+                    color = QColor(color_hex)
+                    theta_start = math.radians(i * angle_per_sector_deg)
+                    theta_end = math.radians((i + 1) * angle_per_sector_deg)
                     inner_points = self.generate_arc_points(x0, y0, r_inner, theta_start, theta_end, num_points)
                     outer_points = self.generate_arc_points(x0, y0, r_outer, theta_end, theta_start, num_points)
                     points = inner_points + outer_points
@@ -148,19 +147,22 @@ class DiskMapView:
                     polygon.setBrush(QBrush(color))
                     polygon.setPen(QPen(Qt.GlobalColor.black, 0.5))
                     self.scene.addItem(polygon)
+                except ValueError as e:
+                     logger = getattr(getattr(self.parent, 'controller', None), 'logger', None)
+                     if logger: logger.error(f"Error getting LBA for C:{c} H:{current_head} S:{i+1}: {e}")
                 except Exception as e:
-                    print(f"Error drawing sector {i} on cylinder {c}, head {current_head}: {e}")
+                    logger = getattr(getattr(self.parent, 'controller', None), 'logger', None)
+                    if logger: logger.error(f"Error drawing sector C:{c} H:{current_head} S:{i+1}: {e}", exc_info=True)
 
-            # Draw sector dividers for this track
+
             for sector in range(sectors_per_track):
-                theta = math.radians(sector * angle_per_sector)
+                theta = math.radians(sector * angle_per_sector_deg)
                 p1 = QPointF(x0 + r_inner * math.cos(theta), y0 + r_inner * math.sin(theta))
                 p2 = QPointF(x0 + r_outer * math.cos(theta), y0 + r_outer * math.sin(theta))
                 line = QGraphicsLineItem(p1.x(), p1.y(), p2.x(), p2.y())
                 line.setPen(QPen(Qt.GlobalColor.black, 0.5))
                 self.scene.addItem(line)
 
-        # Draw cylinder rings
         for cylinder in range(1, num_cylinders):
             r = r_max - (r_max - r_min) * cylinder / num_cylinders
             ellipse = QGraphicsEllipseItem(x0 - r, y0 - r, 2 * r, 2 * r)
@@ -168,40 +170,13 @@ class DiskMapView:
             ellipse.setBrush(QBrush(Qt.BrushStyle.NoBrush))
             self.scene.addItem(ellipse)
 
-        # Draw index hole on the innermost cylinder
         if num_cylinders > 0:
             r_inner = r_max - (r_max - r_min) * num_cylinders / num_cylinders
-            index_hole_radius = 5  # Radius of the index hole marker
-            theta = 0  # Angle for the first sector (0 degrees)
+            index_hole_radius = 5
+            theta = 0
             index_hole_x = x0 + r_inner * math.cos(math.radians(theta)) - index_hole_radius
             index_hole_y = y0 + r_inner * math.sin(math.radians(theta)) - index_hole_radius
             index_hole = QGraphicsEllipseItem(index_hole_x, index_hole_y, 2 * index_hole_radius, 2 * index_hole_radius)
-            index_hole.setBrush(QBrush(Qt.GlobalColor.darkCyan))
+            index_hole.setBrush(QBrush(QColor("#008B8B"))) # Dark Cyan
+            index_hole.setPen(QPen(Qt.GlobalColor.black, 0.5))
             self.scene.addItem(index_hole)
-
-    def _get_filesystem_params(self, controller, bytes_per_sector):
-        reserved_sectors = 1
-        num_fats = 2
-        fat_size = 9
-        root_entries = 224
-        sectors_per_cluster = 1
-
-        if controller.boot_sector:
-            bs = controller.boot_sector
-            reserved_sectors = max(1, getattr(bs, 'reserved_sectors', 1))
-            num_fats = max(1, getattr(bs, 'num_fats', 2))
-            fat_size = max(1, getattr(bs, 'sectors_per_fat', 9))
-            root_entries = max(16, getattr(bs, 'root_entries', 224))
-            sectors_per_cluster = max(1, getattr(bs, 'sectors_per_cluster', 1))
-
-        root_dir_sectors = (root_entries * 32 + bytes_per_sector - 1) // bytes_per_sector
-        first_data_sector = reserved_sectors + num_fats * fat_size + root_dir_sectors
-
-        return {
-            'reserved_sectors': reserved_sectors,
-            'num_fats': num_fats,
-            'fat_size': fat_size,
-            'root_dir_sectors': root_dir_sectors,
-            'sectors_per_cluster': sectors_per_cluster,
-            'first_data_sector': first_data_sector
-        }

@@ -100,11 +100,11 @@ def _check_fat_mirror(fs: FATFilesystem):
 def test_01_initialization_valid(fs_setup):
     fs, _ = fs_setup
     assert fs.is_valid()
-    assert fs.cluster_size > 0
+    assert fs.allocation_unit_size > 0
     assert fs.num_clusters > 0
     # Check specific 1.44MB params
     assert fs.boot_sector.total_sectors == 2880
-    assert fs.cluster_size == 512 # 1 sector/cluster for 1.44
+    assert fs.allocation_unit_size == 512 # 1 sector/cluster for 1.44
     assert fs.num_clusters == 2847 # Hardcoded known value for 1.44MB
 
 def test_03_list_root_directory_empty(fs_setup):
@@ -187,7 +187,7 @@ def test_06_delete_file_in_root(fs_setup):
     fs._cached_allocated_clusters = None
     free_after, _ = fs.get_free_space()
     # Allow for slight variations if intermediate states differ, but should generally increase or stay same
-    assert free_after >= free_before - fs.cluster_size, "Free space should increase or stay similar after delete"
+    assert free_after >= free_before - fs.allocation_unit_size, "Free space should increase or stay similar after delete"
 
 def test_07_create_directory_in_root(fs_setup):
     fs, _ = fs_setup
@@ -301,7 +301,7 @@ def test_12_write_large_file_multiple_clusters(fs_setup):
     filename = "LARGE.BIN"
     # 1200 bytes should require 1200 / 512 = ceil(2.34) = 3 clusters for 1.44MB format
     filedata = bytes([i % 256 for i in range(1200)])
-    assert fs.cluster_size == 512
+    assert fs.allocation_unit_size == 512
 
     fs.write_file(filename, filedata)
     _check_fat_mirror(fs)
@@ -332,7 +332,7 @@ def test_13_overwrite_file(fs_setup):
     initial_data = b"Initial content."
     # Ensure new data requires more clusters than initial data
     new_data = b"This is the new content, much longer than the first, requires more clusters." * 10
-    assert len(new_data) > fs.cluster_size > len(initial_data)
+    assert len(new_data) > fs.allocation_unit_size > len(initial_data)
 
     fs.write_file(filename, initial_data)
     entry1 = next((e for e in fs.list_directory("/") if e.name == filename), None)
@@ -364,7 +364,7 @@ def test_14_filesystem_info(fs_setup):
     free_start, total_start = fs.get_free_space()
     alloc_start = fs.get_allocated_units()
 
-    expected_data_bytes = fs.num_clusters * fs.cluster_size
+    expected_data_bytes = fs.num_clusters * fs.allocation_unit_size
     assert total_start == expected_data_bytes
     assert free_start > 0
     assert len(alloc_start) == 0, "Expected 0 allocated clusters on empty formatted disk"
@@ -380,7 +380,7 @@ def test_14_filesystem_info(fs_setup):
     assert total_end == total_start
     assert free_end < free_start
     assert len(alloc_end) == 3, f"Expected 3 alloc clusters after writing 1200 bytes, got {len(alloc_end)}"
-    assert free_start - free_end == 3 * fs.cluster_size, "Free space decrease mismatch"
+    assert free_start - free_end == 3 * fs.allocation_unit_size, "Free space decrease mismatch"
 
 def test_15_nested_directories(fs_setup):
     fs, _ = fs_setup
@@ -418,7 +418,7 @@ def test_16_read_file_corrupted_fat_chain_loop(fs_setup):
     fs, disk = fs_setup # Need disk to re-init fs
     filename = "LOOP.DAT"
     # Write a file requiring 3 clusters
-    filedata = bytes([i % 256 for i in range(fs.cluster_size * 2 + 10)])
+    filedata = bytes([i % 256 for i in range(fs.allocation_unit_size * 2 + 10)])
     fs.write_file(filename, filedata)
 
     entry = next((e for e in fs.list_directory("/") if e.name == filename), None)
@@ -443,9 +443,9 @@ def test_16_read_file_corrupted_fat_chain_loop(fs_setup):
         # The read should detect the loop and stop
         read_data = fs_reloaded.read_file(filename)
         # It should have read at least the first two clusters before hitting the loop
-        assert len(read_data) >= 2 * fs_reloaded.cluster_size
+        assert len(read_data) >= 2 * fs_reloaded.allocation_unit_size
         # The read length should be less than the theoretical max to indicate loop detection worked
-        assert len(read_data) < fs_reloaded.num_clusters * fs_reloaded.cluster_size
+        assert len(read_data) < fs_reloaded.num_clusters * fs_reloaded.allocation_unit_size
         print(f"WARN: Read looped file OK, len={len(read_data)}")
     except (IOError, ValueError, IndexError) as e:
          # Catching specific exceptions if read_file raises on loop detection
@@ -459,7 +459,7 @@ def test_17_read_file_corrupted_fat_chain_free_sector(fs_setup):
     fs, disk = fs_setup
     filename = "FREEPTR.DAT"
     # Write a file requiring 3 clusters
-    filedata = bytes([i % 256 for i in range(fs.cluster_size * 2 + 10)])
+    filedata = bytes([i % 256 for i in range(fs.allocation_unit_size * 2 + 10)])
     fs.write_file(filename, filedata)
 
     entry = next((e for e in fs.list_directory("/") if e.name == filename), None)
@@ -486,7 +486,7 @@ def test_17_read_file_corrupted_fat_chain_free_sector(fs_setup):
     try:
         read_data = fs_reloaded.read_file(filename)
         # Should only read clusters c1 and c2 before hitting the 0 pointer
-        expected_len = 2 * fs_reloaded.cluster_size
+        expected_len = 2 * fs_reloaded.allocation_unit_size
         assert len(read_data) == expected_len, f"Read should truncate at cluster {c2}, expected len {expected_len}, got {len(read_data)}"
         assert read_data == filedata[:expected_len], "Read data mismatch after truncation"
     except Exception as e:
@@ -563,7 +563,7 @@ def test_21_init_with_different_geometry_720k(fs_setup):
     assert fs_reinit.boot_sector.total_sectors == 2880, "FS should read BPB from 1.44MB image"
     assert fs_reinit.boot_sector.sectors_per_track == 18, "FS should read BPB from 1.44MB image"
     assert fs_reinit.boot_sector.num_heads == 2, "FS should read BPB from 1.44MB image"
-    assert fs_reinit.cluster_size == 512, "Cluster size from 1.44MB BPB"
+    assert fs_reinit.allocation_unit_size == 512, "Cluster size from 1.44MB BPB"
 
     # --- FIX: Verify disk object's geometry using total_sectors and get_sectors_per_track ---
     assert disk.physical_format.total_sectors == FMT_720.physical_format.total_sectors
