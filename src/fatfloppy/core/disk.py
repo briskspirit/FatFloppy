@@ -26,6 +26,7 @@ class Disk:
                 self.logger.error(f"Failed to set physical format: {e}", exc_info=True)
                 raise
 
+    # FIXME: Should be removed, filesystem should decide what it needs and what to read, Disk doesn't care
     def read_boot_sector(self) -> bytes:
         if not self.physical_format:
             raise ValueError("Disk geometry not set")

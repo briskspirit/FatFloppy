@@ -289,11 +289,11 @@ class DiskController:
                 try:
                     boot_data = FATVolumeInfo.from_bytes(boot_sector_bytes)
                     for format_name, profile in self.known_formats.items():
-                        if (profile.boot_sector and self.driver.physical_format and
-                            profile.boot_sector.sectors_per_track == boot_data.sectors_per_track and
-                            profile.boot_sector.num_heads == boot_data.num_heads and
-                            profile.boot_sector.total_sectors == boot_data.total_sectors and
-                            profile.boot_sector.bytes_per_sector == boot_data.bytes_per_sector and
+                        if (profile.filesystem_metadata and self.driver.physical_format and
+                            profile.filesystem_metadata.sectors_per_track == boot_data.sectors_per_track and
+                            profile.filesystem_metadata.num_heads == boot_data.num_heads and
+                            profile.filesystem_metadata.total_sectors == boot_data.total_sectors and
+                            profile.filesystem_metadata.bytes_per_sector == boot_data.bytes_per_sector and
                             profile.physical_format.cylinders == self.driver.physical_format.cylinders):
                             if self.disk.physical_format != profile.physical_format:
                                 self.logger.info(f"Updating geometry to match detected profile '{format_name}'")
@@ -347,14 +347,14 @@ class DiskController:
                         self.logger.debug("Pushing adjusted geometry to driver.")
                         self.driver.set_physical_format(copy.deepcopy(self.disk.physical_format))
                     for format_name, profile in self.known_formats.items():
-                        if (profile.physical_format and profile.boot_sector and
+                        if (profile.physical_format and profile.filesystem_metadata and
                             profile.physical_format.cylinders == self.disk.physical_format.cylinders and
                             profile.physical_format.heads == boot_data.num_heads and
                             profile.physical_format.bytes_per_sector == boot_data.bytes_per_sector and
                             profile.physical_format.get_sectors_per_track(0,0) == boot_data.sectors_per_track and
-                            profile.boot_sector.total_sectors == boot_data.total_sectors and
-                            profile.boot_sector.sectors_per_fat == boot_data.sectors_per_fat and
-                            profile.boot_sector.root_entries == boot_data.root_entries):
+                            profile.filesystem_metadata.total_sectors == boot_data.total_sectors and
+                            profile.filesystem_metadata.sectors_per_fat == boot_data.sectors_per_fat and
+                            profile.filesystem_metadata.root_entries == boot_data.root_entries):
                             if self.disk.physical_format != profile.physical_format:
                                 self.logger.info(f"Aligning geometry to matched profile '{format_name}'")
                                 self.set_geometry(profile.physical_format)
@@ -380,8 +380,8 @@ class DiskController:
         self.disk.set_geometry(profile.physical_format)
         if hasattr(self.driver, "set_physical_format"):
             physical_format_copy = copy.deepcopy(profile.physical_format)
-            if profile.boot_sector:
-                physical_format_copy._associated_boot_sector = profile.boot_sector
+            if profile.filesystem_metadata:
+                physical_format_copy._associated_boot_sector = profile.filesystem_metadata
             try:
                 self.driver.set_physical_format(physical_format_copy)
             finally:
@@ -518,7 +518,7 @@ class DiskController:
                 if hasattr(self.driver, 'physical_format') and self.driver.physical_format:
                     if hasattr(self.driver.physical_format, '_associated_boot_sector'):
                         self.logger.info("Using custom format profile potentially set via set_format.")
-                        profile = FormatProfile(name="custom_runtime", description="Custom (Runtime)", physical_format=self.driver.physical_format, boot_sector=self.driver.physical_format._associated_boot_sector)
+                        profile = FormatProfile(name="custom_runtime", description="Custom (Runtime)", physical_format=self.driver.physical_format, filesystem_metadata=self.driver.physical_format._associated_boot_sector)
                         format_name = "custom_runtime"
                     else:
                         self.logger.error(f"Cannot format with unknown/custom profile '{format_name}' without associated boot sector info attached to driver's format.")
@@ -526,14 +526,14 @@ class DiskController:
                 else:
                     self.logger.error(f"Cannot format with unknown profile '{format_name}' and no geometry set or driver format available.")
                     return False
-        if not profile or not profile.physical_format or not profile.boot_sector:
+        if not profile or not profile.physical_format or not profile.filesystem_metadata:
             self.logger.error(f"Format profile '{format_name}' is invalid or missing required information.")
             return False
         self.logger.info(f"Starting format process with profile: {profile.name}")
         if volume_label:
-            profile.boot_sector.volume_label = volume_label.ljust(11)[:11]
-        elif not profile.boot_sector.volume_label or not profile.boot_sector.volume_label.strip():
-            profile.boot_sector.volume_label = "NO NAME".ljust(11)
+            profile.filesystem_metadata.volume_label = volume_label.ljust(11)[:11]
+        elif not profile.filesystem_metadata.volume_label or not profile.filesystem_metadata.volume_label.strip():
+            profile.filesystem_metadata.volume_label = "NO NAME".ljust(11)
         try:
             if self.disk.physical_format != profile.physical_format:
                 self.logger.warning(f"Disk geometry differs from profile '{profile.name}' before format. Setting format now.")
@@ -547,7 +547,7 @@ class DiskController:
             self.physical_format = self.disk.physical_format
             self.boot_sector = self.filesystem.boot_sector
             self.flush()
-            self.logger.info(f"Disk formatting complete for profile '{profile.name}'. Volume: '{profile.boot_sector.volume_label.strip()}'")
+            self.logger.info(f"Disk formatting complete for profile '{profile.name}'. Volume: '{profile.filesystem_metadata.volume_label.strip()}'")
             return True
         except Exception as e:
             self.logger.exception(f"Error formatting disk with profile '{profile.name}': {e}")
@@ -558,13 +558,13 @@ class DiskController:
     def create_and_format_image(self, file_path: str, profile: FormatProfile, volume_label: str = "NO NAME", disk_type: str = "IMG") -> bool:
         if self.disk:
             self.close_disk()
-        if not profile or not profile.physical_format or not profile.boot_sector:
+        if not profile or not profile.physical_format or not profile.filesystem_metadata:
             self.logger.error("Invalid or incomplete profile provided for image creation.")
             return False
         if volume_label:
-            profile.boot_sector.volume_label = volume_label.ljust(11)[:11]
-        elif not profile.boot_sector.volume_label or not profile.boot_sector.volume_label.strip():
-            profile.boot_sector.volume_label = "NO NAME".ljust(11)
+            profile.filesystem_metadata.volume_label = volume_label.ljust(11)[:11]
+        elif not profile.filesystem_metadata.volume_label or not profile.filesystem_metadata.volume_label.strip():
+            profile.filesystem_metadata.volume_label = "NO NAME".ljust(11)
         try:
             if disk_type == "IMG":
                 total_bytes = profile.physical_format.total_bytes
@@ -577,8 +577,8 @@ class DiskController:
                 self.disk = Disk(self.driver)
                 self.logger.info(f"Setting format for new raw image using profile: {profile.name}")
                 self.set_format(profile)
-                self.logger.info(f"Formatting new raw image with volume label: '{profile.boot_sector.volume_label.strip()}'")
-                success = self.format_disk(profile.name, profile.boot_sector.volume_label)
+                self.logger.info(f"Formatting new raw image with volume label: '{profile.filesystem_metadata.volume_label.strip()}'")
+                success = self.format_disk(profile.name, profile.filesystem_metadata.volume_label)
                 if not success:
                     self.logger.error(f"Formatting step failed for new raw image '{file_path}' with profile '{profile.name}'")
                     self.close_disk()
@@ -591,7 +591,7 @@ class DiskController:
                 self.disk = Disk(self.driver)
                 self.logger.info(f"Setting format for new IMD image using profile: {profile.name}")
                 self.set_format(profile)
-                self.logger.info(f"Formatting new IMD image with volume label: '{profile.boot_sector.volume_label.strip()}'")
+                self.logger.info(f"Formatting new IMD image with volume label: '{profile.filesystem_metadata.volume_label.strip()}'")
                 filesystem = FATFilesystem(self.disk)
                 filesystem.format_fs(profile)
                 self.filesystem = filesystem
@@ -836,7 +836,7 @@ class DiskController:
                 return None
             bytes_per_fat = (num_clusters * 3 // 2) + 3
             sectors_per_fat = (bytes_per_fat + bytes_per_sector - 1) // bytes_per_sector
-            boot_sector = FATVolumeInfo(
+            filesystem_metadata = FATVolumeInfo(
                 bytes_per_sector=bytes_per_sector,
                 sectors_per_cluster=sectors_per_cluster,
                 reserved_sectors=reserved_sectors,
@@ -855,7 +855,7 @@ class DiskController:
                 name="custom",
                 description=f"Custom {physical_format.cylinders}x{physical_format.heads}x{physical_format.track_formats[0].sectors_per_track}x{physical_format.bytes_per_sector}",
                 physical_format=physical_format,
-                boot_sector=boot_sector
+                filesystem_metadata=filesystem_metadata
             )
             self.logger.debug(f"Created custom format profile: {profile.description}")
             return profile

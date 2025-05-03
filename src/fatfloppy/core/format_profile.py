@@ -1,6 +1,6 @@
 # src/fatfloppy/core/formats.py
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Dict
 
 from .physical_format import PhysicalFormat
 
@@ -10,7 +10,8 @@ class FormatProfile:
     name: str
     description: str
     physical_format: PhysicalFormat
-    boot_sector: Optional[Any] = None
+    # filesystem_type: str # FIXME: Implement this??
+    filesystem_metadata: Optional[Dict[str, Any]] = None
 
     @property
     def capacity_kb(self) -> float:

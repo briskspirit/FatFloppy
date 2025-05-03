@@ -300,7 +300,7 @@ class FileBrowserApp(QMainWindow):
             if not profile:
                 QMessageBox.critical(self, "Error", "Failed to determine format profile for creation.")
                 return
-            if not profile.physical_format or not profile.boot_sector:
+            if not profile.physical_format or not profile.filesystem_metadata:
                 QMessageBox.critical(self, "Error", "Selected format profile is incomplete for creation.")
                 return
 
