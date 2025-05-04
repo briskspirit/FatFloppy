@@ -7,7 +7,7 @@ import datetime
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import (QAction, QFont, QPalette)
 from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
-                             QMainWindow, QMessageBox, QToolBar,
+                             QMainWindow, QMessageBox, QToolBar, QHBoxLayout,
                              QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
                              QWidget, QVBoxLayout, QGroupBox, QApplication,
                              QPlainTextEdit, QPushButton, QAbstractItemView)
@@ -37,6 +37,8 @@ class FileBrowserApp(QMainWindow):
         self.controller = None
         self.current_file_path = None
         self.greaseweazle_available = GREASEWEAZLE_AVAILABLE
+        self.original_text_content = None
+        self.text_editor_modified = False
 
         self.initUI()
         self.setup_fonts()
@@ -47,37 +49,29 @@ class FileBrowserApp(QMainWindow):
     def initUI(self):
         self.setWindowTitle("FatFloppy Disk Browser")
         self.setGeometry(100, 100, 1200, 800)
+        self.setDockNestingEnabled(True)
 
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("File")
-
         create_image_action = QAction("Create Disk Image", self)
         create_image_action.triggered.connect(self.create_disk_image)
         file_menu.addAction(create_image_action)
-
         open_image_action = QAction("Open Disk Image File", self)
         open_image_action.setToolTip("Open a disk image file (.ima, .img, .imd)")
         open_image_action.triggered.connect(self.open_disk_image_file)
         file_menu.addAction(open_image_action)
-
         open_floppy_action = QAction("Open Physical Floppy", self)
         open_floppy_action.triggered.connect(self.open_physical_floppy)
         if not self.greaseweazle_available:
             open_floppy_action.setEnabled(False)
         file_menu.addAction(open_floppy_action)
-
+        file_menu.addSeparator()
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
         self.toolbar = QToolBar("Main Toolbar", self)
-        self.addToolBar(self.toolbar)
-
-        self.head_action = QAction("Switch to head 1", self)
-        self.head_action.setToolTip("Switch between disk heads (sides)")
-        self.head_action.triggered.connect(self.toggle_head)
-        self.toolbar.addAction(self.head_action)
-        self.toolbar.addSeparator()
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
 
         extract_action = QAction("Extract", self)
         extract_action.setToolTip("Extract selected item(s) to local filesystem")
@@ -109,32 +103,26 @@ class FileBrowserApp(QMainWindow):
         self.disk_info_dock = QDockWidget("Disk Information", self)
         disk_info_widget = QWidget()
         disk_info_layout = QVBoxLayout(disk_info_widget)
-
+        disk_info_layout.setContentsMargins(5, 5, 5, 5)
+        disk_info_layout.setSpacing(6)
         self.physical_format_group = QGroupBox("Physical Geometry")
         self.physical_format_info = QLabel("No disk image loaded")
         geometry_layout = QVBoxLayout(self.physical_format_group)
         geometry_layout.addWidget(self.physical_format_info)
         self.physical_format_group.setLayout(geometry_layout)
-
         self.filesystem_group = QGroupBox("Filesystem")
         self.filesystem_info = QLabel("No filesystem detected")
         filesystem_layout = QVBoxLayout(self.filesystem_group)
         filesystem_layout.addWidget(self.filesystem_info)
         self.filesystem_group.setLayout(filesystem_layout)
-
         disk_info_layout.addWidget(self.physical_format_group)
         disk_info_layout.addWidget(self.filesystem_group)
-        disk_info_layout.setContentsMargins(2, 2, 2, 2)
-        disk_info_layout.setSpacing(4)
-
         disk_info_widget.setLayout(disk_info_layout)
         self.disk_info_dock.setWidget(disk_info_widget)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.disk_info_dock)
-
         self.splitDockWidget(self.tree_dock, self.disk_info_dock, Qt.Orientation.Vertical)
-        self.resizeDocks([self.tree_dock, self.disk_info_dock], [640, 160], Qt.Orientation.Vertical)
 
-        self.file_list_dock = QDockWidget("Files in Current Directory", self)
+        self.file_list_dock = QDockWidget("Files", self)
         self.file_list = DragDropTreeWidget(self)
         self.file_list.setHeaderLabels(["Name", "Size", "Date/Time", "Attr"])
         self.file_list.setDragEnabled(True)
@@ -142,47 +130,101 @@ class FileBrowserApp(QMainWindow):
         self.file_list.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.file_list_dock.setWidget(self.file_list)
+        header = self.file_list.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(False)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_list_dock)
 
-        header = self.file_list.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
 
-        # Setup separate dock widgets for disk map and text viewer
         self.disk_map_dock = QDockWidget("Disk Map", self)
         self.disk_map = DiskMapView(self)
         self.disk_map_view = self.disk_map.view
-        self.disk_map_dock.setWidget(self.disk_map_view)
 
-        self.text_viewer_dock = QDockWidget("Text Viewer", self)
-        text_viewer_widget = QWidget()
-        text_viewer_layout = QVBoxLayout(text_viewer_widget)
-        self.text_viewer = QPlainTextEdit()
-        self.save_button = QPushButton("Save")
-        self.save_button.clicked.connect(self.save_file)
+        disk_map_container = QWidget()
+        disk_map_layout = QVBoxLayout(disk_map_container)
+        disk_map_layout.setContentsMargins(0, 0, 0, 0)
+        disk_map_layout.setSpacing(0)
 
-        text_viewer_layout.addWidget(self.text_viewer)
-        text_viewer_layout.addWidget(self.save_button)
-        self.text_viewer_dock.setWidget(text_viewer_widget)
+        disk_map_toolbar = QToolBar("Disk Map Tools")
+        disk_map_toolbar.setIconSize(self.toolbar.iconSize())
+        disk_map_toolbar.setMovable(False)
+        disk_map_toolbar.setStyleSheet("QToolBar { border: none; }")
+
+        self.head_action = QAction("Switch Head", self)
+        # self.head_action.setIcon(QIcon("path/to/switch_head_icon.png"))
+        self.head_action.setToolTip("Switch between disk heads (sides)")
+        self.head_action.triggered.connect(self.toggle_head)
+        self.head_action.setEnabled(False)
+
+        disk_map_toolbar.addAction(self.head_action)
+        disk_map_layout.addWidget(disk_map_toolbar)
+        disk_map_layout.addWidget(self.disk_map_view)
+        self.disk_map_dock.setWidget(disk_map_container)
 
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.disk_map_dock)
+        self.splitDockWidget(self.file_list_dock, self.disk_map_dock, Qt.Orientation.Horizontal)
+
+        self.text_viewer_dock = QDockWidget("Text Editor", self)
+        text_viewer_widget = QWidget()
+        text_viewer_layout = QVBoxLayout(text_viewer_widget)
+        text_viewer_layout.setContentsMargins(2, 2, 2, 2)
+        text_viewer_layout.setSpacing(4)
+        self.text_viewer = QPlainTextEdit()
+        self.text_viewer.setReadOnly(False)
+        self.text_viewer.textChanged.connect(self.on_text_editor_changed)
+
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(6)
+
+        self.save_button = QPushButton("Save Changes")
+        self.save_button.clicked.connect(self.save_file)
+        self.save_button.setEnabled(False) # Start disabled
+
+        self.discard_button = QPushButton("Discard Changes")
+        self.discard_button.clicked.connect(self.discard_changes)
+        self.discard_button.setEnabled(False)
+
+        button_layout.addStretch(0)
+        button_layout.addWidget(self.discard_button)
+        button_layout.addWidget(self.save_button)
+        button_layout.addStretch(0)
+
+        text_viewer_layout.addWidget(self.text_viewer)
+        text_viewer_layout.addLayout(button_layout)
+        text_viewer_widget.setLayout(text_viewer_layout)
+        self.text_viewer_dock.setWidget(text_viewer_widget)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.text_viewer_dock)
         self.tabifyDockWidget(self.disk_map_dock, self.text_viewer_dock)
         self.disk_map_dock.raise_()
 
         self.file_list.selectionModel().selectionChanged.connect(self.on_selection_changed)
-
         self.statusBar().showMessage("Ready")
+
+        self.resizeDocks([self.file_list_dock, self.disk_map_dock], [500, 700], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.tree_dock, self.file_list_dock], [200, 500], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.tree_dock, self.disk_info_dock], [600, 200], Qt.Orientation.Vertical)
 
     def setup_fonts(self):
         monospace_fonts = [
             "Courier New", "DejaVu Sans Mono", "Consolas", "Menlo", "Liberation Mono", "Monaco"
         ]
         self.app_font = QFont()
-        self.app_font.setFamily(monospace_fonts[0])
-        self.app_font.setStyleHint(QFont.StyleHint.Monospace)
+
+        found_font = False
+        for font_name in monospace_fonts:
+            test_font = QFont(font_name)
+            if QFont.StyleHint(test_font.styleHint()) == QFont.StyleHint.Monospace:
+                self.app_font.setFamily(font_name)
+                found_font = True
+                self.logger.debug(f"Using monospace font: {font_name}")
+                break
+        if not found_font:
+             self.logger.warning(f"Could not find preferred monospace font, using default.")
+             self.app_font.setStyleHint(QFont.StyleHint.Monospace)
+
         self.app_font.setFixedPitch(True)
         self.app_font.setPointSize(12)
         self.setFont(self.app_font)
@@ -223,29 +265,70 @@ class FileBrowserApp(QMainWindow):
         self.disk_map.scene.clear()
         self.draw_disk_map()
         self.head_action.setEnabled(False)
-        self.head_action.setText("Switch to Head 1")
+        self.head_action.setText("Switch Head")
         self.statusBar().showMessage("Ready")
-        self.text_viewer.clear()
+        self.clear_text_viewer_state()
         self.disk_map_dock.raise_()
 
     def on_selection_changed(self, selected, deselected):
+        if self.text_editor_modified:
+            reply = QMessageBox.warning(self, "Unsaved Changes",
+                                        f"Do you want to save the changes to {os.path.basename(self.current_file_path)}?",
+                                        QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                                        QMessageBox.StandardButton.Cancel)
+
+            if reply == QMessageBox.StandardButton.Save:
+                if not self.save_file():
+                     return
+            elif reply == QMessageBox.StandardButton.Cancel:
+                return
+
         selected_items = self.file_list.selectedItems()
         if len(selected_items) == 1:
             item = selected_items[0]
             node = item.node
             if not node.is_dir:
                 file_path = self.build_full_path(node.name)
-                if node.size <= 2048:
-                    content = self.controller.read_file(file_path)
-                    if content is not None and self.is_text_file(content):
-                        self.text_viewer.setPlainText(content.decode('cp437'))
-                        self.text_viewer_dock.raise_()
-                        self.current_file_path = file_path
-                        return
+                if node.size <= 20480:
+                    try:
+                        content_bytes = self.controller.read_file(file_path)
+                        if content_bytes is not None and self.is_text_file(content_bytes):
+                            try:
+                                content_text = content_bytes.decode('cp437')
+                            except UnicodeDecodeError:
+                                self.logger.warning(f"Could not decode {file_path} as cp437.")
+                                self.clear_text_viewer_state()
+                                self.disk_map_dock.raise_()
+                                return
 
-        self.text_viewer.setPlainText("")
+                            self.text_viewer.blockSignals(True)
+                            self.text_viewer.setPlainText(content_text)
+                            self.text_viewer.blockSignals(False)
+                            self.original_text_content = content_text
+                            self.current_file_path = file_path
+                            self.text_editor_modified = False
+                            self.save_button.setEnabled(False)
+                            self.discard_button.setEnabled(False)
+                            self.text_viewer_dock.raise_()
+                            self.text_viewer_dock.setWindowTitle(f"Text Viewer - {node.name}")
+                            return
+
+                    except Exception as e:
+                         self.logger.error(f"Error reading/processing file {file_path} for text view: {e}")
+
+        self.clear_text_viewer_state()
         self.disk_map_dock.raise_()
+
+    def clear_text_viewer_state(self):
+        self.text_viewer.blockSignals(True)
+        self.text_viewer.clear()
+        self.text_viewer.blockSignals(False)
+        self.original_text_content = None
         self.current_file_path = None
+        self.text_editor_modified = False
+        self.save_button.setEnabled(False)
+        self.discard_button.setEnabled(False)
+        self.text_viewer_dock.setWindowTitle("Text Viewer")
 
     def is_text_file(self, content, check_bytes=4096):
         sample = content[:check_bytes]
@@ -256,18 +339,65 @@ class FileBrowserApp(QMainWindow):
             return False
 
     def save_file(self):
-        if self.current_file_path:
+        success = False
+        if self.current_file_path and self.text_editor_modified:
             try:
-                content = self.text_viewer.toPlainText().encode('cp437')
-                success = self.controller.write_file(self.current_file_path, content)
-                if success:
-                    self.statusBar().showMessage(f"Saved changes to {self.current_file_path}")
+                current_text = self.text_viewer.toPlainText()
+                content_bytes = current_text.encode('cp437')
+
+                if self.controller.write_file(self.current_file_path, content_bytes):
+                    self.statusBar().showMessage(f"Saved changes to {os.path.basename(self.current_file_path)}")
+                    self.original_text_content = current_text
+                    self.text_editor_modified = False
+                    self.save_button.setEnabled(False)
+                    self.discard_button.setEnabled(False)
+                    self.refresh_filesystem_ui(preserve_path=self.current_path)
+                    success = True
                 else:
-                    QMessageBox.warning(self, "Warning", "Failed to save file")
+                    QMessageBox.warning(self, "Save Failed", f"Could not write changes to {self.current_file_path}")
+            except UnicodeEncodeError:
+                 QMessageBox.critical(self, "Encoding Error", "Text contains characters not supported by Code Page 437.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
+        elif not self.text_editor_modified:
+             self.statusBar().showMessage("No changes to save.")
+             success = True
         else:
-            QMessageBox.warning(self, "Warning", "No file selected to save")
+            QMessageBox.warning(self, "Warning", "No file context for saving.")
+
+        return success
+
+    def on_text_editor_changed(self):
+        if self.original_text_content is not None:
+            current_text = self.text_viewer.toPlainText()
+            is_modified = (current_text != self.original_text_content)
+            self.text_editor_modified = is_modified
+            self.save_button.setEnabled(is_modified)
+            self.discard_button.setEnabled(is_modified)
+        else:
+            self.text_editor_modified = False
+            self.save_button.setEnabled(False)
+            self.discard_button.setEnabled(False)
+
+    def discard_changes(self):
+        if self.original_text_content is not None and self.text_editor_modified:
+            reply = QMessageBox.question(self, "Discard Changes",
+                                         "Are you sure you want to discard all changes?",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                         QMessageBox.StandardButton.No)
+
+            if reply == QMessageBox.StandardButton.Yes:
+                self.text_viewer.blockSignals(True)
+                self.text_viewer.setPlainText(self.original_text_content)
+                self.text_viewer.blockSignals(False)
+
+                self.text_editor_modified = False
+                self.save_button.setEnabled(False)
+                self.discard_button.setEnabled(False)
+                self.statusBar().showMessage(f"Changes to {os.path.basename(self.current_file_path)} discarded.")
+        else:
+             self.save_button.setEnabled(False)
+             self.discard_button.setEnabled(False)
 
     def refresh_filesystem_ui(self, preserve_path=None):
         self.root_node = self.build_fs_tree()
@@ -317,7 +447,6 @@ class FileBrowserApp(QMainWindow):
 
                 if self.controller.physical_format and self.controller.physical_format.heads > 1:
                     self.head_action.setEnabled(True)
-                    self.head_action.setText(f"Switch to Head {1 - self.current_head}")
                 else:
                     self.head_action.setEnabled(False)
                     self.head_action.setText("Single-sided disk")
@@ -351,7 +480,6 @@ class FileBrowserApp(QMainWindow):
 
                 if self.controller.physical_format and self.controller.physical_format.heads > 1:
                     self.head_action.setEnabled(True)
-                    self.head_action.setText(f"Switch to Head {1 - self.current_head}")
                 else:
                     self.head_action.setEnabled(False)
                     self.head_action.setText("Single-sided disk")
@@ -382,7 +510,6 @@ class FileBrowserApp(QMainWindow):
 
                 if self.controller.physical_format and self.controller.physical_format.heads > 1:
                     self.head_action.setEnabled(True)
-                    self.head_action.setText(f"Switch to Head {1 - self.current_head}")
                 else:
                     self.head_action.setEnabled(False)
                     self.head_action.setText("Single-sided disk")
@@ -939,7 +1066,6 @@ class FileBrowserApp(QMainWindow):
     def toggle_head(self):
         if self.controller and self.controller.physical_format.heads > 1:
             self.current_head = 1 - self.current_head
-            self.head_action.setText(f"Switch to Head {1 - self.current_head}")
             self.draw_disk_map()
         else:
             QMessageBox.information(self, "Info", "Head switching is not available for this disk.")
@@ -998,6 +1124,8 @@ class FileBrowserApp(QMainWindow):
             self.total_space = 0
 
     def draw_disk_map(self):
+        if not self.controller:
+            return
         text_color = self.palette().color(QPalette.ColorRole.WindowText)
         self.disk_map.draw_disk_map(
             self.controller,
