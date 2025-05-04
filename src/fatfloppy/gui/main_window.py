@@ -5,7 +5,7 @@ import copy
 import datetime
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import (QAction, QFont, QPalette)
+from PyQt6.QtGui import (QAction, QFont, QPalette, QFontDatabase)
 from PyQt6.QtWidgets import (QDockWidget, QFileDialog, QInputDialog, QLabel,
                              QMainWindow, QMessageBox, QToolBar, QHBoxLayout,
                              QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
@@ -208,24 +208,24 @@ class FileBrowserApp(QMainWindow):
         self.resizeDocks([self.tree_dock, self.disk_info_dock], [600, 200], Qt.Orientation.Vertical)
 
     def setup_fonts(self):
+        # List of preferred monospace fonts to check
         monospace_fonts = [
-            "Courier New", "DejaVu Sans Mono", "Consolas", "Menlo", "Liberation Mono", "Monaco"
+            "Courier New", "DejaVu Sans Mono", "Consolas", "Menlo", "Liberation Mono", "Monaco", "SF Mono"
         ]
         self.app_font = QFont()
-
         found_font = False
         for font_name in monospace_fonts:
-            test_font = QFont(font_name)
-            if QFont.StyleHint(test_font.styleHint()) == QFont.StyleHint.Monospace:
+            if QFontDatabase.isFixedPitch(font_name):
                 self.app_font.setFamily(font_name)
                 found_font = True
                 self.logger.debug(f"Using monospace font: {font_name}")
                 break
-        if not found_font:
-             self.logger.warning(f"Could not find preferred monospace font, using default.")
-             self.app_font.setStyleHint(QFont.StyleHint.Monospace)
 
-        self.app_font.setFixedPitch(True)
+        if not found_font:
+            default_monospace = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+            self.app_font = default_monospace
+            self.logger.debug(f"Using system default monospace font: {default_monospace.family()}")
+
         self.app_font.setPointSize(12)
         self.setFont(self.app_font)
 
