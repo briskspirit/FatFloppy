@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.controller import DiskController
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
-from fatfloppy.core.filesystem import FATFilesystem, FileInfo
+from fatfloppy.core.filesystems.fat12fs import FATFilesystem, FileInfo
 
 RESOURCE_DIR = Path(__file__).parent.parent / 'resources'
 POPULATED_IMG_SRC = RESOURCE_DIR / 'populated_read_test_144m.img'

@@ -10,7 +10,7 @@ from .drivers import (
 )
 from .physical_format import PhysicalFormat, TrackFormat
 from .format_profile import FormatProfile
-from .filesystem import Filesystem, FATFilesystem, FATVolumeInfo, FAT12_MAX_CLUSTERS
+from .filesystems.fat12fs import Filesystem, FATFilesystem, FATVolumeInfo, FAT12_MAX_CLUSTERS
 from .format_definitions import FLOPPY_FORMATS
 from .filesystem_factory import create_filesystem
 

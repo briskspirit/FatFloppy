@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
-from fatfloppy.core.filesystem import FATFilesystem, FATVolumeInfo, FileInfo
+from fatfloppy.core.filesystems.fat12fs import FATFilesystem, FATVolumeInfo, FileInfo
 from fatfloppy.core.disk import Disk
 from fatfloppy.core.drivers import DiskIODriver
 from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
@@ -47,7 +47,6 @@ ENCODING = "MFM"
 GAP3 = 84 # Common default
 INTERLEAVE = 1
 
-# Attribute constants (copied from filesystem.py for test context)
 ATTR_READ_ONLY = 0x01
 ATTR_HIDDEN = 0x02
 ATTR_SYSTEM = 0x04

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.controller import DiskController
 from fatfloppy.core.drivers import GreaseweazleDriver
-from fatfloppy.core.filesystem import FATFilesystem, FATVolumeInfo
+from fatfloppy.core.filesystems.fat12fs import FATFilesystem, FATVolumeInfo
 from fatfloppy.core.format_profile import FormatProfile
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 from fatfloppy.core.disk import Disk

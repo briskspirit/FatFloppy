@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.format_profile import FormatProfile
-from fatfloppy.core.filesystem import FATVolumeInfo
+from fatfloppy.core.filesystems.fat12fs import FATVolumeInfo
 from fatfloppy.core.disk import Disk
 from fatfloppy.core.drivers import IMGImageDriver
 from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat

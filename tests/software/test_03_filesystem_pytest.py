@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 from fatfloppy.core.drivers import IMGImageDriver
 from fatfloppy.core.disk import Disk
 # Import specific errors if needed for asserts
-from fatfloppy.core.filesystem import FATFilesystem, FileInfo, FATVolumeInfo, ATTR_VOLUME_ID, ATTR_LONG_NAME
+from fatfloppy.core.filesystems.fat12fs import FATFilesystem, FileInfo, FATVolumeInfo, ATTR_VOLUME_ID, ATTR_LONG_NAME
 from fatfloppy.core.format_definitions import FLOPPY_FORMATS
 
 # --- Constants ---

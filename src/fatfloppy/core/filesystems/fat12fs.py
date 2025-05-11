@@ -6,9 +6,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict, Any
 
-from .format_profile import FormatProfile
-from .utils.logging_config import get_logger
-from .disk import Disk
+from ..format_profile import FormatProfile
+from ..utils.logging_config import get_logger
+from ..disk import Disk
 
 
 @dataclass
