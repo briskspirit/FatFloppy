@@ -460,14 +460,18 @@ class FileBrowserApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"An unexpected error occurred: {str(e)}")
 
     def open_disk_image_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img *.imd);;All Files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Disk Image", "", "Disk Images (*.ima *.img *.imd *.dsk);;All Files (*)")
         if not file_path:
             return
 
         _, ext = os.path.splitext(file_path)
+        ext_lower = ext.lower()
         disk_type = "IMG"
-        if ext.lower() == ".imd":
+        if ext_lower == ".imd":
             disk_type = "IMD"
+        elif ext_lower == ".dsk":
+            disk_type = "IMG"
+            self.logger.info("DSK file selected, will attempt to load as raw image (Amstrad structured DSKs are not supported by this raw loader).")
 
         try:
             self.reset_ui()
@@ -486,10 +490,10 @@ class FileBrowserApp(QMainWindow):
                 self.statusBar().showMessage(f"Loaded: {file_path} (Type: {disk_type})")
             else:
                 self.reset_ui()
-                QMessageBox.critical(self, "Error", f"Failed to open {disk_type} disk image")
+                QMessageBox.critical(self, "Error", f"Failed to open {disk_type} disk image. Check logs for details.")
         except ValueError as e:
              self.reset_ui()
-             QMessageBox.critical(self, "IMD Error", f"Failed to parse IMD file: {str(e)}")
+             QMessageBox.critical(self, "Error", f"Failed to parse or load image file: {str(e)}")
         except Exception as e:
             self.reset_ui()
             QMessageBox.critical(self, "Error", f"Failed to open disk image: {str(e)}")
