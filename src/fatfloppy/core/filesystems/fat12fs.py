@@ -595,7 +595,17 @@ class FATFilesystem(Filesystem):
             elif lba < fat1_end: return "fat1"
             elif bs.num_fats > 1 and lba < fat2_end: return "fat2"
             elif lba < first_data_sector: return "root"
-            else: return "data"
+            else:
+                relative_lba = lba - first_data_sector
+                if bs.sectors_per_cluster == 0: # Avoid division by zero
+                    return "data_free" # Or some other default if SPC is 0
+                cluster_index = relative_lba // bs.sectors_per_cluster
+                fat_cluster_number = cluster_index + 2
+                allocated_units = self.get_allocated_units()
+                if fat_cluster_number in allocated_units:
+                    return "data_used"
+                else:
+                    return "data_free"
 
         # Use hex color strings
         legend_colors = {

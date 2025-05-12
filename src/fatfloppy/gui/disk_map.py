@@ -49,21 +49,10 @@ class DiskMapView:
         if not layout_info: return default_color_hex
         get_sector_type_func: Optional[Callable[[int], str]] = layout_info.get('get_sector_type')
         type_color_map: Dict[str, str] = layout_info.get('type_color_map', {})
-        allocation_unit_size: int = layout_info.get('allocation_unit_size_sectors', 1)
-        first_data_sector: int = layout_info.get('first_data_sector', 0)
         if not get_sector_type_func: return unknown_type_color_hex
         try:
             sector_type = get_sector_type_func(lba)
-            if sector_type == "data":
-                if allocation_unit_size <= 0:
-                    logger = getattr(getattr(self.parent, 'controller', None), 'logger', None)
-                    if logger: logger.warning("Allocation unit size is zero or negative.")
-                    return type_color_map.get("data_free", default_color_hex)
-                relative_sector = max(0, lba - first_data_sector)
-                unit_number = (relative_sector // allocation_unit_size) + 2 # Assumes FAT units start at 2 FIXME ???
-                if unit_number in busy_units: return type_color_map.get("data_used", "#FF00FF")
-                else: return type_color_map.get("data_free", default_color_hex)
-            else: return type_color_map.get(sector_type, unknown_type_color_hex)
+            return type_color_map.get(sector_type, default_color_hex)
         except Exception as e:
             logger = getattr(getattr(self.parent, 'controller', None), 'logger', None)
             if logger: logger.error(f"Error in get_sector_color for LBA {lba}: {e}", exc_info=True)
