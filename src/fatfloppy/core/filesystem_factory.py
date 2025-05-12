@@ -1,7 +1,8 @@
 # src/fatfloppy/core/filesystem_factory.py
 from typing import Optional, List, Type
 from .disk import Disk
-from .filesystems.fat12fs import Filesystem, FATFilesystem
+from .filesystems.fs_base import Filesystem
+from .filesystems.fat12fs import FATFilesystem
 from .utils.logging_config import get_logger
 
 logger = get_logger(__name__)
