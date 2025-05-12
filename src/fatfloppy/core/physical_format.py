@@ -1,5 +1,6 @@
+# src/fatfloppy/core/physical_format.py
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import logging
 
 
@@ -12,8 +13,14 @@ class TrackFormat:
     sectors_per_track: int
     encoding: str
     rate: int
-    gap3: int
     interleave: int
+    id_start: int = 1
+    iam_present: bool = True
+    gap1_bytes: Optional[int] = None
+    gap2_bytes: Optional[int] = None
+    gap3_bytes: Optional[int] = None
+    cskew: Optional[int] = None
+    hskew: Optional[int] = None
 
     def matches(self, cylinder: int, head: int) -> bool:
         """Check if this TrackFormat applies to the given cylinder and head."""
@@ -61,9 +68,13 @@ class PhysicalFormat:
         """Validate cylinder, head, sector values."""
         if not (0 <= cylinder < self.cylinders and 0 <= head < self.heads):
             raise ValueError(f"Invalid CHS: {cylinder}, {head}, {sector}")
-        max_sectors = self.get_sectors_per_track(cylinder, head)
-        if not 0 < sector <= max_sectors:
-            raise ValueError(f"Sector {sector} out of range (1-{max_sectors})")
+
+        track_format_for_validation = self.get_track_format(cylinder, head)
+        max_sectors = track_format_for_validation.sectors_per_track
+        current_id_start = track_format_for_validation.id_start
+
+        if not (current_id_start <= sector < current_id_start + max_sectors):
+            raise ValueError(f"Sector {sector} out of range ({current_id_start}-{current_id_start + max_sectors -1}) for C:{cylinder} H:{head}")
 
     @property
     def total_sectors(self) -> int:
@@ -88,9 +99,12 @@ class PhysicalFormat:
         sector_count = 0
         for c in range(self.cylinders):
             for h in range(self.heads):
-                spt = self.get_sectors_per_track(c, h)
+                current_track_format = self.get_track_format(c,h)
+                spt = current_track_format.sectors_per_track
+                current_id_start = current_track_format.id_start
                 if sector_count + spt > lba:
-                    sector = lba - sector_count + 1
+                    sector_offset = lba - sector_count
+                    sector = current_id_start + sector_offset
                     return (c, h, sector)
                 sector_count += spt
         raise ValueError("LBA conversion failed")
@@ -99,10 +113,14 @@ class PhysicalFormat:
         """Convert CHS to LBA."""
         self.validate_chs(cylinder, head, sector)
         lba = 0
-        for c in range(cylinder):
-            for h in range(self.heads):
-                lba += self.get_sectors_per_track(c, h)
-        for h in range(head):
-            lba += self.get_sectors_per_track(cylinder, h)
-        lba += sector - 1
+        for c_iter in range(cylinder):
+            for h_iter in range(self.heads):
+                lba += self.get_sectors_per_track(c_iter, h_iter)
+
+        for h_iter in range(head):
+            lba += self.get_sectors_per_track(cylinder, h_iter)
+
+        current_track_format_for_lba = self.get_track_format(cylinder, head)
+        current_id_start_for_lba = current_track_format_for_lba.id_start
+        lba += (sector - current_id_start_for_lba)
         return lba

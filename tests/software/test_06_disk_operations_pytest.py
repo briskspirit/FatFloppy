@@ -28,7 +28,7 @@ def disk_setup(tmp_path):
         sectors_per_track=sectors_per_track,
         encoding="MFM",
         rate=500, # Example rate
-        gap3=42,  # Example gap
+        gap3_bytes=42,  # Example gap
         interleave=1
     )
     phys_fmt = PhysicalFormat(

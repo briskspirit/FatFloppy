@@ -72,7 +72,7 @@ def mock_fs_setup(request):
         sectors_per_track=SECTORS_PER_TRACK,
         encoding=ENCODING,
         rate=RATE,
-        gap3=GAP3,
+        gap3_bytes=GAP3,
         interleave=INTERLEAVE
     )
     mock_disk_geometry = PhysicalFormat(

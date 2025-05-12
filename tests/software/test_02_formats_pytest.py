@@ -88,7 +88,7 @@ def test_04_detect_format_no_match(disk_controller):
         sectors_per_track=temp_spt,
         encoding="MFM",
         rate=250,
-        gap3=84, # Assuming default
+        gap3_bytes=84, # Assuming default
         interleave=1 # Assuming default
     )
     temp_geom = PhysicalFormat(

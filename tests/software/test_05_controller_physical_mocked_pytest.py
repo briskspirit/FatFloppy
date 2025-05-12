@@ -134,7 +134,7 @@ def open_disk_for_rw_tests(controller: DiskController, mocks_bundle: dict, test_
         "format_name": test_format.name, "cylinders": phys_fmt.cylinders, "heads": phys_fmt.heads,
         "sectors_per_track": track_fmt.sectors_per_track, "bytes_per_sector": phys_fmt.bytes_per_sector,
         "encoding": track_fmt.encoding, "rate": track_fmt.rate, "rpm": phys_fmt.rpm,
-        "gap3": track_fmt.gap3, "interleave": track_fmt.interleave
+        "gap3_bytes": track_fmt.gap3_bytes, "interleave": track_fmt.interleave
     }
 
     mock_fs = MagicMock(spec=FATFilesystem)
@@ -255,7 +255,7 @@ def test_02_open_physical_with_explicit_format_mocked(mocked_controller):
         "cylinders": phys_fmt.cylinders, "heads": phys_fmt.heads,
         "sectors_per_track": track_fmt.sectors_per_track, "bytes_per_sector": phys_fmt.bytes_per_sector,
         "encoding": track_fmt.encoding, "rate": track_fmt.rate, "rpm": phys_fmt.rpm,
-        "gap3": track_fmt.gap3, "interleave": track_fmt.interleave
+        "gap3_bytes": track_fmt.gap3_bytes, "interleave": track_fmt.interleave
     }
 
     mock_fs = MagicMock(spec=FATFilesystem)

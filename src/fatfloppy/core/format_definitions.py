@@ -3,7 +3,7 @@ from .physical_format import PhysicalFormat, TrackFormat
 from .format_profile import FormatProfile
 from .filesystems.fat12fs import FATVolumeInfo
 
-# TODO: Adjust gap3 based on doc: https://www.isdaman.com/alsos/hardware/fdc/floppy.htm
+# TODO: Adjust gap3_bytes based on doc: https://www.isdaman.com/alsos/hardware/fdc/floppy.htm
 # TODO: Verify against https://retrocmp.de/fdd/general/floppy-formats.htm
 
 FLOPPY_FORMATS = {
@@ -25,8 +25,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=8,
                     encoding="MFM",
                     rate=250,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=84,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -50,8 +56,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=9,
                     encoding="MFM",
                     rate=250,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=84,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -75,8 +87,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=8,
                     encoding="MFM",
                     rate=250,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=84,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -100,8 +118,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=9,
                     encoding="MFM",
                     rate=250,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=84,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -125,8 +149,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=15,
                     encoding="MFM",
                     rate=500,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=84,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -150,8 +180,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=8,
                     encoding="MFM",
                     rate=250,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=84,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -175,8 +211,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=9,
                     encoding="MFM",
                     rate=250,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=84,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -200,8 +242,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=8,
                     encoding="MFM",
                     rate=250,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=84,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -225,8 +273,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=9,
                     encoding="MFM",
                     rate=250,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=84,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -250,8 +304,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=10,
                     encoding="MFM",
                     rate=250,
-                    gap3=30,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=30,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -275,8 +335,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=18,
                     encoding="MFM",
                     rate=500,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=84,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -300,8 +366,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=36,
                     encoding="MFM",
                     rate=1000,
-                    gap3=41,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=41,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -325,8 +397,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=21,
                     encoding="MFM",
                     rate=500,
-                    gap3=12,
-                    interleave=2
+                    interleave=2,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=12,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -350,8 +428,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=21,
                     encoding="MFM",
                     rate=500,
-                    gap3=12,
-                    interleave=2
+                    interleave=2,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=12,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -375,8 +459,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=26,
                     encoding="FM",
                     rate=250,
-                    gap3=26,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=26,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -400,8 +490,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=15,
                     encoding="FM",
                     rate=250,
-                    gap3=26,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=26,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -425,8 +521,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=8,
                     encoding="FM",
                     rate=250,
-                    gap3=26,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=26,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -450,8 +552,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=26,
                     encoding="FM",
                     rate=250,
-                    gap3=26,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=26,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -475,8 +583,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=15,
                     encoding="FM",
                     rate=250,
-                    gap3=26,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=26,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -500,8 +614,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=8,
                     encoding="MFM",
                     rate=500,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=54,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -525,8 +645,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=26,
                     encoding="MFM",
                     rate=500,
-                    gap3=54,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=54,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -550,8 +676,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=15,
                     encoding="MFM",
                     rate=500,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=54,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),
@@ -575,8 +707,14 @@ FLOPPY_FORMATS = {
                     sectors_per_track=8,
                     encoding="MFM",
                     rate=500,
-                    gap3=84,
-                    interleave=1
+                    interleave=1,
+                    id_start=1,
+                    iam_present=True,
+                    gap1_bytes=None,
+                    gap2_bytes=None,
+                    gap3_bytes=54,
+                    cskew=None,
+                    hskew=None,
                 )
             ]
         ),

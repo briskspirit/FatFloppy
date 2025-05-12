@@ -1,4 +1,4 @@
-# src/fatfloppy/core/filesystem.py
+# src/fatfloppy/core/filesystems/fat12fs.py
 import re
 import struct
 import datetime

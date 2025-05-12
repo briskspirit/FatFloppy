@@ -24,12 +24,12 @@ except ImportError:
 
 logger = get_logger()
 
-def create_greaseweazle_diskdef(physical_format: PhysicalFormat, logger: logging.Logger) -> Optional[codec.DiskDef]:
+def create_greaseweazle_diskdef(physical_format: PhysicalFormat, logger_instance: logging.Logger) -> Optional[codec.DiskDef]:
     if not physical_format:
-        logger.warning("Cannot create diskdef: No physical format provided")
+        logger_instance.warning("Cannot create diskdef: No physical format provided")
         return None
 
-    logger.debug("Creating Greaseweazle disk definition")
+    logger_instance.debug("Creating Greaseweazle disk definition")
     try:
         disk_def = codec.DiskDef()
         disk_def.cyls = physical_format.cylinders
@@ -38,14 +38,28 @@ def create_greaseweazle_diskdef(physical_format: PhysicalFormat, logger: logging
         for tf in physical_format.track_formats:
             format_name = "ibm.mfm" if tf.encoding == "MFM" else "ibm.fm" if tf.encoding == "FM" else None
             if not format_name:
-                logger.warning(f"Unsupported encoding '{tf.encoding}', defaulting to 'ibm.mfm'")
+                logger_instance.warning(f"Unsupported encoding '{tf.encoding}', defaulting to 'ibm.mfm'")
                 format_name = "ibm.mfm"
 
             track_def = ibm.IBMTrack_FixedDef(format_name)
             track_def.add_param("secs", str(tf.sectors_per_track))
             track_def.add_param("bps", str(physical_format.bytes_per_sector))
-            track_def.add_param("gap3", str(tf.gap3))
             track_def.add_param("rate", str(tf.rate))
+            track_def.add_param("interleave", str(tf.interleave))
+            track_def.add_param("id", str(tf.id_start))
+            track_def.add_param("iam", "yes" if tf.iam_present else "no")
+
+            if tf.gap1_bytes is not None:
+                track_def.add_param("gap1", str(tf.gap1_bytes))
+            if tf.gap2_bytes is not None:
+                track_def.add_param("gap2", str(tf.gap2_bytes))
+            if tf.gap3_bytes is not None:
+                track_def.add_param("gap3", str(tf.gap3_bytes))
+            if tf.cskew is not None:
+                track_def.add_param("cskew", str(tf.cskew))
+            if tf.hskew is not None:
+                track_def.add_param("hskew", str(tf.hskew))
+
             track_def.finalise()
 
             for c in range(tf.track_start, tf.track_end + 1):
@@ -53,10 +67,10 @@ def create_greaseweazle_diskdef(physical_format: PhysicalFormat, logger: logging
                     disk_def.track_map[(c, h)] = track_def
 
         disk_def.finalise()
-        logger.info(f"Disk definition created: Cyls={disk_def.cyls}, Heads={disk_def.heads}")
+        logger_instance.info(f"Disk definition created: Cyls={disk_def.cyls}, Heads={disk_def.heads}")
         return disk_def
     except Exception as e:
-        logger.error(f"Failed to create disk definition: {e}", exc_info=True)
+        logger_instance.error(f"Failed to create disk definition: {e}", exc_info=True)
         return None
 
 
@@ -244,7 +258,7 @@ class GreaseweazleDriver(DiskIODriver):
 
         track_format = TrackFormat(
             track_start=0, track_end=79, head_start=0, head_end=1,
-            sectors_per_track=num_sectors, encoding=encoding, rate=rate, gap3=84, interleave=1
+            sectors_per_track=num_sectors, encoding=encoding, rate=rate, gap3_bytes=84, interleave=1
         )
         self.physical_format = PhysicalFormat(
             cylinders=80, heads=2, rpm=300, heads_inverted=False,

@@ -62,7 +62,8 @@ class DiskController:
     def _create_physical_format(self, format_info: Dict[str, any], base_profile: Optional[FormatProfile] = None) -> PhysicalFormat:
         default_track_format = TrackFormat(
             track_start=0, track_end=79, head_start=0, head_end=1,
-            sectors_per_track=18, encoding="MFM", rate=500, gap3=84, interleave=1
+            sectors_per_track=18, encoding="MFM", rate=500, interleave=1,
+            id_start=1, iam_present=True, gap3_bytes=84 # Using new field name
         )
         default_phys = PhysicalFormat(
             cylinders=80, heads=2, rpm=300, heads_inverted=False,
@@ -80,8 +81,14 @@ class DiskController:
             sectors_per_track=format_info.get("sectors_per_track", default_track_format.sectors_per_track),
             encoding=format_info.get("encoding", default_track_format.encoding),
             rate=format_info.get("rate", default_track_format.rate),
-            gap3=format_info.get("gap3", default_track_format.gap3),
-            interleave=format_info.get("interleave", default_track_format.interleave)
+            interleave=format_info.get("interleave", default_track_format.interleave),
+            id_start=format_info.get("id_start", default_track_format.id_start),
+            iam_present=format_info.get("iam_present", default_track_format.iam_present),
+            gap1_bytes=format_info.get("gap1_bytes", default_track_format.gap1_bytes),
+            gap2_bytes=format_info.get("gap2_bytes", default_track_format.gap2_bytes),
+            gap3_bytes=format_info.get("gap3_bytes", default_track_format.gap3_bytes),
+            cskew=format_info.get("cskew", default_track_format.cskew),
+            hskew=format_info.get("hskew", default_track_format.hskew)
         )
 
         return PhysicalFormat(
@@ -124,7 +131,7 @@ class DiskController:
                         sectors_per_track=actual_sectors,
                         encoding=self.disk.physical_format.track_formats[0].encoding,
                         rate=self.disk.physical_format.track_formats[0].rate,
-                        gap3=self.disk.physical_format.track_formats[0].gap3,
+                        gap3_bytes=self.disk.physical_format.track_formats[0].gap3_bytes,
                         interleave=self.disk.physical_format.track_formats[0].interleave
                     )
                     updated_geometry = PhysicalFormat(
@@ -152,7 +159,7 @@ class DiskController:
                         sectors_per_track=sectors_per_track,
                         encoding=self.disk.physical_format.track_formats[0].encoding,
                         rate=self.disk.physical_format.track_formats[0].rate,
-                        gap3=self.disk.physical_format.track_formats[0].gap3,
+                        gap3_bytes=self.disk.physical_format.track_formats[0].gap3_bytes,
                         interleave=self.disk.physical_format.track_formats[0].interleave
                     )
                     updated_geometry = PhysicalFormat(
@@ -659,7 +666,7 @@ class DiskController:
             sectors_per_track=sectors_per_track,
             encoding=encoding,
             rate=rate,
-            gap3=84,
+            gap3_bytes=84,
             interleave=1
         )
         geometry = PhysicalFormat(
@@ -741,7 +748,7 @@ class DiskController:
                         sectors_per_track=temp_geometry.track_formats[0].sectors_per_track,
                         encoding=temp_geometry.track_formats[0].encoding,
                         rate=temp_geometry.track_formats[0].rate,
-                        gap3=temp_geometry.track_formats[0].gap3,
+                        gap3_bytes=temp_geometry.track_formats[0].gap3_bytes,
                         interleave=temp_geometry.track_formats[0].interleave
                     )
                     updated_geometry = PhysicalFormat(
@@ -771,7 +778,7 @@ class DiskController:
             sectors_per_track=temp_geometry.track_formats[0].sectors_per_track,
             encoding=temp_geometry.track_formats[0].encoding,
             rate=temp_geometry.track_formats[0].rate,
-            gap3=temp_geometry.track_formats[0].gap3,
+            gap3_bytes=temp_geometry.track_formats[0].gap3_bytes,
             interleave=temp_geometry.track_formats[0].interleave
         )
         fallback_geometry = PhysicalFormat(
@@ -804,7 +811,7 @@ class DiskController:
             "encoding": "MFM",
             "rate": 500,
             "rpm": 360,
-            "gap3": 84,
+            "gap3_bytes": 84,
             "interleave": 1
         }
         physical_format = self._create_physical_format(format_info)

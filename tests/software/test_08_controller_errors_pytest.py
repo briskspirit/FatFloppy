@@ -30,7 +30,7 @@ def test_01_ops_before_open(error_controller):
     # --- FIX: Create PhysicalFormat correctly ---
     dummy_track_format = TrackFormat(
         track_start=0, track_end=0, head_start=0, head_end=0,
-        sectors_per_track=1, encoding="MFM", rate=500, gap3=84, interleave=1
+        sectors_per_track=1, encoding="MFM", rate=500, gap3_bytes=84, interleave=1
     )
     dummy_geom = PhysicalFormat(
         cylinders=1, heads=1, rpm=300, heads_inverted=False,
@@ -67,7 +67,7 @@ def test_02_ops_after_close(error_controller):
     # --- FIX: Define dummy geometry correctly for simulation ---
     dummy_track_format = TrackFormat(
         track_start=0, track_end=0, head_start=0, head_end=0,
-        sectors_per_track=1, encoding="MFM", rate=500, gap3=84, interleave=1
+        sectors_per_track=1, encoding="MFM", rate=500, gap3_bytes=84, interleave=1
     )
     dummy_geom = PhysicalFormat(
         cylinders=1, heads=1, rpm=300, heads_inverted=False,
