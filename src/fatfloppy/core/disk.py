@@ -27,25 +27,6 @@ class Disk:
                 self.logger.error(f"Failed to set physical format: {e}", exc_info=True)
                 raise
 
-    # FIXME: Should be removed, filesystem should decide what it needs and what to read, Disk doesn't care
-    def read_boot_sector(self) -> bytes:
-        if not self.physical_format:
-            raise ValueError("Disk geometry not set")
-        bytes_per_sector = self.physical_format.bytes_per_sector
-        sectors_to_read = 4096 // bytes_per_sector
-        self.logger.debug(f"Reading boot sector: {sectors_to_read} sectors")
-        data = self.read_sectors(0, 0, 1, sectors_to_read)
-        return data
-
-    def write_boot_sector(self, data: bytes) -> None:
-        if not self.physical_format:
-            raise ValueError("Disk geometry not set")
-        bytes_per_sector = self.physical_format.bytes_per_sector
-        if len(data) != bytes_per_sector:
-            raise ValueError(f"Boot sector must be {bytes_per_sector} bytes, got {len(data)} bytes")
-        self.logger.debug("Writing boot sector")
-        self.write_sectors(0, 0, 1, data)
-
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         self._validate_chs(cylinder, head, sector)
         self.logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector}")

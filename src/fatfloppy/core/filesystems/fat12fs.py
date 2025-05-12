@@ -517,7 +517,7 @@ class FATFilesystem(Filesystem):
         boot_sector = profile.boot_sector
         boot_sector_bytes = boot_sector.to_bytes()
 
-        self.disk.write_boot_sector(boot_sector_bytes)
+        self.disk.write_sector(0, 0, 1, boot_sector_bytes)
         self.logger.info("Wrote boot sector")
 
         bytes_per_sector = boot_sector.bytes_per_sector
@@ -659,7 +659,7 @@ class FATFilesystem(Filesystem):
 
     def _load_boot_sector(self) -> None:
         try:
-            boot_sector_data = self.disk.read_boot_sector()
+            boot_sector_data = self.disk.read_sector(0, 0, 1)
             if not boot_sector_data:
                 self.boot_sector = None
                 self.logger.error("Boot sector data is empty (read returned empty)")

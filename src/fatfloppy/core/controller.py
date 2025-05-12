@@ -324,7 +324,7 @@ class DiskController:
                         self.set_geometry(temp_geom)
                 self.logger.debug(f"Detecting format using geometry: {self.disk.physical_format}")
                 try:
-                    boot_sector_bytes = self.disk.read_boot_sector()
+                    boot_sector_bytes = self.disk.read_sector(0, 0, 1)
                 except Exception as read_e:
                     self.logger.error(f"Failed to read boot sector for detection: {read_e}")
                     return None, None

@@ -155,7 +155,7 @@ def open_disk_for_rw_tests(controller: DiskController, mocks_bundle: dict, test_
 
     mock_boot_sector_bytes = bsd.to_bytes()
     # No need to patch create_gw_diskdef here; it's handled by the fixture
-    with patch('fatfloppy.core.disk.Disk.read_boot_sector', return_value=mock_boot_sector_bytes), \
+    with patch('fatfloppy.core.disk.Disk.read_sector', return_value=mock_boot_sector_bytes), \
          patch('fatfloppy.core.controller.create_filesystem', return_value=mock_fs):
         mock_with_drive_selected.side_effect = lambda func, *args, **kwargs: func()
         success = controller.open_disk(None, "physical", 'A', "3.5", format_info=format_info_dict)
@@ -218,7 +218,7 @@ def test_01_open_physical_drive_A_35_auto_detect_mocked(mocked_controller):
     mock_fs.boot_sector = mock_fat_bs
     mock_boot_sector_bytes = bsd.to_bytes()
 
-    with patch('fatfloppy.core.disk.Disk.read_boot_sector', return_value=mock_boot_sector_bytes), \
+    with patch('fatfloppy.core.disk.Disk.read_sector', return_value=mock_boot_sector_bytes), \
          patch('fatfloppy.core.controller.create_filesystem', return_value=mock_fs):
         success = controller.open_disk(source=None, disk_type="physical", drive_letter=drive_letter, drive_size=drive_size)
 

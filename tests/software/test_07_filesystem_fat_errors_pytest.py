@@ -197,8 +197,8 @@ def mock_fs_setup(request):
     mock_disk.read_sector.side_effect = lambda c, h, s: mock_read_sectors(c, h, s, 1)
     mock_disk.read_sectors.side_effect = mock_read_sectors
 
-    # FIX: Configure mock_disk.read_boot_sector
-    mock_disk.read_boot_sector.return_value = bytes(boot_sector_data)
+    # FIX: Configure mock_disk.read_sector
+    mock_disk.read_sector.return_value = bytes(boot_sector_data)
 
     # Mock writing sectors to in-memory data and written_lba_data cache
     def mock_write_sectors(start_c, start_h, start_s, data):
@@ -266,12 +266,12 @@ def mock_fs_setup(request):
     mock_disk.write_sectors.side_effect = mock_write_sectors
     mock_disk.flush.return_value = None # Mock flush does nothing
 
-    # Now initialize the filesystem, which will call the mocked read_boot_sector
+    # Now initialize the filesystem, which will call the mocked read_sector
     fs = FATFilesystem(mock_disk)
 
     # Check if initialization worked (it should now)
     if not fs.is_valid():
-         pytest.fail("FATFilesystem failed to initialize in mock_fs_setup fixture after fixing read_boot_sector mock.")
+         pytest.fail("FATFilesystem failed to initialize in mock_fs_setup fixture after fixing read_sector mock.")
 
     # Store the mutable mock state for tests to access/modify if needed (use with caution)
     mock_state = {
