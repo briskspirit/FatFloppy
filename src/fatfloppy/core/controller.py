@@ -1,7 +1,7 @@
 # src/fatfloppy/core/controller.py
 import os
 import copy
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Any
 
 from .utils.logging_config import get_logger
 from .disk import Disk
@@ -63,7 +63,7 @@ class DiskController:
         default_track_format = TrackFormat(
             track_start=0, track_end=79, head_start=0, head_end=1,
             sectors_per_track=18, encoding="MFM", rate=500, interleave=1,
-            id_start=1, iam_present=True, gap3_bytes=84 # Using new field name
+            id_start=1, iam_present=True, gap3_bytes=84
         )
         default_phys = PhysicalFormat(
             cylinders=80, heads=2, rpm=300, heads_inverted=False,
@@ -150,7 +150,7 @@ class DiskController:
                 sectors_per_track = bs.sectors_per_track
                 heads = bs.num_heads
                 if (self.disk.physical_format.track_formats[0].sectors_per_track != sectors_per_track or
-                    self.disk.physical_format.heads != heads):
+                        self.disk.physical_format.heads != heads):
                     updated_track_format = TrackFormat(
                         track_start=0,
                         track_end=self.disk.physical_format.cylinders - 1,
@@ -193,7 +193,8 @@ class DiskController:
             try:
                 self._apply_user_format(format_info)
                 self.filesystem = create_filesystem(self.disk)
-                self._adjust_geometry_after_filesystem()
+                if isinstance(self.filesystem, FATFilesystem):
+                    self._adjust_geometry_after_filesystem()
                 self.logger.debug(f"Applied user format. Geometry: {self.disk.physical_format}")
                 return True
             except Exception as e:
@@ -208,7 +209,8 @@ class DiskController:
                 success = False
             if success:
                 self.filesystem = create_filesystem(self.disk)
-                self._adjust_geometry_after_filesystem()
+                if isinstance(self.filesystem, FATFilesystem):
+                    self._adjust_geometry_after_filesystem()
                 self.logger.debug(f"Auto-detected format. Geometry: {self.disk.physical_format}")
             return success
 
@@ -232,6 +234,11 @@ class DiskController:
                 self.logger.error(f"Failed to establish valid format/geometry for {source}")
                 self.close_disk()
                 return False
+
+            self.filesystem = create_filesystem(self.disk)
+            if isinstance(self.filesystem, FATFilesystem):
+                self._adjust_geometry_after_filesystem()
+
             self.physical_format = self.disk.physical_format
             self.boot_sector = self.filesystem.boot_sector if self.filesystem and hasattr(self.filesystem, 'boot_sector') else None
             self.logger.info(f"Disk '{source}' opened successfully. Type: {disk_type}. Geometry: {self.physical_format}")
@@ -270,7 +277,7 @@ class DiskController:
         if not self.disk:
             self.logger.error("No disk opened to detect geometry")
             return None
-        format_name = self.detect_format()
+        format_name, _ = self.detect_format()
         if format_name:
             profile = self.get_format_by_name(format_name)
             if profile:
@@ -284,10 +291,14 @@ class DiskController:
         self.disk.set_geometry(geometry)
         self.logger.debug(f"Geometry set: {geometry}")
 
-    def detect_format(self) -> Optional[Tuple[str, FATVolumeInfo]]:
+    def detect_format(self) -> Optional[Tuple[str, Any]]:
         if not self.disk or not self.driver:
             self.logger.error("No disk opened to detect format")
             return None, None
+
+        matched_profile_name: Optional[str] = None
+        boot_info_obj: Optional[Any] = None
+
         try:
             if isinstance(self.driver, IMDImageDriver):
                 boot_sector_bytes = self.driver.read_boot_sector_data()
@@ -295,83 +306,84 @@ class DiskController:
                     self.logger.warning("IMD driver could not read boot sector data (0,0,1).")
                     return None, None
                 try:
-                    boot_data = FATVolumeInfo.from_bytes(boot_sector_bytes)
-                    for format_name, profile in self.known_formats.items():
-                        if (profile.filesystem_config and self.driver.physical_format and
-                            profile.filesystem_config.sectors_per_track == boot_data.sectors_per_track and
-                            profile.filesystem_config.num_heads == boot_data.num_heads and
-                            profile.filesystem_config.total_sectors == boot_data.total_sectors and
-                            profile.filesystem_config.bytes_per_sector == boot_data.bytes_per_sector and
-                            profile.physical_format.cylinders == self.driver.physical_format.cylinders):
-                            if self.disk.physical_format != profile.physical_format:
-                                self.logger.info(f"Updating geometry to match detected profile '{format_name}'")
-                                self.set_geometry(profile.physical_format)
-                            return format_name, boot_data
-                    self.logger.info("Parsed BPB from IMD, but no exact known format match.")
-                    return None, boot_data
+                    boot_info_obj = FATVolumeInfo.from_bytes(boot_sector_bytes)
                 except ValueError as e:
-                    self.logger.warning(f"Could not parse boot sector data from IMD: {e}")
-                    return None, None
-            else:
+                    self.logger.warning(f"Could not parse boot sector data from IMD as FAT BPB: {e}")
+                    boot_info_obj = None
+
+                if boot_info_obj:
+                    for format_name, profile in self.known_formats.items():
+                        if (profile.filesystem_type == "FAT12" and
+                                profile.physical_format and self.driver.physical_format and
+                                profile.filesystem_config and isinstance(profile.filesystem_config, FATVolumeInfo) and
+                                profile.filesystem_config.sectors_per_track == boot_info_obj.sectors_per_track and
+                                profile.filesystem_config.num_heads == boot_info_obj.num_heads and
+                                profile.filesystem_config.total_sectors == boot_info_obj.total_sectors and
+                                profile.filesystem_config.bytes_per_sector == boot_info_obj.bytes_per_sector and
+                                profile.filesystem_config.sectors_per_fat == boot_info_obj.sectors_per_fat and
+                                profile.filesystem_config.root_entries == boot_info_obj.root_entries and
+                                profile.physical_format.cylinders == self.driver.physical_format.cylinders):
+                            matched_profile_name = format_name
+                            if self.disk.physical_format != profile.physical_format:
+                                self.logger.info(f"Updating geometry to match detected profile '{format_name}' for IMD")
+                                self.set_geometry(profile.physical_format)
+                            break
+                    if matched_profile_name:
+                        self.logger.info(f"IMD matched FAT12 profile: {matched_profile_name}")
+                    else:
+                        self.logger.info("Parsed BPB from IMD, but no exact known FAT12 format profile match found.")
+                return matched_profile_name, boot_info_obj
+            else: # For other driver types (IMG, Physical)
                 if not self.disk.physical_format:
-                    self.logger.warning("No geometry set, applying temporary default for detection.")
+                    self.logger.warning("No physical format set for detection. Applying temporary default.")
                     temp_profile = self.get_format_by_name("ibm_3.5_1.44m")
                     if temp_profile:
-                        self.set_geometry(temp_profile.physical_format)
-                    else:
-                        temp_track_format = TrackFormat(0, 79, 0, 1, 18, "MFM", 500, 84, 1)
-                        temp_geom = PhysicalFormat(80, 2, 300, False, 512, [temp_track_format])
-                        self.set_geometry(temp_geom)
-                self.logger.debug(f"Detecting format using geometry: {self.disk.physical_format}")
-                try:
-                    boot_sector_bytes = self.disk.read_sector(0, 0, 1)
-                except Exception as read_e:
-                    self.logger.error(f"Failed to read boot sector for detection: {read_e}")
-                    return None, None
-                if not boot_sector_bytes or len(boot_sector_bytes) < 62:
-                    self.logger.warning("Failed to read sufficient boot sector data for detection.")
-                    return None, None
-                if len(boot_sector_bytes) < 512:
-                    boot_sector_bytes += bytes(512 - len(boot_sector_bytes))
-                try:
-                    boot_data = FATVolumeInfo.from_bytes(boot_sector_bytes)
-                    adjust_geom = False
-                    if boot_data.bytes_per_sector > 0 and boot_data.bytes_per_sector != self.disk.physical_format.bytes_per_sector:
-                        self.logger.info(f"Adjusting sector size based on BPB from {self.disk.physical_format.bytes_per_sector} to {boot_data.bytes_per_sector}")
-                        self.disk.physical_format.bytes_per_sector = boot_data.bytes_per_sector
-                        adjust_geom = True
-                    if boot_data.num_heads > 0 and boot_data.num_heads != self.disk.physical_format.heads:
-                        self.logger.info(f"Adjusting heads based on BPB from {self.disk.physical_format.heads} to {boot_data.num_heads}")
-                        self.disk.physical_format.heads = boot_data.num_heads
-                        for tf in self.disk.physical_format.track_formats:
-                            tf.head_end = boot_data.num_heads - 1
-                        adjust_geom = True
-                    if boot_data.sectors_per_track > 0 and boot_data.sectors_per_track != self.disk.physical_format.get_sectors_per_track(0,0):
-                        self.logger.info(f"Adjusting sectors/track based on BPB from {self.disk.physical_format.get_sectors_per_track(0,0)} to {boot_data.sectors_per_track}")
-                        for tf in self.disk.physical_format.track_formats:
-                            tf.sectors_per_track = boot_data.sectors_per_track
-                        adjust_geom = True
-                    if adjust_geom and hasattr(self.driver, "set_physical_format"):
-                        self.logger.debug("Pushing adjusted geometry to driver.")
-                        self.driver.set_physical_format(copy.deepcopy(self.disk.physical_format))
+                        self.disk.set_geometry(temp_profile.physical_format) # Minimal set, won't persist if no match
+                    else: # Fallback if "ibm_3.5_1.44m" isn't in known_formats
+                        temp_tf = TrackFormat(0, 79, 0, 1, 18, "MFM", 500, 1, gap3_bytes=84)
+                        temp_geom = PhysicalFormat(80, 2, 300, False, 512, [temp_tf])
+                        self.disk.set_geometry(temp_geom)
+                    if not self.disk.physical_format: # Still no format
+                        self.logger.error("Failed to set even a temporary default geometry.")
+                        return None, None
+
+                if self.filesystem and isinstance(self.filesystem, FATFilesystem):
+                    boot_info_obj = self.filesystem.boot_sector
+                else:
+                    try:
+                        raw_boot_sector_bytes = self.disk.read_sector(0, 0, 1)
+                        if raw_boot_sector_bytes and len(raw_boot_sector_bytes) >= 62: # Basic check for BPB presence
+                            boot_info_obj = FATVolumeInfo.from_bytes(raw_boot_sector_bytes)
+                        else:
+                            self.logger.warning("Failed to read sufficient boot sector data for detection.")
+                            boot_info_obj = None
+                    except Exception as read_e:
+                        self.logger.error(f"Failed to read boot sector (0,0,1) for detection: {read_e}")
+                        boot_info_obj = None
+
+                if boot_info_obj and isinstance(boot_info_obj, FATVolumeInfo):
                     for format_name, profile in self.known_formats.items():
-                        if (profile.physical_format and profile.filesystem_config and
-                            profile.physical_format.cylinders == self.disk.physical_format.cylinders and
-                            profile.physical_format.heads == boot_data.num_heads and
-                            profile.physical_format.bytes_per_sector == boot_data.bytes_per_sector and
-                            profile.physical_format.get_sectors_per_track(0,0) == boot_data.sectors_per_track and
-                            profile.filesystem_config.total_sectors == boot_data.total_sectors and
-                            profile.filesystem_config.sectors_per_fat == boot_data.sectors_per_fat and
-                            profile.filesystem_config.root_entries == boot_data.root_entries):
+                        if (profile.filesystem_type == "FAT12" and
+                                profile.physical_format and profile.filesystem_config and
+                                isinstance(profile.filesystem_config, FATVolumeInfo) and
+                                self.disk.physical_format and
+                                profile.physical_format.cylinders == self.disk.physical_format.cylinders and
+                                profile.physical_format.heads == boot_info_obj.num_heads and
+                                profile.physical_format.bytes_per_sector == boot_info_obj.bytes_per_sector and
+                                profile.physical_format.get_sectors_per_track(0, 0) == boot_info_obj.sectors_per_track and
+                                profile.filesystem_config.total_sectors == boot_info_obj.total_sectors and
+                                profile.filesystem_config.sectors_per_fat == boot_info_obj.sectors_per_fat and
+                                profile.filesystem_config.root_entries == boot_info_obj.root_entries):
+                            matched_profile_name = format_name
                             if self.disk.physical_format != profile.physical_format:
-                                self.logger.info(f"Aligning geometry to matched profile '{format_name}'")
+                                self.logger.info(f"Aligning geometry to matched FAT12 profile '{format_name}'")
                                 self.set_geometry(profile.physical_format)
-                            return format_name, boot_data
-                    self.logger.info("Parsed BPB data, but no exact known format profile match found.")
-                    return None, boot_data
-                except ValueError as e:
-                    self.logger.warning(f"Could not parse boot sector data: {e}")
-                    return None, None
+                            break
+                    if matched_profile_name:
+                        self.logger.info(f"Detected FAT12 profile: {matched_profile_name}")
+                    else:
+                        self.logger.info("Parsed BPB data, but no exact known FAT12 format profile match found.")
+                return matched_profile_name, boot_info_obj
         except Exception as e:
             self.logger.exception(f"Error during format detection: {e}")
             return None, None
@@ -511,6 +523,7 @@ class DiskController:
         if not self.disk or not self.driver:
             self.logger.error("Cannot format disk: Disk or driver not initialized.")
             return False
+
         profile = self.known_formats.get(format_name)
         if not profile:
             found_profile = False
@@ -526,7 +539,13 @@ class DiskController:
                 if hasattr(self.driver, 'physical_format') and self.driver.physical_format:
                     if hasattr(self.driver.physical_format, '_associated_boot_sector'):
                         self.logger.info("Using custom format profile potentially set via set_format.")
-                        profile = FormatProfile(name="custom_runtime", description="Custom (Runtime)", physical_format=self.driver.physical_format, filesystem_config=self.driver.physical_format._associated_boot_sector)
+                        profile = FormatProfile(
+                            name="custom_runtime",
+                            description="Custom (Runtime)",
+                            physical_format=self.driver.physical_format,
+                            filesystem_type="FAT12", # Assuming FAT12 for now
+                            filesystem_config=self.driver.physical_format._associated_boot_sector
+                        )
                         format_name = "custom_runtime"
                     else:
                         self.logger.error(f"Cannot format with unknown/custom profile '{format_name}' without associated boot sector info attached to driver's format.")
@@ -534,14 +553,21 @@ class DiskController:
                 else:
                     self.logger.error(f"Cannot format with unknown profile '{format_name}' and no geometry set or driver format available.")
                     return False
+
         if not profile or not profile.physical_format or not profile.filesystem_config:
             self.logger.error(f"Format profile '{format_name}' is invalid or missing required information.")
             return False
+
+        if profile.filesystem_type != "FAT12":
+            self.logger.error(f"Formatting for filesystem type '{profile.filesystem_type}' is not supported.")
+            return False
+
         self.logger.info(f"Starting format process with profile: {profile.name}")
         if volume_label:
             profile.filesystem_config.volume_label = volume_label.ljust(11)[:11]
         elif not profile.filesystem_config.volume_label or not profile.filesystem_config.volume_label.strip():
             profile.filesystem_config.volume_label = "NO NAME".ljust(11)
+
         try:
             if self.disk.physical_format != profile.physical_format:
                 self.logger.warning(f"Disk geometry differs from profile '{profile.name}' before format. Setting format now.")
@@ -549,6 +575,7 @@ class DiskController:
             elif hasattr(self.driver, "physical_format") and self.driver.physical_format != profile.physical_format:
                 self.logger.warning(f"Driver physical format differs from profile '{profile.name}'. Setting format now.")
                 self.set_format(profile)
+
             filesystem = FATFilesystem(self.disk)
             filesystem.format_fs(profile)
             self.filesystem = filesystem
@@ -569,10 +596,16 @@ class DiskController:
         if not profile or not profile.physical_format or not profile.filesystem_config:
             self.logger.error("Invalid or incomplete profile provided for image creation.")
             return False
+
+        if profile.filesystem_type != "FAT12":
+            self.logger.error(f"Formatting with filesystem type '{profile.filesystem_type}' is not supported for image creation.")
+            return False
+
         if volume_label:
             profile.filesystem_config.volume_label = volume_label.ljust(11)[:11]
         elif not profile.filesystem_config.volume_label or not profile.filesystem_config.volume_label.strip():
             profile.filesystem_config.volume_label = "NO NAME".ljust(11)
+
         try:
             if disk_type == "IMG":
                 total_bytes = profile.physical_format.total_bytes
@@ -586,11 +619,12 @@ class DiskController:
                 self.logger.info(f"Setting format for new raw image using profile: {profile.name}")
                 self.set_format(profile)
                 self.logger.info(f"Formatting new raw image with volume label: '{profile.filesystem_config.volume_label.strip()}'")
-                success = self.format_disk(profile.name, profile.filesystem_config.volume_label)
-                if not success:
-                    self.logger.error(f"Formatting step failed for new raw image '{file_path}' with profile '{profile.name}'")
-                    self.close_disk()
-                    return False
+                filesystem = FATFilesystem(self.disk)
+                filesystem.format_fs(profile)
+                self.filesystem = filesystem
+                self.physical_format = self.disk.physical_format
+                self.boot_sector = self.filesystem.boot_sector
+
                 self.flush()
                 self.logger.info(f"Successfully created and formatted raw image '{file_path}'")
                 return True
@@ -717,7 +751,8 @@ class DiskController:
                 self.set_format(profile)
                 self.filesystem = create_filesystem(self.disk)
                 if self.filesystem:
-                    self._adjust_geometry_after_filesystem()
+                    if isinstance(self.filesystem, FATFilesystem):
+                        self._adjust_geometry_after_filesystem()
                     self.logger.debug(f"Adjusted geometry after filesystem: {self.disk.physical_format}")
                     return profile
             except Exception:
@@ -729,7 +764,7 @@ class DiskController:
         temp_profile = FormatProfile(
             name="temp_detect",
             description="Temporary for detection",
-            filesystem_type="FAT12",
+            filesystem_type="FAT12", # Assuming FAT12 for temp
             physical_format=temp_geometry
         )
         self.set_format(temp_profile)
@@ -793,6 +828,7 @@ class DiskController:
         fallback_profile = FormatProfile(
             name="fallback_detected",
             description="Fallback based on detection",
+            filesystem_type="FAT12", # Defaulting to FAT12
             physical_format=fallback_geometry
         )
         self.set_format(fallback_profile)
@@ -800,10 +836,31 @@ class DiskController:
 
     def _detect_image_file_format(self, file_path: str) -> bool:
         format_name, boot_data = self.detect_format()
+        if not boot_data or not isinstance(boot_data, FATVolumeInfo): # Ensure it's FATVolumeInfo for now
+            self.logger.error("Could not detect a valid FAT boot sector for image file.")
+            return False
+
         self.logger.info(f"BPB: bytes_per_sector={boot_data.bytes_per_sector}, sectors_per_track={boot_data.sectors_per_track}, num_heads={boot_data.num_heads}, total_sectors={boot_data.total_sectors}")
         file_size = os.path.getsize(file_path)
-        total_sectors = file_size // boot_data.bytes_per_sector
-        cylinders = total_sectors // (boot_data.num_heads * boot_data.sectors_per_track)
+        if boot_data.bytes_per_sector == 0: # Prevent division by zero
+            self.logger.error("Bytes per sector is zero in BPB, cannot calculate geometry.")
+            return False
+        total_sectors_from_file = file_size // boot_data.bytes_per_sector
+
+        # Use total_sectors_from_file if BPB total_sectors is zero or clearly wrong.
+        # This is a common issue with some images.
+        if boot_data.total_sectors == 0 or abs(boot_data.total_sectors - total_sectors_from_file) > (boot_data.num_heads * boot_data.sectors_per_track * 2): # Heuristic for significant mismatch
+            self.logger.warning(f"BPB total_sectors ({boot_data.total_sectors}) differs significantly from file size derived sectors ({total_sectors_from_file}). Using file size.")
+            effective_total_sectors = total_sectors_from_file
+        else:
+            effective_total_sectors = boot_data.total_sectors
+
+
+        if boot_data.num_heads == 0 or boot_data.sectors_per_track == 0:
+             self.logger.error("Number of heads or sectors per track is zero in BPB, cannot calculate cylinders.")
+             return False
+
+        cylinders = effective_total_sectors // (boot_data.num_heads * boot_data.sectors_per_track)
         format_info = {
             "cylinders": cylinders,
             "heads": boot_data.num_heads,
@@ -824,7 +881,8 @@ class DiskController:
             if profile:
                 self.set_format(profile)
         self.filesystem = create_filesystem(self.disk)
-        self._adjust_geometry_after_filesystem()
+        if isinstance(self.filesystem, FATFilesystem):
+            self._adjust_geometry_after_filesystem()
         logger.debug(f"Adjusted geometry after filesystem: {self.disk.physical_format}")
         return True
 
@@ -838,13 +896,58 @@ class DiskController:
             num_fats = format_info.get("num_fats", 2)
             root_entries = format_info.get("root_entries", 224 if total_sectors > 1440 else 112)
             root_dir_sectors = (root_entries * 32 + bytes_per_sector - 1) // bytes_per_sector
-            data_sectors = total_sectors - (reserved_sectors + num_fats + root_dir_sectors)
+            data_sectors = total_sectors - (reserved_sectors + (num_fats * root_dir_sectors) + root_dir_sectors) # Error in original, num_fats should be multiplied by sectors_per_fat
+
+            # Corrected calculation for sectors_per_fat and data_sectors
+            # Temp calculation for sectors_per_fat to estimate num_clusters first
+            # This is a bit of a circular dependency for FAT12, so we estimate.
+            # A more robust way would be to calculate num_clusters first.
+
+            # Calculate num_clusters first
+            temp_data_area_sectors = total_sectors - (reserved_sectors + root_dir_sectors) # Exclude FATs for now
+            num_clusters_rough = temp_data_area_sectors // sectors_per_cluster
+
+            # Estimate sectors_per_fat based on this rough cluster count for FAT12
+            # For FAT12, each entry is 1.5 bytes (12 bits).
+            # Total FAT size in bytes = (num_clusters * 1.5)
+            # Add a few bytes for media descriptor and end-of-chain markers
+            bytes_per_fat_estimate = (num_clusters_rough * 3 + 1) // 2 + 3 # Add 3 for safety (media desc, 2 EOC markers)
+            sectors_per_fat = (bytes_per_fat_estimate + bytes_per_sector - 1) // bytes_per_sector
+
+            # Recalculate data sectors and num_clusters with this sectors_per_fat
+            data_sectors = total_sectors - (reserved_sectors + (num_fats * sectors_per_fat) + root_dir_sectors)
             num_clusters = data_sectors // sectors_per_cluster
+
             if num_clusters > FAT12_MAX_CLUSTERS:
-                self.logger.error(f"Cluster count ({num_clusters}) exceeds FAT12 limit")
-                return None
-            bytes_per_fat = (num_clusters * 3 // 2) + 3
+                self.logger.error(f"Cluster count ({num_clusters}) exceeds FAT12 limit. Recalculating sectors_per_cluster.")
+                # Attempt to adjust sectors_per_cluster to fit FAT12_MAX_CLUSTERS
+                # This is a simple heuristic, might not always be optimal
+                if data_sectors > 0:
+                    sectors_per_cluster = (data_sectors + FAT12_MAX_CLUSTERS -1) // FAT12_MAX_CLUSTERS
+                    if sectors_per_cluster == 0: sectors_per_cluster = 1 # Ensure at least 1
+                    num_clusters = data_sectors // sectors_per_cluster
+                    if num_clusters > FAT12_MAX_CLUSTERS:
+                         self.logger.error(f"Still too many clusters ({num_clusters}) after adjustment. Cannot create valid FAT12 profile.")
+                         return None
+                    self.logger.info(f"Adjusted sectors_per_cluster to {sectors_per_cluster} to fit FAT12 limits.")
+                else:
+                    self.logger.error("No data sectors available, cannot create FAT12 profile.")
+                    return None
+
+
+            # Final calculation for sectors_per_fat with the new num_clusters
+            bytes_per_fat = (num_clusters * 3 + 1) // 2 + 3 # Add 3 for media_descriptor and 0xFF, 0xFF
             sectors_per_fat = (bytes_per_fat + bytes_per_sector - 1) // bytes_per_sector
+
+            # Final check on data_sectors and num_clusters
+            data_sectors = total_sectors - (reserved_sectors + (num_fats * sectors_per_fat) + root_dir_sectors)
+            num_clusters = data_sectors // sectors_per_cluster
+
+            if data_sectors <=0 or num_clusters <= 0:
+                self.logger.error(f"Calculated data sectors ({data_sectors}) or num_clusters ({num_clusters}) is non-positive. Cannot create profile.")
+                return None
+
+
             filesystem_config = FATVolumeInfo(
                 bytes_per_sector=bytes_per_sector,
                 sectors_per_cluster=sectors_per_cluster,
@@ -864,10 +967,11 @@ class DiskController:
                 name="custom",
                 description=f"Custom {physical_format.cylinders}x{physical_format.heads}x{physical_format.track_formats[0].sectors_per_track}x{physical_format.bytes_per_sector}",
                 physical_format=physical_format,
+                filesystem_type="FAT12",
                 filesystem_config=filesystem_config
             )
-            self.logger.debug(f"Created custom format profile: {profile.description}")
+            self.logger.debug(f"Created custom format profile: {profile.description} with {num_clusters} clusters.")
             return profile
         except Exception as e:
-            self.logger.error(f"Error creating custom profile: {e}")
+            self.logger.error(f"Error creating custom profile: {e}", exc_info=True)
             return None
