@@ -36,3 +36,10 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
 
     logger.warning("No valid filesystem type detected.")
     return None
+
+def get_filesystem_class_by_type(fs_type_name: str) -> Optional[Type[Filesystem]]:
+    for fs_class in FILESYSTEM_TYPES:
+        if fs_type_name == "FAT12" and fs_class.__name__ == "FATFilesystem":
+            return fs_class
+    logger.warning(f"No filesystem class found for type '{fs_type_name}'")
+    return None

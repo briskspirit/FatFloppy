@@ -148,6 +148,7 @@ def open_disk_for_rw_tests(controller: DiskController, mocks_bundle: dict, test_
     mock_fat_bs.num_heads = phys_fmt.heads
     mock_fat_bs.total_sectors = phys_fmt.total_sectors
     mock_fs.boot_sector = mock_fat_bs
+    mock_fs.get_specific_config.return_value = mock_fat_bs
     mock_fs.get_allocated_units.return_value = []
     mock_fs.get_free_space.return_value = (phys_fmt.total_bytes, phys_fmt.total_bytes)
 
@@ -216,6 +217,7 @@ def test_01_open_physical_drive_A_35_auto_detect_mocked(mocked_controller):
     mock_fat_bs.num_heads = expected_format.physical_format.heads
     mock_fat_bs.total_sectors = expected_format.physical_format.total_sectors
     mock_fs.boot_sector = mock_fat_bs
+    mock_fs.get_specific_config.return_value = mock_fat_bs
     mock_boot_sector_bytes = bsd.to_bytes()
 
     with patch('fatfloppy.core.disk.Disk.read_sector', return_value=mock_boot_sector_bytes), \

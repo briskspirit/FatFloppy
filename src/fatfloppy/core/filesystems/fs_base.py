@@ -16,7 +16,7 @@ class FileInfo:
     is_dir: bool
     datetime: datetime.datetime
     attributes: str
-    starting_cluster: int = 0 # TODO: Consider renaming to starting_allocation_unit later
+    starting_cluster: int = 0 # TODO: rename to starting_allocation_unit
 
 
 class Filesystem(ABC):
@@ -70,7 +70,7 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def format_fs(self, profile: FormatProfile) -> None:
+    def format_fs(self, profile: FormatProfile, volume_label: Optional[str] = None) -> None:
         """Format the disk according to the given profile."""
         raise NotImplementedError
 
@@ -95,4 +95,9 @@ class Filesystem(ABC):
         - 'first_data_sector': int (LBA of the first sector available for general file data)
         - (Optional) 'type_color_map': Dict[str, str] (maps type string to hex color, overrides legend colors if specific types need different mapping)
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_specific_config(self) -> Optional[Any]:
+        """Return filesystem-specific configuration details (e.g., BPB, DPB)."""
         raise NotImplementedError
