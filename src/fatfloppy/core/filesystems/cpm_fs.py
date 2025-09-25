@@ -86,12 +86,15 @@ class CPMDirectoryEntry:
 
 
 class CPMFilesystem(Filesystem):
+    VALIDITY_THRESHOLD = 50  # Score above which the filesystem is considered usable
+
     def __init__(self, disk: Disk):
         super().__init__(disk)
         self.dpb: Optional[CPMDiskParameterBlock] = None
         self._init_completed = False
         self._cached_directory: Optional[List[CPMDirectoryEntry]] = None
         self._cached_allocation_map: Optional[Set[int]] = None
+        self._cached_validity_score: Optional[int] = None
 
         if self.disk and self.disk.physical_format:
             if hasattr(self.disk.physical_format, '_associated_filesystem_config'):
@@ -117,7 +120,7 @@ class CPMFilesystem(Filesystem):
                     except ValueError as e:
                         self.logger.error(f"CP/M Initialization failed with derived DPB: {e}")
                 else:
-                    self.logger.warning("CP/M Filesystem initialized without a DPB. is_valid() will be required to confirm format.")
+                    self.logger.warning("CP/M Filesystem initialized without a DPB. get_validity_score() will be required to confirm format.")
         else:
             self.logger.warning("CP/M Filesystem initialized without disk or physical format.")
 
@@ -358,76 +361,99 @@ class CPMFilesystem(Filesystem):
 
         return entries
     
-    def is_valid(self) -> bool:
-        """Validate the CP/M filesystem by checking directory entries and DPB consistency."""
+    def get_validity_score(self) -> int:
+        if self._cached_validity_score is not None:
+            return self._cached_validity_score
+
+        score = 0
         if not self.disk or not self.disk.physical_format:
-            self.logger.debug("No disk or physical format for validation.")
-            return False
+            self.logger.debug("Score: 0 (No disk or physical format for validation.)")
+            return 0
         if not self.dpb:
-            self.logger.debug("No DPB provided for validation.")
-            return False
+            self.logger.debug("Score: 0 (No DPB provided for validation.)")
+            return 0
 
         try:
             self._initialize_parameters()
+            score += 10  # DPB and geometry are present and initialized
+
             entries = self._read_directory_entries()
             if not entries:
-                self.logger.debug("No directory entries found.")
-                return False
+                self.logger.debug("Score: 0 (No directory entries found.)")
+                return 0
+            score += 20 # Directory is readable
 
-            # Check directory size consistency
-            expected_dir_sectors = ((self.dpb.drm + 1) * 32) // CPM_SECTOR_SIZE
-            total_logical_sectors = 0
-            for track in range(self.dpb.off, self.disk.physical_format.cylinders):
-                total_logical_sectors += self._get_logical_spt(track)
-                if total_logical_sectors >= expected_dir_sectors:
-                    break
-            if total_logical_sectors < expected_dir_sectors:
-                self.logger.debug(f"Disk too small for directory: {total_logical_sectors} < {expected_dir_sectors} logical sectors.")
-                return False
-
-            # Validate directory entries
+            # Directory entry analysis
             valid_count = 0
+            bad_name_count = 0
             user_numbers = set()
-            deleted_count = 0
+            active_entries = 0
+
             for entry in entries:
-                if entry.user == 0xE5:
-                    deleted_count += 1
-                    valid_count += 1  # Count deleted as valid
-                elif 0 <= entry.user <= 15:
-                    user_numbers.add(entry.user)
-                    # Check filename and extension for printable ASCII, ignoring high bit
-                    name_valid = all(32 <= (ord(c) & 0x7F) <= 126 for c in entry.name + entry.ext)
-                    # Exclude if name is all spaces or invalid
-                    if name_valid and entry.name.strip() and entry.ext.strip():
-                        # Check block pointers
-                        blocks_valid = all(0 <= b <= self.dpb.dsm for b in entry.blks)
-                        # Check record count
-                        rc_valid = 0 <= entry.rc <= 128
-                        if blocks_valid and rc_valid:
-                            valid_count += 1
+                if entry.is_deleted() or entry.user > 15:
+                    if entry.user == 0xE5: valid_count += 1 # Deleted is a valid state
+                    continue
+                
+                active_entries += 1
+                user_numbers.add(entry.user)
+                
+                # Check for printable 7-bit ASCII characters. This is a strong indicator.
+                name_valid = all(32 <= (ord(c) & 0x7F) <= 126 for c in entry.name.strip() + entry.ext.strip())
+                
+                if not name_valid:
+                    bad_name_count += 1
+
+                if name_valid and (entry.name.strip() or entry.ext.strip()):
+                    blocks_valid = all(0 <= b <= self.dpb.dsm for b in entry.blks)
+                    rc_valid = 0 <= entry.rc <= 128
+                    if blocks_valid and rc_valid:
+                        valid_count += 1
 
             valid_ratio = valid_count / len(entries) if entries else 0
-            # Adjusted threshold
-            if valid_ratio < 0.3 or len(user_numbers) < 1:
-                self.logger.debug(f"Validation failed: valid_ratio={valid_ratio}, unique users={len(user_numbers)}")
-                return False
+            if valid_ratio > 0.3:
+                score += 30 * valid_ratio # Up to 30 points for plausible entries
+            
+            # Penalize for bad filenames in active entries
+            if active_entries > 0:
+                bad_name_ratio = bad_name_count / active_entries
+                penalty = bad_name_ratio * 60 # Heavy penalty for non-ASCII names
+                self.logger.debug(f"Applying filename validity penalty of {int(penalty)} points.")
+                score -= penalty
 
-            # Check allocation bitmap (al0, al1) for directory blocks
+
+            if len(user_numbers) >= 1:
+                score += 15 # At least one active user number found
+
+            # Allocation bitmap check
             dir_blocks = self.dpb.directory_blocks
-            al0_bits = bin(self.dpb.al0)[2:].zfill(8)
-            al1_bits = bin(self.dpb.al1)[2:].zfill(8)
-            dir_bits_set = sum(1 for b in (al0_bits + al1_bits)[:dir_blocks] if b == '1')
-            if dir_bits_set != dir_blocks:
-                self.logger.debug(f"Allocation bitmap mismatch: {dir_bits_set} != {dir_blocks} directory blocks.")
-                return False
-
-            self.logger.info("CP/M filesystem validation passed.")
-            return True
+            if dir_blocks > 16:
+                 self.logger.debug(f"Directory blocks ({dir_blocks}) exceed AL0/AL1 capacity (16). Skipping AL check.")
+            else:
+                al0_bits = bin(self.dpb.al0)[2:].zfill(8)
+                al1_bits = bin(self.dpb.al1)[2:].zfill(8)
+                dir_bits_str = (al0_bits + al1_bits)[:dir_blocks]
+                dir_bits_set = dir_bits_str.count('1')
+                
+                # Allocation bitmap is a strong indicator
+                if dir_bits_set == dir_blocks and all(b == '1' for b in dir_bits_str):
+                    score += 25
+                elif dir_bits_set == dir_blocks: # Bits are correct but not contiguous
+                    score += 15
+                else:
+                    self.logger.debug(f"Allocation bitmap mismatch: {dir_bits_set} != {dir_blocks} directory blocks.")
+            
+            final_score = max(0, int(score))
+            self.logger.info(f"CP/M validation score: {final_score}")
+            self._cached_validity_score = final_score
+            return final_score
         except Exception as e:
-            self.logger.debug(f"is_valid check failed: {e}")
-            return False
+            self.logger.debug(f"get_validity_score check failed with exception: {e}")
+            self._cached_validity_score = 0
+            return 0
 
     def list_directory(self, path: str) -> List[FileInfo]:
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+            raise IOError("Filesystem is not valid or not recognized as CP/M.")
         if path != '/':
             raise NotImplementedError("Subdirectories not supported in CP/M")
 
@@ -466,6 +492,8 @@ class CPMFilesystem(Filesystem):
         return data
 
     def read_file(self, path: str) -> bytes:
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+            raise IOError("Filesystem is not valid or not recognized as CP/M.")
         # Parse path: /Uxx:NAME.EXT or Uxx:NAME.EXT or NAME.EXT (assume U0)
         path = path.lstrip('/')
         if ':' in path:
@@ -590,7 +618,7 @@ class CPMFilesystem(Filesystem):
             current_track += 1
 
     def write_file(self, path: str, data: bytes) -> None:
-        if not self.is_valid(): raise IOError("Filesystem not valid")
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD: raise IOError("Filesystem not valid")
         self.logger.warning("CP/M write_file not fully implemented yet.")
         raise NotImplementedError("CP/M write_file not implemented.")
 
@@ -599,7 +627,7 @@ class CPMFilesystem(Filesystem):
         raise NotImplementedError("CP/M create_directory not applicable in the standard sense.")
 
     def delete(self, path: str) -> None:
-        if not self.is_valid(): raise IOError("Filesystem not valid")
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD: raise IOError("Filesystem not valid")
         self.logger.warning("CP/M delete not fully implemented yet.")
         raise NotImplementedError("CP/M delete not implemented.")
 
@@ -611,14 +639,14 @@ class CPMFilesystem(Filesystem):
             return False
 
     def get_allocated_units(self) -> List[int]:
-        if not self.is_valid() or not self.dpb: return []
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.dpb: return []
         if self._cached_allocation_map is None:
             self._load_allocation_map()
         
         return sorted(list(self._cached_allocation_map)) if self._cached_allocation_map else []
 
     def _load_allocation_map(self):
-        if not self.is_valid() or not self.dpb: return
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.dpb: return
         
         self.logger.debug("Building CP/M allocation map by scanning directory entries...")
         raw_entries = self._read_directory_raw()
@@ -641,7 +669,7 @@ class CPMFilesystem(Filesystem):
 
 
     def get_free_space(self) -> Tuple[int, int]:
-        if not self.is_valid() or not self.dpb: return 0, 0
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.dpb: return 0, 0
         
         total_alloc_blocks_on_disk = self.dpb.dsm + 1 
         total_data_bytes_possible = total_alloc_blocks_on_disk * self.dpb.block_size
@@ -820,4 +848,3 @@ class CPMFilesystem(Filesystem):
                 tf = pf.get_track_format(c, h)
                 if not getattr(tf, "sector_translation_table", None):
                     tf.sector_translation_table = self._build_physical_sector_order_for_tf(tf)
-

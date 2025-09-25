@@ -141,6 +141,8 @@ ENTRY_UNUSED = 0x00
 
 
 class FATFilesystem(Filesystem):
+    VALIDITY_THRESHOLD = 40  # Score above which the filesystem is considered usable
+
     def __init__(self, disk: Disk):
         super().__init__(disk)
         self.logger = get_logger(self.__class__.__name__)
@@ -149,21 +151,42 @@ class FATFilesystem(Filesystem):
         self._cached_allocated_clusters: Optional[List[int]] = None
         self.fat_cache: Optional[bytearray] = None
         self.fat_dirty = False
-        self._load_boot_sector()
-        if self.boot_sector and self.boot_sector.is_valid():
-            try:
+        self._cached_validity_score: Optional[int] = None
+
+        # Initialization is now deferred to get_validity_score to avoid
+        # raising errors on non-FAT disks.
+        self._try_initialize()
+
+    def _try_initialize(self):
+        """
+        Attempt to load boot sector and initialize parameters.
+        Prioritizes on-disk BPB, but falls back to profile-associated BPB if available.
+        """
+        try:
+            # First, attempt to load from the disk itself
+            self._load_boot_sector()
+
+            # If disk BPB is invalid or missing, try falling back to a profile
+            if not self.boot_sector or not self.boot_sector.is_valid():
+                if self.disk and self.disk.physical_format and hasattr(self.disk.physical_format, '_associated_filesystem_config'):
+                    fs_config = getattr(self.disk.physical_format, '_associated_filesystem_config')
+                    if isinstance(fs_config, FATVolumeInfo):
+                        self.logger.debug("Using BPB from associated format profile for initialization.")
+                        self.boot_sector = fs_config
+
+            # Now, with either a disk BPB or a profile BPB, try to initialize
+            if self.boot_sector and self.boot_sector.is_valid():
                 self._initialize_filesystem_parameters()
                 self._load_fat_cache()
                 self._init_completed = True
-                self.logger.info("FAT Filesystem initialized successfully")
-            except ValueError as e:
-                 self.logger.error(f"FAT Initialization failed: {e}")
-                 self._init_completed = False
-            except Exception as e:
-                self.logger.exception(f"Unexpected FAT Initialization error: {e}")
+                self.logger.debug("FAT Filesystem initialized successfully for subsequent operations.")
+            else:
                 self._init_completed = False
-        else:
-            self.logger.warning("FAT Boot sector not loaded or invalid.")
+        except (ValueError, IOError) as e:
+            self.logger.debug(f"FAT Initialization failed during initial check: {e}")
+            self._init_completed = False
+        except Exception as e:
+            self.logger.debug(f"Unexpected FAT Initialization error: {e}", exc_info=False)
             self._init_completed = False
 
     def _check_and_adjust_geometry(self, driver: DiskIODriver, explicit_format_set: bool) -> None:
@@ -224,20 +247,86 @@ class FATFilesystem(Filesystem):
     def get_specific_config(self) -> Optional[FATVolumeInfo]:
         return self.boot_sector
 
-    def is_valid(self) -> bool:
-        if not self._init_completed or not self.boot_sector or not self.boot_sector.is_valid():
-            return False
+    def get_validity_score(self) -> int:
+        if self._cached_validity_score is not None:
+            return self._cached_validity_score
 
-        if self.fat_cache:
-            if len(self.fat_cache) < 3: return False
-            expected_sig = bytes([self.boot_sector.media_descriptor, 0xFF, 0xFF])
-            if self.fat_cache[:3] != expected_sig:
-                self.logger.warning(f"FAT signature mismatch. Expected {expected_sig.hex()}, got {self.fat_cache[:3].hex()}")
-        return True
+        score = 0
+        try:
+            boot_sector_data = self.disk.read_sector(0, 0, 1)
+            if not boot_sector_data:
+                return 0
+
+            if len(boot_sector_data) >= 512 and boot_sector_data[510:512] == b'\x55\xAA':
+                score += 25
+            if boot_sector_data[0] in (0xEB, 0xE9):
+                score += 5
+
+            parsed_bpb = None
+            try:
+                parsed_bpb = FATVolumeInfo.from_bytes(boot_sector_data)
+            except (ValueError, struct.error):
+                parsed_bpb = None
+
+            if parsed_bpb and parsed_bpb.is_valid():
+                score += 50  # High score for a valid, self-described format
+                self.boot_sector = parsed_bpb
+                self._try_initialize()
+            else:
+                # Fallback: No valid BPB on disk. Let's see if a profile was provided.
+                profile_bpb = None
+                if self.disk and self.disk.physical_format and hasattr(self.disk.physical_format, '_associated_filesystem_config'):
+                    fs_config = getattr(self.disk.physical_format, '_associated_filesystem_config')
+                    if isinstance(fs_config, FATVolumeInfo):
+                        profile_bpb = fs_config
+
+                if profile_bpb:
+                    self.logger.debug("No valid BPB on disk, validating against profile BPB.")
+                    score += 10 # Credit for having a profile to test against
+                    self.boot_sector = profile_bpb
+                    self._try_initialize() # Re-init with the profile's BPB
+                else:
+                    self.logger.debug("No valid BPB on disk and no profile BPB available.")
+            
+            # If we have a working BPB (from disk or profile), validate FAT and Dir
+            if self._init_completed and self.boot_sector:
+                # Check FAT media descriptor
+                if self.fat_cache and len(self.fat_cache) > 0:
+                    if self.fat_cache[0] == self.boot_sector.media_descriptor:
+                        score += 40  # Very strong indicator
+                
+                # Analyze root directory for filename validity
+                try:
+                    root_data = self._read_bytes(self.root_dir_start_offset, self.root_dir_bytes)
+                    parsed_entries, valid_name_entries = 0, 0
+                    for i in range(0, len(root_data), 32):
+                        entry_data = root_data[i:i + 32]
+                        if len(entry_data) < 32 or entry_data[0] == ENTRY_UNUSED: break
+                        if entry_data[0] == ENTRY_DELETED: continue
+                        parsed_entries += 1
+                        if self._parse_single_directory_entry(entry_data):
+                            valid_name_entries += 1
+                    
+                    if parsed_entries > 0:
+                        valid_name_ratio = valid_name_entries / parsed_entries
+                        bonus = int(valid_name_ratio * 30)
+                        score += bonus
+                        self.logger.debug(f"Directory name score bonus: {bonus}")
+                except Exception as dir_e:
+                    self.logger.debug(f"Could not analyze root directory for scoring: {dir_e}")
+
+        except Exception as e:
+            self.logger.debug(f"Could not read boot sector for scoring: {e}")
+            return 0
+        
+        final_score = min(score, 100)
+        self.logger.info(f"FAT validation score: {final_score}")
+        self._cached_validity_score = final_score
+        return final_score
 
     def list_directory(self, path: str = "/") -> List[FileInfo]:
-        if not self.is_valid():
-            return []
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+            raise IOError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Listing directory: {path}")
         if path == "/":
@@ -255,8 +344,8 @@ class FATFilesystem(Filesystem):
         ]
 
     def read_file(self, path: str) -> bytes:
-        if not self.is_valid():
-            raise ValueError("Invalid filesystem")
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+            raise IOError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Reading file: {path}")
         file_entry_info = self._find_path(path)
@@ -274,8 +363,8 @@ class FATFilesystem(Filesystem):
         return file_data[:file_entry_info.size]
 
     def write_file(self, path: str, data: bytes) -> None:
-        if not self.is_valid():
-            raise ValueError("Invalid filesystem")
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+            raise IOError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Writing file: {path}, size: {len(data)} bytes")
         parent_path, file_name = self._split_path(path)
@@ -317,8 +406,8 @@ class FATFilesystem(Filesystem):
         self.disk.flush()
 
     def create_directory(self, path: str) -> None:
-        if not self.is_valid():
-            raise ValueError("Invalid filesystem")
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+            raise IOError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Creating directory: {path}")
         parent_path, dir_name = self._split_path(path)
@@ -391,8 +480,8 @@ class FATFilesystem(Filesystem):
         self.logger.info(f"Successfully created directory '{path}'")
 
     def delete(self, path: str) -> None:
-        if not self.is_valid():
-            raise ValueError("Invalid filesystem")
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+            raise IOError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         if path == "/":
             raise ValueError("Cannot delete root directory")
@@ -452,7 +541,7 @@ class FATFilesystem(Filesystem):
             return False
 
     def get_allocated_units(self) -> List[int]:
-        if not self.is_valid() or self.fat_cache is None:
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD or self.fat_cache is None:
             self.logger.warning("Cannot get allocated units: Filesystem invalid or FAT cache not loaded.")
             return []
         if self._cached_allocated_clusters is not None and not self.fat_dirty:
@@ -466,7 +555,7 @@ class FATFilesystem(Filesystem):
         return allocated_clusters
 
     def get_free_space(self) -> Tuple[int, int]:
-        if not self.is_valid():
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
             return 0, 0
         total_data_bytes = self.num_clusters * self.allocation_unit_size
         allocated_count = len(self.get_allocated_units())
@@ -528,7 +617,7 @@ class FATFilesystem(Filesystem):
         self._initialize_filesystem_parameters()
 
     def get_display_info(self) -> Dict[str, str]:
-        if not self.is_valid() or not self.boot_sector:
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.boot_sector:
             return {"Error": "FAT filesystem not valid or BPB missing"}
 
         bs = self.boot_sector
@@ -553,7 +642,7 @@ class FATFilesystem(Filesystem):
         return info
 
     def get_disk_map_layout(self) -> Dict[str, Any]:
-        if not self.is_valid() or not self.boot_sector: return {}
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.boot_sector: return {}
         bs = self.boot_sector
         reserved = bs.reserved_sectors
         fat_size_total = bs.sectors_per_fat * bs.num_fats

@@ -16,7 +16,7 @@ class FileInfo:
     is_dir: bool
     datetime: datetime.datetime
     attributes: str
-    starting_cluster: int = 0  # TODO: rename to starting_allocation_unit
+    starting_cluster: int = 0  # Represents the starting allocation unit (cluster, block, etc.)
     extra_data: Optional[Any] = None
 
 
@@ -26,8 +26,12 @@ class Filesystem(ABC):
         self.disk = disk
 
     @abstractmethod
-    def is_valid(self) -> bool:
-        """Check if the filesystem structure is valid on the disk."""
+    def get_validity_score(self) -> int:
+        """
+        Check the filesystem structure and return a confidence score (0-100).
+        0: Not this filesystem.
+        100: A perfect match.
+        """
         raise NotImplementedError
 
     @abstractmethod
