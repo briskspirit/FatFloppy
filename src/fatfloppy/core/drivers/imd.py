@@ -155,7 +155,7 @@ class IMDImageDriver(DiskIODriver):
             raise ValueError("No physical format set")
 
         track_info = self.tracks.get((cylinder, head))
-        target_size = track_info.get_sector_size(sector) if track_info else self.physical_format.bytes_per_sector
+        target_size = track_info.get_sector_size(sector) if track_info else self.physical_format.get_bytes_per_sector(cylinder, head)
 
         if len(data) != target_size:
             raise ValueError(f"Data size mismatch: {len(data)} vs {target_size}")
@@ -186,7 +186,7 @@ class IMDImageDriver(DiskIODriver):
                     logger.error(f"Unsupported format for C:{cyl} H:{head}")
                     continue
 
-                size_code = track_info.sector_size_code if track_info else next((c for c, s in IMD_SECTOR_SIZE_MAP.items() if s == self.physical_format.bytes_per_sector), -1)
+                size_code = track_info.sector_size_code if track_info else next((c for c, s in IMD_SECTOR_SIZE_MAP.items() if s == self.physical_format.get_bytes_per_sector(cyl, head)), -1)
                 if size_code == -1:
                     logger.error(f"Unsupported sector size for C:{cyl} H:{head}")
                     continue
@@ -205,7 +205,7 @@ class IMDImageDriver(DiskIODriver):
 
                 for sector in sector_map:
                     sector_key = (cyl, head, sector)
-                    sector_data = self.modified_sector_data.get(sector_key, self._read_original_sector(cyl, head, sector) if self.file_loaded else bytes([self.last_format_fill_byte or 0xE5] * self.physical_format.bytes_per_sector))
+                    sector_data = self.modified_sector_data.get(sector_key, self._read_original_sector(cyl, head, sector) if self.file_loaded else bytes([self.last_format_fill_byte or 0xE5] * self.physical_format.get_bytes_per_sector(cyl, head)))
                     target_size = rebuilt_info.get_sector_size(sector)
 
                     if len(sector_data) != target_size or all(b == sector_data[0] for b in sector_data):
@@ -264,7 +264,7 @@ class IMDImageDriver(DiskIODriver):
             for head in range(self.physical_format.heads):
                 track_format = self.physical_format.get_track_format(cyl, head)
                 mode = next((m for m, (r, e, _) in IMD_MODE_MAP.items() if r == track_format.rate and e == track_format.encoding), -1)
-                size_code = next((c for c, s in IMD_SECTOR_SIZE_MAP.items() if s == self.physical_format.bytes_per_sector), -1)
+                size_code = next((c for c, s in IMD_SECTOR_SIZE_MAP.items() if s == track_format.bytes_per_sector), -1)
 
                 if mode == -1 or size_code == -1:
                     logger.error(f"Unsupported format for C:{cyl} H:{head}")
@@ -277,6 +277,29 @@ class IMDImageDriver(DiskIODriver):
                     self.image_data.extend([IMD_SECTOR_COMPRESSED, fill_byte])
 
         logger.info(f"Formatted IMD in memory, size: {len(self.image_data)} bytes")
+
+    def _add_track_format(self, track_formats: List[TrackFormat], start: int, end: int, rate: int, encoding: str, spt: int, bps: int, mode: int, max_head_idx: int):
+        interleave = 6 if encoding == "FM" else 9
+        gap3_bytes = 26 if encoding == "FM" else 54
+        tf = TrackFormat(
+            track_start=start,
+            track_end=end,
+            head_start=0,
+            head_end=max_head_idx,
+            sectors_per_track=spt,
+            encoding=encoding,
+            rate=rate,
+            interleave=interleave,
+            bytes_per_sector=bps,
+            id_start=1,
+            iam_present=True,
+            gap1_bytes=None,
+            gap2_bytes=None,
+            gap3_bytes=gap3_bytes,
+            cskew=None,
+            hskew=None
+        )
+        track_formats.append(tf)
 
     def _load_and_parse_imd_file(self):
         logger.info(f"Loading IMD file: {self.file_path}")
@@ -395,24 +418,68 @@ class IMDImageDriver(DiskIODriver):
             logger.warning("No tracks to derive format from")
             return
 
-        ref_track_info = self.tracks.get((0, 0)) or self.tracks[min(self.tracks.keys())]
-        rate_kbps, encoding, _ = IMD_MODE_MAP.get(ref_track_info.mode, (500, "MFM", ""))
-        ref_spt = ref_track_info.num_sectors
-        ref_sector_size = ref_track_info.get_sector_size(ref_track_info.sector_num_map[0])
+        track_formats = []
+        current_start = 0
+        prev_encoding = None
+        prev_rate = None
+        prev_spt = None
+        prev_bps = None
+        prev_mode = None
 
+        for cyl in range(max_cyl_idx + 1):
+            key = (cyl, 0)  # Assuming head=0 for properties
+            if key not in self.tracks:
+                if prev_encoding is not None:
+                    self._add_track_format(track_formats, current_start, cyl - 1, prev_rate, prev_encoding, prev_spt, prev_bps, prev_mode, max_head_idx)
+                current_start = cyl + 1
+                prev_encoding = None
+                continue
+
+            ti = self.tracks[key]
+            rate, encoding, _ = IMD_MODE_MAP.get(ti.mode, (250, "FM", "SD"))
+            spt = ti.num_sectors
+            if ti.sector_size_code == 0xFF:
+                # Variable sizes; use size of first sector for grouping
+                bps = ti.get_sector_size(ti.sector_num_map[0])
+            else:
+                bps = ti._get_base_sector_size()
+
+            if (encoding != prev_encoding or rate != prev_rate or spt != prev_spt or bps != prev_bps or ti.mode != prev_mode) and prev_encoding is not None:
+                self._add_track_format(track_formats, current_start, cyl - 1, prev_rate, prev_encoding, prev_spt, prev_bps, prev_mode, max_head_idx)
+                current_start = cyl
+
+            prev_encoding = encoding
+            prev_rate = rate
+            prev_spt = spt
+            prev_bps = bps
+            prev_mode = ti.mode
+
+        if prev_encoding is not None:
+            self._add_track_format(track_formats, current_start, max_cyl_idx, prev_rate, prev_encoding, prev_spt, prev_bps, prev_mode, max_head_idx)
+
+        # Derive RPM
+        ref_ti = self.tracks.get((0, 0)) or self.tracks[min(self.tracks.keys())]
+        ref_rate, ref_encoding, _ = IMD_MODE_MAP.get(ref_ti.mode, (500, "MFM", ""))
+        ref_spt = ref_ti.num_sectors
         rpm = 300
-        if rate_kbps == 500 and encoding == "MFM":
+        if ref_rate == 500 and ref_encoding == "MFM":
             rpm = 360 if ref_spt == 15 else 300
-        elif encoding == "FM":
+        elif ref_encoding == "FM":
             rpm = 360
 
-        try:
-            track_format = TrackFormat(0, max_cyl_idx, 0, max_head_idx, ref_spt, encoding, rate_kbps, 84, 1)
-            self.physical_format = PhysicalFormat(max_cyl_idx + 1, max_head_idx + 1, rpm, False, ref_sector_size, [track_format])
-            logger.info(f"Derived format: Cyl={max_cyl_idx + 1}, Heads={max_head_idx + 1}, SPT={ref_spt}, BPS={ref_sector_size}")
-        except Exception as e:
-            logger.error(f"Failed to create PhysicalFormat: {e}")
-            self.physical_format = None
+        # Disk-wide BPS (use 128 for variable or mixed)
+        all_bps = {tf.bytes_per_sector for tf in track_formats}
+        disk_bps = list(all_bps)[0] if len(all_bps) == 1 else 128
+
+        self.physical_format = PhysicalFormat(
+            cylinders=max_cyl_idx + 1,
+            heads=max_head_idx + 1,
+            rpm=rpm,
+            heads_inverted=False,
+            bytes_per_sector=disk_bps,
+            track_formats=track_formats
+        )
+        logger.info(f"Derived format: Cyl={max_cyl_idx + 1}, Heads={max_head_idx + 1}, RPM={rpm}, Variable BPS={len(all_bps) > 1}")
 
     def _read_original_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         track_info = self.tracks.get((cylinder, head))

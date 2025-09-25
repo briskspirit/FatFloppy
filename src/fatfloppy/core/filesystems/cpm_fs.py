@@ -100,7 +100,7 @@ class CPMFilesystem(Filesystem):
                     self.dpb = fs_config
                     self.logger.info("Initialized DPB from disk's physical_format associated config.")
 
-            if self.dpb: 
+            if self.dpb:
                 try:
                     self._initialize_parameters()
                     self._init_completed = True
@@ -108,7 +108,16 @@ class CPMFilesystem(Filesystem):
                 except ValueError as e:
                     self.logger.error(f"CP/M Initialization failed with provided DPB: {e}")
             else:
-                self.logger.warning("CP/M Filesystem initialized without a DPB. is_valid() will be required to confirm format.")
+                # Try to derive DPB if not provided
+                if self._try_derive_dpb():
+                    try:
+                        self._initialize_parameters()
+                        self._init_completed = True
+                        self.logger.info("CP/M Filesystem initialized with derived DPB based on physical format.")
+                    except ValueError as e:
+                        self.logger.error(f"CP/M Initialization failed with derived DPB: {e}")
+                else:
+                    self.logger.warning("CP/M Filesystem initialized without a DPB. is_valid() will be required to confirm format.")
         else:
             self.logger.warning("CP/M Filesystem initialized without disk or physical format.")
 
@@ -497,6 +506,30 @@ class CPMFilesystem(Filesystem):
             data += used_data
         return data
 
+    def _try_derive_dpb(self) -> bool:
+        pf = self.disk.physical_format
+        if pf.cylinders != 77 or pf.heads != 1 or pf.rpm != 360:
+            return False
+        tfs = pf.track_formats
+        if len(tfs) == 1:
+            tf = tfs[0]
+            if tf.encoding == "FM" and tf.rate in (250, 300, 500) and tf.sectors_per_track == 26 and tf.bytes_per_sector == 128:
+                self.dpb = CPMDiskParameterBlock(
+                    spt=26, bsh=3, blm=7, exm=0, dsm=242, drm=63, al0=0xC0, al1=0x00, cks=0, off=2
+                )
+                return True
+        elif len(tfs) == 2:
+            tf0 = tfs[0]
+            tf1 = tfs[1]
+            if (tf0.track_start == 0 and tf0.track_end == 0 and tf0.encoding == "FM" and tf0.rate in (250, 300, 500) and
+                tf0.sectors_per_track == 26 and tf0.bytes_per_sector == 128 and
+                tf1.track_start == 1 and tf1.track_end == 76 and tf1.encoding == "MFM" and tf1.rate == 500 and
+                tf1.sectors_per_track == 26 and tf1.bytes_per_sector == 256):
+                self.dpb = CPMDiskParameterBlock(
+                    spt=52, bsh=4, blm=15, exm=1, dsm=242, drm=63, al0=0xC0, al1=0x00, cks=0, off=2
+                )
+                return True
+        return False
 
     def _parse_cpm_path(self, path: str) -> Tuple[int, str]:
         path_to_parse = path.upper()
