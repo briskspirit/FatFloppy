@@ -52,7 +52,7 @@ def fs_setup(tmp_path):
 
 # --- Helper to read FAT entry (simplistic for testing) ---
 def _read_test_fat_entry(fs: FATFilesystem, cluster: int):
-     if not fs.is_valid(): return None
+     if fs.get_validity_score() < fs.VALIDITY_THRESHOLD: return None
      # Use fat_start_offset from the fs instance
      fat_offset = fs.fat_start_offset + int(cluster * 1.5)
      try:
@@ -77,7 +77,7 @@ def _read_test_fat_entry(fs: FATFilesystem, cluster: int):
 
 # --- Helper to check FAT mirroring ---
 def _check_fat_mirror(fs: FATFilesystem):
-    if not fs.is_valid() or fs.boot_sector.num_fats < 2:
+    if fs.get_validity_score() < fs.VALIDITY_THRESHOLD or fs.boot_sector.num_fats < 2:
         print("DEBUG: Skipping FAT mirror check (FS invalid or <2 FATs)")
         return True # No second FAT to check
 
@@ -99,7 +99,7 @@ def _check_fat_mirror(fs: FATFilesystem):
 
 def test_01_initialization_valid(fs_setup):
     fs, _ = fs_setup
-    assert fs.is_valid()
+    assert fs.get_validity_score() >= fs.VALIDITY_THRESHOLD
     assert fs.allocation_unit_size > 0
     assert fs.num_clusters > 0
     # Check specific 1.44MB params
@@ -436,7 +436,7 @@ def test_16_read_file_corrupted_fat_chain_loop(fs_setup):
     # --- Reload filesystem to simulate fresh read ---
     fs.fat_cache = None # Clear cache of the original fs object
     fs_reloaded = FATFilesystem(disk) # Re-initialize from the disk (image file)
-    assert fs_reloaded.is_valid(), "Reloaded filesystem should be valid despite corruption"
+    assert fs_reloaded.get_validity_score() >= fs.VALIDITY_THRESHOLD, "Reloaded filesystem should be valid despite corruption"
 
     # --- Attempt to read the file with the loop ---
     try:
@@ -478,7 +478,7 @@ def test_17_read_file_corrupted_fat_chain_free_sector(fs_setup):
     print("DEBUG: Re-initializing FS object after corruption")
     fs.fat_cache = None
     fs_reloaded = FATFilesystem(disk)
-    assert fs_reloaded.is_valid(), "Filesystem invalid after FAT corruption?"
+    assert fs_reloaded.get_validity_score() >= fs.VALIDITY_THRESHOLD, "Filesystem invalid after FAT corruption?"
     fs_reloaded.fat_cache = None # Ensure cache is clear for reloaded instance
     fs_reloaded._cached_allocated_clusters = None
 
@@ -556,7 +556,7 @@ def test_21_init_with_different_geometry_720k(fs_setup):
     # Re-init FS using the *same disk object*
     # The disk still wraps the original 1.44MB image file data
     fs_reinit = FATFilesystem(disk)
-    assert fs_reinit.is_valid()
+    assert fs_reinit.get_validity_score() >= fs.VALIDITY_THRESHOLD
 
     # FATFilesystem initialization reads the boot sector from the underlying image.
     # It should use the BPB from the *image data*, not the geometry set on the Disk object.

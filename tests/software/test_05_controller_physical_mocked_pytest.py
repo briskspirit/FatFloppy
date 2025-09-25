@@ -138,7 +138,7 @@ def open_disk_for_rw_tests(controller: DiskController, mocks_bundle: dict, test_
     }
 
     mock_fs = MagicMock(spec=FATFilesystem)
-    mock_fs.is_valid.return_value = True
+    mock_fs.get_validity_score.return_value = 100
     mock_fat_bs = MagicMock(spec=FATVolumeInfo)
     bsd = test_format.filesystem_config or FATVolumeInfo()
     for attr, value in bsd.__dict__.items():
@@ -207,7 +207,7 @@ def test_01_open_physical_drive_A_35_auto_detect_mocked(mocked_controller):
     mock_read_with_retry.side_effect = mock_read_retry_auto_detect
 
     mock_fs = MagicMock(spec=FATFilesystem)
-    mock_fs.is_valid.return_value = True
+    mock_fs.get_validity_score.return_value = 100
     bsd = expected_format.filesystem_config
     mock_fat_bs = MagicMock(spec=FATVolumeInfo)
     for attr, value in bsd.__dict__.items():
@@ -261,7 +261,7 @@ def test_02_open_physical_with_explicit_format_mocked(mocked_controller):
     }
 
     mock_fs = MagicMock(spec=FATFilesystem)
-    mock_fs.is_valid.return_value = True
+    mock_fs.get_validity_score.return_value = 100
     mock_fat_bs = MagicMock(spec=FATVolumeInfo)
     bsd = expected_format.filesystem_config
     for attr, value in bsd.__dict__.items():

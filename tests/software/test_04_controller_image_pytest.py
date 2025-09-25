@@ -32,7 +32,7 @@ def populated_controller(tmp_path):
     assert controller.disk is not None
     assert controller.filesystem is not None
     assert isinstance(controller.filesystem, FATFilesystem)
-    assert controller.filesystem.is_valid()
+    assert controller.filesystem.get_validity_score() >= controller.filesystem.VALIDITY_THRESHOLD
     yield controller
     print(f"[Fixture Teardown] Closing populated disk image: {test_img_path}")
     controller.close_disk()
@@ -51,7 +51,7 @@ def empty_controller(tmp_path):
     assert controller.disk is not None
     assert controller.filesystem is not None
     assert isinstance(controller.filesystem, FATFilesystem)
-    assert controller.filesystem.is_valid()
+    assert controller.filesystem.get_validity_score() >= controller.filesystem.VALIDITY_THRESHOLD
     yield controller, test_img_path
     print(f"[Fixture Teardown] Closing empty disk image: {test_img_path}")
     controller.close_disk()

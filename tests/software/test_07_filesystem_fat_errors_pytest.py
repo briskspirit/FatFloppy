@@ -270,7 +270,7 @@ def mock_fs_setup(request):
     fs = FATFilesystem(mock_disk)
 
     # Check if initialization worked (it should now)
-    if not fs.is_valid():
+    if fs.get_validity_score() < fs.VALIDITY_THRESHOLD:
          pytest.fail("FATFilesystem failed to initialize in mock_fs_setup fixture after fixing read_sector mock.")
 
     # Store the mutable mock state for tests to access/modify if needed (use with caution)
@@ -574,4 +574,4 @@ def test_19_fs_parse_corrupt_entry(mock_fs_setup):
     assert parsed_vol.attributes == "VOL"
     assert parsed_vol.is_dir is False # Volume ID is not a directory
     assert parsed_vol.size == 0
-    assert parsed_vol.datetime == datetime.datetime.min # Should ignore file datetime for VOL
+    assert parsed_vol.datetime == datetime.datetime.min # Should ignore file datetime for VOL```
