@@ -16,7 +16,8 @@ class FileInfo:
     is_dir: bool
     datetime: datetime.datetime
     attributes: str
-    starting_cluster: int = 0 # TODO: rename to starting_allocation_unit
+    starting_cluster: int = 0  # TODO: rename to starting_allocation_unit
+    extra_data: Optional[Any] = None
 
 
 class Filesystem(ABC):

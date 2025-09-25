@@ -3,14 +3,16 @@ from typing import Optional, List, Type
 from .disk import Disk
 from .filesystems.fs_base import Filesystem
 from .filesystems.fat12fs import FATFilesystem
+from .filesystems.cpm_fs import CPMFilesystem # Add this import
 from .utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 FILESYSTEM_TYPES: List[Type[Filesystem]] = [
     FATFilesystem,
+    CPMFilesystem, # Add CPMFilesystem here
     # CBMFilesystem,
-    # CPMFilesystem,
+    # CPMFilesystem, # Original commented out, assuming it's a typo
 ]
 
 def create_filesystem(disk: Disk) -> Optional[Filesystem]:
@@ -40,6 +42,8 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
 def get_filesystem_class_by_type(fs_type_name: str) -> Optional[Type[Filesystem]]:
     for fs_class in FILESYSTEM_TYPES:
         if fs_type_name == "FAT12" and fs_class.__name__ == "FATFilesystem":
+            return fs_class
+        elif fs_type_name == "CPM" and fs_class.__name__ == "CPMFilesystem": # Add this condition
             return fs_class
     logger.warning(f"No filesystem class found for type '{fs_type_name}'")
     return None

@@ -41,22 +41,31 @@ class DiskMapView:
             points.append(QPointF(x, y))
         return points
 
-    def get_sector_color(self, lba: int,
+    def get_sector_color(self, lba: int, cylinder: int, head: int, sector: int,
                          layout_info: Optional[Dict[str, Any]],
-                         busy_units: List[int]) -> str:
+                         use_lba: bool) -> str:
         """Determine the color hex string for a sector."""
         default_color_hex = "#BEBEBE"; error_color_hex = "#8B0000"; unknown_type_color_hex = "#008B8B"
         if not layout_info: return default_color_hex
-        get_sector_type_func: Optional[Callable[[int], str]] = layout_info.get('get_sector_type')
+        
         type_color_map: Dict[str, str] = layout_info.get('type_color_map', {})
-        if not get_sector_type_func: return unknown_type_color_hex
+        sector_type = "unknown"
+
         try:
-            sector_type = get_sector_type_func(lba)
+            if use_lba:
+                get_sector_type_func: Optional[Callable[[int], str]] = layout_info.get('get_sector_type')
+                if get_sector_type_func:
+                    sector_type = get_sector_type_func(lba)
+            else: # Use CHS-based lookup
+                get_sector_type_chs_func: Optional[Callable[[int, int, int], str]] = layout_info.get('get_sector_type_chs')
+                if get_sector_type_chs_func:
+                    sector_type = get_sector_type_chs_func(cylinder, head, sector)
+            
             return type_color_map.get(sector_type, default_color_hex)
         except Exception as e:
             logger = getattr(getattr(self.parent, 'controller', None), 'logger', None)
-            if logger: logger.error(f"Error in get_sector_color for LBA {lba}: {e}", exc_info=True)
-            else: print(f"Error in get_sector_color for LBA {lba}: {e}")
+            if logger: logger.error(f"Error getting sector color for LBA {lba} / CHS {cylinder},{head},{sector}: {e}", exc_info=False)
+            else: print(f"Error getting sector color for LBA {lba} / CHS {cylinder},{head},{sector}: {e}")
             return error_color_hex
 
     def draw_disk_map(self, controller, current_head, busy_units,
@@ -85,6 +94,8 @@ class DiskMapView:
             layout_info = filesystem.get_disk_map_layout()
         else:
             layout_info = { 'legend': [("Unknown/Data", "#BEBEBE")], 'get_sector_type': lambda lba: "unknown", 'allocation_unit_size_sectors': 1, 'first_data_sector': 0, 'type_color_map': {"unknown": "#BEBEBE"} }
+
+        use_lba_for_color = not geometry.has_variable_bps
 
         x0 = view_width / 2; y0 = view_height / 2
         r_min = min(view_width, view_height) * 0.1
@@ -124,9 +135,13 @@ class DiskMapView:
             r_inner = r_max - (r_max - r_min) * (c + 1) / num_cylinders
 
             for i in range(sectors_per_track):
+                lba = -1
+                sector_num = i + 1
                 try:
-                    lba = geometry.chs_to_lba(c, current_head, i + 1)
-                    color_hex = self.get_sector_color(lba, layout_info, busy_units)
+                    if use_lba_for_color:
+                        lba = geometry.chs_to_lba(c, current_head, sector_num)
+                    
+                    color_hex = self.get_sector_color(lba, c, current_head, sector_num, layout_info, use_lba_for_color)
                     color = QColor(color_hex)
                     theta_start = math.radians(i * angle_per_sector_deg)
                     theta_end = math.radians((i + 1) * angle_per_sector_deg)
@@ -139,10 +154,10 @@ class DiskMapView:
                     self.scene.addItem(polygon)
                 except ValueError as e:
                      logger = getattr(getattr(self.parent, 'controller', None), 'logger', None)
-                     if logger: logger.error(f"Error getting LBA for C:{c} H:{current_head} S:{i+1}: {e}")
+                     if logger: logger.error(f"Error getting LBA for C:{c} H:{current_head} S:{sector_num}: {e}")
                 except Exception as e:
                     logger = getattr(getattr(self.parent, 'controller', None), 'logger', None)
-                    if logger: logger.error(f"Error drawing sector C:{c} H:{current_head} S:{i+1}: {e}", exc_info=True)
+                    if logger: logger.error(f"Error drawing sector C:{c} H:{current_head} S:{sector_num}: {e}", exc_info=True)
 
 
             for sector in range(sectors_per_track):

@@ -2,6 +2,7 @@
 from .physical_format import PhysicalFormat, TrackFormat
 from .format_profile import FormatProfile
 from .filesystems.fat12fs import FATVolumeInfo
+from .filesystems.cpm_fs import CPMDiskParameterBlock
 
 # TODO: Adjust gap3_bytes based on doc: https://www.isdaman.com/alsos/hardware/fdc/floppy.htm
 # TODO: Verify against https://retrocmp.de/fdd/general/floppy-formats.htm
@@ -30,7 +31,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=84,
+gap3_bytes=84,
                     cskew=None,
                     hskew=None,
                 )
@@ -62,7 +63,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=84,
+gap3_bytes=84,
                     cskew=None,
                     hskew=None,
                 )
@@ -94,7 +95,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=84,
+gap3_bytes=84,
                     cskew=None,
                     hskew=None,
                 )
@@ -126,7 +127,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=84,
+gap3_bytes=84,
                     cskew=None,
                     hskew=None,
                 )
@@ -158,7 +159,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=84,
+gap3_bytes=84,
                     cskew=None,
                     hskew=None,
                 )
@@ -190,7 +191,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=84,
+gap3_bytes=84,
                     cskew=None,
                     hskew=None,
                 )
@@ -222,7 +223,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=84,
+gap3_bytes=84,
                     cskew=None,
                     hskew=None,
                 )
@@ -254,7 +255,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=84,
+gap3_bytes=84,
                     cskew=None,
                     hskew=None,
                 )
@@ -286,7 +287,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=84,
+gap3_bytes=84,
                     cskew=None,
                     hskew=None,
                 )
@@ -318,7 +319,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=30,
+gap3_bytes=30,
                     cskew=None,
                     hskew=None,
                 )
@@ -350,7 +351,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=84,
+gap3_bytes=84,
                     cskew=None,
                     hskew=None,
                 )
@@ -382,7 +383,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=41,
+gap3_bytes=41,
                     cskew=None,
                     hskew=None,
                 )
@@ -414,7 +415,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=12,
+gap3_bytes=12,
                     cskew=None,
                     hskew=None,
                 )
@@ -446,7 +447,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=12,
+gap3_bytes=12,
                     cskew=None,
                     hskew=None,
                 )
@@ -478,7 +479,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=26,
+gap3_bytes=26,
                     cskew=None,
                     hskew=None,
                 )
@@ -510,7 +511,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=26,
+gap3_bytes=26,
                     cskew=None,
                     hskew=None,
                 )
@@ -542,7 +543,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=26,
+gap3_bytes=26,
                     cskew=None,
                     hskew=None,
                 )
@@ -574,7 +575,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=26,
+gap3_bytes=26,
                     cskew=None,
                     hskew=None,
                 )
@@ -606,7 +607,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=26,
+gap3_bytes=26,
                     cskew=None,
                     hskew=None,
                 )
@@ -638,7 +639,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=54,
+gap3_bytes=54,
                     cskew=None,
                     hskew=None,
                 )
@@ -670,7 +671,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=54,
+gap3_bytes=54,
                     cskew=None,
                     hskew=None,
                 )
@@ -702,7 +703,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=54,
+gap3_bytes=54,
                     cskew=None,
                     hskew=None,
                 )
@@ -734,7 +735,7 @@ FLOPPY_FORMATS = {
                     iam_present=True,
                     gap1_bytes=None,
                     gap2_bytes=None,
-                    gap3_bytes=54,
+gap3_bytes=54,
                     cskew=None,
                     hskew=None,
                 )
@@ -742,5 +743,85 @@ FLOPPY_FORMATS = {
         ),
         filesystem_type="FAT12",
         filesystem_config=FATVolumeInfo(sectors_per_track=8, bytes_per_sector=1024, num_heads=2, total_sectors=1232, media_descriptor=0xFE, root_entries=192, sectors_per_fat=2, sectors_per_cluster=1)
+    ),
+    "cpm_8_sssd_250k": FormatProfile( # Standard IBM 3740 compatible format
+        name="cpm_8_sssd_250k",
+        description="8\" SSSD 250KB CP/M (77 tracks, 1 head, 26 sectors/track, 128 bytes/sector, 1K blocks)",
+        physical_format=PhysicalFormat(
+            cylinders=77, # Usually 0-76
+            heads=1,
+            rpm=360,
+            heads_inverted=False,
+            bytes_per_sector=128, # Physical sector size matches CP/M logical sector size
+            image_in_sector_id_order=True,
+            track_formats=[
+                TrackFormat(
+                    track_start=0,
+                    track_end=76,
+                    head_start=0,
+                    head_end=0,
+                    sectors_per_track=26, # Physical sectors per track
+                    encoding="FM", # Single Density typically FM
+                    rate=250, # Common for 8" SD
+                    interleave=6, # Common for IBM 3740 SSSD
+                    sector_translation_table=None,
+                    id_start=1,
+                    iam_present=True,
+                    gap3_bytes=26, # Typical value
+                )
+            ]
+        ),
+        filesystem_type="CPM",
+        filesystem_config=CPMDiskParameterBlock(
+            spt=26,   # Number of 128-byte logical sectors per track
+            bsh=3,    # Block shift: 2^3 = 8 => 8 * 128 = 1024 byte blocks (1K)
+            blm=7,    # Block mask: 2^BSH - 1 = 7
+            exm=0,    # Extent mask: 0 for 16KB extents (1K blocks * 16 = 16KB)
+            dsm=242,  # Max alloc block num: (250KB total - 2 tracks sys - ~6KB dir) / 1KB blocks approx.
+            drm=63,   # Directory entries max: 64 entries - 1 = 63
+            al0=0xC0, # Allocation bitmap for directory blocks (first 2 blocks for dir: 11000000)
+            al1=0x00,
+            cks=0,    # Checksum vector size: 0 (no checksumming for directory)
+            off=2     # Offset: 2 reserved tracks for system (tracks 0 and 1)
+        )
+    ),
+    "cpm_8_ssdd_imsai_mixed": FormatProfile(
+        name="cpm_8_ssdd_imsai_mixed",
+        description="8\" SSDD IMSAI Mixed Density (T0 FM, T1-76 MFM, ~500KB)",
+        physical_format=PhysicalFormat(
+            cylinders=77,
+            heads=1,
+            rpm=360,
+            heads_inverted=False,
+            bytes_per_sector=128,
+            image_in_sector_id_order=True,
+            track_formats=[
+                TrackFormat(
+                    track_start=0, track_end=0, head_start=0, head_end=0,
+                    sectors_per_track=26, bytes_per_sector=128,
+                    encoding="FM", rate=250, interleave=6,
+                    sector_translation_table=None,
+                ),
+                TrackFormat(
+                    track_start=1, track_end=76, head_start=0, head_end=0,
+                    sectors_per_track=26, bytes_per_sector=256,
+                    encoding="MFM", rate=500, interleave=9,
+                    sector_translation_table=None,
+                )
+            ]
+        ),
+        filesystem_type="CPM",
+        filesystem_config=CPMDiskParameterBlock(
+            spt=52,
+            bsh=4,
+            blm=15,
+            exm=1,
+            dsm=242,
+            drm=63,
+            al0=0xC0,
+            al1=0x00,
+            cks=0,
+            off=2
+        )
     ),
 }

@@ -52,8 +52,8 @@ class IMGImageDriver(DiskIODriver):
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         if not self.physical_format:
             raise ValueError("Physical format not set")
-        bytes_per_sector = self.physical_format.bytes_per_sector
-        offset = self._calculate_sector_offset(cylinder, head, sector, bytes_per_sector)
+        bytes_per_sector = self.physical_format.get_bytes_per_sector(cylinder, head)
+        offset = self._calculate_sector_offset(cylinder, head, sector)
         if offset + bytes_per_sector > len(self.image_data):
             raise IOError(f"Sector C:{cylinder} H:{head} S:{sector} out of bounds")
         logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector}")
@@ -62,12 +62,12 @@ class IMGImageDriver(DiskIODriver):
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
         if not self.physical_format:
             raise ValueError("Physical format not set")
-        bytes_per_sector = self.physical_format.bytes_per_sector
+        bytes_per_sector = self.physical_format.get_bytes_per_sector(cylinder, head)
         if bytes_per_sector <= 0:
             raise ValueError(f"Invalid sector size: {bytes_per_sector}")
         if len(data) != bytes_per_sector:
             raise ValueError(f"Data size mismatch: {len(data)} vs {bytes_per_sector}")
-        offset = self._calculate_sector_offset(cylinder, head, sector, bytes_per_sector)
+        offset = self._calculate_sector_offset(cylinder, head, sector)
         if offset + bytes_per_sector > len(self.image_data):
             raise IOError(f"Write out of bounds for C:{cylinder} H:{head} S:{sector}")
         self.image_data[offset:offset + bytes_per_sector] = data
@@ -96,12 +96,11 @@ class IMGImageDriver(DiskIODriver):
             logger.warning(f"Format size {self.physical_format.total_bytes} != image size {len(self.image_data)}")
         logger.info(f"Physical format set with total bytes: {self.physical_format.total_bytes}")
 
-    def _calculate_sector_offset(self, cylinder: int, head: int, sector: int, bytes_per_sector: int) -> int:
+    def _calculate_sector_offset(self, cylinder: int, head: int, sector: int) -> int:
         if not self.physical_format:
             raise ValueError("No physical format set")
         try:
-            lba = self.physical_format.chs_to_lba(cylinder, head, sector)
-            return lba * bytes_per_sector
-        except ValueError as e:
+            return self.physical_format.chs_to_byte_offset(cylinder, head, sector)
+        except (ValueError, NotImplementedError) as e:
             logger.error(f"Invalid CHS C:{cylinder} H:{head} S:{sector}: {e}")
             raise ValueError(f"Invalid sector access: {e}") from e

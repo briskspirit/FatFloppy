@@ -99,7 +99,6 @@ def test_07_write_within_bounds(driver_setup):
     driver, test_img_path, bytes_per_sector, geom = driver_setup # geom is PhysicalFormat
     test_data = b'LAST' * (bytes_per_sector // 4)
     assert len(test_data) == bytes_per_sector
-
     # Write to the last valid sector
     last_cyl, last_head = geom.cylinders - 1, geom.heads - 1
     last_sect = geom.get_sectors_per_track(last_cyl, last_head)
@@ -109,16 +108,15 @@ def test_07_write_within_bounds(driver_setup):
     driver2.set_physical_format(geom) # Use the same PhysicalFormat
     read_data = driver2.read_sector(last_cyl, last_head, last_sect)
     assert read_data == test_data
-
-    # Check exceptions raised by write_sector (which internally calls _calculate_sector_offset -> chs_to_lba -> validate_chs)
+    # Check exceptions raised by write_sector.
+    # The first check is now for a valid track format, which fails first.
     invalid_cyl = geom.cylinders
-    with pytest.raises(ValueError, match=f"Invalid sector access: Invalid CHS: {invalid_cyl}, 0, 1"):
+    with pytest.raises(ValueError, match=f"No TrackFormat for cylinder {invalid_cyl}, head 0"):
         driver.write_sector(invalid_cyl, 0, 1, test_data)
-
     invalid_head = geom.heads
-    with pytest.raises(ValueError, match=f"Invalid sector access: Invalid CHS: 0, {invalid_head}, 1"):
+    with pytest.raises(ValueError, match=f"No TrackFormat for cylinder 0, head {invalid_head}"):
         driver.write_sector(0, invalid_head, 1, test_data)
-
+    # This check is still valid as get_track_format will succeed, but validate_chs will fail.
     max_spt = geom.get_sectors_per_track(0, 0)
     invalid_sect = max_spt + 1
     with pytest.raises(ValueError, match=f"Invalid sector access: Sector {invalid_sect} out of range"):
@@ -126,17 +124,23 @@ def test_07_write_within_bounds(driver_setup):
 
 def test_08_img_write_invalid_sector_size(driver_setup):
     driver, _, _, geom = driver_setup # geom is PhysicalFormat
-    original_bps = geom.bytes_per_sector
-    # Create a temporary modified format
+    # Create a deep copy of the track formats to modify them safely
+    import copy
+    invalid_track_formats = copy.deepcopy(geom.track_formats)
+    for tf in invalid_track_formats:
+        tf.bytes_per_sector = 0
+    # Create a temporary modified format with the invalid track formats
     invalid_geom = PhysicalFormat(
         cylinders=geom.cylinders, heads=geom.heads, rpm=geom.rpm,
-        heads_inverted=geom.heads_inverted, bytes_per_sector=0, # Invalid size
-        track_formats=geom.track_formats
+        heads_inverted=geom.heads_inverted, bytes_per_sector=0, # This is now consistent
+        track_formats=invalid_track_formats
     )
     driver.set_physical_format(invalid_geom) # Apply invalid format
+    # Now, the get_bytes_per_sector call will return 0, triggering the correct error.
+    # We pass empty bytes to satisfy the data size check (len(b'') == 0)
     with pytest.raises(ValueError, match="Invalid sector size: 0"):
-        driver.write_sector(0, 0, 1, b'data')
-    # Restore original format for fixture cleanup if needed
+        driver.write_sector(0, 0, 1, b'')
+    # Restore original format for fixture cleanup
     driver.set_physical_format(geom)
 
 
