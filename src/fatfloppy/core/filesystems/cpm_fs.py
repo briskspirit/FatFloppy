@@ -366,83 +366,80 @@ class CPMFilesystem(Filesystem):
             return self._cached_validity_score
 
         score = 0
-        if not self.disk or not self.disk.physical_format:
-            self.logger.debug("Score: 0 (No disk or physical format for validation.)")
-            return 0
-        if not self.dpb:
-            self.logger.debug("Score: 0 (No DPB provided for validation.)")
+        if not self.disk or not self.disk.physical_format or not self.dpb:
+            self.logger.debug("Score: 0 (No disk, physical format, or DPB for validation.)")
             return 0
 
         try:
             self._initialize_parameters()
-            score += 10  # DPB and geometry are present and initialized
+            score += 5  # Small bonus for having a DPB to test against.
 
-            entries = self._read_directory_entries()
-            if not entries:
-                self.logger.debug("Score: 0 (No directory entries found.)")
+            # Perform a raw check on the first directory sector for plausibility
+            first_dir_sector_data = self._read_logical_sector(self.dpb.off, 0)
+
+            # Case 1: Freshly formatted disk (all 0xE5)
+            if all(b == 0xE5 for b in first_dir_sector_data):
+                score += 75  # High confidence
+                final_score = min(100, score)
+                self.logger.info(f"CP/M validation score (empty formatted): {final_score}")
+                self._cached_validity_score = final_score
+                return final_score
+
+            # Case 2: Check structure of first few entries against garbage/other filesystems
+            plausible_entries = 0
+            entries_to_check = min(len(first_dir_sector_data) // 32, 4)
+            if entries_to_check == 0:
+                self.logger.debug("Score: 0 (First directory sector is too small or unreadable)")
                 return 0
-            score += 20 # Directory is readable
 
-            # Directory entry analysis
-            valid_count = 0
-            bad_name_count = 0
-            user_numbers = set()
-            active_entries = 0
+            for i in range(entries_to_check):
+                entry_bytes = first_dir_sector_data[i*32 : (i+1)*32]
+                user_num = entry_bytes[0]
 
-            for entry in entries:
-                if entry.is_deleted() or entry.user > 15:
-                    if entry.user == 0xE5: valid_count += 1 # Deleted is a valid state
+                if user_num == 0xE5: # Deleted is plausible
+                    plausible_entries += 1
                     continue
                 
-                active_entries += 1
-                user_numbers.add(entry.user)
-                
-                # Check for printable 7-bit ASCII characters. This is a strong indicator.
-                name_valid = all(32 <= (ord(c) & 0x7F) <= 126 for c in entry.name.strip() + entry.ext.strip())
-                
-                if not name_valid:
-                    bad_name_count += 1
+                if 0 <= user_num <= 15:
+                    name_and_ext = entry_bytes[1:12]
+                    
+                    # An active entry should not have a fully zeroed-out name/ext
+                    if all(b == 0 for b in name_and_ext):
+                        continue # Not plausible
 
-                if name_valid and (entry.name.strip() or entry.ext.strip()):
-                    blocks_valid = all(0 <= b <= self.dpb.dsm for b in entry.blks)
-                    rc_valid = 0 <= entry.rc <= 128
-                    if blocks_valid and rc_valid:
-                        valid_count += 1
-
-            valid_ratio = valid_count / len(entries) if entries else 0
-            if valid_ratio > 0.3:
-                score += 30 * valid_ratio # Up to 30 points for plausible entries
+                    # All characters in name/ext must be valid 7-bit printable ASCII
+                    # when the high bit is ignored.
+                    is_valid_chars = all(0x20 <= (b & 0x7F) <= 0x7E for b in name_and_ext)
+                    if is_valid_chars:
+                        plausible_entries += 1
+                # Any other user_num is not plausible for an active/deleted entry
             
-            # Penalize for bad filenames in active entries
-            if active_entries > 0:
-                bad_name_ratio = bad_name_count / active_entries
-                penalty = bad_name_ratio * 60 # Heavy penalty for non-ASCII names
-                self.logger.debug(f"Applying filename validity penalty of {int(penalty)} points.")
-                score -= penalty
+            # This is a strong gate: if the first few entries don't look right, it's not CP/M.
+            if plausible_entries < 1: # Require at least one plausible entry
+                self.logger.debug(f"Score: 0 (Found {plausible_entries}/{entries_to_check} plausible entries on raw check)")
+                self._cached_validity_score = 0
+                return 0
 
-
-            if len(user_numbers) >= 1:
-                score += 15 # At least one active user number found
-
-            # Allocation bitmap check
-            dir_blocks = self.dpb.directory_blocks
-            if dir_blocks > 16:
-                 self.logger.debug(f"Directory blocks ({dir_blocks}) exceed AL0/AL1 capacity (16). Skipping AL check.")
-            else:
-                al0_bits = bin(self.dpb.al0)[2:].zfill(8)
-                al1_bits = bin(self.dpb.al1)[2:].zfill(8)
-                dir_bits_str = (al0_bits + al1_bits)[:dir_blocks]
-                dir_bits_set = dir_bits_str.count('1')
-                
-                # Allocation bitmap is a strong indicator
-                if dir_bits_set == dir_blocks and all(b == '1' for b in dir_bits_str):
-                    score += 25
-                elif dir_bits_set == dir_blocks: # Bits are correct but not contiguous
-                    score += 15
-                else:
-                    self.logger.debug(f"Allocation bitmap mismatch: {dir_bits_set} != {dir_blocks} directory blocks.")
+            # If raw check passes, proceed with full parsing and scoring
+            score += 40
             
-            final_score = max(0, int(score))
+            entries = self._read_directory_entries()
+            active_entries = [e for e in entries if not e.is_deleted() and 0 <= e.user <= 15]
+            if active_entries:
+                score += 20
+            
+            # Only add the DPB self-consistency bonus if we have other evidence.
+            if score > 50:
+                dir_blocks = self.dpb.directory_blocks
+                if 0 < dir_blocks <= 16:
+                    al0_bits = bin(self.dpb.al0)[2:].zfill(8)
+                    al1_bits = bin(self.dpb.al1)[2:].zfill(8)
+                    dir_bits_str = (al0_bits + al1_bits)[:dir_blocks]
+                    
+                    if dir_bits_str.count('1') == dir_blocks:
+                        score += 25
+
+            final_score = min(100, int(score))
             self.logger.info(f"CP/M validation score: {final_score}")
             self._cached_validity_score = final_score
             return final_score

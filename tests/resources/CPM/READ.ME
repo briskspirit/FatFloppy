@@ -1,0 +1,183 @@
+	Disk file explanation
+
+  This is the explanation of the files which are on this disk.
+
+  Before doing any editing or assembling on this disk, you should
+first copy the files you wish to work with on to another disk, as
+there is not enough room on this disk to work with.
+
+1. 2xBIOS24.ASM
+  This is your bios file for your operating system. This contains
+all the disk I/O, and console I/O routines.
+
+2. 2xBOOT24.ASM
+  This is the secondary bootstrap for your operating system.
+
+3. 2ZBIOS24.ASM
+  This is a special modified file of the 2xBIOS24.ASM with Z-80
+instructions. This file is smaller in size then the standard
+bios file used in your system. To assemble it, a special assembler
+called ZASM.COM is included on the disk. You must have a Z-80 cpu
+in order to use the 2ZBIOS24 in your system.
+
+4. ASM.COM
+  This is the Digital Research assembler. It does not assemble Z-80
+instructions.
+
+5. BASIC.COM
+  This is a public domain basic written by Gorden Ubanks for his
+thesis. It is an unsupported peice of software.
+
+6. COPY.ASM and COPY.COM
+  This is a disk copy routine. It will copy a disk from drive A to
+drive B.
+Commands are:
+	COPY ALL<cr>	copys entire disk
+	COPY DATA<cr>	copys data tracks only
+	COPY SYSTEM<cr>	copys system tracks only
+
+7. CPM.COM
+  This is your imiage file of your operating system. DO NOT DESTROY!!
+
+8. DDT.COM
+  This is Digital Researches Dynamic Debugger Tool as described in
+their manuals
+
+9. DEBLOCK.ASM
+  This is a special blocking/deblocking file which must be merged into
+your bios file to allow operating with sector sizes other than 128 byte.
+Instructions are in your manuals from Digital Research.
+
+10.DISKDEF.LIB
+  This file is used to automatically create disk definitions in the
+bios file. You must have Digital Researches "MAC" macro assembler to
+use it.
+
+11. DISKTEST.ASM
+  This is a disk test file. It will report hard and soft disk errors.
+this program is read only.
+
+12. DUMP.ASM and DUMP.COM
+  This is a disk dump file from Digital Research.
+To use it, type DUMP <filename.ext><cr>
+
+13. ED.COM
+  This is Digital Researches Context Editor.
+
+14. EXTRACT.COM
+  This program allows you to list out to the console (or list device
+if you type ^p), any portion of a PRN file between two (2) labels.
+Command syntax:
+EXTRACT <filename> (1st label) (2nd label)<cr>
+This program will list starting in the middle of the file to the end
+of the file by using a dummy lable for the 2nd lable name (one which
+does not appear in the file).
+
+15. FORMAT.ASM
+  This is a disk format program. It will only format in the A drive.
+Besure to remove your system disk from drive A and replace it with
+the disk you wish to format, as this program will destroy any data
+on the disk.
+
+16.GUESS.COM
+  Fun game of guessing a number that the computer knows. This program
+will run only on a Z-80 system. (oh well!).
+
+17.INV.BAS
+  Unsupported inventory program. Will run with the basic on this disk.
+
+18.LOAD.COM
+  Used to turn a HEX file into a COM file for execution by CPM.
+
+19.PIP.COM
+  Program to transfer files from disk to disk, disk to console, etc.
+as explained in your CPM manuals.
+
+20.PRINT.COM
+  Utility program for printing file name heading and page numbers on
+list device.
+Command syntax:
+PRINT <filename.ext><cr>
+
+21.RUN.COM
+  Run time package for BASIC.COM
+
+22.STAT.COM
+  Status program as explained in manuals.
+
+23. STRIP.COM
+  This program will allow you to make an ASM file from a PRN file
+in case you should loose your original ASM file. It will also allow
+you to name the ASM file to something else if you wish.
+Command syntax:
+STRIP <filename> (<new filename> or <old filename>)<cr>
+This program looks automatically for the PRN file and automatically
+creats the new file with the extenstion of ASM.
+
+24.SUBMIT.COM
+  this is a batch processor as described in the manuals.
+
+25.SYSGEN.COM
+  File used to put a new system on the first 2 tracks of a disk.
+
+26.XDIR.COM
+  Wide disk directory view program. Only works with drive A or B.
+
+27. XSUB.COM
+  This is the extended batch processor file as described in the manual.
+
+28. ZASM.COM
+  This is a unsupported Z-80 assembler. This file will run on either
+8080 or Z-80. The opcodes recognized by this assembler is included in
+your package, along with a cross reference from ZASM to ZILOG mnemonics.
+For the most part the command syntax is the same as the Digital researches
+ASM.COM file with one exception.
+Command syntax:
+ZASM <filename.ABC><cr>
+	where ABC must be provided or the assembler will not work right.
+The extension of .ABC are the options that may be used during assembly
+time.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
