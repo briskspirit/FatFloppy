@@ -69,7 +69,7 @@ def test_cpm_disk_images_read_and_verify(
 
     listed_filenames = {item['name'] for item in dir_listing}
     for fname in expected_files:
-        cpm_fname = f"U0:{fname}"
+        cpm_fname = f"{fname}"
         assert cpm_fname in listed_filenames, f"{cpm_fname} not found in directory listing"
         # Check for invalid characters (valid chars are 7-bit printable)
         assert all(32 <= ord(c) < 127 for c in fname if c not in '.'), f"Filename '{fname}' contains invalid characters"
@@ -82,7 +82,7 @@ def test_cpm_disk_images_read_and_verify(
     # 4. Extract and compare files
     for filename in expected_files:
         # Read from disk image
-        cpm_filepath = f"/U0:{filename}"
+        cpm_filepath = f"/{filename}"
         content_from_disk = controller.read_file(cpm_filepath)
         assert content_from_disk is not None, f"Failed to read {cpm_filepath} from image"
 

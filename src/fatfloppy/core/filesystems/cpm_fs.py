@@ -78,11 +78,11 @@ class CPMDirectoryEntry:
         return self.user == 0xE5
 
     def get_attributes(self) -> str:
-        attr_str_parts = []
+        attr_str_parts = [f"U{self.user}"]
         if self.attributes_raw.get('t1', 0) & 0x80: attr_str_parts.append("R") # Read-Only
         if self.attributes_raw.get('t2', 0) & 0x80: attr_str_parts.append("S") # System
         if self.attributes_raw.get('t3', 0) & 0x80: attr_str_parts.append("A") # Archive
-        return "-".join(attr_str_parts) if attr_str_parts else "-"
+        return "-".join(attr_str_parts)
 
 
 class CPMFilesystem(Filesystem):
@@ -460,17 +460,16 @@ class CPMFilesystem(Filesystem):
         file_groups = defaultdict(list)
         for entry in self._cached_directory:
             if not entry.is_deleted() and 0 <= entry.user <= 15:
-                key = (entry.user, entry.name.strip(), entry.ext.strip())
+                key = (entry.user, entry.get_filename())
                 file_groups[key].append(entry)
 
         files = []
         for key, group in file_groups.items():
-            user, name, ext = key
+            user, full_name = key
             group.sort(key=lambda e: e.ex + (e.xh << 5))  # Extent number: ex low 5 bits, xh high bits (CP/M 2.2 S2 as xh)
             total_rc = sum(e.rc for e in group)
             size = total_rc * CPM_SECTOR_SIZE
             attr = group[0].get_attributes() if group else "-"
-            full_name = f"U{user}:{name}.{ext}"
             files.append(FileInfo(name=full_name, size=size, is_dir=False, datetime=datetime.datetime(1978, 1, 1), attributes=attr, starting_cluster=0, extra_data=group))
 
         return files
