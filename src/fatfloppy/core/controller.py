@@ -585,48 +585,64 @@ class DiskController:
 
     def write_file(self, path: str, data: bytes) -> bool:
         if not self.filesystem:
+            self.logger.error("write_file called but no filesystem is active.")
             return False
         try:
             self.filesystem.write_file(path, data)
             self.logger.debug(f"Wrote file {path} with size {len(data)} bytes")
             return True
-        except Exception as e:
+        except (IOError, ValueError, NotImplementedError) as e:
             self.logger.error(f"Error writing file {path}: {e}")
-            return False
+            raise  # Re-raise the exception so the caller knows what went wrong
+        except Exception as e:
+            self.logger.exception(f"An unexpected error occurred while writing file {path}: {e}")
+            raise
 
     def create_directory(self, path: str) -> bool:
         if not self.filesystem:
+            self.logger.error("create_directory called but no filesystem is active.")
             return False
         try:
             self.filesystem.create_directory(path)
             self.logger.debug(f"Created directory {path}")
             return True
-        except Exception as e:
+        except (IOError, ValueError, NotImplementedError) as e:
             self.logger.error(f"Error creating directory {path}: {e}")
-            return False
+            raise # Re-raise the exception
+        except Exception as e:
+            self.logger.exception(f"An unexpected error occurred while creating directory {path}: {e}")
+            raise
 
     def delete_item(self, path: str) -> bool:
         if not self.filesystem:
+            self.logger.error("delete_item called but no filesystem is active.")
             return False
         try:
             self.filesystem.delete(path)
             self.logger.debug(f"Deleted item {path}")
             return True
-        except Exception as e:
+        except (IOError, ValueError, NotImplementedError, FileNotFoundError) as e:
             self.logger.error(f"Error deleting item {path}: {e}")
-            return False
+            raise # Re-raise the exception
+        except Exception as e:
+            self.logger.exception(f"An unexpected error occurred while deleting {path}: {e}")
+            raise
 
     def delete_item_recursive(self, path: str) -> bool:
         if not self.filesystem:
+            self.logger.error("delete_item_recursive called but no filesystem is active.")
             return False
         try:
             success = self.filesystem.delete_recursive(path)
             if success:
                 self.logger.debug(f"Deleted item recursively {path}")
             return success
-        except Exception as e:
+        except (IOError, ValueError, NotImplementedError, FileNotFoundError) as e:
             self.logger.error(f"Error deleting item recursively {path}: {e}")
-            return False
+            raise # Re-raise the exception
+        except Exception as e:
+            self.logger.exception(f"An unexpected error occurred while recursively deleting {path}: {e}")
+            raise
 
     def format_disk(self, format_name: str, volume_label: str = "NO NAME") -> bool:
         if isinstance(self.driver, IMDImageDriver):

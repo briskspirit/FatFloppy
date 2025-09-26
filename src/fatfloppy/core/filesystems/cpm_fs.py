@@ -306,15 +306,25 @@ class CPMFilesystem(Filesystem):
         logical_sector_idx = 0
 
         for _ in range(dir_logical_sectors):
+            # Stop if we would read past the max number of entries
+            if len(entries) > self.dpb.drm:
+                break
             try:
                 sector_data = self._read_logical_sector(current_cpm_track, logical_sector_idx)
-                if all(b == 0xE5 for b in sector_data):
-                    break  # Stop at first all-E5 sector, end of directory
+                
+                # CRITICAL FIX: The break on an all-E5 sector was removed.
+                # On a formatted disk, this would cause the read to stop immediately,
+                # incorrectly reporting zero available directory slots.
+
                 for i in range(CPM_DIRECTORY_ENTRIES_PER_SECTOR):
                     offset = i * 32
                     if offset + 32 > len(sector_data):
                         self.logger.warning(f"Invalid sector data size at CP/M track {current_cpm_track}, logical sector {logical_sector_idx}")
                         break
+                    
+                    if len(entries) > self.dpb.drm:
+                        break
+
                     entry_data = sector_data[offset:offset + 32]
                     if len(entry_data) != 32:
                         continue
@@ -338,15 +348,8 @@ class CPMFilesystem(Filesystem):
                     }
 
                     entry = CPMDirectoryEntry(
-                        user=user,
-                        name=name,
-                        ext=ext,
-                        ex=ex,
-                        s1=s1,
-                        xh=xh,
-                        rc=rc,
-                        blks=blks,
-                        attributes_raw=attributes_raw
+                        user=user, name=name, ext=ext, ex=ex, s1=s1, xh=xh, rc=rc,
+                        blks=blks, attributes_raw=attributes_raw
                     )
                     entries.append(entry)
             except Exception as e:
@@ -354,10 +357,13 @@ class CPMFilesystem(Filesystem):
                 break
 
             logical_spt = self._get_logical_spt(current_cpm_track)
-            logical_sector_idx += 1
-            if logical_sector_idx >= logical_spt:
-                logical_sector_idx = 0
-                current_cpm_track += 1
+            if logical_spt > 0:
+                logical_sector_idx += 1
+                if logical_sector_idx >= logical_spt:
+                    logical_sector_idx = 0
+                    current_cpm_track += 1
+            else: # Should not happen, but as a safeguard
+                break
 
         return entries
     
@@ -465,10 +471,14 @@ class CPMFilesystem(Filesystem):
 
         files = []
         for key, group in file_groups.items():
-            user, full_name = key
-            group.sort(key=lambda e: e.ex + (e.xh << 5))  # Extent number: ex low 5 bits, xh high bits (CP/M 2.2 S2 as xh)
+            _user, full_name = key
+            # Sort by the full extent number (xh:ex)
+            group.sort(key=lambda e: (e.xh << 8) | e.ex)
+            
+            # This simple sum is correct now that the DPB is fixed
             total_rc = sum(e.rc for e in group)
             size = total_rc * CPM_SECTOR_SIZE
+            
             attr = group[0].get_attributes() if group else "-"
             files.append(FileInfo(name=full_name, size=size, is_dir=False, datetime=datetime.datetime(1978, 1, 1), attributes=attr, starting_cluster=0, extra_data=group))
 
@@ -477,58 +487,89 @@ class CPMFilesystem(Filesystem):
     def _read_block(self, block_num: int) -> bytes:
         if block_num == 0:
             return b''  # Skip invalid block
+        if not self.dpb: raise ValueError("DPB not set.")
+
         logical_sectors_per_block = self.dpb.block_size // CPM_SECTOR_SIZE
-        logical_sector_start = block_num * logical_sectors_per_block
-        data = b''
-        for i in range(logical_sectors_per_block):
-            cpm_track = self.dpb.off + (logical_sector_start // self.dpb.spt)
-            logical_sector_on_track = (logical_sector_start % self.dpb.spt)
-            data += self._read_logical_sector(cpm_track, logical_sector_on_track)
-            logical_sector_start += 1
-        return data
+        data = bytearray()
+        
+        # Use the robust block_to_track_sector to find the starting point
+        current_cpm_track, logical_sector_on_track = self._block_to_track_sector(block_num)
+
+        for _ in range(logical_sectors_per_block):
+            try:
+                data.extend(self._read_logical_sector(current_cpm_track, logical_sector_on_track))
+            except ValueError:
+                # If we run off the end of the disk, pad with zeros
+                self.logger.warning(f"Read for block {block_num} went past valid disk sectors. Padding with nulls.")
+                data.extend(bytes(CPM_SECTOR_SIZE))
+
+            logical_sector_on_track += 1
+            spt = self._get_logical_spt(current_cpm_track)
+            if spt > 0 and logical_sector_on_track >= spt:
+                logical_sector_on_track = 0
+                current_cpm_track += 1
+        return bytes(data)
 
     def read_file(self, path: str) -> bytes:
         if self.get_validity_score() < self.VALIDITY_THRESHOLD:
             raise IOError("Filesystem is not valid or not recognized as CP/M.")
-        # Parse path: /Uxx:NAME.EXT or Uxx:NAME.EXT or NAME.EXT (assume U0)
+        
         path = path.lstrip('/')
+        specified_user: Optional[int] = None
+        filename: str
+
         if ':' in path:
-            user_str, filename = path.split(':', 1)
-            user = int(user_str.lstrip('U'))
+            try:
+                user_part, file_part = path.split(':', 1)
+                if user_part.startswith('U') and user_part[1:].isdigit():
+                    specified_user = int(user_part[1:])
+                    filename = file_part
+                else:
+                    filename = path 
+            except ValueError:
+                filename = path 
         else:
-            user = 0
             filename = path
-        if '.' in filename:
-            name, ext = filename.split('.', 1)
-            name = name.upper().ljust(8)
-            ext = ext.upper().ljust(3)
-        else:
+        
+        if '.' not in filename:
             raise ValueError(f"Invalid filename format: {filename}")
 
-        # Find the group
         if self._cached_directory is None:
             self._cached_directory = self._read_directory_entries()
-        group = [e for e in self._cached_directory if not e.is_deleted() and e.user == user and e.name.strip() == name.strip() and e.ext.strip() == ext.strip()]
-        if not group:
-            raise FileNotFoundError(f"File {path} not found")
-        group.sort(key=lambda e: e.ex + (e.xh << 5))
 
-        # Read data from all extents
+        # Group all extents for the requested file
+        all_file_groups = self._group_extents(self._cached_directory)
+        matching_groups = []
+        search_filename_key = filename.upper()
+        for (user, file_key), group in all_file_groups.items():
+            if file_key == search_filename_key and (specified_user is None or user == specified_user):
+                matching_groups.append(group)
+
+        if not matching_groups:
+            raise FileNotFoundError(f"File {path} not found")
+        if len(matching_groups) > 1:
+            self.logger.warning(f"File '{filename}' exists for multiple users; reading from lowest user number.")
+            matching_groups.sort(key=lambda g: g[0].user)
+        
+        group = matching_groups[0]
+        
         data = b''
+        _name_part, ext_part = filename.split('.', 1)
         text_exts = ['ASM', 'PRN', 'BAS', 'TXT', 'DOC', 'HEX']
-        is_text = ext in text_exts
+        is_text = ext_part.upper() in text_exts
         for entry in group:
             logical_records = entry.rc
             extent_data = b''
             for block in entry.blks:
-                block_data = self._read_block(block)
-                extent_data += block_data
+                if block != 0:
+                    block_data = self._read_block(block)
+                    extent_data += block_data
             used_data = extent_data[:logical_records * CPM_SECTOR_SIZE]
             if is_text:
                 used_data = bytes(b & 0x7F for b in used_data)
-            used_data = used_data.rstrip(b'\x1A')
             data += used_data
-        return data
+        
+        return data.rstrip(b'\x1A')
 
     def _try_derive_dpb(self) -> bool:
         pf = self.disk.physical_format
@@ -596,10 +637,11 @@ class CPMFilesystem(Filesystem):
         if self.dpb.block_size == 0: raise ValueError("DPB.block_size is zero.")
         
         logical_128byte_sectors_per_alloc_block = self.dpb.block_size // CPM_SECTOR_SIZE
-        dir_logical_sectors = ((self.dpb.drm + 1) * 32) // CPM_SECTOR_SIZE
         
-        # Data area starts *after* the directory.
-        start_logical_128byte_sector_for_block_global = (block_num * logical_128byte_sectors_per_alloc_block) + dir_logical_sectors
+        # The data area (including the directory blocks) starts immediately after the reserved tracks.
+        # Block 0 is the first block right after the reserved tracks.
+        # The previous implementation incorrectly added a directory offset, causing all writes to be misplaced.
+        start_logical_128byte_sector_for_block_global = (block_num * logical_128byte_sectors_per_alloc_block)
         
         current_track = self.dpb.off
         sectors_remaining = start_logical_128byte_sector_for_block_global
@@ -614,9 +656,92 @@ class CPMFilesystem(Filesystem):
             current_track += 1
 
     def write_file(self, path: str, data: bytes) -> None:
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD: raise IOError("Filesystem not valid")
-        self.logger.warning("CP/M write_file not fully implemented yet.")
-        raise NotImplementedError("CP/M write_file not implemented.")
+        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+            raise IOError("Filesystem not valid")
+
+        # 1. Preparation & Path Parsing
+        user, parsed_filename = self._parse_cpm_path(path)
+        base_name, ext_name = (parsed_filename.split('.', 1) + [''])[:2]
+        
+        try:
+            self.delete(path)
+        except FileNotFoundError:
+            pass 
+
+        # 2. Resource Calculation based on the simple 16KB extent logic
+        if not self.dpb: raise ValueError("DPB not set.")
+        block_size = self.dpb.block_size
+        if block_size == 0: raise IOError("Block size is zero, cannot write file.")
+
+        RECORDS_PER_EXTENT = 128
+        
+        num_records_total = (len(data) + CPM_SECTOR_SIZE - 1) // CPM_SECTOR_SIZE if data else 0
+        num_dir_entries_needed = (num_records_total + RECORDS_PER_EXTENT - 1) // RECORDS_PER_EXTENT if data else 0
+        num_blocks_needed = (len(data) + block_size - 1) // block_size if data else 0
+
+        self.logger.info(f"Writing '{path}': {len(data)} bytes, needs {num_blocks_needed} blocks, {num_dir_entries_needed} dir entries.")
+
+        # 3. Resource Allocation
+        self._cached_directory = self._read_directory_entries()
+        self._load_allocation_map()
+
+        free_blocks = sorted(list(set(range(self.dpb.dsm + 1)) - self._cached_allocation_map))
+        if len(free_blocks) < num_blocks_needed:
+            raise IOError(f"Not enough free space. Required: {num_blocks_needed}, Available: {len(free_blocks)}.")
+        blocks_to_use = free_blocks[:num_blocks_needed]
+
+        free_dir_slots = [i for i, e in enumerate(self._cached_directory) if e.is_deleted()]
+        if len(free_dir_slots) < num_dir_entries_needed:
+            raise IOError(f"Directory is full. Required: {num_dir_entries_needed}, Available: {len(free_dir_slots)}.")
+        dir_slots_to_use = free_dir_slots[:num_dir_entries_needed]
+        
+        # 4. Create and Write Directory Entries
+        records_rem = num_records_total
+        blocks_consumed = 0
+        sectors_to_modify = defaultdict(bytearray)
+
+        for i in range(num_dir_entries_needed):
+            rc = min(records_rem, RECORDS_PER_EXTENT)
+            records_rem -= rc
+            
+            bytes_in_this_extent = rc * CPM_SECTOR_SIZE
+            blocks_for_this_extent = (bytes_in_this_extent + block_size - 1) // block_size
+            extent_blocks = blocks_to_use[blocks_consumed : blocks_consumed + blocks_for_this_extent]
+            blocks_consumed += blocks_for_this_extent
+            
+            ex = i
+
+            new_entry = CPMDirectoryEntry(
+                user=user, name=base_name, ext=ext_name,
+                ex=ex, s1=0, xh=0, rc=rc,
+                blks=extent_blocks, attributes_raw={}
+            )
+            entry_bytes = self._format_entry_to_bytes(new_entry)
+            
+            cpm_track, log_sec, offset = self._map_dir_entry_index_to_location(dir_slots_to_use[i])
+            key = (cpm_track, log_sec)
+
+            if key not in sectors_to_modify:
+                sectors_to_modify[key] = bytearray(self._read_logical_sector(cpm_track, log_sec))
+            sectors_to_modify[key][offset : offset+32] = entry_bytes
+
+        for (cpm_track, log_sec), mod_data in sectors_to_modify.items():
+            self._write_logical_sector(cpm_track, log_sec, bytes(mod_data))
+
+        # 5. Write File Data
+        data_to_write = bytearray(data)
+        if len(data_to_write) > 0 and len(data_to_write) % CPM_SECTOR_SIZE != 0:
+            padding_needed = CPM_SECTOR_SIZE - (len(data_to_write) % CPM_SECTOR_SIZE)
+            data_to_write.extend([0x1A] * padding_needed)
+
+        for i, block_num in enumerate(blocks_to_use):
+            chunk = data_to_write[i * block_size : (i + 1) * block_size]
+            self._write_block(block_num, bytes(chunk))
+        
+        self.logger.info(f"Successfully wrote file '{path}'.")
+        self._cached_directory = None
+        self._cached_allocation_map = None
+        self.disk.flush()
 
     def create_directory(self, path: str) -> None:
         self.logger.warning("CP/M 2.2 does not support traditional directory creation via this method.")
@@ -624,8 +749,37 @@ class CPMFilesystem(Filesystem):
 
     def delete(self, path: str) -> None:
         if self.get_validity_score() < self.VALIDITY_THRESHOLD: raise IOError("Filesystem not valid")
-        self.logger.warning("CP/M delete not fully implemented yet.")
-        raise NotImplementedError("CP/M delete not implemented.")
+        
+        user, parsed_filename = self._parse_cpm_path(path)
+
+        if self._cached_directory is None:
+            self._cached_directory = self._read_directory_entries()
+
+        indices_to_delete = []
+        for i, entry in enumerate(self._cached_directory):
+            if not entry.is_deleted() and entry.user == user and entry.get_filename().upper() == parsed_filename.upper():
+                indices_to_delete.append(i)
+
+        if not indices_to_delete:
+            raise FileNotFoundError(f"File '{path}' not found.")
+
+        sectors_to_modify = defaultdict(bytearray)
+        for index in indices_to_delete:
+            cpm_track, log_sec, offset = self._map_dir_entry_index_to_location(index)
+            key = (cpm_track, log_sec)
+            
+            if key not in sectors_to_modify:
+                sectors_to_modify[key] = bytearray(self._read_logical_sector(cpm_track, log_sec))
+
+            sectors_to_modify[key][offset] = 0xE5
+
+        for (cpm_track, log_sec), data in sectors_to_modify.items():
+            self._write_logical_sector(cpm_track, log_sec, bytes(data))
+
+        self.logger.info(f"Deleted file '{path}' by marking {len(indices_to_delete)} directory entries.")
+        self._cached_directory = None
+        self._cached_allocation_map = None
+        self.disk.flush()
 
     def delete_recursive(self, path: str) -> bool:
         try:
@@ -640,6 +794,82 @@ class CPMFilesystem(Filesystem):
             self._load_allocation_map()
         
         return sorted(list(self._cached_allocation_map)) if self._cached_allocation_map else []
+    
+    def _map_dir_entry_index_to_location(self, index: int) -> Tuple[int, int, int]:
+        """Maps a flat directory entry index to its on-disk location."""
+        if not self.dpb: raise ValueError("DPB not set.")
+        
+        logical_dir_sector_idx = index // CPM_DIRECTORY_ENTRIES_PER_SECTOR
+        offset_in_sector = (index % CPM_DIRECTORY_ENTRIES_PER_SECTOR) * 32
+
+        current_cpm_track = self.dpb.off
+        logical_sectors_left = logical_dir_sector_idx
+
+        while True:
+            spt = self._get_logical_spt(current_cpm_track)
+            if spt == 0:
+                raise IOError(f"Cannot map directory entry: SPT for CP/M track {current_cpm_track} is zero.")
+            if logical_sectors_left < spt:
+                return current_cpm_track, logical_sectors_left, offset_in_sector
+            logical_sectors_left -= spt
+            current_cpm_track += 1
+
+    def _write_block(self, block_num: int, data: bytes) -> None:
+        if not self.dpb: raise ValueError("DPB not available for write_block.")
+        if block_num <= 0 or block_num > self.dpb.dsm:
+            raise ValueError(f"Invalid block number {block_num} for writing.")
+        
+        expected_size = self.dpb.block_size
+        if len(data) > expected_size:
+            data = data[:expected_size]
+        elif len(data) < expected_size:
+            data = data.ljust(expected_size, b'\x00') # Pad with nulls
+
+        logical_sectors_per_block = expected_size // CPM_SECTOR_SIZE
+        start_cpm_track, start_logical_sector_on_track = self._block_to_track_sector(block_num)
+
+        current_cpm_track = start_cpm_track
+        current_logical_sector = start_logical_sector_on_track
+
+        for i in range(logical_sectors_per_block):
+            sector_data = data[i * CPM_SECTOR_SIZE : (i + 1) * CPM_SECTOR_SIZE]
+            self._write_logical_sector(current_cpm_track, current_logical_sector, sector_data)
+            
+            current_logical_sector += 1
+            spt = self._get_logical_spt(current_cpm_track)
+            if spt > 0 and current_logical_sector >= spt:
+                current_logical_sector = 0
+                current_cpm_track += 1
+
+    def _format_entry_to_bytes(self, entry: CPMDirectoryEntry) -> bytes:
+        if not self.dpb: raise ValueError("DPB not available.")
+        
+        entry_bytes = bytearray(32)
+        entry_bytes[0] = entry.user
+        
+        name_padded = entry.name.upper().ljust(8, ' ')
+        ext_padded = entry.ext.upper().ljust(3, ' ')
+        
+        entry_bytes[1:9] = name_padded.encode('ascii')
+        entry_bytes[9:12] = ext_padded.encode('ascii')
+
+        if 't1' in entry.attributes_raw: entry_bytes[9] |= (entry.attributes_raw.get('t1', 0) & 0x80)
+        if 't2' in entry.attributes_raw: entry_bytes[10] |= (entry.attributes_raw.get('t2', 0) & 0x80)
+        if 't3' in entry.attributes_raw: entry_bytes[11] |= (entry.attributes_raw.get('t3', 0) & 0x80)
+
+        entry_bytes[12] = entry.ex
+        entry_bytes[13] = entry.s1
+        entry_bytes[14] = entry.xh
+        entry_bytes[15] = entry.rc
+
+        if self.dpb.dsm > 255: # 2-byte block pointers
+            for i, block_num in enumerate(entry.blks):
+                if i < 8: struct.pack_into("<H", entry_bytes, 16 + i * 2, block_num)
+        else: # 1-byte block pointers
+            for i, block_num in enumerate(entry.blks):
+                if i < 16: entry_bytes[16 + i] = block_num
+        
+        return bytes(entry_bytes)
 
     def _load_allocation_map(self):
         if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.dpb: return
@@ -730,8 +960,12 @@ class CPMFilesystem(Filesystem):
         
         self.logger.info("Data area not explicitly cleared (standard for CP/M format).")
 
+        # CRITICAL FIX: After formatting, the internal state must be completely reset.
+        # The allocation map must be cleared and rebuilt to reflect that only
+        # the directory blocks are now "in use".
         self._cached_directory = [] 
         self._cached_allocation_map = set(range(self.dpb.directory_blocks)) 
+        
         self.disk.flush()
         self.logger.info("CP/M formatting complete (system tracks and directory cleared).")
 
