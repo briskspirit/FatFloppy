@@ -1,30 +1,71 @@
 # src/fatfloppy/core/drivers/greaseweazle.py
+"""
+Disk I/O driver for interacting with physical floppy drives via a Greaseweazle device.
+
+This module provides the `GreaseweazleDriver`, an implementation of the `DiskIODriver`
+abstract base class. It uses the `greaseweazle` library to perform low-level
+operations such as reading and writing tracks, which are then translated into
+sector-based I/O for the rest of the application.
+
+This driver handles:
+- Initializing the USB connection to the Greaseweazle.
+- Caching track and sector data to minimize physical disk access.
+- Managing a "dirty" state for sectors and flushing changes back to the disk.
+- Dynamically creating Greaseweazle disk definitions (`DiskDef`) from the
+  application's `PhysicalFormat` objects.
+- Attempting to auto-detect track formats on-the-fly if an explicit format
+  is not perfectly matched.
+
+Note:
+    This driver requires the `greaseweazle` library to be installed. If the
+    library is not found, an `ImportError` will be raised upon instantiation.
+"""
 import copy
 import types
 import logging
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Any, Set
 
 from ..drivers.base_driver import DiskIODriver
 from ..physical_format import PhysicalFormat, TrackFormat
 from ..utils.logging_config import get_logger
 
 try:
-    from greaseweazle.tools import util
-    from greaseweazle.tools import read
+    from greaseweazle.tools import util, read
     from greaseweazle.codec import codec
     from greaseweazle.codec.ibm import ibm
     GREASEWEAZLE_AVAILABLE = True
 except ImportError:
     GREASEWEAZLE_AVAILABLE = False
+    # Define placeholder types for when the library is not available
     util = None
     read = None
     ibm = None
     codec = None
-    types = None
 
-logger = get_logger()
+logger: logging.Logger = get_logger()
 
-def create_greaseweazle_diskdef(physical_format: PhysicalFormat, logger_instance: logging.Logger) -> Optional[codec.DiskDef]:
+
+def create_greaseweazle_diskdef(
+    physical_format: PhysicalFormat, logger_instance: logging.Logger
+) -> Optional["codec.DiskDef"]:
+    """
+    Creates a Greaseweazle DiskDef object from a PhysicalFormat definition.
+
+    This function translates the abstract PhysicalFormat used by this application
+    into the specific DiskDef object required by the Greaseweazle library to
+    understand the track layout of a disk.
+
+    Args:
+        physical_format: The format definition for the disk.
+        logger_instance: The logger to use for recording creation progress.
+
+    Returns:
+        A Greaseweazle DiskDef object if creation is successful, otherwise None.
+    """
+    if not GREASEWEAZLE_AVAILABLE:
+        logger_instance.error("Cannot create diskdef: Greaseweazle library not available.")
+        return None
+
     if not physical_format:
         logger_instance.warning("Cannot create diskdef: No physical format provided")
         return None
@@ -36,8 +77,11 @@ def create_greaseweazle_diskdef(physical_format: PhysicalFormat, logger_instance
         disk_def.heads = physical_format.heads
 
         for tf in physical_format.track_formats:
-            format_name = "ibm.mfm" if tf.encoding == "MFM" else "ibm.fm" if tf.encoding == "FM" else None
-            if not format_name:
+            if tf.encoding == "MFM":
+                format_name = "ibm.mfm"
+            elif tf.encoding == "FM":
+                format_name = "ibm.fm"
+            else:
                 logger_instance.warning(f"Unsupported encoding '{tf.encoding}', defaulting to 'ibm.mfm'")
                 format_name = "ibm.mfm"
 
@@ -75,29 +119,61 @@ def create_greaseweazle_diskdef(physical_format: PhysicalFormat, logger_instance
 
 
 class GreaseweazleDriver(DiskIODriver):
-    def __init__(self, device_name=None, drive="A", drive_size="3.5"):
+    """
+    Disk I/O driver for Greaseweazle hardware.
+    """
+
+    def __init__(self, device_name: Optional[str] = None, drive: str = "A", drive_size: str = "3.5"):
+        """
+        Initializes the GreaseweazleDriver.
+
+        Args:
+            device_name: The serial number or path of the Greaseweazle device.
+                         If None, the default device is used.
+            drive: The drive letter to control ("A" or "B").
+            drive_size: The physical size of the drive ("3.5", "5.25", etc.).
+
+        Raises:
+            ImportError: If the `greaseweazle` library is not installed.
+        """
         super().__init__()
         self.logger.debug(f"Initializing GreaseweazleDriver for drive {drive}")
         if not GREASEWEAZLE_AVAILABLE:
             raise ImportError("Greaseweazle library not found")
-        self.device_name = device_name
-        self.drive = drive
-        self.drive_size = drive_size
-        self.physical_format = None
-        self.dirty_sectors = {}
-        self.dirty_tracks = set()
-        self.track_data = {}
-        self.sector_cache = {}
-        self.initialized = False
-        self.fmt_cls = None
-        self.drive_ticks_per_rev = None
-        self.last_successful_format = None
-        self.using_custom_diskdef = False
-        self.scan_track_object = None
-        self.verify_writes = True
-        self.uses_physical_heads = True
 
-    def initialize(self):
+        # --- Configuration ---
+        self.device_name: Optional[str] = device_name
+        self.drive: str = drive
+        self.drive_size: str = drive_size
+        self.physical_format: Optional[PhysicalFormat] = None
+        self.verify_writes: bool = True
+        self.uses_physical_heads: bool = True
+
+        # --- State ---
+        self.initialized: bool = False
+        self.dirty_sectors: Dict[Tuple[int, int], Dict[int, bytes]] = {}
+        self.dirty_tracks: Set[Tuple[int, int]] = set()
+        self.track_data: Dict[Tuple[int, int], Dict[int, bytes]] = {}
+        self.sector_cache: Dict[Tuple[int, int, int], bytes] = {}
+
+        # --- Greaseweazle Specifics ---
+        self.usb: Optional[Any] = None  # Greaseweazle USB object
+        self.drive_obj: Optional[Any] = None  # Greaseweazle Drive object
+        self.fmt_cls: Optional["codec.DiskDef"] = None
+        self.drive_ticks_per_rev: Optional[float] = None
+        self.last_successful_format: Optional[Tuple[str, Optional[int]]] = None
+        self.using_custom_diskdef: bool = False
+        self.scan_track_object: Optional[Any] = None
+
+    # --- Public API ---
+
+    def initialize(self) -> None:
+        """
+        Connects to the Greaseweazle USB device and measures the drive's RPM.
+
+        This method must be called before any read or write operations.
+        It is called automatically by the first I/O operation if not done manually.
+        """
         if not GREASEWEAZLE_AVAILABLE:
             self.logger.error("Cannot initialize: Greaseweazle library unavailable")
             return
@@ -117,7 +193,9 @@ class GreaseweazleDriver(DiskIODriver):
             util.with_drive_selected(measure_rpm, self.usb, self.drive_obj)
             self.logger.debug(f"RPM measured: ticks_per_rev={self.drive_ticks_per_rev}")
         except Exception as e:
-            # TODO: If failed to measure RPM - we should stop initializing and quit/close disk, as this tells us that either drive isn't working or something is wrong with floppy disk itself. Or it's not there?) CRYTICAL!
+            # TODO: If failed to measure RPM - we should stop initializing and quit/close disk,
+            #       as this tells us that either drive isn't working or something is wrong
+            #       with floppy disk itself. Or it's not there?) CRYTICAL!
             self.logger.warning(f"RPM measurement failed: {e}")
             self.drive_ticks_per_rev = 0.2 * self.usb.sample_freq
             self.logger.debug(f"Defaulting to ticks_per_rev={self.drive_ticks_per_rev}")
@@ -126,6 +204,17 @@ class GreaseweazleDriver(DiskIODriver):
         self.logger.info(f"Driver initialized for drive {self.drive}")
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
+        """
+        Reads a single sector from the physical disk.
+
+        Args:
+            cylinder: The cylinder number.
+            head: The head number.
+            sector: The sector number.
+
+        Returns:
+            The sector data as a bytes object. Returns a zero-filled buffer on failure.
+        """
         self.logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector}")
         self.initialize()
         sector_key = (cylinder, head, sector)
@@ -148,10 +237,21 @@ class GreaseweazleDriver(DiskIODriver):
             return data
 
         bytes_per_sector = self.physical_format.bytes_per_sector if self.physical_format else 512
-        self.logger.debug(f"Returning default data for sector {sector_key}")
+        self.logger.warning(f"Returning default zero-filled data for unreadable sector {sector_key}")
         return b"\x00" * bytes_per_sector
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
+        """
+        Writes a single sector to an in-memory buffer.
+
+        The actual write to the physical disk is deferred until `flush()` is called.
+
+        Args:
+            cylinder: The cylinder number.
+            head: The head number.
+            sector: The sector number.
+            data: The sector data as a bytes object.
+        """
         self.logger.debug(f"Writing sector C:{cylinder} H:{head} S:{sector}, {len(data)} bytes")
         self.initialize()
         track_id = (cylinder, head)
@@ -163,6 +263,9 @@ class GreaseweazleDriver(DiskIODriver):
             self.logger.debug(f"Cleared cache for sector {sector_key}")
 
     def flush(self) -> None:
+        """
+        Writes all buffered (dirty) sectors to the physical disk.
+        """
         if not self.initialized or not self.dirty_tracks:
             self.logger.debug("Nothing to flush: not initialized or no dirty tracks")
             return
@@ -183,6 +286,7 @@ class GreaseweazleDriver(DiskIODriver):
 
         for cylinder, head in sorted(self.dirty_tracks):
             result = [False]
+
             def write_track_wrapper():
                 try:
                     flux_list = self._convert_to_flux(cylinder, head)
@@ -206,6 +310,15 @@ class GreaseweazleDriver(DiskIODriver):
         self.logger.info("Flush operation completed")
 
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
+        """
+        Sets the physical disk format for the driver to use.
+
+        Args:
+            physical_format: The format definition for the disk.
+
+        Raises:
+            TypeError: If the provided object is not a `PhysicalFormat`.
+        """
         self.logger.debug("Setting physical format")
         if not isinstance(physical_format, PhysicalFormat):
             raise TypeError("physical_format must be a PhysicalFormat object")
@@ -215,7 +328,12 @@ class GreaseweazleDriver(DiskIODriver):
         self.last_successful_format = None
         self.logger.info(f"Physical format set: Cyls={physical_format.cylinders}, Heads={physical_format.heads}")
 
-    def _create_and_set_custom_diskdef(self):
+    # --- Private Helper Methods ---
+
+    def _create_and_set_custom_diskdef(self) -> None:
+        """
+        Creates a Greaseweazle DiskDef from the current physical format and sets it for use.
+        """
         self.logger.debug("Creating and setting custom disk definition")
         if not self.physical_format:
             self.logger.warning("No physical format to create diskdef")
@@ -234,6 +352,15 @@ class GreaseweazleDriver(DiskIODriver):
             self.logger.error("Failed to set custom diskdef")
 
     def _get_formats_to_try(self) -> List[Tuple[str, Optional[int]]]:
+        """
+        Determines the sequence of formats to attempt when reading a track.
+
+        It prioritizes a custom definition, then the last successful format,
+        and finally falls back to a generic scan or default MFM.
+
+        Returns:
+            A list of format tuples (format_name, rate) to try.
+        """
         formats = []
         if self.fmt_cls and self.using_custom_diskdef:
             formats.append(("custom", None))
@@ -246,13 +373,21 @@ class GreaseweazleDriver(DiskIODriver):
         self.logger.debug(f"Formats to try: {formats}")
         return formats
 
-    def _update_physical_format(self, dat, num_sectors: int) -> None:
+    def _update_physical_format(self, dat: Any, num_sectors: int) -> None:
+        """
+        Updates the driver's physical_format based on a successful 'ibm.scan'.
+
+        Args:
+            dat: The data object returned from a successful Greaseweazle read.
+            num_sectors: The number of sectors found on the track.
+        """
         if not hasattr(dat, "track") or not hasattr(dat.track, "mode") or not hasattr(dat.track, "clock"):
             self.logger.debug("Insufficient data to update physical format")
             return
 
         mode = dat.track.mode
         encoding = "MFM" if str(mode) == "IBM MFM" else "FM"
+        # Calculate rate in kbps from clock period in microseconds
         rate = int(1.0 / (dat.track.clock * (2000 if encoding == "MFM" else 1000)))
         self.logger.debug(f"Updating format: encoding={encoding}, rate={rate}, sectors={num_sectors}")
 
@@ -265,9 +400,22 @@ class GreaseweazleDriver(DiskIODriver):
             bytes_per_sector=512, track_formats=[track_format]
         )
 
-    def _read_track_with_format(self, cylinder: int, head: int, format_tuple: Tuple[str, Optional[int]]) -> Optional[Dict[int, bytes]]:
+    def _read_track_with_format(
+        self, cylinder: int, head: int, format_tuple: Tuple[str, Optional[int]]
+    ) -> Optional[Dict[int, bytes]]:
+        """
+        Attempts to read a track using a single, specified Greaseweazle format.
+
+        Args:
+            cylinder: The cylinder number.
+            head: The head number.
+            format_tuple: A tuple of (format_name, rate) to use for the read attempt.
+
+        Returns:
+            A dictionary of {sector_number: sector_data} on success, otherwise None.
+        """
         self.logger.debug(f"Reading track C:{cylinder} H:{head} with format {format_tuple}")
-        format_name, rate = format_tuple
+        format_name, _ = format_tuple
         fmt_cls = self.fmt_cls if format_name == "custom" else None
         if not fmt_cls:
             try:
@@ -288,7 +436,7 @@ class GreaseweazleDriver(DiskIODriver):
             try:
                 track_iter = util.TrackSet.TrackIter(args.tracks)
                 next(track_iter)
-                flux, dat = read.read_with_retry(self.usb, args, track_iter)
+                _, dat = read.read_with_retry(self.usb, args, track_iter)
                 if dat and (sectors := getattr(getattr(dat, "track", None), "sectors", None) or getattr(dat, "sectors", None)):
                     self.scan_track_object = dat
                     sector_data = {s.idam.r: bytes(s.dam.data) for s in sectors if hasattr(s, "idam") and hasattr(s, "dam") and hasattr(s.dam, "data")}
@@ -303,25 +451,48 @@ class GreaseweazleDriver(DiskIODriver):
                             self.last_successful_format = format_tuple
                         success = True
             except Exception as e:
-                self.logger.error(f"Track read error with format {format_tuple}: {e}")
+                self.logger.warning(f"Track read error with format {format_tuple}: {e}")
 
         util.with_drive_selected(read_track_wrapper, self.usb, self.drive_obj)
         if success:
             self.logger.debug(f"Track C:{cylinder} H:{head} read successfully")
-            return self.track_data[(cylinder, head)]
+            return self.track_data.get((cylinder, head))
         return None
 
     def _read_track(self, cylinder: int, head: int) -> bool:
+        """
+        Reads a full track from the disk, trying multiple formats if necessary.
+
+        Args:
+            cylinder: The cylinder number.
+            head: The head number.
+
+        Returns:
+            True if the track was read successfully, False otherwise.
+        """
         self.logger.debug(f"Attempting to read track C:{cylinder} H:{head}")
         self.initialize()
         self.track_data[(cylinder, head)] = {}
         for fmt in self._get_formats_to_try():
-            if data := self._read_track_with_format(cylinder, head, fmt):
+            if self._read_track_with_format(cylinder, head, fmt):
                 return True
         self.logger.warning(f"No suitable format found for track C:{cylinder} H:{head}")
         return False
 
     def _convert_to_flux(self, cylinder: int, head: int) -> List[int]:
+        """
+        Converts sector data for a track into a flux stream for writing.
+
+        Args:
+            cylinder: The cylinder number of the track to convert.
+            head: The head number of the track to convert.
+
+        Returns:
+            A list of integers representing the flux stream.
+
+        Raises:
+            ValueError: If no format is defined or the format is invalid.
+        """
         self.logger.debug(f"Converting track C:{cylinder} H:{head} to flux")
         if not self.fmt_cls:
             if self.physical_format:
@@ -347,12 +518,14 @@ class GreaseweazleDriver(DiskIODriver):
                     s.dam.data = bytearray(self.track_data[track_id][sector_num])
                 elif track_id in self.dirty_sectors and sector_num in self.dirty_sectors[track_id]:
                     data = self.dirty_sectors[track_id][sector_num]
+                    # Pad or truncate data to match expected sector size
                     s.dam.data = bytearray(data[:len(s.dam.data)] if len(data) > len(s.dam.data) else data + bytes(len(s.dam.data) - len(data)))
                 s.crc = s.idam.crc = s.dam.crc = 0
 
         master_track = track.master_track()
         self.drive_ticks_per_rev = self.drive_ticks_per_rev or (
-            (60.0 / self.physical_format.rpm) * self.usb.sample_freq if self.physical_format and self.physical_format.rpm else 0.2 * self.usb.sample_freq
+            (60.0 / self.physical_format.rpm) * self.usb.sample_freq
+            if self.physical_format and self.physical_format.rpm else 0.2 * self.usb.sample_freq
         )
         master_track.time_per_rev = self.drive_ticks_per_rev / self.usb.sample_freq
         wflux = master_track.flux_for_writeout(cue_at_index=True)
@@ -368,6 +541,16 @@ class GreaseweazleDriver(DiskIODriver):
         return flux_list
 
     def _write_track(self, cylinder: int, head: int) -> bool:
+        """
+        Writes a full track to the disk. (Internal, currently called by `flush`)
+
+        Args:
+            cylinder: The cylinder number.
+            head: The head number.
+
+        Returns:
+            True on success, False on failure.
+        """
         self.logger.debug(f"Writing track C:{cylinder} H:{head}")
         track_id = (cylinder, head)
         if track_id not in self.dirty_sectors:
@@ -388,12 +571,21 @@ class GreaseweazleDriver(DiskIODriver):
             self.logger.error(f"Failed to write track C:{cylinder} H:{head}: {e}", exc_info=True)
             return False
 
-    def _update_after_write(self, cylinder: int, head: int):
+    def _update_after_write(self, cylinder: int, head: int) -> None:
+        """
+        Updates internal caches and dirty flags after a successful write.
+
+        Args:
+            cylinder: The cylinder number that was written.
+            head: The head number that was written.
+        """
         track_id = (cylinder, head)
         if track_id in self.dirty_sectors:
             sectors_per_track = self.physical_format.get_sectors_per_track(cylinder, head)
+            # If the entire track was dirty, we can just copy the dirty data
             if len(self.dirty_sectors[track_id]) == sectors_per_track:
                 self.track_data[track_id] = self.dirty_sectors[track_id].copy()
+            # Otherwise, update the existing track cache with the new dirty sectors
             elif track_id in self.track_data:
                 self.track_data[track_id].update(self.dirty_sectors[track_id])
             del self.dirty_sectors[track_id]

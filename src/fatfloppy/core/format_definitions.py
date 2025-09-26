@@ -1,13 +1,28 @@
 # src/fatfloppy/core/format_definitions.py
+"""
+Predefined format profiles for various common floppy disk types.
+
+This module contains the `FLOPPY_FORMATS` dictionary, which serves as a
+database of known floppy disk formats. Each entry is a `FormatProfile`
+object that encapsulates the physical geometry (cylinders, heads, sectors, etc.)
+and the logical filesystem configuration (e.g., FAT12 BPB or CP/M DPB) for a
+specific format.
+
+These profiles are used by the `DiskController` for auto-detection,
+formatting, and creating new disk images.
+
+TODO:
+    - Adjust gap3_bytes based on doc: https://www.isdaman.com/alsos/hardware/fdc/floppy.htm
+    - Verify against https://retrocmp.de/fdd/general/floppy-formats.htm
+"""
+from typing import Dict
+
 from .physical_format import PhysicalFormat, TrackFormat
 from .format_profile import FormatProfile
 from .filesystems.fat12fs import FATVolumeInfo
 from .filesystems.cpm_fs import CPMDiskParameterBlock
 
-# TODO: Adjust gap3_bytes based on doc: https://www.isdaman.com/alsos/hardware/fdc/floppy.htm
-# TODO: Verify against https://retrocmp.de/fdd/general/floppy-formats.htm
-
-FLOPPY_FORMATS = {
+FLOPPY_FORMATS: Dict[str, FormatProfile] = {
     "ibm_5.25_160k": FormatProfile(
         name="ibm_5.25_160k",
         description="5.25\" DD 160KB (40 tracks, 1 head, 8 sectors)",
@@ -29,16 +44,21 @@ FLOPPY_FORMATS = {
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=84,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=84,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=8, bytes_per_sector=512, num_heads=1, total_sectors=320, media_descriptor=0xFE, root_entries=64, sectors_per_fat=1, sectors_per_cluster=1)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=8,
+            bytes_per_sector=512,
+            num_heads=1,
+            total_sectors=320,
+            media_descriptor=0xFE,
+            root_entries=64,
+            sectors_per_fat=1,
+            sectors_per_cluster=1,
+        ),
     ),
     "ibm_5.25_180k": FormatProfile(
         name="ibm_5.25_180k",
@@ -61,16 +81,21 @@ gap3_bytes=84,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=84,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=84,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=9, bytes_per_sector=512, num_heads=1, total_sectors=360, media_descriptor=0xFC, root_entries=64, sectors_per_fat=2, sectors_per_cluster=1)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=9,
+            bytes_per_sector=512,
+            num_heads=1,
+            total_sectors=360,
+            media_descriptor=0xFC,
+            root_entries=64,
+            sectors_per_fat=2,
+            sectors_per_cluster=1,
+        ),
     ),
     "ibm_5.25_320k": FormatProfile(
         name="ibm_5.25_320k",
@@ -93,16 +118,21 @@ gap3_bytes=84,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=84,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=84,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=8, bytes_per_sector=512, num_heads=2, total_sectors=640, media_descriptor=0xFF, root_entries=112, sectors_per_fat=1, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=8,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=640,
+            media_descriptor=0xFF,
+            root_entries=112,
+            sectors_per_fat=1,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_5.25_360k": FormatProfile(
         name="ibm_5.25_360k",
@@ -125,16 +155,21 @@ gap3_bytes=84,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=84,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=84,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=9, bytes_per_sector=512, num_heads=2, total_sectors=720, media_descriptor=0xFD, root_entries=112, sectors_per_fat=2, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=9,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=720,
+            media_descriptor=0xFD,
+            root_entries=112,
+            sectors_per_fat=2,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_5.25_1.2m": FormatProfile(
         name="ibm_5.25_1.2m",
@@ -157,16 +192,21 @@ gap3_bytes=84,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=84,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=84,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=15, bytes_per_sector=512, num_heads=2, total_sectors=2400, media_descriptor=0xF9, root_entries=224, sectors_per_fat=7, sectors_per_cluster=1)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=15,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=2400,
+            media_descriptor=0xF9,
+            root_entries=224,
+            sectors_per_fat=7,
+            sectors_per_cluster=1,
+        ),
     ),
     "ibm_3.5_320k": FormatProfile(
         name="ibm_3.5_320k",
@@ -189,16 +229,21 @@ gap3_bytes=84,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=84,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=84,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=8, bytes_per_sector=512, num_heads=1, total_sectors=640, media_descriptor=0xFF, root_entries=112, sectors_per_fat=1, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=8,
+            bytes_per_sector=512,
+            num_heads=1,
+            total_sectors=640,
+            media_descriptor=0xFF,
+            root_entries=112,
+            sectors_per_fat=1,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_3.5_360k": FormatProfile(
         name="ibm_3.5_360k",
@@ -221,16 +266,21 @@ gap3_bytes=84,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=84,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=84,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=9, bytes_per_sector=512, num_heads=1, total_sectors=720, media_descriptor=0xFC, root_entries=112, sectors_per_fat=2, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=9,
+            bytes_per_sector=512,
+            num_heads=1,
+            total_sectors=720,
+            media_descriptor=0xFC,
+            root_entries=112,
+            sectors_per_fat=2,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_3.5_640k": FormatProfile(
         name="ibm_3.5_640k",
@@ -253,16 +303,21 @@ gap3_bytes=84,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=84,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=84,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=8, bytes_per_sector=512, num_heads=2, total_sectors=1280, media_descriptor=0xFF, root_entries=112, sectors_per_fat=2, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=8,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=1280,
+            media_descriptor=0xFF,
+            root_entries=112,
+            sectors_per_fat=2,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_3.5_720k": FormatProfile(
         name="ibm_3.5_720k",
@@ -285,16 +340,21 @@ gap3_bytes=84,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=84,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=84,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=9, bytes_per_sector=512, num_heads=2, total_sectors=1440, media_descriptor=0xF9, root_entries=112, sectors_per_fat=3, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=9,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=1440,
+            media_descriptor=0xF9,
+            root_entries=112,
+            sectors_per_fat=3,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_3.5_800k": FormatProfile(
         name="ibm_3.5_800k",
@@ -317,16 +377,21 @@ gap3_bytes=84,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=30,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=30,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=10, bytes_per_sector=512, num_heads=2, total_sectors=1600, media_descriptor=0xF9, root_entries=112, sectors_per_fat=3, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=10,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=1600,
+            media_descriptor=0xF9,
+            root_entries=112,
+            sectors_per_fat=3,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_3.5_1.44m": FormatProfile(
         name="ibm_3.5_1.44m",
@@ -349,16 +414,21 @@ gap3_bytes=30,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=84,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=84,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=18, bytes_per_sector=512, num_heads=2, total_sectors=2880, media_descriptor=0xF0, root_entries=224, sectors_per_fat=9, sectors_per_cluster=1)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=18,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=2880,
+            media_descriptor=0xF0,
+            root_entries=224,
+            sectors_per_fat=9,
+            sectors_per_cluster=1,
+        ),
     ),
     "ibm_3.5_2.88m": FormatProfile(
         name="ibm_3.5_2.88m",
@@ -381,16 +451,22 @@ gap3_bytes=84,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=41,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=41,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=36, bytes_per_sector=512, num_heads=2, total_sectors=5760, reserved_sectors=2, media_descriptor=0xF0, root_entries=224, sectors_per_fat=9, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=36,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=5760,
+            reserved_sectors=2,
+            media_descriptor=0xF0,
+            root_entries=224,
+            sectors_per_fat=9,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_3.5_1.68m": FormatProfile(
         name="ibm_3.5_1.68m",
@@ -413,16 +489,21 @@ gap3_bytes=41,
                     interleave=2,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=12,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=12,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=21, bytes_per_sector=512, num_heads=2, total_sectors=3360, media_descriptor=0xF0, root_entries=16, sectors_per_fat=5, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=21,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=3360,
+            media_descriptor=0xF0,
+            root_entries=16,
+            sectors_per_fat=5,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_3.5_1.72m": FormatProfile(
         name="ibm_3.5_1.72m",
@@ -445,16 +526,21 @@ gap3_bytes=12,
                     interleave=2,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=12,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=12,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=21, bytes_per_sector=512, num_heads=2, total_sectors=3444, media_descriptor=0xF0, root_entries=16, sectors_per_fat=6, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=21,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=3444,
+            media_descriptor=0xF0,
+            root_entries=16,
+            sectors_per_fat=6,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_8_250k": FormatProfile(
         name="ibm_8_250k",
@@ -477,16 +563,21 @@ gap3_bytes=12,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=26,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=26,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=26, bytes_per_sector=128, num_heads=1, total_sectors=2002, media_descriptor=0xFE, root_entries=68, sectors_per_fat=6, sectors_per_cluster=4)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=26,
+            bytes_per_sector=128,
+            num_heads=1,
+            total_sectors=2002,
+            media_descriptor=0xFE,
+            root_entries=68,
+            sectors_per_fat=6,
+            sectors_per_cluster=4,
+        ),
     ),
     "ibm_8_298k": FormatProfile(
         name="ibm_8_298k",
@@ -509,16 +600,21 @@ gap3_bytes=26,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=26,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=26,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=15, bytes_per_sector=256, num_heads=1, total_sectors=1155, media_descriptor=0xFE, root_entries=56, sectors_per_fat=4, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=15,
+            bytes_per_sector=256,
+            num_heads=1,
+            total_sectors=1155,
+            media_descriptor=0xFE,
+            root_entries=56,
+            sectors_per_fat=4,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_8_315k": FormatProfile(
         name="ibm_8_315k",
@@ -541,16 +637,21 @@ gap3_bytes=26,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=26,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=26,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=8, bytes_per_sector=512, num_heads=1, total_sectors=616, media_descriptor=0xFE, root_entries=64, sectors_per_fat=2, sectors_per_cluster=1)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=8,
+            bytes_per_sector=512,
+            num_heads=1,
+            total_sectors=616,
+            media_descriptor=0xFE,
+            root_entries=64,
+            sectors_per_fat=2,
+            sectors_per_cluster=1,
+        ),
     ),
     "ibm_8_500k": FormatProfile(
         name="ibm_8_500k",
@@ -573,16 +674,22 @@ gap3_bytes=26,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=26,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=26,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=26, bytes_per_sector=128, num_heads=2, total_sectors=4004, reserved_sectors=2, media_descriptor=0xFD, root_entries=96, sectors_per_fat=12, sectors_per_cluster=4)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=26,
+            bytes_per_sector=128,
+            num_heads=2,
+            total_sectors=4004,
+            reserved_sectors=2,
+            media_descriptor=0xFD,
+            root_entries=96,
+            sectors_per_fat=12,
+            sectors_per_cluster=4,
+        ),
     ),
     "ibm_8_590k": FormatProfile(
         name="ibm_8_590k",
@@ -605,16 +712,22 @@ gap3_bytes=26,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=26,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=26,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=15, bytes_per_sector=256, num_heads=2, total_sectors=2310, reserved_sectors=2, media_descriptor=0xFD, root_entries=96, sectors_per_fat=7, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=15,
+            bytes_per_sector=256,
+            num_heads=2,
+            total_sectors=2310,
+            reserved_sectors=2,
+            media_descriptor=0xFD,
+            root_entries=96,
+            sectors_per_fat=7,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_8_630k": FormatProfile(
         name="ibm_8_630k",
@@ -637,16 +750,21 @@ gap3_bytes=26,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=54,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=54,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=8, bytes_per_sector=1024, num_heads=1, total_sectors=616, media_descriptor=0x00, root_entries=96, sectors_per_fat=1, sectors_per_cluster=1)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=8,
+            bytes_per_sector=1024,
+            num_heads=1,
+            total_sectors=616,
+            media_descriptor=0x00,
+            root_entries=96,
+            sectors_per_fat=1,
+            sectors_per_cluster=1,
+        ),
     ),
     "ibm_8_1025k": FormatProfile(
         name="ibm_8_1025k",
@@ -669,16 +787,21 @@ gap3_bytes=54,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=54,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=54,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=26, bytes_per_sector=256, num_heads=2, total_sectors=4004, media_descriptor=0xFE, root_entries=192, sectors_per_fat=6, sectors_per_cluster=4)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=26,
+            bytes_per_sector=256,
+            num_heads=2,
+            total_sectors=4004,
+            media_descriptor=0xFE,
+            root_entries=192,
+            sectors_per_fat=6,
+            sectors_per_cluster=4,
+        ),
     ),
     "ibm_8_1180k": FormatProfile(
         name="ibm_8_1180k",
@@ -701,16 +824,22 @@ gap3_bytes=54,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=54,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=54,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=15, bytes_per_sector=512, num_heads=2, total_sectors=2310, reserved_sectors=2, media_descriptor=0xFE, root_entries=192, sectors_per_fat=4, sectors_per_cluster=2)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=15,
+            bytes_per_sector=512,
+            num_heads=2,
+            total_sectors=2310,
+            reserved_sectors=2,
+            media_descriptor=0xFE,
+            root_entries=192,
+            sectors_per_fat=4,
+            sectors_per_cluster=2,
+        ),
     ),
     "ibm_8_1260k": FormatProfile(
         name="ibm_8_1260k",
@@ -733,26 +862,32 @@ gap3_bytes=54,
                     interleave=1,
                     id_start=1,
                     iam_present=True,
-                    gap1_bytes=None,
-                    gap2_bytes=None,
-gap3_bytes=54,
-                    cskew=None,
-                    hskew=None,
-                )
-            ]
+                    gap3_bytes=54,
+                ),
+            ],
         ),
         filesystem_type="FAT12",
-        filesystem_config=FATVolumeInfo(sectors_per_track=8, bytes_per_sector=1024, num_heads=2, total_sectors=1232, media_descriptor=0xFE, root_entries=192, sectors_per_fat=2, sectors_per_cluster=1)
+        filesystem_config=FATVolumeInfo(
+            sectors_per_track=8,
+            bytes_per_sector=1024,
+            num_heads=2,
+            total_sectors=1232,
+            media_descriptor=0xFE,
+            root_entries=192,
+            sectors_per_fat=2,
+            sectors_per_cluster=1,
+        ),
     ),
-    "cpm_8_sssd_250k": FormatProfile( # Standard IBM 3740 compatible format
+    # Standard IBM 3740 compatible format
+    "cpm_8_sssd_250k": FormatProfile(
         name="cpm_8_sssd_250k",
         description="8\" SSSD 250KB CP/M (77 tracks, 1 head, 26 sectors/track, 128 bytes/sector, 1K blocks)",
         physical_format=PhysicalFormat(
-            cylinders=77, # Usually 0-76
+            cylinders=77,  # Usually 0-76
             heads=1,
             rpm=360,
             heads_inverted=False,
-            bytes_per_sector=128, # Physical sector size matches CP/M logical sector size
+            bytes_per_sector=128,  # Physical sector size matches CP/M logical sector size
             image_in_sector_id_order=True,
             track_formats=[
                 TrackFormat(
@@ -760,16 +895,15 @@ gap3_bytes=54,
                     track_end=76,
                     head_start=0,
                     head_end=0,
-                    sectors_per_track=26, # Physical sectors per track
-                    encoding="FM", # Single Density typically FM
-                    rate=250, # Common for 8" SD
-                    interleave=6, # Common for IBM 3740 SSSD
-                    sector_translation_table=None,
+                    sectors_per_track=26,  # Physical sectors per track
+                    encoding="FM",  # Single Density typically FM
+                    rate=250,  # Common for 8" SD
+                    interleave=6,  # Common for IBM 3740 SSSD
                     id_start=1,
                     iam_present=True,
-                    gap3_bytes=26, # Typical value
-                )
-            ]
+                    gap3_bytes=26,  # Typical value
+                ),
+            ],
         ),
         filesystem_type="CPM",
         filesystem_config=CPMDiskParameterBlock(
@@ -779,11 +913,11 @@ gap3_bytes=54,
             exm=0,    # Extent mask: 0 for 16KB extents (1K blocks * 16 = 16KB)
             dsm=242,  # Max alloc block num: (250KB total - 2 tracks sys - ~6KB dir) / 1KB blocks approx.
             drm=63,   # Directory entries max: 64 entries - 1 = 63
-            al0=0xC0, # Allocation bitmap for directory blocks (first 2 blocks for dir: 11000000)
+            al0=0xC0,  # Allocation bitmap for directory blocks (first 2 blocks for dir: 11000000)
             al1=0x00,
             cks=0,    # Checksum vector size: 0 (no checksumming for directory)
-            off=2     # Offset: 2 reserved tracks for system (tracks 0 and 1)
-        )
+            off=2,    # Offset: 2 reserved tracks for system (tracks 0 and 1)
+        ),
     ),
     "cpm_8_ssdd_imsai_mixed": FormatProfile(
         name="cpm_8_ssdd_imsai_mixed",
@@ -797,18 +931,28 @@ gap3_bytes=54,
             image_in_sector_id_order=True,
             track_formats=[
                 TrackFormat(
-                    track_start=0, track_end=0, head_start=0, head_end=0,
-                    sectors_per_track=26, bytes_per_sector=128,
-                    encoding="FM", rate=250, interleave=6,
-                    sector_translation_table=None,
+                    track_start=0,
+                    track_end=0,
+                    head_start=0,
+                    head_end=0,
+                    sectors_per_track=26,
+                    bytes_per_sector=128,
+                    encoding="FM",
+                    rate=250,
+                    interleave=6,
                 ),
                 TrackFormat(
-                    track_start=1, track_end=76, head_start=0, head_end=0,
-                    sectors_per_track=26, bytes_per_sector=256,
-                    encoding="MFM", rate=500, interleave=9,
-                    sector_translation_table=None,
-                )
-            ]
+                    track_start=1,
+                    track_end=76,
+                    head_start=0,
+                    head_end=0,
+                    sectors_per_track=26,
+                    bytes_per_sector=256,
+                    encoding="MFM",
+                    rate=500,
+                    interleave=9,
+                ),
+            ],
         ),
         filesystem_type="CPM",
         filesystem_config=CPMDiskParameterBlock(
@@ -821,7 +965,7 @@ gap3_bytes=54,
             al0=0xC0,
             al1=0x00,
             cks=0,
-            off=2
-        )
+            off=2,
+        ),
     ),
 }
