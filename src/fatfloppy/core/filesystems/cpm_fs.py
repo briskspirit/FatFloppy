@@ -17,6 +17,7 @@ CPM_SECTOR_SIZE = 128 # Typically, but DPB can specify others for logical mappin
 CPM_DIRECTORY_ENTRIES_PER_SECTOR = CPM_SECTOR_SIZE // 32 # 4 entries per 128-byte sector
 CPM_EXTENT_SIZE = 16 * 1024 # 16KB per extent (usually)
 CPM_BLOCK_SIZE_DEFAULT = 1024 # Smallest allocation unit, can vary by DPB
+CPM_DEFAULT_DATETIME = datetime.datetime(1978, 1, 1) # CP/M 2.2 has no file timestamps; use a default.
 
 # File attributes (typically stored in Ftype byte of directory entry)
 CPM_ATTR_RO = 0x80  # Read-Only (bit 7 of ftype)
@@ -472,15 +473,14 @@ class CPMFilesystem(Filesystem):
         files = []
         for key, group in file_groups.items():
             _user, full_name = key
-            # Sort by the full extent number (xh:ex)
-            group.sort(key=lambda e: (e.xh << 8) | e.ex)
+            group.sort(key=lambda e: (e.ex | (e.xh << 8))) 
             
-            # This simple sum is correct now that the DPB is fixed
             total_rc = sum(e.rc for e in group)
             size = total_rc * CPM_SECTOR_SIZE
             
             attr = group[0].get_attributes() if group else "-"
-            files.append(FileInfo(name=full_name, size=size, is_dir=False, datetime=datetime.datetime(1978, 1, 1), attributes=attr, starting_cluster=0, extra_data=group))
+            # Use the defined constant for the timestamp
+            files.append(FileInfo(name=full_name, size=size, is_dir=False, datetime=CPM_DEFAULT_DATETIME, attributes=attr, starting_cluster=0, extra_data=group))
 
         return files
 
