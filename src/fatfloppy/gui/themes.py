@@ -1,7 +1,23 @@
 # src/fatfloppy/gui/themes.py
+"""
+Provides stylesheet strings for theming the PyQt6 application.
+
+This module contains functions that return Qt StyleSheet (QSS) strings
+for dark and light application themes. These can be applied to the main
+QApplication instance to control the look and feel of the GUI.
+"""
 
 
-def get_dark_theme():
+def get_dark_theme() -> str:
+    """
+    Returns a QSS string for a dark application theme.
+
+    The theme uses dark backgrounds with light text, suitable for
+    low-light environments or user preference.
+
+    Returns:
+        A string containing the dark theme Qt StyleSheet.
+    """
     return """
     QMainWindow {
         background-color: #2b2b2b;
@@ -36,7 +52,17 @@ def get_dark_theme():
     /* Add more widget styles as needed */
     """
 
-def get_light_theme():
+
+def get_light_theme() -> str:
+    """
+    Returns a QSS string for a light application theme.
+
+    The theme uses light backgrounds with dark text, following a more
+    traditional desktop application appearance.
+
+    Returns:
+        A string containing the light theme Qt StyleSheet.
+    """
     return """
     QMainWindow {
         background-color: #ffffff;
