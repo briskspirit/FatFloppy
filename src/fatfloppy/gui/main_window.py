@@ -279,8 +279,12 @@ class FileBrowserApp(QMainWindow):
 
             if reply == QMessageBox.StandardButton.Save:
                 if not self.save_file():
-                     return
+                    if deselected.indexes():
+                        self.file_list.selectionModel().select(deselected, self.file_list.selectionModel().SelectionFlag.Select)
+                    return
             elif reply == QMessageBox.StandardButton.Cancel:
+                if deselected.indexes():
+                    self.file_list.selectionModel().select(deselected, self.file_list.selectionModel().SelectionFlag.Select)
                 return
 
         selected_items = self.file_list.selectedItems()
@@ -289,17 +293,20 @@ class FileBrowserApp(QMainWindow):
             node = item.node
             if not node.is_dir:
                 file_path = self.build_full_path(node.name)
-                if node.size <= 20480:
+                if node.size <= 51200: # 50 KB limit
                     try:
                         content_bytes = self.controller.read_file(file_path)
                         if content_bytes is not None and self.is_text_file(content_bytes):
-                            try:
-                                content_text = content_bytes.decode('cp437')
-                            except UnicodeDecodeError:
-                                self.logger.warning(f"Could not decode {file_path} as cp437.")
-                                self.clear_text_viewer_state()
-                                self.disk_map_dock.raise_()
-                                return
+                            content_text = ""
+                            # Get filesystem type in a decoupled way
+                            fs_type = self.controller.filesystem.get_display_info().get("Filesystem Type", "Unknown")
+                            if fs_type == "CP/M":
+                                cleaned_bytes = bytes([b & 0x7F for b in content_bytes])
+                                content_text = cleaned_bytes.decode('ascii', errors='replace')
+                            else: # Default to FAT/MS-DOS style
+                                content_text = content_bytes.decode('cp437', errors='replace')
+
+                            content_text = content_text.replace('\r\n', '\n').replace('\r', '\n')
 
                             self.text_viewer.blockSignals(True)
                             self.text_viewer.setPlainText(content_text)
@@ -310,7 +317,7 @@ class FileBrowserApp(QMainWindow):
                             self.save_button.setEnabled(False)
                             self.discard_button.setEnabled(False)
                             self.text_viewer_dock.raise_()
-                            self.text_viewer_dock.setWindowTitle(f"Text Viewer - {node.name}")
+                            self.text_viewer_dock.setWindowTitle(f"Text Editor - {node.name}")
                             return
 
                     except Exception as e:
@@ -332,9 +339,15 @@ class FileBrowserApp(QMainWindow):
 
     def is_text_file(self, content, check_bytes=4096):
         sample = content[:check_bytes]
+        if not sample:
+            return True
+
         try:
             text = sample.decode('cp437')
-            return all(c.isprintable() or c in '\n\t' for c in text)
+            non_printable = sum(1 for c in text if not (c.isprintable() or c in '\r\n\t'))
+            if len(text) > 0 and (non_printable / len(text)) > 0.1:
+                return False
+            return True
         except UnicodeDecodeError:
             return False
 
@@ -343,7 +356,15 @@ class FileBrowserApp(QMainWindow):
         if self.current_file_path and self.text_editor_modified:
             try:
                 current_text = self.text_viewer.toPlainText()
-                content_bytes = current_text.encode('cp437')
+                normalized_text = current_text.replace('\n', '\r\n')
+                
+                content_bytes = b''
+                fs_type = self.controller.filesystem.get_display_info().get("Filesystem Type", "Unknown")
+
+                if fs_type == "CP/M":
+                    content_bytes = normalized_text.encode('ascii', errors='replace')
+                else: # Default to FAT/MS-DOS style
+                    content_bytes = normalized_text.encode('cp437', errors='replace')
 
                 if self.controller.write_file(self.current_file_path, content_bytes):
                     self.statusBar().showMessage(f"Saved changes to {os.path.basename(self.current_file_path)}")
@@ -355,8 +376,8 @@ class FileBrowserApp(QMainWindow):
                     success = True
                 else:
                     QMessageBox.warning(self, "Save Failed", f"Could not write changes to {self.current_file_path}")
-            except UnicodeEncodeError:
-                 QMessageBox.critical(self, "Encoding Error", "Text contains characters not supported by Code Page 437.")
+            except UnicodeEncodeError as e:
+                 QMessageBox.critical(self, "Encoding Error", f"Text contains characters not supported by the target encoding: {e}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
         elif not self.text_editor_modified:
