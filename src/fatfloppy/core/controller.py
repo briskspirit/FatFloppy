@@ -217,196 +217,55 @@ class DiskController:
 
     def detect_format(self) -> Tuple[Optional[str], Optional[Any]]:
         """
-        Attempts to auto-detect the disk's format by analyzing its structure and filesystem.
+        Attempts to auto-detect the disk's format by analyzing its structure.
 
-        This method iterates through known format profiles and performs filesystem-specific
-        validity checks to find a match. For some disk types (like IMD or FAT), it can
-        derive the format from metadata or the boot sector.
+        This method orchestrates several detection strategies:
+        1. Uses IMD metadata if the file is a self-describing .imd image.
+        2. Attempts a direct parse of the boot sector for a FAT BPB.
+        3. Iterates through all known format profiles as a fallback.
 
         Returns:
             A tuple containing:
-            - The name of the matched format profile (or None if no profile matched).
-            - The specific filesystem configuration object (e.g., FATVolumeInfo) if parsing was successful.
+            - The name of the matched format profile (or None).
+            - The specific filesystem configuration (e.g., FATVolumeInfo).
         """
         if not self.disk or not self.driver:
             self.logger.error("No disk opened to detect format (DiskController.detect_format)")
             return None, None
 
-        true_initial_disk_physical_format = copy.deepcopy(self.disk.physical_format) if self.disk.physical_format else None
+        initial_format = copy.deepcopy(self.disk.physical_format) if self.disk.physical_format else None
 
-        def _restore_state_if_no_match_found() -> None:
-            if true_initial_disk_physical_format:
-                if not self.disk.physical_format or self.disk.physical_format != true_initial_disk_physical_format:
-                    self.logger.debug(f"Restoring true_initial_disk_physical_format {true_initial_disk_physical_format} after failed detection attempts.")
-                    self.set_geometry(true_initial_disk_physical_format)
-            elif self.disk.physical_format is not None:
-                self.logger.debug("Clearing temporary geometry as no initial format existed and detection failed.")
-                self.disk.physical_format = None
-                self.physical_format = None
-                # Driver's format will be updated if set_geometry(None) was possible, or by next explicit set.
-
+        # Strategy 1: IMD-specific detection
         if isinstance(self.driver, IMDImageDriver):
-            if not self.driver.physical_format:
-                self.logger.warning("IMD: No derived physical format available for detection.")
-                return None, None
-            # For IMD, its derived format is authoritative for the physical layout.
-            self.set_geometry(self.driver.physical_format)
+            return self._detect_format_for_imd()
 
-            parsed_fs_config: Optional[Any] = None
-            boot_sector_bytes = self.driver.read_boot_sector_data()
-            if boot_sector_bytes:
-                try:
-                    # For IMD, we rely on the FS specific get_validity_score to parse.
-                    temp_fs = create_filesystem(self.disk)  # This will try FAT, then CPM etc.
-                    if temp_fs:
-                        parsed_fs_config = temp_fs.get_specific_config()
-                        fs_type_name = temp_fs.__class__.__name__
-                        self.logger.info(f"IMD: Parsed system area using {fs_type_name}.")
+        # Strategy 2: Direct parse of boot sector (for FAT)
+        result = self._detect_format_by_direct_parse()
+        if result:
+            return result
 
-                except ValueError:  # Catch errors from specific FS parsing
-                    self.logger.warning("IMD: Failed to parse system area for any known FS type.")
+        # Restore state after failed direct parse before trying next strategy
+        if initial_format:
+            if not self.disk.physical_format or self.disk.physical_format != initial_format:
+                self.set_geometry(initial_format)
+        elif self.disk.physical_format is not None:
+            self.disk.physical_format = None
+            self.physical_format = None
 
-            if parsed_fs_config:
-                # Match against known profiles based on physical and logical parameters
-                for pf_name, pf_profile in self.known_formats.items():
-                    # Check if filesystem types match (e.g. both are CPM or both are FAT12)
-                    is_profile_fat = pf_profile.filesystem_type == "FAT12" and isinstance(pf_profile.filesystem_config, FATVolumeInfo)
-                    is_parsed_fat = isinstance(parsed_fs_config, FATVolumeInfo)
-                    is_profile_cpm = pf_profile.filesystem_type == "CPM" and isinstance(pf_profile.filesystem_config, CPMDiskParameterBlock)
-                    is_parsed_cpm = isinstance(parsed_fs_config, CPMDiskParameterBlock)
+        # Strategy 3: Iteration over all known format profiles
+        result = self._detect_format_by_profile_iteration(initial_format)
+        if result:
+            return result
 
-                    physical_match = (
-                        pf_profile.physical_format and
-                        pf_profile.physical_format.cylinders == self.driver.physical_format.cylinders and
-                        pf_profile.physical_format.heads == self.driver.physical_format.heads and
-                        pf_profile.physical_format.bytes_per_sector == self.driver.physical_format.bytes_per_sector and
-                        pf_profile.physical_format.get_sectors_per_track(0, 0) == self.driver.physical_format.get_sectors_per_track(0, 0)
-                    )
-
-                    if not physical_match:
-                        continue
-
-                    logical_match = False
-                    if is_profile_fat and is_parsed_fat:
-                        logical_match = (
-                            pf_profile.filesystem_config.total_sectors == parsed_fs_config.total_sectors and
-                            pf_profile.filesystem_config.sectors_per_fat == parsed_fs_config.sectors_per_fat
-                        )
-                    elif is_profile_cpm and is_parsed_cpm:
-                        logical_match = (
-                            pf_profile.filesystem_config.spt == parsed_fs_config.spt and
-                            pf_profile.filesystem_config.bsh == parsed_fs_config.bsh and
-                            pf_profile.filesystem_config.dsm == parsed_fs_config.dsm and
-                            pf_profile.filesystem_config.drm == parsed_fs_config.drm and
-                            pf_profile.filesystem_config.off == parsed_fs_config.off
-                        )
-
-                    if logical_match:
-                        self.logger.info(f"IMD: Matched known profile '{pf_name}'")
-                        return pf_name, parsed_fs_config
-
-            if parsed_fs_config:
-                self.logger.info("IMD: System area parsed, but no exact profile match. Using derived parameters.")
-                return None, parsed_fs_config
-
-            return None, None
-
-        # Non-IMD drivers:
-        parsed_fs_config_direct: Optional[Any] = None
-        geom_for_direct_parse = self.disk.physical_format
-
-        if not geom_for_direct_parse:
-            self.logger.debug("Detect_format (non-IMD): No initial geometry, setting temporary default for direct parse.")
-            temp_tf = TrackFormat(0, 79, 0, 1, 18, "MFM", 500, 1, gap3_bytes=84)
-            geom_for_direct_parse = PhysicalFormat(80, 2, 300, False, 512, [temp_tf])
-            self.set_geometry(geom_for_direct_parse)
-
-        if geom_for_direct_parse:
-            try:
-                fs_instance = FATFilesystem(self.disk)
-                if fs_instance.get_validity_score() >= FATFilesystem.VALIDITY_THRESHOLD:
-                    self.logger.info("Direct parse: Successfully validated as FAT filesystem.")
-                    parsed_fs_config_direct = fs_instance.get_specific_config()
-
-                    for pf_name, pf_profile in self.known_formats.items():
-                        if pf_profile.filesystem_type == "FAT12" and \
-                           isinstance(pf_profile.filesystem_config, FATVolumeInfo) and \
-                           pf_profile.physical_format and \
-                           isinstance(parsed_fs_config_direct, FATVolumeInfo):
-                            bpb_cyls = parsed_fs_config_direct.total_sectors // (parsed_fs_config_direct.num_heads * parsed_fs_config_direct.sectors_per_track) if parsed_fs_config_direct.num_heads * parsed_fs_config_direct.sectors_per_track > 0 else 0
-                            if (pf_profile.filesystem_config.bytes_per_sector == parsed_fs_config_direct.bytes_per_sector and
-                                    pf_profile.filesystem_config.sectors_per_track == parsed_fs_config_direct.sectors_per_track and
-                                    pf_profile.filesystem_config.num_heads == parsed_fs_config_direct.num_heads and
-                                    pf_profile.filesystem_config.total_sectors == parsed_fs_config_direct.total_sectors and
-                                    pf_profile.physical_format.cylinders == bpb_cyls and
-                                    pf_profile.physical_format.heads == parsed_fs_config_direct.num_heads):
-                                self.logger.info(f"Direct parse strongly matched FAT profile: '{pf_name}'")
-                                self.set_geometry(pf_profile.physical_format)
-                                if not hasattr(self.disk.physical_format, '_associated_filesystem_config') and pf_profile.filesystem_config:
-                                    setattr(self.disk.physical_format, '_associated_filesystem_config', pf_profile.filesystem_config)
-                                return pf_name, parsed_fs_config_direct
-
-                    self.logger.info("Direct parse (FAT) valid, but no exact named profile. Using parsed BPB to refine geometry.")
-                    if parsed_fs_config_direct.bytes_per_sector > 0 and parsed_fs_config_direct.num_heads > 0 and parsed_fs_config_direct.sectors_per_track > 0:
-                        cyls = parsed_fs_config_direct.total_sectors // (parsed_fs_config_direct.num_heads * parsed_fs_config_direct.sectors_per_track)
-                        current_pf = self.disk.physical_format
-                        updated_tf = TrackFormat(
-                            track_start=0, track_end=cyls - 1,
-                            head_start=0, head_end=parsed_fs_config_direct.num_heads - 1,
-                            sectors_per_track=parsed_fs_config_direct.sectors_per_track,
-                            encoding=current_pf.track_formats[0].encoding,
-                            rate=current_pf.track_formats[0].rate,
-                            interleave=current_pf.track_formats[0].interleave,
-                            id_start=current_pf.track_formats[0].id_start,
-                            iam_present=current_pf.track_formats[0].iam_present,
-                            gap3_bytes=current_pf.track_formats[0].gap3_bytes
-                        )
-                        refined_pf = PhysicalFormat(
-                            cylinders=cyls, heads=parsed_fs_config_direct.num_heads,
-                            rpm=current_pf.rpm, heads_inverted=current_pf.heads_inverted,
-                            bytes_per_sector=parsed_fs_config_direct.bytes_per_sector,
-                            track_formats=[updated_tf]
-                        )
-                        setattr(refined_pf, '_associated_filesystem_config', parsed_fs_config_direct)
-                        self.set_geometry(refined_pf)
-                        return None, parsed_fs_config_direct
-                else:
-                    self.logger.debug("Direct parse: The disk is not a valid FAT filesystem.")
-            except Exception as e:
-                self.logger.warning(f"Direct FAT parse attempt failed with an error: {e}")
-
-        _restore_state_if_no_match_found()
-
-        self.logger.debug("Attempting full profile iteration for detection (if direct parse inconclusive).")
-        for profile_name, profile in self.known_formats.items():
-            if not profile.physical_format or not profile.filesystem_type:
-                continue
-
-            # *** CRITICAL CHECK FOR IMAGES ***
-            if isinstance(self.driver, IMGImageDriver):
-                image_size = len(self.driver.image_data)
-                profile_size = profile.physical_format.total_bytes
-                if image_size != profile_size:
-                    self.logger.debug(f"Skipping profile '{profile_name}': image size {image_size} != profile size {profile_size}")
-                    continue
-
-            self.logger.debug(f"Detect_format (profile iteration): Trying '{profile_name}'")
-            self.set_format(profile)
-
-            try:
-                fs_class = get_filesystem_class_by_type(profile.filesystem_type)
-                if fs_class:
-                    fs_instance = fs_class(self.disk)
-                    if fs_instance.get_validity_score() >= getattr(fs_instance, 'VALIDITY_THRESHOLD', 30):
-                        self.logger.info(f"Profile iteration: Detected format '{profile_name}' with filesystem {profile.filesystem_type}")
-                        return profile_name, fs_instance.get_specific_config()
-            except Exception as e:
-                self.logger.debug(f"Profile '{profile_name}' not a match (iteration) or error: {e}")
-
-            _restore_state_if_no_match_found()
-
+        # All strategies failed
         self.logger.warning("detect_format: No format detected after all attempts.")
-        _restore_state_if_no_match_found()
+        if initial_format:
+            if not self.disk.physical_format or self.disk.physical_format != initial_format:
+                self.set_geometry(initial_format)
+        elif self.disk.physical_format is not None:
+            self.disk.physical_format = None
+            self.physical_format = None
+
         return None, None
 
     def set_format(self, profile: FormatProfile) -> None:
@@ -1576,5 +1435,161 @@ class DiskController:
         elif not original_disk_format_on_entry and self.disk.physical_format is not None:
             self.disk.physical_format = None
             self.physical_format = None
+
+        return None
+
+    def _detect_format_for_imd(self) -> Tuple[Optional[str], Optional[Any]]:
+        """Handles format detection specifically for an IMDImageDriver."""
+        if not isinstance(self.driver, IMDImageDriver) or not self.driver.physical_format:
+            self.logger.warning("IMD: No derived physical format available for detection.")
+            return None, None
+
+        self.set_geometry(self.driver.physical_format)
+        parsed_fs_config: Optional[Any] = None
+
+        if self.driver.read_boot_sector_data():
+            try:
+                temp_fs = create_filesystem(self.disk)
+                if temp_fs:
+                    parsed_fs_config = temp_fs.get_specific_config()
+                    self.logger.info(f"IMD: Parsed system area using {temp_fs.__class__.__name__}.")
+            except ValueError:
+                self.logger.warning("IMD: Failed to parse system area for any known FS type.")
+
+        if not parsed_fs_config:
+            return None, None
+
+        # Match against known profiles using more detailed criteria
+        for pf_name, pf_profile in self.known_formats.items():
+            is_fat_match = (pf_profile.filesystem_type == "FAT12" and
+                            isinstance(pf_profile.filesystem_config, FATVolumeInfo) and
+                            isinstance(parsed_fs_config, FATVolumeInfo))
+            is_cpm_match = (pf_profile.filesystem_type == "CPM" and
+                            isinstance(pf_profile.filesystem_config, CPMDiskParameterBlock) and
+                            isinstance(parsed_fs_config, CPMDiskParameterBlock))
+
+            physical_match = (
+                pf_profile.physical_format and
+                pf_profile.physical_format.cylinders == self.driver.physical_format.cylinders and
+                pf_profile.physical_format.heads == self.driver.physical_format.heads and
+                pf_profile.physical_format.bytes_per_sector == self.driver.physical_format.bytes_per_sector and
+                pf_profile.physical_format.get_sectors_per_track(0, 0) == self.driver.physical_format.get_sectors_per_track(0, 0)
+            )
+            if not physical_match:
+                continue
+
+            logical_match = False
+            if is_fat_match and pf_profile.filesystem_config.total_sectors == parsed_fs_config.total_sectors:
+                logical_match = True
+            elif is_cpm_match and all([
+                pf_profile.filesystem_config.spt == parsed_fs_config.spt,
+                pf_profile.filesystem_config.bsh == parsed_fs_config.bsh,
+                pf_profile.filesystem_config.dsm == parsed_fs_config.dsm,
+                pf_profile.filesystem_config.off == parsed_fs_config.off,
+            ]):
+                logical_match = True
+
+            if logical_match:
+                self.logger.info(f"IMD: Matched known profile '{pf_name}'")
+                return pf_name, parsed_fs_config
+
+        self.logger.info("IMD: System area parsed, but no exact profile match. Using derived parameters.")
+        return None, parsed_fs_config
+
+    def _detect_format_by_direct_parse(self) -> Optional[Tuple[Optional[str], Optional[Any]]]:
+        """Handles format detection by attempting a direct parse of the boot sector."""
+        if not self.disk:
+            return None
+
+        geom_for_parse = self.disk.physical_format
+        if not geom_for_parse:
+            self.logger.debug("Direct parse: No initial geometry, setting temporary default.")
+            temp_tf = TrackFormat(0, 79, 0, 1, 18, "MFM", 500, 1, gap3_bytes=84)
+            geom_for_parse = PhysicalFormat(80, 2, 300, False, 512, [temp_tf])
+            self.set_geometry(geom_for_parse)
+
+        try:
+            fs = FATFilesystem(self.disk)
+            if fs.get_validity_score() < FATFilesystem.VALIDITY_THRESHOLD:
+                return None
+
+            self.logger.info("Direct parse: Successfully validated as FAT filesystem.")
+            parsed_bpb = fs.get_specific_config()
+            if not isinstance(parsed_bpb, FATVolumeInfo):
+                return None
+
+            # Try to find a strong profile match
+            for pf_name, pf_profile in self.known_formats.items():
+                if (pf_profile.filesystem_type == "FAT12" and
+                        isinstance(pf_profile.filesystem_config, FATVolumeInfo) and
+                        pf_profile.physical_format and
+                        pf_profile.filesystem_config.total_sectors == parsed_bpb.total_sectors and
+                        pf_profile.filesystem_config.num_heads == parsed_bpb.num_heads and
+                        pf_profile.physical_format.heads == parsed_bpb.num_heads):
+                    self.logger.info(f"Direct parse strongly matched FAT profile: '{pf_name}'")
+                    self.set_geometry(pf_profile.physical_format)
+                    return pf_name, parsed_bpb
+
+            # No strong match, but BPB is valid; refine the geometry from BPB
+            self.logger.info("Direct parse valid, refining geometry from BPB.")
+            if all(v > 0 for v in [parsed_bpb.bytes_per_sector, parsed_bpb.num_heads, parsed_bpb.sectors_per_track]):
+                cyls = parsed_bpb.total_sectors // (parsed_bpb.num_heads * parsed_bpb.sectors_per_track)
+                current_pf = self.disk.physical_format
+                updated_tf = TrackFormat(
+                    track_start=0, track_end=cyls - 1, head_start=0, head_end=parsed_bpb.num_heads - 1,
+                    sectors_per_track=parsed_bpb.sectors_per_track,
+                    encoding=current_pf.track_formats[0].encoding, rate=current_pf.track_formats[0].rate,
+                    interleave=current_pf.track_formats[0].interleave
+                )
+                refined_pf = PhysicalFormat(
+                    cylinders=cyls, heads=parsed_bpb.num_heads, rpm=current_pf.rpm,
+                    heads_inverted=current_pf.heads_inverted,
+                    bytes_per_sector=parsed_bpb.bytes_per_sector, track_formats=[updated_tf]
+                )
+                self.set_geometry(refined_pf)
+                return None, parsed_bpb
+        except Exception as e:
+            self.logger.warning(f"Direct FAT parse attempt failed: {e}")
+
+        return None
+
+    def _detect_format_by_profile_iteration(
+        self, initial_format: Optional[PhysicalFormat]
+    ) -> Optional[Tuple[Optional[str], Optional[Any]]]:
+        """Handles format detection by iterating through all known format profiles."""
+        if not self.disk or not self.driver:
+            return None
+
+        self.logger.debug("Attempting full profile iteration for detection.")
+        for profile_name, profile in self.known_formats.items():
+            if not profile.physical_format or not profile.filesystem_type:
+                continue
+
+            if isinstance(self.driver, IMGImageDriver):
+                image_size = len(self.driver.image_data)
+                profile_size = profile.physical_format.total_bytes
+                if image_size != profile_size:
+                    continue
+
+            self.logger.debug(f"Profile iteration: Trying '{profile_name}'")
+            self.set_format(profile)
+
+            try:
+                fs_class = get_filesystem_class_by_type(profile.filesystem_type)
+                if fs_class:
+                    fs = fs_class(self.disk)
+                    if fs.get_validity_score() >= getattr(fs, 'VALIDITY_THRESHOLD', 30):
+                        self.logger.info(f"Profile iteration: Detected format '{profile_name}'")
+                        return profile_name, fs.get_specific_config()
+            except Exception as e:
+                self.logger.debug(f"Profile '{profile_name}' did not match or caused error: {e}")
+
+            # Restore state before trying the next profile
+            if initial_format:
+                if self.disk.physical_format != initial_format:
+                    self.set_geometry(initial_format)
+            elif self.disk.physical_format is not None:
+                self.disk.physical_format = None
+                self.physical_format = None
 
         return None
