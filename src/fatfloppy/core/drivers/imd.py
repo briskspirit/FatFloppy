@@ -503,8 +503,8 @@ class IMDImageDriver(DiskIODriver):
             offset += 5
 
             if num_sectors == 0:
-                logger.warning(f"Track C:{cyl} H:{head_flags & 1} has zero sectors, stopping parse.")
-                break
+                logger.warning(f"Track C:{cyl} H:{head_flags & 1} has zero sectors, skipping to next track header.")
+                continue
 
             track_info = IMDTrackInfo(mode, cyl, head_flags, num_sectors, sector_size_code)
             max_cyl = max(max_cyl, cyl)
