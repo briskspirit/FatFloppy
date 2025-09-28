@@ -1135,37 +1135,26 @@ class CPMFilesystem(Filesystem):
 
     def _try_derive_dpb(self) -> bool:
         """Tries to derive a DPB for common 8-inch disk formats."""
-        if not self.disk or not self.disk.physical_format:
-            return False
         pf = self.disk.physical_format
-
-        # Check for common 8-inch SSSD geometry (77 cyl, 1 head)
-        if pf.cylinders == 77 and pf.heads == 1:
-            # Check for standard IBM 3740 format (FM, 26 sectors)
-            spt_counts = [tf.sectors_per_track for tf in pf.track_formats]
-            most_common_spt = max(set(spt_counts), key=spt_counts.count) if spt_counts else 0
-            encoding_counts = [tf.encoding for tf in pf.track_formats]
-            most_common_encoding = max(set(encoding_counts), key=encoding_counts.count) if encoding_counts else ""
-
-            if most_common_spt == 26 and most_common_encoding == "FM":
-                self.logger.info("Derived DPB for standard 8-inch SSSD (IBM 3740-like) format.")
+        if pf.cylinders != 77 or pf.heads != 1 or pf.rpm != 360:
+            return False
+        # Standard IBM 3740 8-inch single-density
+        if len(pf.track_formats) == 1:
+            tf = pf.track_formats[0]
+            if tf.encoding == "FM" and tf.rate in (250, 300, 500) and tf.sectors_per_track == 26 and tf.bytes_per_sector == 128:
                 self.dpb = CPMDiskParameterBlock(
                     spt=26, bsh=3, blm=7, exm=0, dsm=242, drm=63, al0=0xC0, al1=0x00, cks=0, off=2)
                 return True
-
-            # Check for common mixed-density format (IMSAI-like)
-            if len(pf.track_formats) >= 2:
-                tf0 = pf.get_track_format(0, 0)
-                # Check if other tracks are mostly MFM with 256 BPS
-                other_bps = [tf.bytes_per_sector for tf in pf.track_formats if tf.track_start > 0]
-                other_enc = [tf.encoding for tf in pf.track_formats if tf.track_start > 0]
-                if (tf0.encoding == "FM" and tf0.bytes_per_sector == 128 and
-                        (all(bps == 256 for bps in other_bps) and all(enc == "MFM" for enc in other_enc))):
-                    self.logger.info("Derived DPB for mixed-density 8-inch SSDD (IMSAI-like) format.")
-                    self.dpb = CPMDiskParameterBlock(
-                        spt=52, bsh=4, blm=15, exm=1, dsm=242, drm=63, al0=0xC0, al1=0x00, cks=0, off=2)
-                    return True
-
+        # Common double-density format
+        elif len(pf.track_formats) == 2:
+            tf0, tf1 = pf.track_formats[0], pf.track_formats[1]
+            if (tf0.track_start == 0 and tf0.track_end == 0 and tf0.encoding == "FM" and
+                    tf0.sectors_per_track == 26 and tf0.bytes_per_sector == 128 and
+                    tf1.track_start == 1 and tf1.track_end == 76 and tf1.encoding == "MFM" and
+                    tf1.sectors_per_track == 26 and tf1.bytes_per_sector == 256):
+                self.dpb = CPMDiskParameterBlock(
+                    spt=52, bsh=4, blm=15, exm=1, dsm=242, drm=63, al0=0xC0, al1=0x00, cks=0, off=2)
+                return True
         return False
 
     def _write_block(self, block_num: int, data: bytes) -> None:
