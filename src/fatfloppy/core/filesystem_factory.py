@@ -1,4 +1,3 @@
-# src/fatfloppy/core/filesystem_factory.py
 """
 Provides factory functions for creating and identifying filesystem handlers.
 
@@ -17,6 +16,7 @@ from .disk import Disk
 from .filesystems.fs_base import Filesystem
 from .filesystems.fat12fs import FATFilesystem
 from .filesystems.cpm_fs import CPMFilesystem
+from .filesystems.hdos_fs import HDOSFilesystem
 from .utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 FILESYSTEM_TYPES: List[Type[Filesystem]] = [
     FATFilesystem,
     CPMFilesystem,
+    HDOSFilesystem,
     # CBMFilesystem, # Example of where another FS would be added
 ]
 
@@ -59,11 +60,19 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
     all_scores: dict = {}
 
     for fs_class in FILESYSTEM_TYPES:
+        original_pf = disk.physical_format
         try:
             logger.debug(f"Scoring filesystem type: {fs_class.__name__}")
+            
+            # Temporarily apply a canonical geometry if the FS provides one
+            if hasattr(fs_class, 'get_canonical_format') and callable(getattr(fs_class, 'get_canonical_format')):
+                canonical_format = fs_class.get_canonical_format()
+                if canonical_format.physical_format != original_pf:
+                    logger.debug(f"Applying canonical geometry for {fs_class.__name__} scoring.")
+                    disk.set_geometry(canonical_format.physical_format)
+
             fs_instance = fs_class(disk)
             score = fs_instance.get_validity_score()
-
             all_scores[fs_class.__name__] = score
 
             if score > highest_score:
@@ -73,12 +82,21 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
         except Exception as e:
             logger.error(f"Error while scoring {fs_class.__name__}: {e}", exc_info=False)
             all_scores[fs_class.__name__] = f"Error: {e}"
+        finally:
+            # Always restore the original geometry
+            if disk.physical_format != original_pf:
+                disk.set_geometry(original_pf)
+
 
     # Log all scores for debugging purposes
     logger.debug(f"Filesystem scores: {all_scores}")
 
     if highest_score >= MINIMUM_VALIDITY_SCORE and best_fs_instance:
         logger.info(f"Selected best match: {best_fs_instance.__class__.__name__} with a score of {highest_score}.")
+        # Re-initialize the best instance with the final, correct geometry
+        if disk.physical_format != original_pf:
+            best_fs_instance = type(best_fs_instance)(disk)
+            best_fs_instance.get_validity_score() # Re-run to initialize internal state
         return best_fs_instance
 
     logger.warning(f"No valid filesystem type detected (highest score {highest_score} was below threshold {MINIMUM_VALIDITY_SCORE}).")
@@ -101,6 +119,8 @@ def get_filesystem_class_by_type(fs_type_name: str) -> Optional[Type[Filesystem]
         if fs_type_name == "FAT12" and fs_class.__name__ == "FATFilesystem":
             return fs_class
         if fs_type_name == "CPM" and fs_class.__name__ == "CPMFilesystem":
+            return fs_class
+        if fs_type_name == "HDOS" and fs_class.__name__ == "HDOSFilesystem":
             return fs_class
 
     logger.warning(f"No filesystem class found for type '{fs_type_name}'")

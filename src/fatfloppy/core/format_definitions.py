@@ -21,6 +21,7 @@ from .physical_format import PhysicalFormat, TrackFormat
 from .format_profile import FormatProfile
 from .filesystems.fat12fs import FATVolumeInfo
 from .filesystems.cpm_fs import CPMDiskParameterBlock
+from .filesystems.hdos_fs import HDOSLabelRecord
 
 FLOPPY_FORMATS: Dict[str, FormatProfile] = {
     "ibm_5.25_160k": FormatProfile(
@@ -966,6 +967,103 @@ FLOPPY_FORMATS: Dict[str, FormatProfile] = {
             al1=0x00,
             cks=0,
             off=2,
+        ),
+    ),
+    # --- HDOS 2.0 / 3.0 Formats ---
+    # NOTE: HDOS 2.0+ INIT places the DIR and GRT at lower LBAs than HDOS 1.x.
+    # We use representative values from real disks as defaults for formatting.
+    "hdos_5.25_100k": FormatProfile(
+        name="hdos_5.25_100k",
+        description="5.25\" SSSD 100KB HDOS 2.0 (40 tracks, 1 head, 10 sectors/track)",
+        physical_format=PhysicalFormat(
+            cylinders=40,
+            heads=1,
+            rpm=300,
+            heads_inverted=False,
+            bytes_per_sector=256,
+            track_formats=[
+                TrackFormat(0, 39, 0, 0, 10, "FM", 250, 1, id_start=1)
+            ],
+        ),
+        filesystem_type="HDOS",
+        filesystem_config=HDOSLabelRecord(
+            title="HDOS 2.0 DISK",
+            volume_number=1,
+            cluster_factor=2,
+            dir_start_block=130, # Representative value for HDOS 2.0+
+            grt_start_block=148  # Representative value for HDOS 2.0+
+        ),
+    ),
+
+    # H17/H37 2-Side, 40-track, Single Density (400 sectors -> 200 groups * 2 SPG)
+    "hdos_5.25_200k_dssd": FormatProfile(
+        name="hdos_5.25_200k_dssd",
+        description="5.25\" DSSD 200KB HDOS 3.0 (40 tracks, 2 heads, 10 sectors/track, FM)",
+        physical_format=PhysicalFormat(
+            cylinders=40,
+            heads=2,
+            rpm=300,
+            heads_inverted=False,
+            bytes_per_sector=256,
+            track_formats=[
+                TrackFormat(0, 39, 0, 1, 10, "FM", 250, 1, id_start=1)
+            ],
+        ),
+        filesystem_type="HDOS",
+        filesystem_config=HDOSLabelRecord(
+            title="HDOS 3.0 DISK",
+            volume_number=1,
+            cluster_factor=4,
+            dir_start_block=130,
+            grt_start_block=148
+        ),
+    ),
+
+    # H37 1-Side, 80-track, Double Density (640 sectors -> 160 groups * 4 SPG)
+    "hdos_5.25_320k_ssdd": FormatProfile(
+        name="hdos_5.25_320k_ssdd",
+        description="5.25\" SSDD 320KB HDOS 3.0 (80 tracks, 1 head, 16 sectors/track, MFM)",
+        physical_format=PhysicalFormat(
+            cylinders=80,
+            heads=1,
+            rpm=300,
+            heads_inverted=False,
+            bytes_per_sector=256,
+            track_formats=[
+                TrackFormat(0, 79, 0, 0, 16, "MFM", 250, 1, id_start=1)
+            ],
+        ),
+        filesystem_type="HDOS",
+        filesystem_config=HDOSLabelRecord(
+            title="HDOS 3.0 DISK",
+            volume_number=1,
+            cluster_factor=4,
+            dir_start_block=130,
+            grt_start_block=148
+        ),
+    ),
+
+    # H47 2-Side, 77-track, Double Density (4000 sectors -> 250 groups * 16 SPG)
+    "hdos_8_1m_dsdd": FormatProfile(
+        name="hdos_8_1m_dsdd",
+        description="8\" DSDD 1MB HDOS 3.0 (77 tracks, 2 heads, 26 sectors/track, MFM)",
+        physical_format=PhysicalFormat(
+            cylinders=77,
+            heads=2,
+            rpm=360,
+            heads_inverted=False,
+            bytes_per_sector=256,
+            track_formats=[
+                TrackFormat(0, 76, 0, 1, 26, "MFM", 500, 1, id_start=1)
+            ],
+        ),
+        filesystem_type="HDOS",
+        filesystem_config=HDOSLabelRecord(
+            title="HDOS 3.0 DISK",
+            volume_number=1,
+            cluster_factor=16,
+            dir_start_block=130,
+            grt_start_block=148
         ),
     ),
 }

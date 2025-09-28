@@ -154,11 +154,11 @@ class FileBrowserApp(QMainWindow):
     @pyqtSlot()
     def open_disk_image_file(self) -> None:
         """
-        Opens a disk image file (.ima, .img, .imd) selected by the user.
+        Opens a disk image file (.ima, .img, .imd, .dsk, .h8d) selected by the user.
         """
         self.logger.debug("Attempting to open a disk image file.")
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open Disk Image", "", "Disk Images (*.ima *.img *.imd *.dsk);;All Files (*)"
+            self, "Open Disk Image", "", "Disk Images (*.ima *.img *.imd *.dsk *.h8d);;All Files (*)"
         )
         if not file_path:
             self.logger.debug("Open Disk Image file dialog cancelled.")
@@ -172,6 +172,8 @@ class FileBrowserApp(QMainWindow):
         elif ext_lower == ".dsk":
             disk_type = "IMG"  # Treat .dsk as raw .img for Amstrad DSKs
             self.logger.info("DSK file selected, will attempt to load as raw image (Amstrad structured DSKs are not supported by this raw loader).")
+        elif ext_lower == ".h8d":
+            disk_type = "IMG"  # Treat .h8d as raw .img for HDOS images
 
         try:
             self.reset_ui()
