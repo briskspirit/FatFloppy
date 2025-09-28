@@ -1624,7 +1624,8 @@ class FileBrowserApp(QMainWindow):
             non_printable = sum(1 for c in text if not (c.isprintable() or c in '\r\n\t'))
             # If more than 10% of characters are non-printable, it's probably binary
             if len(text) > 0 and (non_printable / len(text)) > 0.1:
-                self.logger.debug(f"File detected as binary: {non_printable / len(text):.2f}% non-printable characters.")
+                percentage = (non_printable / len(text)) * 100
+                self.logger.debug(f"File detected as binary: {percentage:.2f}% non-printable characters.")
                 return False
             return True
         except UnicodeDecodeError:
