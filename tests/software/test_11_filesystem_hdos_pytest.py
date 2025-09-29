@@ -328,7 +328,7 @@ def test_hdos_format_creates_structures(hdos_controller: DiskController, tmp_pat
 
     # Verify label sector exists and is valid
     assert fs.label is not None
-    assert fs.label.volume_number == 0
+    assert fs.label.volume_number == 1
     assert fs.label.cluster_factor == 2
 
     # Verify GRT exists at correct location

@@ -110,8 +110,8 @@ def test_02_ops_after_close(error_controller: DiskController) -> None:
     mock_profile.description = "Mock Format"
     mock_profile.physical_format = dummy_geom
 
-    # Simulate an open state to allow for closing
-    with patch.object(controller, "_detect_image_file_format", return_value=True):
+    # CHANGED: Mock the new detect_format method instead
+    with patch.object(controller, "detect_format", return_value=(None, None)):
         controller.driver = MagicMock()
         controller.disk = MagicMock()
         controller.filesystem = MagicMock()
