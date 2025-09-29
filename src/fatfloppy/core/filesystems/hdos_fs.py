@@ -226,21 +226,24 @@ class HDOSFilesystem(Filesystem):
         file_data = file_data[:allocated_size]
         
         # Trim trailing null bytes only if this appears to be a text file
-        # Check if the file is primarily text (printable ASCII + common whitespace)
+        # Strategy: Find last non-null byte, check if non-null portion is mostly text
         if len(file_data) > 0:
-            # Sample up to first 512 bytes to determine if it's text
-            sample_size = min(512, len(file_data))
-            sample = file_data[:sample_size]
+            # Find the last non-null byte
+            last_non_null = len(file_data) - 1
+            while last_non_null >= 0 and file_data[last_non_null] == 0:
+                last_non_null -= 1
             
-            # Count text-like bytes (printable ASCII + tab, newline, carriage return)
-            text_bytes = sum(1 for b in sample if b in range(32, 127) or b in (9, 10, 13))
-            text_ratio = text_bytes / sample_size
-            
-            # If >90% of sampled bytes are text-like, treat as text file and trim nulls
-            if text_ratio > 0.9:
-                while file_data and file_data[-1] == 0:
-                    file_data.pop()
-                logger.debug(f"Trimmed trailing nulls from text file: {filename}")
+            # If there are trailing nulls and we have actual content
+            if last_non_null >= 0 and last_non_null < len(file_data) - 1:
+                # Check if the non-null portion is mostly text
+                non_null_portion = file_data[:last_non_null + 1]
+                text_bytes = sum(1 for b in non_null_portion if b in range(32, 127) or b in (9, 10, 13))
+                text_ratio = text_bytes / len(non_null_portion) if len(non_null_portion) > 0 else 0
+                
+                # If >90% of non-null bytes are text-like, trim the nulls
+                if text_ratio > 0.9:
+                    file_data = file_data[:last_non_null + 1]
+                    logger.debug(f"Trimmed trailing nulls from text file: {filename}")
         
         return bytes(file_data)
 
@@ -506,12 +509,11 @@ class HDOSFilesystem(Filesystem):
         current_group = self._grt[0]
         visited = set()
         
-        logger.warning(f"DEBUG: GRT[0]={current_group}, num_groups={num_groups_on_disk}")
-        logger.warning(f"DEBUG: First 30 GRT bytes: {list(self._grt[:30])}")
+        logger.debug(f"get_allocated_units: GRT[0]={current_group}, num_groups={num_groups_on_disk}")
         
         # If GRT[0] is 0, the disk doesn't have a maintained free chain
         if current_group == 0:
-            logger.warning("GRT[0]=0, no free chain - using fallback to scan file chains")
+            logger.info("GRT[0]=0, no free chain - using fallback to scan file chains")
             
             # Collect all groups actually used by files
             file_groups = set()
@@ -567,7 +569,7 @@ class HDOSFilesystem(Filesystem):
                         rgt_locked_groups.add(g)
             
             allocated_groups = file_groups | system_groups | rgt_locked_groups
-            logger.warning(f"DEBUG: Fallback found {len(file_groups)} file groups, "
+            logger.debug(f"Fallback found {len(file_groups)} file groups, "
                         f"{len(system_groups)} system groups, {len(rgt_locked_groups)} RGT-locked groups")
             return sorted(list(allocated_groups))
         
@@ -587,8 +589,18 @@ class HDOSFilesystem(Filesystem):
             except IndexError:
                 break
 
+        # Calculate allocated groups as: all - free
         allocated_groups = all_groups - free_groups
-        logger.warning(f"DEBUG: Normal traversal found {len(free_groups)} free groups")
+        
+        # BUT we also need to add RGT locked-out groups that might not be in the free chain
+        # These are already excluded from the free chain, but we need to ensure they're
+        # counted as allocated
+        if self._rgt:
+            for g in range(1, min(num_groups_on_disk + 1, len(self._rgt))):
+                if self._is_group_locked_out(g):
+                    allocated_groups.add(g)
+        
+        logger.debug(f"Normal traversal: {len(free_groups)} free, {len(allocated_groups)} allocated")
         return sorted(list(allocated_groups))
 
     def get_free_space(self) -> Tuple[int, int]:
@@ -805,8 +817,18 @@ class HDOSFilesystem(Filesystem):
             if 1 <= grt_group <= num_groups_on_disk:
                 grt_reserved_groups.add(grt_group)
 
+        # Calculate Track 0 groups that must be locked out
+        track0_end_lba = HDOS_SECTORS_PER_TRACK - 1  # LBA 9
+        track0_groups = set()
+        for g in range(1, num_groups_on_disk + 1):
+            group_start_lba = data_area_start_lba + (g - 1) * spg
+            if group_start_lba <= track0_end_lba:
+                track0_groups.add(g)
+        
+        logger.info(f"Track 0 groups to lock out: {sorted(track0_groups)}")
+
         # Combine all reserved (allocated) groups
-        reserved_groups = dir_reserved_groups | grt_reserved_groups
+        reserved_groups = dir_reserved_groups | grt_reserved_groups | track0_groups
 
         # Build the GRT with a free chain excluding reserved groups
         grt_data = bytearray(HDOS_BYTES_PER_SECTOR)
@@ -821,6 +843,16 @@ class HDOSFilesystem(Filesystem):
                 free_chain_head = i
         grt_data[0] = free_chain_head
 
+        # Create RGT (Reserved Group Table) marking Track 0 groups as locked out
+        rgt_data = bytearray(HDOS_BYTES_PER_SECTOR)
+        for i in range(len(rgt_data)):
+            if i == 0:
+                rgt_data[i] = 0x00  # RGT[0] not used
+            elif i in track0_groups:
+                rgt_data[i] = 0xFF  # Locked out
+            else:
+                rgt_data[i] = 0x01  # Usable
+        
         # Create empty directory
         dir_data = bytearray(DIR_BLOCK_BYTES)
         dir_data[0] = 0xFE
@@ -829,6 +861,7 @@ class HDOSFilesystem(Filesystem):
         # Write all structures
         label_bytes = self._create_label_sector_bytes(label_template)
         self._write_lba(HDOS_LABEL_SECTOR_LBA, label_bytes)
+        self._write_lba(HDOS_RGT_SECTOR_LBA, rgt_data)  # Write RGT!
         self._write_lba(label_template.grt_start_block, grt_data)
         self._write_lba(label_template.dir_start_block, dir_data[:HDOS_BYTES_PER_SECTOR])
         self._write_lba(label_template.dir_start_block + 1, dir_data[HDOS_BYTES_PER_SECTOR:])
@@ -837,7 +870,8 @@ class HDOSFilesystem(Filesystem):
         self._init_completed = False
         self._data_base_lba_cache = None
         
-        logger.info(f"Disk formatted with profile '{profile.name}', reserved groups: {len(reserved_groups)}")
+        logger.info(f"Disk formatted with profile '{profile.name}', "
+                    f"reserved: {len(dir_reserved_groups)} dir + {len(grt_reserved_groups)} grt + {len(track0_groups)} track0 groups")
 
     def write_file(self, path: str, data: bytes) -> None:
         """Writes data to a new file on the disk."""
@@ -857,6 +891,10 @@ class HDOSFilesystem(Filesystem):
 
         if num_groups_needed == 0:
              self._create_empty_file_entry(path)
+             # Flush and refresh cache so empty file is visible
+             self.disk.flush()
+             self._dir_entries = None
+             self._init_completed = False
              return
 
         allocated_groups = []
@@ -872,6 +910,7 @@ class HDOSFilesystem(Filesystem):
             self._grt[allocated_groups[i]] = allocated_groups[i+1]
         self._grt[allocated_groups[-1]] = 0
 
+        # Zero-pad data to clear any leftover content in allocated groups
         padded_data = data.ljust(num_sectors_needed * HDOS_BYTES_PER_SECTOR, b'\x00')
         data_area_start_lba = self._data_base_lba()
         for i, group_num in enumerate(allocated_groups):
@@ -1004,11 +1043,13 @@ class HDOSFilesystem(Filesystem):
             return False
             
     def _create_label_sector_bytes(self, label: HDOSLabelRecord) -> bytes:
+        """Creates the 256-byte label sector from an HDOSLabelRecord."""
         sector = bytearray(HDOS_BYTES_PER_SECTOR)
         struct.pack_into("<H", sector, 3, label.dir_start_block)
         struct.pack_into("<H", sector, 5, label.grt_start_block)
         sector[7] = label.cluster_factor
-        sector[0] = label.volume_number
+        # Volume number: 0 for data disks, 1 for system disks
+        sector[0] = label.volume_number if hasattr(label, 'volume_number') and label.volume_number is not None else 0
         
         title_bytes = label.title.encode('ascii', 'ignore')
         sector[17:17+len(title_bytes)] = title_bytes
