@@ -30,13 +30,14 @@ from typing import List, Optional, Tuple, Dict, Any, Type
 from .utils.logging_config import get_logger
 from .disk import Disk
 from .drivers import (
-    DiskIODriver, GreaseweazleDriver, IMGImageDriver, IMDImageDriver
+    DiskIODriver, GreaseweazleDriver, IMGImageDriver, IMDImageDriver, H17ImageDriver
 )
 from .physical_format import PhysicalFormat, TrackFormat
 from .format_profile import FormatProfile
 from .filesystems.fs_base import Filesystem
 from .filesystems.fat12fs import FATFilesystem, FATVolumeInfo, FAT12_MAX_CLUSTERS
 from .filesystems.cpm_fs import CPMFilesystem, CPMDiskParameterBlock
+from .filesystems.hdos_fs import HDOSFilesystem, HDOSLabelRecord
 from .format_definitions import FLOPPY_FORMATS
 from .filesystem_factory import create_filesystem, get_filesystem_class_by_type
 
@@ -50,7 +51,7 @@ class DiskController:
 
     This class handles driver initialization, format detection, filesystem
     interaction, and file operations. It abstracts the complexities of
-    different disk drivers (Greaseweazle, IMG, IMD) and filesystems (FAT12, CP/M).
+    different disk drivers (Greaseweazle, IMG, IMD, H17) and filesystems (FAT12, CP/M, HDOS).
     """
 
     def __init__(self) -> None:
@@ -221,8 +222,9 @@ class DiskController:
 
         This method orchestrates several detection strategies:
         1. Uses IMD metadata if the file is a self-describing .imd image.
-        2. Attempts a direct parse of the boot sector for a FAT BPB.
-        3. Iterates through all known format profiles as a fallback.
+        2. Uses H17 metadata if the file is a .h17disk image.  # ADD THIS LINE
+        3. Attempts a direct parse of the boot sector for a FAT BPB.
+        4. Iterates through all known format profiles as a fallback.
 
         Returns:
             A tuple containing:
@@ -238,6 +240,10 @@ class DiskController:
         # Strategy 1: IMD-specific detection
         if isinstance(self.driver, IMDImageDriver):
             return self._detect_format_for_imd()
+
+        # Strategy 1.5: H17-specific detection  # ADD THIS BLOCK
+        if isinstance(self.driver, H17ImageDriver):
+            return self._detect_format_for_h17()
 
         # Strategy 2: Direct parse of boot sector (for FAT)
         result = self._detect_format_by_direct_parse()
@@ -556,6 +562,9 @@ class DiskController:
         if isinstance(self.driver, IMDImageDriver):
             self.logger.error("Formatting is not supported directly via the IMDImageDriver.")
             return False
+        if isinstance(self.driver, H17ImageDriver):
+            self.logger.error("Formatting is not supported for already-open H17 images. Use create_and_format_image instead.")
+            return False
         if not self.disk or not self.driver:
             self.logger.error("Cannot format disk: Disk or driver not initialized.")
             return False
@@ -624,7 +633,8 @@ class DiskController:
             self.active_filesystem_config = None
             return False
 
-    def create_and_format_image(self, file_path: str, profile: FormatProfile, volume_label: str = "NO NAME", disk_type: str = "IMG") -> bool:
+    def create_and_format_image(self, file_path: str, profile: FormatProfile,
+                            volume_label: str = "NO NAME", disk_type: str = "IMG") -> bool:
         """
         Creates a new disk image file and formats it.
 
@@ -632,7 +642,7 @@ class DiskController:
             file_path: The path where the new image file will be created.
             profile: The FormatProfile defining the geometry and filesystem.
             volume_label: The volume label for the new filesystem.
-            disk_type: The type of image to create ("IMG" or "IMD").
+            disk_type: The type of image to create ("IMG", "IMD", or "H17").  # UPDATED
 
         Returns:
             True on successful creation and formatting, False otherwise.
@@ -657,11 +667,35 @@ class DiskController:
                 self.driver = self._create_img_driver(file_path)
                 if not self.driver or len(self.driver.image_data) != total_bytes:
                     raise IOError(f"Failed to create or correctly size raw image file '{file_path}'")
+
             elif disk_type == "IMD":
                 self.driver = self._create_imd_driver(file_path)
                 if hasattr(self.driver, 'format_imd') and isinstance(self.driver, IMDImageDriver):
                     fill_byte = 0xE5
                     self.driver.format_imd(profile, fill_byte=fill_byte)
+
+            # ADD THIS BLOCK
+            elif disk_type == "H17":
+                self.driver = self._create_h17_driver(file_path)
+                if hasattr(self.driver, 'format_h17') and isinstance(self.driver, H17ImageDriver):
+                    # Determine volume scheme from filesystem type
+                    scheme = 'cpm' if profile.filesystem_type == 'CPM' else 'hdos'
+                    hdos_volume = 1  # Default HDOS volume
+
+                    # Try to extract volume from filesystem config
+                    if profile.filesystem_type == 'HDOS' and hasattr(profile.filesystem_config, 'volume_number'):
+                        hdos_volume = profile.filesystem_config.volume_number
+
+                    self.driver.format_h17(
+                        sides=profile.physical_format.heads,
+                        tracks=profile.physical_format.cylinders,
+                        scheme=scheme,
+                        hdos_volume=hdos_volume,
+                        label=self.driver.metadata.label or volume_label,
+                        comment=f"Created by FatFloppy"
+                    )
+                    self.logger.info(f"H17 image formatted with {scheme.upper()} volume scheme")
+
             else:
                 self.logger.error(f"Unsupported disk type: {disk_type} for image creation.")
                 return False
@@ -836,7 +870,7 @@ class DiskController:
         Internal factory method to create the appropriate disk driver.
 
         Args:
-            disk_type: The type of disk ("physical", "IMG", "IMD").
+            disk_type: The type of disk ("physical", "IMG", "IMD", "H17").  # UPDATED comment
             source: The device name or file path.
             drive_letter: The drive letter for physical drives.
             drive_size: The drive size for physical drives.
@@ -853,6 +887,8 @@ class DiskController:
             return self._create_img_driver(source)
         elif disk_type == "IMD":
             return self._create_imd_driver(source)
+        elif disk_type == "H17":
+            return self._create_h17_driver(source)
         else:
             raise ValueError(f"Unsupported disk type: {disk_type}")
 
@@ -904,6 +940,20 @@ class DiskController:
         """
         driver = IMDImageDriver(file_path=source)
         self.logger.debug(f"Created IMD driver for {source}")
+        return driver
+
+    def _create_h17_driver(self, source: str) -> H17ImageDriver:
+        """
+        Creates an H17ImageDriver for a Heathkit hard-sectored disk image.
+
+        Args:
+            source: The file path to the H17 image.
+
+        Returns:
+            An H17ImageDriver instance.
+        """
+        driver = H17ImageDriver(file_path=source)
+        self.logger.debug(f"Created H17 driver for {source}")
         return driver
 
     def _create_physical_format(self, format_info: Dict[str, any], base_profile: Optional[FormatProfile] = None) -> PhysicalFormat:
@@ -1017,6 +1067,20 @@ class DiskController:
                     self._apply_user_format(format_info)
                 except Exception as e:
                     self.logger.error(f"Failed to apply user format override to IMD: {e}")
+                    return False
+            return True
+        elif isinstance(self.driver, H17ImageDriver):
+            if not self.driver.physical_format:
+                self.logger.error("H17 driver loaded but failed to derive physical format.")
+                return False
+            self.disk.set_geometry(self.driver.physical_format)
+            self.physical_format = self.driver.physical_format
+            if format_info:
+                self.logger.warning("Applying user format_info to an H17 disk, this may override H17 metadata.")
+                try:
+                    self._apply_user_format(format_info)
+                except Exception as e:
+                    self.logger.error(f"Failed to apply user format override to H17: {e}")
                     return False
             return True
         elif format_info:  # User provided explicit format
@@ -1467,6 +1531,7 @@ class DiskController:
             is_cpm_match = (pf_profile.filesystem_type == "CPM" and
                             isinstance(pf_profile.filesystem_config, CPMDiskParameterBlock) and
                             isinstance(parsed_fs_config, CPMDiskParameterBlock))
+            # TODO: add HDOS match
 
             physical_match = (
                 pf_profile.physical_format and
@@ -1494,6 +1559,78 @@ class DiskController:
                 return pf_name, parsed_fs_config
 
         self.logger.info("IMD: System area parsed, but no exact profile match. Using derived parameters.")
+        return None, parsed_fs_config
+
+    def _detect_format_for_h17(self) -> Tuple[Optional[str], Optional[Any]]:
+        """Handles format detection specifically for an H17ImageDriver."""
+        if not isinstance(self.driver, H17ImageDriver) or not self.driver.physical_format:
+            self.logger.warning("H17: No derived physical format available for detection.")
+            return None, None
+
+        self.set_geometry(self.driver.physical_format)
+        parsed_fs_config: Optional[Any] = None
+
+        # Try to parse the filesystem
+        try:
+            temp_fs = create_filesystem(self.disk)
+            if temp_fs:
+                parsed_fs_config = temp_fs.get_specific_config()
+                self.logger.info(f"H17: Parsed filesystem using {temp_fs.__class__.__name__}.")
+
+                # Apply volumes if the filesystem supports it
+                if hasattr(temp_fs, 'apply_volume_to_driver'):
+                    try:
+                        temp_fs.apply_volume_to_driver()
+                        self.logger.info("H17: Applied filesystem-specific volume scheme")
+                    except Exception as e:
+                        self.logger.warning(f"H17: Could not apply volumes: {e}")
+        except ValueError:
+            self.logger.warning("H17: Failed to parse filesystem.")
+
+        if not parsed_fs_config:
+            return None, None
+
+        # Try to match against known profiles
+        for pf_name, pf_profile in self.known_formats.items():
+            is_fat_match = (pf_profile.filesystem_type == "FAT12" and
+                            isinstance(pf_profile.filesystem_config, FATVolumeInfo) and
+                            isinstance(parsed_fs_config, FATVolumeInfo))
+            is_cpm_match = (pf_profile.filesystem_type == "CPM" and
+                            isinstance(pf_profile.filesystem_config, CPMDiskParameterBlock) and
+                            isinstance(parsed_fs_config, CPMDiskParameterBlock))
+            is_hdos_match = (pf_profile.filesystem_type == "HDOS" and
+                            isinstance(pf_profile.filesystem_config, HDOSLabelRecord) and
+                            isinstance(parsed_fs_config, HDOSLabelRecord))
+
+            physical_match = (
+                pf_profile.physical_format and
+                pf_profile.physical_format.cylinders == self.driver.physical_format.cylinders and
+                pf_profile.physical_format.heads == self.driver.physical_format.heads and
+                pf_profile.physical_format.bytes_per_sector == self.driver.physical_format.bytes_per_sector and
+                pf_profile.physical_format.get_sectors_per_track(0, 0) == self.driver.physical_format.get_sectors_per_track(0, 0)
+            )
+            if not physical_match:
+                continue
+
+            logical_match = False
+            if is_fat_match and pf_profile.filesystem_config.total_sectors == parsed_fs_config.total_sectors:
+                logical_match = True
+            elif is_cpm_match and all([
+                pf_profile.filesystem_config.spt == parsed_fs_config.spt,
+                pf_profile.filesystem_config.bsh == parsed_fs_config.bsh,
+                pf_profile.filesystem_config.dsm == parsed_fs_config.dsm,
+                pf_profile.filesystem_config.off == parsed_fs_config.off,
+            ]):
+                logical_match = True
+            elif is_hdos_match:
+                # HDOS match is simpler - just physical format is enough
+                logical_match = True
+
+            if logical_match:
+                self.logger.info(f"H17: Matched known profile '{pf_name}'")
+                return pf_name, parsed_fs_config
+
+        self.logger.info("H17: Filesystem parsed, but no exact profile match. Using derived parameters.")
         return None, parsed_fs_config
 
     def _detect_format_by_direct_parse(self) -> Optional[Tuple[Optional[str], Optional[Any]]]:

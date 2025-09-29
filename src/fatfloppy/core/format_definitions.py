@@ -982,7 +982,7 @@ FLOPPY_FORMATS: Dict[str, FormatProfile] = {
             heads_inverted=False,
             bytes_per_sector=256,
             track_formats=[
-                TrackFormat(0, 39, 0, 0, 10, "FM", 250, 1, id_start=1)
+                TrackFormat(0, 39, 0, 0, 10, "FM", 250, 1, id_start=1, gap1_bytes=45, gap2_bytes=12, gap3_bytes=30) # Gap values are from H17 manual, DO NOT CHANGE
             ],
         ),
         filesystem_type="HDOS",
