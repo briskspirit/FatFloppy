@@ -9,7 +9,7 @@ start the program.
 
 from logging import Logger
 
-from src.fatfloppy.core.utils.logging_config import get_logger
+from fatfloppy.core.utils.logging_config import get_logger
 
 logger: Logger = get_logger()
 
@@ -24,7 +24,7 @@ def main() -> None:
     """
     logger.info("Starting FatFloppy application")
     try:
-        from src.fatfloppy.gui import run_gui
+        from fatfloppy.gui import run_gui
         logger.info("Starting GUI mode")
         run_gui()
     except ImportError as e:

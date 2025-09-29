@@ -1,0 +1,46 @@
+# pyproject.toml
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "FatFloppy"
+# Pull version from fatfloppy/_version.py
+dynamic = ["version"]
+description = "Graphical utility for working with vintage floppy images via Greaseweazle."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "greaseweazle",
+  "PyQt6",
+]
+
+# Optional, but keeps your trove classifiers
+classifiers = [
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Filesystems",
+  "Topic :: Utilities",
+  "Environment :: X11 Applications :: Qt",
+  "Environment :: MacOS X :: Cocoa",
+  "Environment :: Win32 (MS Windows)",
+]
+
+[project.gui-scripts]
+fatfloppy = "fatfloppy.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true  # keep if you rely on MANIFEST.in or package_data
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "fatfloppy._version.__version__"}
