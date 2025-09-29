@@ -10,25 +10,25 @@ actions on CP/M formatted disk images. It covers:
 - Error handling for edge cases like full directories and full disks.
 - The validity scoring mechanism to differentiate CP/M disks from other formats.
 """
-
-import pytest
-import sys
-import shutil
 import math
+import shutil
+import sys
 from pathlib import Path
 from typing import Iterator, List
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.controller import DiskController
-from fatfloppy.core.filesystems.cpm_fs import CPMFilesystem
-from fatfloppy.core.drivers import IMGImageDriver
 from fatfloppy.core.disk import Disk
+from fatfloppy.core.drivers import IMGImageDriver
+from fatfloppy.core.filesystems.cpm_fs import CPM_SECTOR_SIZE, CPMFilesystem
 
 # --- Constants ---
-RESOURCE_DIR = Path(__file__).parent.parent / 'resources'
-CPM_RESOURCE_DIR = RESOURCE_DIR / 'CPM'
-FAT_IMG_SRC = RESOURCE_DIR / 'empty_formatted_144m.img'
+RESOURCE_DIR: Path = Path(__file__).parent.parent / 'resources'
+CPM_RESOURCE_DIR: Path = RESOURCE_DIR / 'CPM'
+FAT_IMG_SRC: Path = RESOURCE_DIR / 'empty_formatted_144m.img'
 
 
 # --- Fixtures ---
@@ -107,7 +107,8 @@ def test_cpm_disk_images_read_and_verify(
     for fname in expected_files:
         assert fname in listed_filenames, f"{fname} not found in directory listing"
         # Check for invalid characters (valid chars are 7-bit printable)
-        assert all(32 <= ord(c) < 127 for c in fname if c not in '.'), f"Filename '{fname}' contains invalid characters"
+        assert all(32 <= ord(c) < 127 for c in fname if c not in '.'), \
+            f"Filename '{fname}' contains invalid characters"
 
     # 3. Check free space
     free_bytes, _ = cpm_controller.get_free_space()
@@ -294,7 +295,7 @@ def test_cpm_directory_full_error(cpm_controller: DiskController, tmp_path: Path
     max_entries = dpb.drm + 1
     for i in range(max_entries):
         filename = f"/FILE{i}.TXT"
-        assert cpm_controller.write_file(filename, b'small'), f"Failed to write file {i+1}/{max_entries}"
+        assert cpm_controller.write_file(filename, b'small'), f"Failed to write file {i + 1}/{max_entries}"
 
     # Verify directory is now full
     assert len(cpm_controller.list_directory("/")) == max_entries
@@ -384,3 +385,417 @@ def test_cpm_validity_score(cpm_controller: DiskController) -> None:
 
     cpm_fs_on_garbage = CPMFilesystem(garbage_disk)
     assert cpm_fs_on_garbage.get_validity_score() == 0
+
+
+def test_cpm_single_byte_file_write_read(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests writing and reading a very small (1-byte) file.
+    Note: CP/M doesn't truly support 0-byte files as they require at least
+    one record (128 bytes) in the extent structure.
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile, f"Profile '{profile_name}' not found"
+
+    img_path = tmp_path / "small_file_test.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # Write a minimal file (1 byte)
+    minimal_data = b"X"
+    assert cpm_controller.write_file("/TINY.TXT", minimal_data)
+
+    # Verify it appears in directory
+    dir_listing = cpm_controller.list_directory("/")
+    assert len(dir_listing) == 1
+    assert dir_listing[0]['name'] == "TINY.TXT"
+    assert dir_listing[0]['size'] == CPM_SECTOR_SIZE  # CP/M allocates in 128-byte records
+
+    # Read it back and verify content (may have padding)
+    content = cpm_controller.read_file("/TINY.TXT")
+    assert content.startswith(minimal_data)
+
+    cpm_controller.close_disk()
+
+
+def test_cpm_file_exact_extent_boundary(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests writing a file that exactly fills one extent (16KB).
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile
+
+    img_path = tmp_path / "extent_boundary.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # Write exactly 16KB (one extent)
+    exact_extent_data = b'X' * 16384
+    assert cpm_controller.write_file("/EXACT.BIN", exact_extent_data)
+
+    # Read back and verify
+    read_data = cpm_controller.read_file("/EXACT.BIN")
+    assert len(read_data) == 16384
+    assert read_data == exact_extent_data
+
+    cpm_controller.close_disk()
+
+
+def test_cpm_file_multiple_extents(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests writing and reading a file that spans multiple extents (>16KB).
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile
+
+    img_path = tmp_path / "multi_extent.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # Write 40KB (spans 3 extents: 16KB + 16KB + 8KB)
+    multi_extent_data = bytes(range(256)) * 160  # 40KB with pattern
+    assert cpm_controller.write_file("/LARGE.DAT", multi_extent_data)
+
+    # Verify directory shows correct size
+    dir_listing = cpm_controller.list_directory("/")
+    assert len(dir_listing) == 1
+    assert dir_listing[0]['size'] == len(multi_extent_data)
+
+    # Read back and verify integrity
+    read_data = cpm_controller.read_file("/LARGE.DAT")
+    assert read_data == multi_extent_data
+
+    cpm_controller.close_disk()
+
+
+def test_cpm_user_areas_multiple_files(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests writing and reading files in different user areas (U0-U15).
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile
+
+    img_path = tmp_path / "user_areas.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # Write files to different user areas
+    test_data = {
+        "U0:FILE.TXT": b"User 0 content",
+        "U1:FILE.TXT": b"User 1 content",
+        "U5:DATA.BIN": b"User 5 data",
+        "U15:LAST.DOC": b"User 15 document"
+    }
+
+    for path, data in test_data.items():
+        assert cpm_controller.write_file(f"/{path}", data), f"Failed to write {path}"
+
+    # Read files back with explicit user specification
+    for path, expected_data in test_data.items():
+        read_data = cpm_controller.read_file(f"/{path}")
+        assert read_data == expected_data, f"Content mismatch for {path}"
+
+    # Verify directory listing shows all files
+    dir_listing = cpm_controller.list_directory("/")
+    assert len(dir_listing) == 4
+
+    # Check that each file has correct user in attributes
+    for item in dir_listing:
+        assert item['attributes'].startswith('U'), "Missing user area in attributes"
+
+    cpm_controller.close_disk()
+
+
+def test_cpm_same_filename_different_users(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests handling files with the same name in different user areas.
+    Verifies that reading without user specification returns the file from U0.
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile
+
+    img_path = tmp_path / "same_name.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # Write same filename to multiple user areas
+    assert cpm_controller.write_file("/U0:TEST.TXT", b"Content from user 0")
+    assert cpm_controller.write_file("/U1:TEST.TXT", b"Content from user 1")
+    assert cpm_controller.write_file("/U2:TEST.TXT", b"Content from user 2")
+
+    # Read with explicit user specification
+    assert cpm_controller.read_file("/U0:TEST.TXT") == b"Content from user 0"
+    assert cpm_controller.read_file("/U1:TEST.TXT") == b"Content from user 1"
+    assert cpm_controller.read_file("/U2:TEST.TXT") == b"Content from user 2"
+
+    # Read without user specification should get lowest user number (U0)
+    content = cpm_controller.read_file("/TEST.TXT")
+    assert content == b"Content from user 0"
+
+    cpm_controller.close_disk()
+
+
+def test_cpm_invalid_filename_handling(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests error handling for invalid filenames (e.g., too long).
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile
+
+    img_path = tmp_path / "invalid_names.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # Try to read a file without extension (controller catches exception and returns None)
+    result = cpm_controller.read_file("/NOEXTENSION")
+    assert result is None, "Should return None for invalid filename without extension"
+
+    # Very long names should be truncated to 8.3 format automatically
+    long_name_data = b"test content"
+    assert cpm_controller.write_file("/VERYLONGFILENAME.LONGEXT", long_name_data)
+
+    # Verify the file was written (with truncated name)
+    dir_listing = cpm_controller.list_directory("/")
+    assert len(dir_listing) == 1
+    # Name should be truncated to max 8.3
+    name, ext = dir_listing[0]['name'].split('.')
+    assert len(name) <= 8
+    assert len(ext) <= 3
+
+    cpm_controller.close_disk()
+
+
+def test_cpm_delete_specific_user_file(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests deleting a file from a specific user area without affecting
+    files with the same name in other user areas.
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile
+
+    img_path = tmp_path / "delete_user.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # Create same filename in multiple user areas
+    assert cpm_controller.write_file("/U0:DATA.BIN", b"User 0 data")
+    assert cpm_controller.write_file("/U1:DATA.BIN", b"User 1 data")
+    assert cpm_controller.write_file("/U2:DATA.BIN", b"User 2 data")
+
+    # Delete from U1
+    assert cpm_controller.delete_item("/U1:DATA.BIN")
+
+    # Verify U1 file is gone (returns None) but others remain
+    u1_result = cpm_controller.read_file("/U1:DATA.BIN")
+    assert u1_result is None, "U1 file should be deleted and return None"
+
+    assert cpm_controller.read_file("/U0:DATA.BIN") == b"User 0 data"
+    assert cpm_controller.read_file("/U2:DATA.BIN") == b"User 2 data"
+
+    # Directory should show 2 files remaining
+    dir_listing = cpm_controller.list_directory("/")
+    assert len(dir_listing) == 2
+
+    cpm_controller.close_disk()
+
+
+def test_cpm_overwrite_existing_file(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests overwriting an existing file with new content of different size.
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile
+
+    img_path = tmp_path / "overwrite.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # Write initial file
+    initial_data = b"Initial content that is moderately long"
+    assert cpm_controller.write_file("/TEST.DAT", initial_data)
+    assert cpm_controller.read_file("/TEST.DAT") == initial_data
+
+    # Overwrite with larger content
+    larger_data = b"X" * 5000
+    assert cpm_controller.write_file("/TEST.DAT", larger_data)
+    assert cpm_controller.read_file("/TEST.DAT") == larger_data
+
+    # Overwrite with smaller content
+    smaller_data = b"Small"
+    assert cpm_controller.write_file("/TEST.DAT", smaller_data)
+    read_back = cpm_controller.read_file("/TEST.DAT")
+    assert read_back == smaller_data
+
+    # Should only be one file in directory
+    dir_listing = cpm_controller.list_directory("/")
+    assert len(dir_listing) == 1
+
+    cpm_controller.close_disk()
+
+
+def test_cpm_free_space_tracking(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests that free space is accurately tracked through various operations.
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile
+
+    img_path = tmp_path / "freespace.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # Get initial free space
+    initial_free, total = cpm_controller.get_free_space()
+    assert initial_free > 0
+    assert total > initial_free  # Total includes directory blocks
+
+    # Write a file and check free space decreases
+    test_data = b"A" * 3000
+    assert cpm_controller.write_file("/FILE1.TXT", test_data)
+    free_after_write, _ = cpm_controller.get_free_space()
+    assert free_after_write < initial_free
+
+    # Write another file
+    assert cpm_controller.write_file("/FILE2.TXT", test_data)
+    free_after_second, _ = cpm_controller.get_free_space()
+    assert free_after_second < free_after_write
+
+    # Delete first file, free space should increase
+    assert cpm_controller.delete_item("/FILE1.TXT")
+    free_after_delete, _ = cpm_controller.get_free_space()
+    assert free_after_delete > free_after_second
+
+    # Delete second file, should return close to initial
+    assert cpm_controller.delete_item("/FILE2.TXT")
+    final_free, _ = cpm_controller.get_free_space()
+    assert final_free == pytest.approx(initial_free)
+
+    cpm_controller.close_disk()
+
+
+def test_cpm_file_with_no_extension(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests writing and reading a file specified without an extension.
+    CP/M should handle this gracefully by treating the extension as blank.
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile
+
+    img_path = tmp_path / "no_ext.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # To create a file with no extension, we can specify a trailing dot
+    test_data = b"Content without extension"
+    filename = "/NOEXT."
+    assert cpm_controller.write_file(filename, test_data)
+
+    # Read it back
+    read_data = cpm_controller.read_file(filename)
+    assert read_data == test_data
+
+    # Verify it appears in the directory listing correctly
+    dir_listing = cpm_controller.list_directory("/")
+    assert len(dir_listing) == 1
+    assert dir_listing[0]['name'] == "NOEXT."
+
+    cpm_controller.close_disk()
+
+
+def test_cpm_allocated_blocks_consistency(cpm_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests that the get_allocated_units method accurately tracks block allocation.
+
+    Args:
+        cpm_controller: The disk controller fixture.
+        tmp_path: The pytest temporary path fixture.
+    """
+    profile_name = "cpm_8_sssd_250k"
+    profile = cpm_controller.get_format_by_name(profile_name)
+    assert profile
+
+    img_path = tmp_path / "alloc_blocks.img"
+    img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert cpm_controller.format_disk(profile_name)
+
+    # Initially, only directory blocks should be allocated
+    initial_allocated = cpm_controller.filesystem.get_allocated_units()
+    dpb = cpm_controller.filesystem.dpb
+    assert len(initial_allocated) == dpb.directory_blocks
+
+    # Write a file
+    test_data = b"X" * 2500
+    assert cpm_controller.write_file("/TEST.BIN", test_data)
+
+    # Check allocated blocks increased
+    after_write_allocated = cpm_controller.filesystem.get_allocated_units()
+    assert len(after_write_allocated) > len(initial_allocated)
+
+    # Delete the file
+    assert cpm_controller.delete_item("/TEST.BIN")
+
+    # Should return to initial state
+    final_allocated = cpm_controller.filesystem.get_allocated_units()
+    assert len(final_allocated) == len(initial_allocated)
+
+    cpm_controller.close_disk()
