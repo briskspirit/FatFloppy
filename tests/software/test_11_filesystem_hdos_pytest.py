@@ -13,7 +13,7 @@ actions on HDOS formatted disk images. It covers:
 import pytest
 import sys
 import shutil
-import math
+import hashlib
 from pathlib import Path
 from typing import Iterator
 
@@ -568,5 +568,286 @@ def test_hdos_text_file_null_trimming(hdos_controller: DiskController, tmp_path:
     read_binary = hdos_controller.read_file("/BINARY.DAT")
     # Binary content will be sector-aligned, so may have padding
     assert read_binary[:len(binary_content)] == binary_content
+    
+    hdos_controller.close_disk()
+
+
+def test_hdos_large_file_spanning_many_groups(hdos_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests writing and reading a large file that spans 50+ allocation groups.
+    
+    This verifies that the GRT chain handling works correctly for large files
+    and that file content integrity is maintained across many groups.
+    """
+    profile_name = "hdos_5.25_100k"
+    profile = hdos_controller.get_format_by_name(profile_name)
+    blank_img_path = tmp_path / "large_file_test.h8d"
+    blank_img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    
+    assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG",
+                                     format_info={"format_name": profile_name})
+    assert hdos_controller.format_disk(profile_name)
+    
+    # SPG=2 means 512 bytes per group
+    # To get 50+ groups, we need 50 * 512 = 25,600+ bytes
+    # Create a file with 60 groups worth of data (30,720 bytes)
+    groups_needed = 60
+    bytes_per_group = 512
+    file_size = groups_needed * bytes_per_group
+    
+    # Create unique content so we can verify integrity
+    # Use a repeating pattern that's easy to verify
+    pattern = b"HDOS_LARGE_FILE_TEST_PATTERN_" + bytes(range(256))
+    large_content = (pattern * (file_size // len(pattern) + 1))[:file_size]
+    
+    # Verify we have enough free space
+    initial_free, total = hdos_controller.get_free_space()
+    assert initial_free >= file_size, f"Not enough free space: {initial_free} < {file_size}"
+    
+    # Write the large file
+    filename = "/LARGEFIL.DAT"
+    assert hdos_controller.write_file(filename, large_content), "Failed to write large file"
+    
+    # Verify it appears in directory with correct size
+    dir_listing = hdos_controller.list_directory("/")
+    large_file_entry = next((f for f in dir_listing if f['name'] == 'LARGEFIL.DAT'), None)
+    assert large_file_entry is not None, "Large file not found in directory"
+    assert large_file_entry['size'] == file_size, f"Size mismatch: {large_file_entry['size']} != {file_size}"
+    
+    # Verify free space decreased (don't check exact amount due to group alignment)
+    free_after_write, _ = hdos_controller.get_free_space()
+    assert free_after_write < initial_free, "Free space should decrease after writing file"
+    space_used = initial_free - free_after_write
+    # Space used should be at least the file size, possibly more due to group alignment
+    assert space_used >= file_size, f"Space used {space_used} should be >= file size {file_size}"
+    
+    # Read back and verify content integrity
+    read_content = hdos_controller.read_file(filename)
+    assert len(read_content) == len(large_content), "Read size doesn't match written size"
+    assert read_content == large_content, "Content mismatch after reading large file"
+    
+    # Verify the file uses at least the expected number of groups
+    fs = hdos_controller.filesystem
+    assert isinstance(fs, HDOSFilesystem)
+    
+    # Count groups in the file's chain
+    entry = next(e for e in fs._dir_entries if e.get_filename() == 'LARGEFIL.DAT')
+    group_count = 0
+    current_group = entry.first_group
+    visited = set()
+    
+    while current_group != 0 and current_group not in visited:
+        visited.add(current_group)
+        group_count += 1
+        if current_group == entry.last_group:
+            break
+        current_group = fs._grt[current_group]
+    
+    assert group_count >= groups_needed, f"Expected at least {groups_needed} groups, found {group_count}"
+    
+    # Delete the large file and verify space is reclaimed
+    assert hdos_controller.delete_item_recursive(filename)
+    
+    # Verify the file is gone from directory
+    dir_after_delete = hdos_controller.list_directory("/")
+    assert not any(f['name'] == 'LARGEFIL.DAT' for f in dir_after_delete), \
+        "File still in directory after deletion"
+    
+    # Verify free space increased (at least some groups were freed)
+    free_after_delete, _ = hdos_controller.get_free_space()
+    assert free_after_delete > free_after_write, \
+        f"Free space should increase after deletion: {free_after_delete} vs {free_after_write}"
+    
+    # Verify we can write another file to the reclaimed space
+    second_file_content = b"Testing reuse of freed space" * 100
+    assert hdos_controller.write_file("/SECOND.TXT", second_file_content), \
+        "Should be able to write to freed space"
+    
+    # Verify the second file is readable
+    read_second = hdos_controller.read_file("/SECOND.TXT")
+    assert read_second == second_file_content, "Second file content mismatch"
+    
+    hdos_controller.close_disk()
+
+
+def test_hdos_filename_edge_cases(hdos_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests various filename edge cases including 8.3 limits, case sensitivity,
+    and special character handling.
+    
+    HDOS follows the 8.3 naming convention (8 character name, 3 character extension)
+    and typically stores filenames in uppercase.
+    """
+    profile_name = "hdos_5.25_100k"
+    profile = hdos_controller.get_format_by_name(profile_name)
+    blank_img_path = tmp_path / "filename_test.h8d"
+    blank_img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
+    
+    assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG",
+                                     format_info={"format_name": profile_name})
+    assert hdos_controller.format_disk(profile_name)
+    
+    test_content = b"Test content for filename tests"
+    
+    # Test 1: Maximum length filename (8.3)
+    max_filename = "/MAXNAME8.EXT"
+    assert hdos_controller.write_file(max_filename, test_content)
+    dir_listing = hdos_controller.list_directory("/")
+    assert any(f['name'] == 'MAXNAME8.EXT' for f in dir_listing), "Max length filename not found"
+    
+    # Test 2: Short filename
+    short_filename = "/A.B"
+    assert hdos_controller.write_file(short_filename, test_content)
+    dir_listing = hdos_controller.list_directory("/")
+    assert any(f['name'] == 'A.B' for f in dir_listing), "Short filename not found"
+    
+    # Test 3: No extension
+    no_ext_filename = "/NOEXT"
+    assert hdos_controller.write_file(no_ext_filename, test_content)
+    dir_listing = hdos_controller.list_directory("/")
+    # Check if it appears as "NOEXT" or "NOEXT." (with trailing dot)
+    assert any(f['name'] in ['NOEXT', 'NOEXT.'] for f in dir_listing), \
+        "No-extension filename not found"
+    
+    # Test 4: Case insensitivity - HDOS typically uppercases filenames
+    lower_filename = "/lowercase.txt"
+    assert hdos_controller.write_file(lower_filename, test_content)
+    dir_listing = hdos_controller.list_directory("/")
+    # Should appear as LOWERCASE.TXT (uppercased)
+    assert any(f['name'] == 'LOWERCAS.TXT' for f in dir_listing), \
+        "Lowercase filename not uppercased (or truncated correctly)"
+    
+    # Test 5: Reading with different case should work
+    content_lower = hdos_controller.read_file("/lowercase.txt")
+    content_upper = hdos_controller.read_file("/LOWERCASE.TXT")
+    assert content_lower == test_content, "Read with lowercase failed"
+    assert content_upper == test_content, "Read with uppercase failed"
+    assert content_lower == content_upper, "Case-insensitive reads returned different content"
+    
+    # Test 6: Single character name and extension
+    single_char = "/X.Y"
+    assert hdos_controller.write_file(single_char, test_content)
+    assert any(f['name'] == 'X.Y' for f in hdos_controller.list_directory("/")), \
+        "Single character filename not found"
+    
+    # Test 7: Verify all files are readable
+    all_files = hdos_controller.list_directory("/")
+    for file_entry in all_files:
+        if not file_entry['is_dir']:
+            content = hdos_controller.read_file(f"/{file_entry['name']}")
+            assert content is not None, f"Could not read {file_entry['name']}"
+    
+    # Test 8: Verify filename uniqueness (can't create duplicate)
+    # Writing to existing filename should overwrite (delete + create)
+    original_listing_count = len(hdos_controller.list_directory("/"))
+    modified_content = b"Modified content"
+    assert hdos_controller.write_file("/A.B", modified_content)
+    new_listing_count = len(hdos_controller.list_directory("/"))
+    assert new_listing_count == original_listing_count, "Duplicate filename created instead of overwriting"
+    
+    read_modified = hdos_controller.read_file("/A.B")
+    assert read_modified == modified_content, "Overwrite didn't update content"
+    
+    hdos_controller.close_disk()
+
+
+def test_hdos_read_only_operations_no_modification(hdos_controller: DiskController, tmp_path: Path) -> None:
+    """
+    Tests that read-only operations (directory listing, file reading, free space checks)
+    do not modify the disk image in any way.
+    
+    This verifies that:
+    1. Reading files doesn't alter them
+    2. Listing directories doesn't change metadata
+    3. Free space calculations don't modify allocation tables
+    4. Multiple reads of the same file are consistent
+    """
+    image_file = "HDOS_2-0_TEST.h8d"
+    temp_img_path = tmp_path / image_file
+    shutil.copy(HDOS_RESOURCE_DIR / image_file, temp_img_path)
+    
+    # Calculate initial hash of the entire disk image
+    initial_hash = hashlib.sha256(temp_img_path.read_bytes()).hexdigest()
+    
+    # Open the disk
+    assert hdos_controller.open_disk(str(temp_img_path), disk_type="IMG")
+    assert isinstance(hdos_controller.filesystem, HDOSFilesystem)
+    
+    # Perform multiple read-only operations
+    
+    # 1. List directory multiple times
+    dir_listing_1 = hdos_controller.list_directory("/")
+    dir_listing_2 = hdos_controller.list_directory("/")
+    dir_listing_3 = hdos_controller.list_directory("/")
+    
+    assert dir_listing_1 == dir_listing_2 == dir_listing_3, \
+        "Multiple directory listings returned different results"
+    
+    # 2. Check free space multiple times
+    free_space_1 = hdos_controller.get_free_space()
+    free_space_2 = hdos_controller.get_free_space()
+    free_space_3 = hdos_controller.get_free_space()
+    
+    assert free_space_1 == free_space_2 == free_space_3, \
+        "Multiple free space checks returned different results"
+    
+    # 3. Read same file multiple times and verify consistency
+    test_file = "/DVDIO.ACM"
+    content_1 = hdos_controller.read_file(test_file)
+    content_2 = hdos_controller.read_file(test_file)
+    content_3 = hdos_controller.read_file(test_file)
+    
+    assert content_1 == content_2 == content_3, \
+        "Multiple reads of same file returned different content"
+    assert len(content_1) > 0, "File content is empty"
+    
+    # 4. Read multiple different files
+    files_to_read = ["BITS.ACM", "H47LIB.ACM", "DVDIO.ACM"]
+    file_contents = {}
+    
+    for filename in files_to_read:
+        if any(f['name'] == filename for f in dir_listing_1):
+            content = hdos_controller.read_file(f"/{filename}")
+            file_contents[filename] = content
+            assert content is not None, f"Could not read {filename}"
+    
+    assert len(file_contents) >= 3, "Could not read expected test files"
+    
+    # 5. Check allocated units
+    allocated_1 = hdos_controller.get_allocated_units()
+    allocated_2 = hdos_controller.get_allocated_units()
+    
+    assert allocated_1 == allocated_2, "Allocated units changed between calls"
+    
+    # 6. Get filesystem display info
+    fs = hdos_controller.filesystem
+    display_info_1 = fs.get_display_info()
+    display_info_2 = fs.get_display_info()
+    
+    assert display_info_1 == display_info_2, "Display info changed between calls"
+    
+    # Close the disk (should flush any buffers)
+    hdos_controller.close_disk()
+    
+    # Calculate final hash and verify no changes occurred
+    final_hash = hashlib.sha256(temp_img_path.read_bytes()).hexdigest()
+    
+    assert initial_hash == final_hash, \
+        f"Disk image was modified by read-only operations!\nInitial: {initial_hash}\nFinal: {final_hash}"
+    
+    # Reopen and verify all data is still intact
+    assert hdos_controller.open_disk(str(temp_img_path), disk_type="IMG")
+    
+    final_dir_listing = hdos_controller.list_directory("/")
+    assert final_dir_listing == dir_listing_1, "Directory listing changed after reopen"
+    
+    final_free_space = hdos_controller.get_free_space()
+    assert final_free_space == free_space_1, "Free space changed after reopen"
+    
+    # Verify file contents are still the same
+    for filename, original_content in file_contents.items():
+        reread_content = hdos_controller.read_file(f"/{filename}")
+        assert reread_content == original_content, \
+            f"Content of {filename} changed after reopen"
     
     hdos_controller.close_disk()

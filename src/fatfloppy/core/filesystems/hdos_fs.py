@@ -186,8 +186,22 @@ class HDOSFilesystem(Filesystem):
             raise IOError("Filesystem is not valid or not recognized as HDOS.")
 
         self._initialize()
-        filename = path.strip("/").upper()
-        target_entry = next((e for e in self._dir_entries if e.get_filename().upper() == filename), None)
+        
+        # Parse filename the same way write does to handle truncation
+        filename_upper = path.strip("/").upper()
+        parts = filename_upper.split('.')
+        name_part = parts[0][:8] if parts else ""  # Truncate to 8 chars
+        ext_part = parts[1][:3] if len(parts) > 1 else ""  # Truncate to 3 chars
+        
+        # Reconstruct the truncated filename
+        search_filename = f"{name_part}.{ext_part}" if ext_part else name_part
+        
+        target_entry = None
+        for e in self._dir_entries:
+            entry_filename = e.get_filename().upper()
+            if entry_filename == search_filename:
+                target_entry = e
+                break
 
         if not target_entry:
             raise FileNotFoundError(f"File not found: {path}")
@@ -243,7 +257,7 @@ class HDOSFilesystem(Filesystem):
                 # If >90% of non-null bytes are text-like, trim the nulls
                 if text_ratio > 0.9:
                     file_data = file_data[:last_non_null + 1]
-                    logger.debug(f"Trimmed trailing nulls from text file: {filename}")
+                    logger.debug(f"Trimmed trailing nulls from text file: {search_filename}")
         
         return bytes(file_data)
 
@@ -654,11 +668,16 @@ class HDOSFilesystem(Filesystem):
             raise IOError("Filesystem is not valid.")
         self._initialize()
 
-        filename = path.strip("/").upper()
+        # Parse filename the same way as read_file to handle truncation
+        filename_upper = path.strip("/").upper()
+        parts = filename_upper.split('.')
+        name_part = parts[0][:8] if parts else ""
+        ext_part = parts[1][:3] if len(parts) > 1 else ""
+        search_filename = f"{name_part}.{ext_part}" if ext_part else name_part
         
         # Protect system files from deletion
-        if filename in HDOS_SYSTEM_FILES:
-            raise IOError(f"Cannot delete system file: {filename}")
+        if search_filename in HDOS_SYSTEM_FILES or filename_upper in HDOS_SYSTEM_FILES:
+            raise IOError(f"Cannot delete system file: {filename_upper}")
         
         found_entry = None
         entry_dir_lba = 0
@@ -678,7 +697,7 @@ class HDOSFilesystem(Filesystem):
             for i in range(DIR_ENTRIES_PER_BLOCK):
                 offset = i * HDOS_DIR_ENTRY_SIZE
                 entry = self._parse_single_dir_entry(dir_data[offset : offset + HDOS_DIR_ENTRY_SIZE])
-                if entry and entry.get_filename().upper() == filename:
+                if entry and entry.get_filename().upper() == search_filename:
                     found_entry = entry
                     entry_dir_lba = current_dir_lba
                     entry_offset_in_block = offset
@@ -693,22 +712,26 @@ class HDOSFilesystem(Filesystem):
         if not found_entry:
             raise FileNotFoundError(f"File not found: {path}")
 
-        # Free the file's groups by adding them to the free chain
+        # Collect all groups in the file's chain before freeing
+        file_groups_to_free = []
         if found_entry.first_group != 0:
-            # Find the last group in the file's chain
-            last_in_chain = found_entry.first_group
+            current = found_entry.first_group
             for _ in range(len(self._grt)):
-                if last_in_chain >= len(self._grt):
-                    logger.warning(f"File chain extends beyond GRT bounds at group {last_in_chain}")
+                if current == 0 or current >= len(self._grt):
                     break
-                next_group = self._grt[last_in_chain]
-                if next_group == 0:
+                file_groups_to_free.append(current)
+                if current == found_entry.last_group:
                     break
-                if next_group == last_in_chain:
-                    logger.warning(f"Circular reference detected in file chain at group {last_in_chain}")
+                next_group = self._grt[current]
+                if next_group == current:  # Circular reference
+                    logger.warning(f"Circular reference in file chain at group {current}")
                     break
-                last_in_chain = next_group
+                current = next_group
+        
+        logger.info(f"Deleting file '{path}' which uses {len(file_groups_to_free)} groups: {file_groups_to_free}")
 
+        # Free the file's groups by adding them to the free chain
+        if file_groups_to_free:
             # Check if we need to rebuild the free chain from scratch
             if self._grt[0] == 0:
                 logger.info("Rebuilding free chain from scratch after deletion")
@@ -717,30 +740,19 @@ class HDOSFilesystem(Filesystem):
                 current_allocated = set(self.get_allocated_units())
                 
                 # Remove the groups from the file we're deleting
-                deleted_file_groups = set()
-                current = found_entry.first_group
-                for _ in range(len(self._grt)):
-                    if current == 0 or current > self._num_groups_on_disk:
-                        break
-                    deleted_file_groups.add(current)
-                    if current == found_entry.last_group:
-                        break
-                    if current >= len(self._grt):
-                        break
-                    current = self._grt[current]
-                
-                current_allocated -= deleted_file_groups
+                deleted_file_groups_set = set(file_groups_to_free)
+                current_allocated -= deleted_file_groups_set
                 
                 # Build free chain from all non-allocated groups
                 all_groups = set(range(1, self._num_groups_on_disk + 1))
                 
-                # Exclude RGT locked-out groups (instead of hardcoding Track 0)
+                # Exclude RGT locked-out groups
                 rgt_locked_groups = set()
                 if self._rgt:
                     for g in range(1, min(self._num_groups_on_disk + 1, len(self._rgt))):
                         if self._is_group_locked_out(g):
                             rgt_locked_groups.add(g)
-                    logger.info(f"Excluding {len(rgt_locked_groups)} RGT locked-out groups from free chain")
+                    logger.debug(f"Excluding {len(rgt_locked_groups)} RGT locked-out groups from free chain")
                 
                 # Free groups = all - allocated - locked
                 free_groups = sorted(all_groups - current_allocated - rgt_locked_groups)
@@ -752,13 +764,22 @@ class HDOSFilesystem(Filesystem):
                     self._grt[free_groups[-1]] = 0
                     self._grt[0] = free_groups[0]
                 
-                logger.info(f"Built free chain with {len(free_groups)} groups "
-                        f"(excluded {len(rgt_locked_groups)} RGT-locked groups)")
+                logger.info(f"Built free chain with {len(free_groups)} groups")
             else:
-                # Normal case: existing free chain, just prepend deleted groups
+                # Normal case: prepend freed groups to existing free chain
                 old_free_start = self._grt[0]
-                self._grt[last_in_chain] = old_free_start
-                self._grt[0] = found_entry.first_group
+                
+                # Link the freed groups together
+                for i in range(len(file_groups_to_free) - 1):
+                    self._grt[file_groups_to_free[i]] = file_groups_to_free[i + 1]
+                
+                # Link last freed group to old free chain
+                self._grt[file_groups_to_free[-1]] = old_free_start
+                
+                # Update GRT[0] to point to first freed group
+                self._grt[0] = file_groups_to_free[0]
+                
+                logger.info(f"Prepended {len(file_groups_to_free)} freed groups to free chain")
 
             # Write the updated GRT
             try:
@@ -782,12 +803,12 @@ class HDOSFilesystem(Filesystem):
         # Clear all cached data to force re-initialization
         self._dir_entries = None
         self._grt = None
-        self._rgt = None  # Also clear RGT cache
+        self._rgt = None
         self._init_completed = False
         self._data_base_lba_cache = None
         self._cached_validity_score = None
         
-        logger.info(f"Deleted file '{path}'")
+        logger.info(f"Deleted file '{path}' and freed {len(file_groups_to_free)} groups")
 
     def format_fs(self, profile: FormatProfile, volume_label: Optional[str] = None) -> None:
         """Formats the disk with a blank HDOS filesystem."""
@@ -938,8 +959,8 @@ class HDOSFilesystem(Filesystem):
     def _create_and_write_dir_entry(self, path: str, allocated_groups: List[int], num_sectors: int) -> None:
         """Finds a free slot and writes a new directory entry."""
         name, ext = (path.strip("/").upper().split('.') + [''])[:2]
-        name_bytes = name.ljust(8).encode('ascii')
-        ext_bytes = ext.ljust(3).encode('ascii')
+        name_bytes = name.ljust(8).encode('ascii')[:8]  # Ensure exactly 8 bytes
+        ext_bytes = ext.ljust(3).encode('ascii')[:3]    # Ensure exactly 3 bytes
         
         spg = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
         lsi = (num_sectors - 1) % spg + 1 if num_sectors > 0 else 0
@@ -959,15 +980,31 @@ class HDOSFilesystem(Filesystem):
 
         current_dir_lba = self.label.dir_start_block
         for _ in range(20):
-            if current_dir_lba == 0: raise IOError("No free directory space.")
-            dir_data = bytearray(self._read_lba(current_dir_lba) + self._read_lba(current_dir_lba + 1))
+            if current_dir_lba == 0: 
+                raise IOError("No free directory space.")
+            
+            # Read directory block (2 sectors = 512 bytes)
+            sector1 = self._read_lba(current_dir_lba)
+            sector2 = self._read_lba(current_dir_lba + 1)
+            
+            # Ensure each sector is exactly 256 bytes
+            if len(sector1) != HDOS_BYTES_PER_SECTOR:
+                raise IOError(f"Directory sector 1 size mismatch: {len(sector1)} != {HDOS_BYTES_PER_SECTOR}")
+            if len(sector2) != HDOS_BYTES_PER_SECTOR:
+                raise IOError(f"Directory sector 2 size mismatch: {len(sector2)} != {HDOS_BYTES_PER_SECTOR}")
+            
+            dir_data = bytearray(sector1 + sector2)
+            
             for i in range(DIR_ENTRIES_PER_BLOCK):
                 offset = i * HDOS_DIR_ENTRY_SIZE
                 if dir_data[offset] in (0x00, 0xFF, 0xFE):
                     dir_data[offset:offset+HDOS_DIR_ENTRY_SIZE] = entry_bytes
-                    self._write_lba(current_dir_lba, dir_data[:HDOS_BYTES_PER_SECTOR])
-                    self._write_lba(current_dir_lba + 1, dir_data[HDOS_BYTES_PER_SECTOR:])
+                    
+                    # Write back both sectors with exact sizes
+                    self._write_lba(current_dir_lba, bytes(dir_data[:HDOS_BYTES_PER_SECTOR]))
+                    self._write_lba(current_dir_lba + 1, bytes(dir_data[HDOS_BYTES_PER_SECTOR:HDOS_BYTES_PER_SECTOR*2]))
                     return
+            
             current_dir_lba = struct.unpack_from("<H", dir_data, DIR_NEXT_BLOCK_PTR_OFFSET)[0]
         
         raise IOError("Could not find a free directory entry slot.")
