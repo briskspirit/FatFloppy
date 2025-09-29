@@ -1,0 +1,936 @@
+	STL	'H47 Library'
+	EJECT
+***	Assembly Constants
+*
+*
+*	.BLKW	Used to conditional WRITE operations in and out.
+*
+*	.SMALL	Used to conditional BLK operations out
+*		memory, or minimal run-time.
+*
+	SPACE	4,10
+	IF	.SMALL
+	ELSE
+BLK	SPACE	4,10
+**	BLK	-  Block
+*
+*	BLK repeatedly READ/WRITEs the data until all of the data
+*	is transfered.  Data is always transfered so that it will
+*	not wrap over a single side track boundary, so as to avoid
+*	the multiple sector algorithem problem.
+*
+*
+*	ENTRY:	BC	= total count (should be a multiple of 256)
+*		DE	= buffer address
+*		HL	= block number
+*
+*	EXIT:	PSW	= 'C' set   if    error
+*			  'C' clear if no error
+*
+*	USES:	ALL
+*
+
+BLKWT	MVI	A,DD.WRIB	block write
+	STA	BLKB
+	CALL	SDE		Default error is WRITE
+	DB	EC.WF
+	PUSH	H
+	LXI	H,OUTB
+	SHLD	BLKA		set block operation as output
+	POP	H
+	JMP	BLK1
+
+BLKRD	MVI	A,DD.REAB	block read
+	STA	BLKB
+	CALL	SDE		Default error is READ
+	DB	EC.RF
+	PUSH	H
+	LXI	H,PINB
+	SHLD	BLKA		set block operation as input
+	POP	H
+	ERRNZ	*-BLK1
+
+BLK1	CALL	SDP		Set-Up device parameters
+	LDA	DEFERR
+	RC			Illegal parameters
+
+BLK2	MOV	A,B
+	ORA	C
+	RZ			all finished with the block operation
+
+	PUSH	B
+	CALL	BLK3
+	POP	B
+	RC			Error
+
+	MOV	A,C
+	SUB	L
+	MOV	C,A
+	MOV	A,B		decrement the bytes read count
+	SBB	H
+	MOV	B,A
+
+	CALL	USN		Update sector number
+
+	CALL	WDN
+	JNC	BLK2		No errors
+
+	RET			ERROR waiting for DONE
+BLK3	SPACE	4,10
+**	BLK3
+*
+*	EXIT:	HL	= bytes actually read
+*
+
+BLK3	EQU	*
+
+*	Compute Transfer Size
+
+	MOV	H,B		HL = BC ; Initialize byte count
+	MOV	L,C
+
+	MOV	A,C
+	ANA	A
+	JZ	BLK4
+	INR	B		round sector count up for partial sector
+BLK4	EQU	*
+
+	MOV	A,B
+	STA	STC		Initialize sector count
+
+	PUSH	H
+	LDA	SPT		A  = Sectors per Track
+	LHLD	SECTOR
+	SUB	L
+	INR	A		A  = maximum number of sectors left this track
+	CMP	B
+	POP	H
+	JNC	BLK5		Can read all that we need
+
+	STA	STC		Update sector count for end of track
+	MOV	H,A
+	MVI	L,0		HL = count for the rest of this track
+BLK5	EQU	*
+
+	CALL	LSC		Set the transfer count
+	RC			ERROR
+
+	LDA	BLKB
+	CALL	COM.		command
+	RC			ERROR issuing command
+
+	CALL	TRK		track
+	CALL	SUS		side/unit/sector
+	RC			ERROR bit is set
+
+	MOV	B,H
+	MOV	C,L		BC = actual byte transfer count
+	JMP	-1		Enter data transfer processor
+BLKA	EQU	*-2
+
+BLKB	DB	0		Transfer Command (Read/Write)
+BLKC	EQU	256
+COM	SPACE	4,10
+**	COM	-  Command
+*
+*	COM outputs a command byte.
+*
+*
+*	ENTRY:	A	= command
+*
+*	EXIT:	PSW	= 'C' SET   IF    ERROR
+*			= 'C' CLEAR IF NO ERROR
+*
+*	USES:	PSW
+*
+
+COM	XTHL
+	MOV	A,M		Fetch the command byte
+	INX	H
+	XTHL
+
+COM.	PUSH	PSW
+	CALL	WDN
+	JC	COM1		ERROR
+	POP	PSW
+COM..	CALL	OUT.
+	CALL	DLY
+	RET
+
+COM1	INX	SP
+	INX	SP
+	RET			Return with error from WDN
+DLY	SPACE	4,10
+**	DLY	-  Delay
+*
+*	DLY delays for a short time.
+*
+*	ENTRY:	NONE
+*
+*	EXIT:	A	= 0
+*
+*	USES:	PSW
+*
+
+DLY	MVI	A,040Q
+	ANA	A		F = 'NC'
+DLY1	DCR	A
+	JNZ	DLY1		Wait longer
+	RET
+LSC	SPACE	4,10
+**	LSC	-  Load Sector Count
+*
+*	LSC loads the sector count for subsequent operations.
+*
+*	ENTRY:	AUXSTAT	initialized
+*
+*	EXIT:	PSW	= 'C' CLEAR if NO ERROR
+*			  'C' SET   if    ERROR
+*
+*	USES:	PSW
+*
+
+LSC	CALL	COM
+	DB	DD.LSC
+	RC			Tough luck if COM returns errors
+
+	XRA	A		High order byte
+	CALL	OUT
+	RC
+
+	LDA	AUXSTAT
+	ANI	AS.0DD		Check for Double Density
+	LDA	STC
+	JNZ	LSC1		Double Density
+	ADD	A		Double Count for single density 128 byte sect.
+LSC1	CALL	OUT		Low order byte
+	RC
+
+	JMP	WDN
+OUT	SPACE	4,10
+**	OUT	-  Output
+*
+*	OUT outputs a byte to the port with a  *S.DTR*  handshake.
+*
+*
+*	ENTRY:	A	= byte
+*
+*	EXIT:	PSW	= 'C'	if ERROR
+*			  'NC'	if NO Error, no byte output
+*
+*	USES:	PSW
+*
+
+OUT	PUSH	PSW
+	CALL	WTR		Wait for DTR
+	JC	OUT0
+	POP	PSW
+
+OUT.	OUT	D.DAT		OUTPUT TO THE DATA PORT
+	RET
+
+OUT0	INX	SP		Return with error from WTR
+	INX	SP
+	RET
+	ENDIF
+	SPACE	4,10
+	IF	.BLKW
+OUTB	SPACE	4,10
+**	OUTB	-  Output Block
+*
+*	OUTB outputs a block.  This is one of the more critical
+*	routines as far as time goes in transfering data.  This
+*	routine should be highly tuned.
+*
+*
+*	ENTRY:	BC	=  count
+*		DE	=  buffer address
+*
+*	EXIT:	PSW	=  'C' clear if NO error
+*			=  'C' set   if    error
+*			    BC = count remaining
+*
+*	USES:	ALL
+*
+
+OUTB	MOV	A,B
+	ORA	C
+	JZ	WDN		Finished, wait for DONE
+
+	PUSH	B
+	CALL	OUT128
+	POP	B
+	RC			Transfer Error
+
+	PUSH	H
+	LXI	H,-128
+	DAD	B
+	MOV	B,H
+	MOV	C,L
+	POP	H
+	JMP	OUTB
+OUT128	SPACE	4,10
+**	OUT128	- OUT 128
+*
+*	OUT128 outputs 128 bytes from the data input port.
+*	The first and last bytes are transfered via hand-
+*	shake, the rest are transferred as good.  The
+*	reason 128 was chosen, as it is the minimum trans-
+*	fer size if the H47 code is somehow lost.
+*
+*	NOTE:	This code assumes that the H47 accepts
+*		bytes sufficiently fast in the MAIN loop.
+*
+*	ENTRY:	DE	= buffer
+*
+*	EXIT:	PSW	= 'C' CLEAR if NO error
+*			    DE = DE advanced
+*			  'C' SET   if    error
+*			    A  = Error Code
+*
+*	USES:	PSW,BC,DE
+*
+
+OUT128	CALL	WTR
+	RC			Synchronization error
+
+*	Output 127 bytes
+
+	MVI	C,127
+OUT1	IN	D.STA
+	ANI	S.DTR+S.DON
+	JM	OUT2		S.DTR is set, is not done
+	ERRNZ	S.DTR-200Q
+
+	JZ	OUT1		is not done yet
+
+	JMP	TEB.		Generate error, and examine status
+
+OUT2	LDAX	D
+	OUT	D.DAT		output a byte
+	INX	D
+	DCR	C
+	JNZ	OUT1
+
+*	Handshake last byte
+
+	CALL	WTR
+	RC			Synchronization error
+
+	LDAX	D
+	OUT	D.DAT
+	INX	D
+	ANA	A		Clear 'C'
+	RET
+	ENDIF
+	IF	.SMALL
+	ELSE
+PIN	SPACE	4,10
+**	PIN	-  Input
+*
+*	PIN inputs a byte from the data data port.
+*
+*
+*	ENTRY:	NONE
+*
+*	EXIT:	PSW	= 'C'	if ERROR
+*			   A  = Error Code
+*			  'NC'	if NO Error
+*			   A = Byte
+*
+*	USES:	PSW
+*
+
+PIN	CALL	WTR		Wait for DTR
+	RC
+
+PIN.	IN	D.DAT
+	RET
+PINB	SPACE	4,10
+**	PINB	-  Input Block
+*
+*	PINB inputs a block.  This is one of the more critical
+*	routines as far as time goes in transfering data.  This
+*	routine should be highly tuned.
+*
+*
+*	ENTRY:	BC	=  count
+*		DE	=  buffer address
+*
+*	EXIT:	PSW	=  'C' clear if NO error
+*			=  'C' set   if    error
+*			    A  = Error Code
+*			    BC = count remaining
+*
+*	USES:	ALL
+*
+
+PINB	MOV	A,B
+	ANA	A
+	JZ	PINB2		Need less than one sector
+
+PINB1	PUSH	B
+	CALL	PIN256		read one sector
+	POP	B
+	RC			ERROR
+
+	DCR	B		Count the bytes read
+	JNZ	PINB1
+
+PINB2	MOV	A,C
+	ANA	A
+	JZ	WDN		Finished, don't need partial sector
+
+*	Read any partial sectors
+
+	PUSH	B		C  = bytes left to read in partial sector
+	CALL	PIN1.		Read a partial sector
+	POP	B
+	RC			ERROR
+
+PINB3	IN	D.STA
+	ANI	S.DTR+S.DON
+	JM	PINB4		H47 has a byte
+	ERRNZ	S.DTR-200Q
+
+	JZ	PINB3		DONE is not set
+
+	JMP	TEB.		Generate error, and look at status
+
+PINB4	IN	D.DAT		Eat the byte
+	INR	C
+	JNZ	PINB3
+
+	JMP	WDN		DONE accepting bytes
+PIN256	SPACE	4,10
+**	PIN256	- PIN 256
+*
+*	PIN256 inputs 256 bytes from the data input port.
+*	S.DTR must be set before any bytes may be transfered.
+*	This is one of the more critical routines, and should
+*	be highly tuned.
+*
+*	ENTRY:	DE	= buffer
+*
+*	EXIT:	PSW	= 'C' CLEAR if NO error
+*			    DE = DE advanced
+*			  'C' SET   if    error
+*
+*	USES:	PSW,BC,DE
+*
+
+PIN256	CALL	WTR
+	RC			Synchronization ERROR
+
+*	Accept 256 bytes
+
+	MVI	C,0		Set count to 256
+PIN1.	IN	D.STA
+	ANI	S.DTR+S.DON
+	JM	PIN2		H47 has a byte
+	ERRNZ	S.DTR-200Q
+
+	JZ	PIN1.		done is not set
+
+	JMP	TEB.		Generate Error on pre-mature done
+
+PIN2	IN	D.DAT
+	STAX	D
+	INX	D
+	DCR	C
+	JNZ	PIN1.
+
+	ANA	A		Clear 'C'
+	RET
+RAS	SPACE	4,10
+**	RAS	-  Read Auxiliary Status
+*
+*	RAS reads the auxiliary status for the unit specified
+*	in AIO.UNI.
+*
+*	ENTRY:	AIO.UNI	= Device Unit
+*
+*	EXIT:	PSW	= 'C'	if ERROR
+*			   A  = error code
+*			  'NC'	if NO error
+*
+*	USES:	PSW,HL,BC
+*
+
+RAS	LXI	H,0
+	SHLD	SECTOR		Zero initial parameters
+	ERRNZ	SIDE-SECTOR-1
+	ERRNZ	SID.0
+
+	CALL	COM		Output original command
+	DB	DD.RAS
+	RC
+	CALL	SUS..		Unit number
+	RC
+	CALL	PIN		A  = Aux. Status byte
+	RC
+
+	PUSH	PSW
+	CALL	WDN		Wait for DONE
+	JC	RAS1
+
+	POP	PSW
+	RET			NO Error, so return with 'NC' and A
+
+RAS1	INX	SP
+	INX	SP		Discard saved A
+	RET			Exit with WDN return values
+RST	SPACE	4,10
+**	RST	-  Reset
+*
+*	RST reset the device.
+*
+*
+*	ENTRY:	NONE
+*
+*	EXIT:	NONE
+*
+*	USES:	PSW
+*
+
+RST	PUSH	B
+	CALL	RST.
+	POP	B
+	RET
+
+RST.	MVI	A,W.RES
+	OUT	D.STA
+	CALL	DLY
+
+*	Wait for DONE
+
+	LXI	B,RSTA
+RST1	DCX	B
+	MOV	A,B
+	ORA	C
+	JZ	TEB.		Set error flags
+
+	IN	D.STA
+	ANI	S.DON
+	JNZ	RST1		Wait some more
+
+	RET
+
+RSTA	EQU	0		Time-Out Counter
+SDE	SPACE	4,10
+**	SDE	-  Set Default Error
+*
+*	SDE sets the default error to the specified one
+*
+*	ENTRY:	(SP)	= default error
+*
+*	EXIT:	(SP) advanced to the RETurn address
+*
+*	USES:	PSW
+*
+
+SDE	XTHL
+	MOV	A,M
+	INX	H
+	STA	DEFERR
+	XTHL
+	RET
+	ENDIF
+SDP	SPACE	4,10
+**	SDP	-  Set-up Device Parameters
+*
+*	SDP sets up the device TRACK, SIDE, and SECTOR from the
+*	sector number.
+*
+*	IF	.SMALL, this code assumes that AUXSTAT is initialized.
+*
+*	ENTRY:	HL	= sector number
+*
+*	EXIT:	TRACK, SIDE, and SECTOR initialized for the
+*		transfer
+*
+*	USES:	PSW,HL
+*
+
+SDP	EQU	*
+	PUSH	B
+	PUSH	D
+
+	CALL	SDP.
+
+	POP	D
+	POP	B
+	RET
+
+SDP.	MOV	B,H
+	MOV	C,L		BC = sector number
+	XRA	A
+	ERRNZ	SID.0
+	STA	SIDE		Initialize Side Byte
+
+	IF	.SMALL
+	LDA	AUXSTAT		A  = Alternate Status
+	ELSE
+	CALL	FAS		A  = Alternate Status
+	STA	AUXSTAT
+	ENDIF
+
+	ANI	AS.0DD		Track 0 is the real clue
+	MVI	A,NSPTS
+	JZ	SDP1		Is Single Density
+	ADD	A		A = 2 * A
+	ERRNZ	NSPTS*2-NSPTD
+SDP1	STA	SPT		Save Sectors per Track
+
+	MOV	L,A
+	MVI	H,0		HL = Sectors per Track
+	LDA	AUXSTAT
+	ANI	AS.S1A
+	JZ	SDP2		Only 1 Side
+	DAD	H		HL = 2 * HL
+SDP2	EQU	*
+	IF	.SMALL
+	ELSE
+	MOV	A,L
+	STA	SPC		Save sectors per cylinder
+	ENDIF
+
+	XCHG			DE = Sectors per Cylinder
+	CALL	$DU66		HL = BC/DE = Track Number
+
+	MOV	A,L
+	STA	TRACK		Assume Track is Good (Let H47 flag errors)
+	MOV	A,E
+	IF	.SMALL
+	ELSE
+	STA	CSN		Save cylinder sector number
+	ENDIF
+	INR	A		Range for sector is [1-NSPTx]
+	STA	SECTOR
+
+	LXI	H,SPT
+	CMP	M
+	RZ			Is on Side 0
+	CMC
+	RNC			Is on Side 0
+
+	SUB	M
+	STA	SECTOR		Compute Real sector number
+	MVI	A,SID.1
+	STA	SIDE		Use side 1
+	RET
+	IF	.SMALL
+	ELSE
+SUS	SPACE	4,10
+**	SUS	-  Side Unit Sector
+*
+*	SUS outputs the Side/Unit/Sector byte.  It assumes that
+*	SIDE, AIO.UNI, and SECTOR are already initialized.
+*
+*
+*	NOTE:	This code no longer masks the fields
+*		to insure against overflow.  Be careful!!!
+*
+*
+*	ENTRY:	SIDE	=  side
+*		AIO.UNI	=  unit number
+*		SECTOR	=  sector number
+*
+*	EXIT:	NONE
+*
+*	USES	PSW
+*
+
+SUS..	LDA	SECTOR
+	JMP	SUS1		Do not map sector number
+
+SUS	PUSH	B
+	CALL	SUS.
+	POP	B
+	RET
+
+SUS.	LDA	AUXSTAT
+	ANI	AS.0DD
+	LDA	SECTOR		A  = Sector
+	JNZ	SUS1		Double Density
+	DCR	A
+	ADD	A		Map Sector Number
+	INR	A
+SUS1	MOV	B,A
+
+	LDA	SIDE
+	ORA	B
+	MOV	B,A		Accumulate Side
+
+	LDA	AIO.UNI
+	RRC
+	RRC
+	RRC
+	ERRNZ	UNT.M-96
+	ORA	B
+
+	JMP	OUT		OUTPUT THE BYTE
+TEB	SPACE	4,10
+**	TEB	-  Test Error Bit
+*
+*	TEB test for the error bit to be set.  This routine assumes
+*	that the error bit will already be valid, that is, that the
+*	caller has already verified  *S.DON*.
+*
+*	If the error bit is set, a table look-up is performed to find
+*	the HDOS error.
+*
+*
+*	ENTRY:	NONE
+*
+*	EXIT:	PSW	= 'C' clear if no error
+*			  'C' set   if    error
+*
+*	USES:	PSW
+*
+
+TEB..	CALL	RST		The system needs cleaning up
+
+TEB.	LDA	DEFERR
+	CALL	TEB		Check for error other than default
+	STC			Force at least some error flag
+	RET
+
+TEB	PUSH	PSW		Look for error in the status port
+	IN	D.STA
+	ANI	S.DON
+	JZ	TEB4		DONE is NOT set
+
+	IN	D.STA
+	ANI	S.ERR
+	JZ	TEB4		ERROR is NOT set
+
+*	ERROR is set
+
+	POP	PSW		Discard saved PSW
+	MVI	A,DD.RST	A  = Command
+	CALL	COM..		Read status (Know Done is already set)
+	JC	TEB3		Things are rapidly disintegrating
+
+*	Input the error byte
+
+	PUSH	B
+	LXI	B,WTRA		Initialize Time-Out Counter
+
+TEB1	DCX	B
+	MOV	A,B
+	ORA	C
+	JZ	TEB2		Time-Out
+
+	IN	D.STA
+	ANI	S.DON
+	JNZ	TEB2		Pre-Mature Done
+
+	IN	D.STA
+	ANI	S.DTR
+	JZ	TEB1		No DONE yet
+
+	POP	B
+	CALL	PIN.		Get the error byte
+
+*	Determine HDOS error
+
+	ANI	SB.WPD
+	MVI	A,EC.WP
+	STC
+	RNZ			Drive was write-protected
+
+	PUSH	B
+TEB2	POP	B
+
+*	Take the default error
+
+TEB3	LDA	DEFERR		A  = default error
+	RET
+
+*	NO Error
+
+TEB4	POP	PSW		Restore A
+	ANA	A		Clear Error Flag
+	RET
+
+DEFERR	DB	0		Default Error for anything but write-protect
+TRK	SPACE	4,10
+**	TRK	-  Track
+*
+*	TRK output the track.
+*
+*
+*	ENTRY:	TRACK	=  track sought
+*
+*	EXIT:	NONE
+*
+*	USES:	PSW
+*
+
+TRK	LDA	TRACK
+	JMP	OUT
+USN	SPACE	4,10
+**	USN	- Update Sector Number
+*
+*	USN updates the sector number to the next group.  SDP
+*	must have been previously called to initialize all of
+*	the device parameters.
+*
+*	ENTRY:	SPC, CSN, and STC initialized.
+*
+*	EXIT:	Parameters updated
+*
+*	USES:	PSW,HL
+*
+
+USN	EQU	*
+
+*	Compute new sector number
+
+	LDA	CSN
+	LHLD	STC
+	ADD	L
+	STA	CSN		Update cylinder sector number
+
+*	Check for cylinder wrap
+
+	LHLD	SPC
+	SUB	L
+	JC	USN1		Is no cylinder wrap
+	STA	CSN		Update cylinder number
+	LXI	H,TRACK
+	INR	M		Move to the next track
+USN1	EQU	*
+
+*	Compute physical sector number
+
+	XRA	A
+	ERRNZ	SID.0
+	STA	SIDE		Assume side 0
+	LDA	CSN
+	INR	A		Range for sector number is [1-NSPTx]
+	STA	SECTOR		Assume on side 0
+	LXI	H,SPT
+	CMP	M
+	RZ			Is side 0
+	CMC
+	RNC			Is side 0
+
+	SUB	M
+	STA	SECTOR		Is Side 1
+	MVI	A,SID.1
+	STA	SIDE
+	RET
+	ENDIF
+WDN	SPACE	4,10
+**	WDN	-  Wait for Done
+*
+*	WDN waits for the done bit to be asserted.
+*
+*
+*	ENTRY:	NONE
+*
+*	EXIT:	PSW	=  'C' clear if NO errors
+*			=  'C' set   if    error bit set
+*			    A  = Error Code
+*
+*	USES:	PSW
+*
+
+WDN	PUSH	B
+	CALL	WDN.
+	POP	B
+	RET
+
+WDN.	LXI	B,WDNA		Initialize Time-Out counter
+
+WDN1	DCX	B
+	MOV	A,B
+	ORA	C
+	JZ	TEB..		Time-out ERROR
+
+	IN	D.STA
+	ANI	S.DON
+	JZ	WDN1		Wait for Done
+
+	JMP	TEB		Test error bits
+
+WDNA	EQU	0		Time-Out Counter
+	IF	1
+WND	SPACE	4,10
+**	WND	-  Wait for Not Done
+*
+*	WND waits for the Done bit to be cleared
+*
+*
+*	ENTRY:	NONE
+*
+*	EXIT:	NONE
+*
+*	USES:	PSW
+*
+
+WND	PUSH	B
+	CALL	WND.
+	POP	B
+	RET
+
+WND.	LXI	B,WNDA
+
+WND1	DCX	B
+	MOV	A,B
+	ORA	C
+	JZ	TEB..		Time-Out Error
+
+	IN	D.STA
+	ANI	S.DON
+	JNZ	WND1		DONE IS STILL HIGH
+
+	RET
+
+WNDA	EQU	0		Wait for Not Done Time-Out count
+	ENDIF
+	IF	.SMALL
+	ELSE
+WTR	SPACE	4,10
+**	WTR	- Wait for Transfer Request
+*
+*	WTR waits for a transfer request.  It checks for done
+*	first, and if it is found flags an error.  The code
+*	will also time-out waiting for  *S.DTR*.
+*
+*	ENTRY:	NONE
+*
+*	EXIT:	PSW	= 'C' CLEAR if NO error
+*			  'C' SET   if    error
+*
+*	USES:	PSW
+*
+
+WTR	PUSH	B
+	CALL	WTR.
+	POP	B
+	RET
+
+WTR.	LXI	B,WTRA		Initialize Time-Out Counter
+
+WTR1	IN	D.STA
+	ANI	S.DON
+	JNZ	TEB.		Done means some type of synchronization error
+
+*	Wait for Handshake on First Byte, Time-Out if not fast enough
+
+	DCX	B
+	MOV	A,B
+	ORA	C
+	JZ	TEB..		Time-Out fatal
+
+	IN	D.STA
+	ANI	S.DTR
+	JZ	WTR1		Wait for Data Transfer Request
+
+	RET
+
+WTRA	EQU	0		Time-Out Loop control
+	ENDIF
