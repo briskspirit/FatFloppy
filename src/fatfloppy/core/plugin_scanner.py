@@ -66,7 +66,8 @@ class PluginScanner:
                         # Must be subclass but not the base class itself
                         if (issubclass(item, base_class) and
                             item is not base_class and
-                            not inspect.isabstract(item)):
+                            not inspect.isabstract(item) and
+                            item.__module__ == module_name):  # ← Only discover classes defined in this module
 
                             # Run validation if provided
                             if validator:

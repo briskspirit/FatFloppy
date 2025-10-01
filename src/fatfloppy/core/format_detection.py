@@ -29,7 +29,7 @@ class FormatDetector(ABC):
         pass
 
 
-class MetadataBasedDetector(FormatDetector):
+class MetadataBasedDetector(FormatDetector, ABC):
     """Base class for drivers that have self-describing metadata (IMD, H17)."""
 
     def detect(self) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
