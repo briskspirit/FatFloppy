@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication,
 
 from ..core.controller import DiskController
 from ..core.drivers import GREASEWEAZLE_AVAILABLE
+from ..core.driver_factory import DriverFactory
 from ..core.format_definitions import FLOPPY_FORMATS
 from ..core.utils.logging_config import get_logger
 from .dialogs import CreateImageDialog, DriveSelectionDialog
@@ -60,8 +61,11 @@ class FileBrowserApp(QMainWindow):
         self.original_text_content: Optional[str] = None
         self.text_editor_modified: bool = False
 
-        # Greaseweazle availability
+        # Store discovered driver info
         self.greaseweazle_available: bool = GREASEWEAZLE_AVAILABLE
+        self.extension_to_driver_map: Dict[str, str] = {}
+        self.file_dialog_filter: str = ""
+        self._build_file_dialog_filter()
 
         # UI Components (initialized in _init_ui)
         self.app_font: QFont
@@ -154,11 +158,11 @@ class FileBrowserApp(QMainWindow):
     @pyqtSlot()
     def open_disk_image_file(self) -> None:
         """
-        Opens a disk image file (.ima, .img, .imd, .dsk, .h8d, .h17) selected by the user.
+        Opens a disk image file selected by the user, using auto-discovered drivers.
         """
         self.logger.debug("Attempting to open a disk image file.")
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open Disk Image", "", "Disk Images (*.ima *.img *.imd *.dsk *.h8d *.h17);;All Files (*)"
+            self, "Open Disk Image", "", self.file_dialog_filter
         )
         if not file_path:
             self.logger.debug("Open Disk Image file dialog cancelled.")
@@ -166,18 +170,11 @@ class FileBrowserApp(QMainWindow):
 
         _, ext = os.path.splitext(file_path)
         ext_lower = ext.lower()
-        disk_type = "IMG"
-        if ext_lower == ".imd":
-            disk_type = "IMD"
-        elif ext_lower == ".h17":
-            disk_type = "H17"
-        elif ext_lower == ".dsk":
-            disk_type = "IMG"  # Treat .dsk as raw .img for Amstrad DSKs
-            self.logger.info("DSK file selected, will attempt to load as raw image (Amstrad structured DSKs are not supported by this raw loader).")
-        elif ext_lower == ".h8d":
-            disk_type = "IMG"  # Treat .h8d as raw .img for HDOS images
-        elif ext_lower == ".ima":
-            disk_type = "IMG"  # .ima is also a raw image format
+
+        # --- DYNAMIC DRIVER SELECTION ---
+        # Use the map to find the driver type, defaulting to 'IMG' if not found
+        disk_type = self.extension_to_driver_map.get(ext_lower, "IMG")
+        self.logger.info(f"File extension '{ext_lower}' mapped to driver type '{disk_type}'.")
 
         try:
             self.reset_ui()
@@ -858,6 +855,35 @@ class FileBrowserApp(QMainWindow):
         self.filesystem_info.setFont(self.app_font)
         self.text_viewer.setFont(self.app_font)
         self.logger.debug("Application fonts set up.")
+
+    def _build_file_dialog_filter(self) -> None:
+        """
+        Dynamically builds the file dialog filter string from discovered drivers.
+        """
+        self.logger.debug("Building file dialog filter from discovered drivers.")
+        self.extension_to_driver_map = DriverFactory.get_extension_map()
+
+        all_extensions = sorted(self.extension_to_driver_map.keys())
+
+        # Group extensions by driver type for a nicer dialog
+        driver_to_exts: Dict[str, List[str]] = {}
+        for ext, driver_type in self.extension_to_driver_map.items():
+            driver_to_exts.setdefault(driver_type, []).append(f"*{ext}")
+
+        filters = []
+        # Create a filter for "All Supported Images"
+        all_ext_str = " ".join(f"*{ext}" for ext in all_extensions)
+        filters.append(f"All Supported Images ({all_ext_str})")
+
+        # Create a specific filter for each driver type
+        for driver_type, exts in sorted(driver_to_exts.items()):
+            exts_str = " ".join(exts)
+            desc = getattr(DriverFactory.get_driver_class(driver_type), 'driver_description', f"{driver_type} Files")
+            filters.append(f"{desc} ({exts_str})")
+
+        filters.append("All Files (*)")
+        self.file_dialog_filter = ";;".join(filters)
+        self.logger.info(f"Generated file dialog filter: {self.file_dialog_filter}")
 
     @pyqtSlot()
     def _update_theme(self) -> None:

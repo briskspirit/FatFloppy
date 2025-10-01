@@ -136,6 +136,25 @@ class DriverFactory:
         cls._registry[disk_type] = driver_class
         logger.info(f"Externally registered driver: {disk_type}")
 
+    @classmethod
+    def get_extension_map(cls) -> Dict[str, str]:
+        """
+        Builds a map of file extensions to their driver types.
+
+        Returns:
+            A dictionary where keys are file extensions (e.g., '.img')
+            and values are driver types (e.g., 'IMG').
+        """
+        if not cls._initialized:
+            cls._discover_and_register()
+
+        ext_map = {}
+        for driver_type, driver_class in cls._registry.items():
+            if hasattr(driver_class, 'driver_file_extensions'):
+                for ext in driver_class.driver_file_extensions:
+                    ext_map[ext.lower()] = driver_type
+        return ext_map
+
 
 # Auto-discover on module import
 DriverFactory._discover_and_register()

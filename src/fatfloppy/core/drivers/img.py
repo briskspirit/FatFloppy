@@ -29,7 +29,7 @@ class IMGImageDriver(DiskIODriver):
     """
     # Plugin metadata
     driver_type: ClassVar[str] = "IMG"
-    driver_file_extensions: ClassVar[List[str]] = [".img", ".ima", ".dsk"]
+    driver_file_extensions: ClassVar[List[str]] = [".img", ".ima", ".dsk", ".h8d"]
     driver_category: ClassVar[str] = "raw"
     driver_description: ClassVar[str] = "Raw sector image driver"
 
