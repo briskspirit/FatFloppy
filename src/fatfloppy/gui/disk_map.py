@@ -3,7 +3,7 @@ import logging
 import math
 from typing import Any, Callable, Dict, List, Optional
 
-from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtCore import QPointF, Qt, QTimer
 from PyQt6.QtGui import (QBrush, QColor, QFont, QPainter, QPen, QPolygonF,
                          QResizeEvent)
 from PyQt6.QtWidgets import (QGraphicsEllipseItem, QGraphicsLineItem,
@@ -14,36 +14,21 @@ logger = logging.getLogger(__name__)
 
 
 class ResizableGraphicsView(QGraphicsView):
-    """
-    A QGraphicsView that automatically resizes its scene and triggers a redraw.
-    """
-
-    def __init__(self, scene: QGraphicsScene, parent: Optional[QWidget] = None) -> None:
-        """
-        Initializes the ResizableGraphicsView.
-
-        Args:
-            scene: The QGraphicsScene to be managed by this view.
-            parent: The parent widget, which is expected to have a
-                    'draw_disk_map' method.
-        """
+    def __init__(self, scene: QGraphicsScene, parent: Optional[QWidget] = None):
         super().__init__(scene, parent)
         self.app = parent
-        # Initial scene rect setup, -2 helps prevent scrollbars from appearing.
+        self._resize_timer = QTimer()
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._delayed_redraw)
         self.setSceneRect(0, 0, self.width() - 2, self.height() - 2)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
-        """
-        Handles the view's resize event.
-
-        Updates the scene rectangle to match the new view dimensions and
-        calls the parent's drawing method to redraw the contents.
-
-        Args:
-            event: The resize event.
-        """
         super().resizeEvent(event)
         self.setSceneRect(0, 0, self.width() - 2, self.height() - 2)
+        # Debounce: only redraw after resize stops for 100ms
+        self._resize_timer.start(100)
+
+    def _delayed_redraw(self) -> None:
         if hasattr(self.app, 'draw_disk_map'):
             self.app.draw_disk_map()
 
