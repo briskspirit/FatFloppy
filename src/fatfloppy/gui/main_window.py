@@ -589,7 +589,7 @@ class FileBrowserApp(QMainWindow):
         if not self.controller:
             self.disk_map.scene.clear()
             self.disk_map._draw_no_disk_message(
-                self.app_font, 
+                self.app_font,
                 self.palette().color(QPalette.ColorRole.WindowText)
             )
             return
@@ -1700,8 +1700,20 @@ def run_gui() -> None:
     """
     Initializes and runs the FatFloppy GUI application.
     """
+    import sys
+    import os
+
+    # macOS: Set app name before QApplication creation
+    if sys.platform == 'darwin':
+        os.environ['RESOURCE_NAME'] = 'FatFloppy'
+
     app = QApplication(sys.argv)
+
+    # Set application metadata
     app.setApplicationName("FatFloppy")
+    app.setApplicationDisplayName("FatFloppy")
+    app.setOrganizationName("FatFloppy")
+    app.setOrganizationDomain("fatfloppy.local")
 
     # Set application icon
     current_dir = os.path.dirname(os.path.abspath(__file__))

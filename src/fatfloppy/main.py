@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
 Main entry point for the FatFloppy application.
-
-This script initializes the application's logging configuration and launches the
-graphical user interface (GUI). It is designed to be executed directly to
-start the program.
 """
+import sys
+import os
+
+
+if sys.platform == 'darwin':
+    os.environ['RESOURCE_NAME'] = 'FatFloppy'
 
 from logging import Logger
-
 from fatfloppy.core.utils.logging_config import get_logger
 
 logger: Logger = get_logger()
@@ -17,10 +18,6 @@ logger: Logger = get_logger()
 def main() -> None:
     """
     Initializes and starts the FatFloppy application.
-
-    This function logs the application start and attempts to import and run the
-    GUI. If the GUI components cannot be imported, it logs a critical error,
-    as the application cannot proceed.
     """
     logger.info("Starting FatFloppy application")
     try:
