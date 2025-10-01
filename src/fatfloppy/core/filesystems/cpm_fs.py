@@ -396,6 +396,54 @@ class CPMFilesystem(Filesystem):
 
         return sorted(list(self._cached_allocation_map)) if self._cached_allocation_map else []
 
+    def get_file_allocation_units(self, path: str) -> List[int]:
+        """
+        Gets the list of allocation block numbers used by a specific file.
+
+        Args:
+            path: The path to the file (e.g., "FILENAME.EXT" or "U0:FILENAME.EXT").
+
+        Returns:
+            A list of allocation block numbers used by the file, in order of extents.
+            Returns an empty list if the file doesn't exist or has no allocated blocks.
+
+        Raises:
+            IOError: If the filesystem is not valid.
+        """
+        if self.get_validity_score() < self.validity_threshold:
+            raise IOError("Filesystem is not valid or not recognized as CP/M.")
+
+        user, parsed_filename = self._parse_cpm_path(path)
+
+        if self._cached_directory is None:
+            self._cached_directory = self._read_directory_entries()
+
+        # Find all extents for this file
+        file_extents = []
+        for entry in self._cached_directory:
+            if (not entry.is_deleted() and
+                entry.user == user and
+                entry.get_filename().upper() == parsed_filename.upper()):
+                file_extents.append(entry)
+
+        if not file_extents:
+            self.logger.warning(f"File '{path}' not found in directory.")
+            return []
+
+        # Sort extents by extent number
+        file_extents.sort(key=lambda e: (e.ex | (e.xh << 8)))
+
+        # Collect all block numbers from all extents
+        all_blocks = []
+        for extent in file_extents:
+            for block_num in extent.blks:
+                # Block 0 is invalid, and blocks beyond dsm are invalid
+                if 0 < block_num <= self.dpb.dsm:
+                    all_blocks.append(block_num)
+
+        self.logger.debug(f"File '{path}' uses {len(all_blocks)} blocks: {all_blocks}")
+        return all_blocks
+
     def get_display_info(self) -> Dict[str, str]:
         """
         Returns a dictionary of key CP/M filesystem parameters for display.

@@ -64,7 +64,9 @@ class DiskMapView:
         free_space: int,
         total_space: int,
         app_font: QFont,
-        text_color: QColor
+        text_color: QColor,
+        selected_file_units: Optional[List[int]] = None,
+        selected_file_path: Optional[str] = None
     ) -> None:
         """
         Draws the entire disk map visualization onto the scene.
@@ -77,6 +79,8 @@ class DiskMapView:
             total_space: The total space on the disk.
             app_font: The font to use for text rendering.
             text_color: The color for text rendering.
+            selected_file_units: Optional list of allocation units for a selected file.
+            selected_file_path: Optional path of the selected file for tooltip display.
         """
         self.scene.clear()
 
@@ -90,6 +94,14 @@ class DiskMapView:
             return
 
         layout_info = self._get_layout_info(controller.filesystem)
+
+        # Store selected file information for use in sector coloring and tooltips
+        self._selected_units = set(selected_file_units) if selected_file_units else set()
+        self._selected_file_path = selected_file_path
+
+        # Add "Selected File" to legend if we have a selection
+        if self._selected_units and layout_info.get('legend'):
+            layout_info['legend'].insert(0, ("Selected File", "#FFD700"))
 
         self._draw_legend(layout_info, app_font, text_color)
         self._draw_stats(current_head, free_space, total_space, app_font, text_color)
@@ -209,15 +221,17 @@ class DiskMapView:
         r_inner: float, r_outer: float, x0: float, y0: float, geometry: Any,
         layout_info: Dict[str, Any], use_lba_for_color: bool
     ) -> None:
-        """Draws a single sector polygon."""
+        """Draws a single sector polygon with color and tooltip."""
         lba = -1
         sector_num = i + 1  # Assuming sectors are 1-based for CHS
+
         try:
             if use_lba_for_color:
                 lba = geometry.chs_to_lba(c, h, sector_num)
 
             color_hex = self._get_sector_color(lba, c, h, sector_num, layout_info, use_lba_for_color)
             color = QColor(color_hex)
+
             theta_start = math.radians(i * angle_per_sector_deg)
             theta_end = math.radians((i + 1) * angle_per_sector_deg)
 
@@ -227,7 +241,13 @@ class DiskMapView:
             polygon = QGraphicsPolygonItem(QPolygonF(inner_points + outer_points))
             polygon.setBrush(QBrush(color))
             polygon.setPen(QPen(Qt.GlobalColor.black, 0.5))
+
+            # Create tooltip
+            tooltip = self._create_sector_tooltip(lba, c, h, sector_num, layout_info, use_lba_for_color)
+            polygon.setToolTip(tooltip)
+
             self.scene.addItem(polygon)
+
         except ValueError as e:
             app_logger = self._get_app_logger()
             log_msg = f"Error getting LBA for C:{c} H:{h} S:{sector_num}: {e}"
@@ -242,6 +262,84 @@ class DiskMapView:
                 app_logger.error(log_msg, exc_info=True)
             else:
                 logger.error(log_msg, exc_info=True)
+
+    def _create_sector_tooltip(
+        self,
+        lba: int,
+        cylinder: int,
+        head: int,
+        sector: int,
+        layout_info: Optional[Dict[str, Any]],
+        use_lba: bool
+    ) -> str:
+        """
+        Creates a tooltip string for a sector showing its location and purpose.
+
+        Args:
+            lba: The logical block address of the sector.
+            cylinder, head, sector: The CHS address of the sector.
+            layout_info: Dictionary containing filesystem layout details.
+            use_lba: Flag indicating if LBA addressing is used.
+
+        Returns:
+            A formatted tooltip string.
+        """
+        tooltip_parts = [f"C:{cylinder} H:{head} S:{sector}"]
+
+        if lba >= 0:
+            tooltip_parts.append(f"LBA: {lba}")
+
+        # Determine sector type and allocation unit
+        allocation_unit = None
+        sector_type_desc = "Unknown"
+
+        if layout_info and lba >= 0:
+            allocation_unit_size = layout_info.get('allocation_unit_size_sectors', 1)
+            first_data_sector = layout_info.get('first_data_sector', 0)
+
+            # Get sector type
+            if use_lba:
+                get_type_func = layout_info.get('get_sector_type')
+                if get_type_func:
+                    try:
+                        sector_type = get_type_func(lba)
+                        type_color_map = layout_info.get('type_color_map', {})
+                        # Reverse lookup the type description from color map
+                        for desc, color in layout_info.get('legend', []):
+                            if type_color_map.get(sector_type) == color:
+                                sector_type_desc = desc
+                                break
+                    except Exception:
+                        pass
+            else:
+                get_type_chs_func = layout_info.get('get_sector_type_chs')
+                if get_type_chs_func:
+                    try:
+                        sector_type = get_type_chs_func(cylinder, head, sector)
+                        type_color_map = layout_info.get('type_color_map', {})
+                        for desc, color in layout_info.get('legend', []):
+                            if type_color_map.get(sector_type) == color:
+                                sector_type_desc = desc
+                                break
+                    except Exception:
+                        pass
+
+            # Calculate allocation unit number if in data area
+            if lba >= first_data_sector and allocation_unit_size > 0:
+                allocation_unit = (lba - first_data_sector) // allocation_unit_size
+
+        tooltip_parts.append(f"Type: {sector_type_desc}")
+
+        if allocation_unit is not None:
+            tooltip_parts.append(f"Unit: {allocation_unit}")
+
+            # Check if this unit belongs to the selected file
+            if hasattr(self, '_selected_units') and allocation_unit in self._selected_units:
+                if hasattr(self, '_selected_file_path') and self._selected_file_path:
+                    filename = self._selected_file_path.split('/')[-1]
+                    tooltip_parts.append(f"★ Selected File: {filename}")
+
+        return "\n".join(tooltip_parts)
 
     def _draw_stats(self, current_head: int, free_space: int, total_space: int, font: QFont, color: QColor) -> None:
         """Draws the disk space statistics text."""
@@ -305,6 +403,7 @@ class DiskMapView:
         """
         default_color = "#BEBEBE"
         error_color = "#8B0000"
+        selected_file_color = "#00FF00"  # Gold for selected file
 
         if not layout_info:
             return default_color
@@ -313,6 +412,18 @@ class DiskMapView:
         sector_type = "unknown"
 
         try:
+            # First, check if this sector belongs to the selected file
+            if hasattr(self, '_selected_units') and self._selected_units and lba >= 0:
+                allocation_unit_size = layout_info.get('allocation_unit_size_sectors', 1)
+                first_data_sector = layout_info.get('first_data_sector', 0)
+
+                if lba >= first_data_sector and allocation_unit_size > 0:
+                    allocation_unit = (lba - first_data_sector) // allocation_unit_size
+
+                    if allocation_unit in self._selected_units:
+                        return selected_file_color
+
+            # Otherwise, use normal sector type coloring
             if use_lba:
                 get_type_func: Optional[Callable[[int], str]] = layout_info.get('get_sector_type')
                 if get_type_func:
@@ -323,6 +434,7 @@ class DiskMapView:
                     sector_type = get_type_chs_func(cylinder, head, sector)
 
             return type_color_map.get(sector_type, default_color)
+
         except Exception as e:
             app_logger = self._get_app_logger()
             log_msg = f"Error getting sector color for LBA {lba} / CHS {cylinder},{head},{sector}: {e}"

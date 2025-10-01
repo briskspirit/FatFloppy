@@ -56,6 +56,8 @@ class FileBrowserApp(QMainWindow):
         self.busy_units: List[Any] = []  # Type depends on filesystem implementation
         self.free_space: int = 0
         self.total_space: int = 0
+        self.selected_file_path: Optional[str] = None
+        self.selected_file_units: List[int] = []
 
         # Text Editor State
         self.original_text_content: Optional[str] = None
@@ -586,7 +588,10 @@ class FileBrowserApp(QMainWindow):
         """
         if not self.controller:
             self.disk_map.scene.clear()
-            self.disk_map._draw_no_disk_message(self.app_font, self.palette().color(QPalette.ColorRole.WindowText))
+            self.disk_map._draw_no_disk_message(
+                self.app_font, 
+                self.palette().color(QPalette.ColorRole.WindowText)
+            )
             return
 
         text_color = self.palette().color(QPalette.ColorRole.WindowText)
@@ -598,6 +603,8 @@ class FileBrowserApp(QMainWindow):
             self.total_space,
             self.app_font,
             text_color,
+            selected_file_units=self.selected_file_units,  # NEW
+            selected_file_path=self.selected_file_path      # NEW
         )
         self.logger.debug(f"Disk map drawn for head {self.current_head}.")
 
@@ -1542,60 +1549,63 @@ class FileBrowserApp(QMainWindow):
         Slot to handle changes in the file list selection.
         Manages saving/discarding changes in the text editor and
         loads the content of selected files into the editor.
+        Also tracks selected file for disk map highlighting.
         """
         if self.text_editor_modified:
-            reply = QMessageBox.warning(self, "Unsaved Changes",
-                                        f"Do you want to save the changes to {os.path.basename(self.current_file_path)}?",
-                                        QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
-                                        QMessageBox.StandardButton.Cancel)
+            reply = QMessageBox.warning(
+                self, "Unsaved Changes",
+                f"Do you want to save the changes to {os.path.basename(self.current_file_path)}?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel
+            )
 
             if reply == QMessageBox.StandardButton.Save:
                 if not self.save_file():
-                    # If save failed or was cancelled, revert selection
-                    if self.file_list.selectionModel().hasSelection():
-                        # This part of the logic is complex in PyQt.
-                        # It's attempting to restore a previous selection,
-                        # but if 'selected' is empty and 'deselected' has items,
-                        # it means all items might have been deselected or
-                        # a new selection failed to take. The original code
-                        # `self.file_list.selectionModel().select(deselected, ...)`
-                        # implies it's trying to re-select what was just deselected,
-                        # which effectively cancels the new selection.
-                        # For simplicity and to not alter business logic, we'll
-                        # assume the signal comes with relevant selected/deselected
-                        # and that the original intent was to restore to 'deselected'
-                        # state if a save was required but failed/cancelled.
-                        # However, `selectionChanged` doesn't pass these.
-                        # A robust solution might involve storing the *previous* selection.
-                        # Given the current parameters, we simply return and let the UI
-                        # implicitly remain in its previous state or default selection.
-                        self.logger.warning("Save during selection change failed/cancelled, preventing new selection.")
+                    self.logger.warning("Save during selection change failed/cancelled, preventing new selection.")
                     return
             elif reply == QMessageBox.StandardButton.Cancel:
                 self.logger.debug("Selection change cancelled due to unsaved changes.")
-                return # Prevent the new selection from taking effect
+                return
+
+        # Clear previous file selection tracking
+        self.selected_file_path = None
+        self.selected_file_units = []
 
         selected_items = self.file_list.selectedItems()
+
         if len(selected_items) == 1:
             item = selected_items[0]
             node: FileSystemNode = item.node
+
             if not node.is_dir:
                 file_path = self._build_full_path(node.name)
-                # 50 KB limit for text viewing
-                if node.size <= 51200:
+                self.selected_file_path = file_path
+
+                # Get allocation units for this file
+                if self.controller:
+                    units = self.controller.get_file_allocation_units(file_path)
+                    if units:
+                        self.selected_file_units = units
+                        self.logger.debug(f"File '{node.name}' uses {len(units)} units: {units[:10]}{'...' if len(units) > 10 else ''}")
+                    else:
+                        self.logger.debug(f"File '{node.name}' has no allocation units (empty or error)")
+
+                # Redraw disk map with highlighted file
+                self.draw_disk_map()
+
+                # Handle text editor loading (existing logic)
+                if node.size <= 51200:  # 50 KB limit
                     try:
                         content_bytes = self.controller.read_file(file_path)
                         if content_bytes is not None and self._is_text_file(content_bytes):
                             content_text = ""
                             fs_type = self.controller.filesystem.get_display_info().get("Filesystem Type", "Unknown")
                             if fs_type == "CP/M":
-                                # CP/M often uses 7-bit ASCII, sometimes with high bit stripped
                                 cleaned_bytes = bytes([b & 0x7F for b in content_bytes])
                                 content_text = cleaned_bytes.decode('ascii', errors='replace')
-                            else:  # Default to FAT/MS-DOS style (CP437)
+                            else:
                                 content_text = content_bytes.decode('cp437', errors='replace')
 
-                            # Normalize line endings for display in QPlainTextEdit
                             content_text = content_text.replace('\r\n', '\n').replace('\r', '\n')
 
                             self.text_viewer.blockSignals(True)
@@ -1610,11 +1620,13 @@ class FileBrowserApp(QMainWindow):
                             self.text_viewer_dock.setWindowTitle(f"Text Editor - {node.name}")
                             self.logger.info(f"Loaded '{node.name}' into text editor.")
                             return
-
                     except Exception as e:
                         self.logger.error(f"Error reading/processing file {file_path} for text view: {e}", exc_info=True)
                 else:
                     self.logger.info(f"File '{node.name}' too large ({node.size} bytes) for text editor. Limit is 50KB.")
+        else:
+            # Multiple items or no items selected - clear selection and redraw
+            self.draw_disk_map()
 
         self._clear_text_viewer_state()
         self.disk_map_dock.raise_()

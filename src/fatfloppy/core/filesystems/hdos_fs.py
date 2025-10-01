@@ -896,6 +896,79 @@ class HDOSFilesystem(Filesystem):
         logger.debug(f"Normal traversal: {len(free_groups)} free, {len(allocated_groups)} allocated")
         return sorted(list(allocated_groups))
 
+    def get_file_allocation_units(self, path: str) -> List[int]:
+        """
+        Gets the list of group numbers allocated to a specific file.
+
+        Args:
+            path: The full path to the file.
+
+        Returns:
+            A list of group numbers used by the file, in chain order.
+            Returns an empty list if the file doesn't exist or has no allocated groups.
+
+        Raises:
+            IOError: If the filesystem is not valid or a read error occurs.
+        """
+        if self.get_validity_score() < self.validity_threshold:
+            raise IOError("Filesystem is not valid or not recognized as HDOS.")
+
+        self._initialize()
+
+        # Parse filename with truncation (same as read_file)
+        filename_upper = path.strip("/").upper()
+        parts = filename_upper.split('.')
+        name_part = parts[0][:8] if parts else ""
+        ext_part = parts[1][:3] if len(parts) > 1 else ""
+        search_filename = f"{name_part}.{ext_part}" if ext_part else name_part
+
+        # Find the file entry
+        target_entry = None
+        for e in self._dir_entries:
+            entry_filename = e.get_filename().upper()
+            if entry_filename == search_filename:
+                target_entry = e
+                break
+
+        if not target_entry:
+            self.logger.warning(f"File '{path}' not found in directory.")
+            return []
+
+        # If file has no groups allocated (empty file)
+        if target_entry.first_group == 0:
+            return []
+
+        # Follow the GRT chain to collect all groups
+        file_groups = []
+        current_group = target_entry.first_group
+
+        for _ in range(len(self._grt)):
+            if current_group == 0:
+                break
+
+            if not (0 < current_group < len(self._grt)):
+                self.logger.error(f"Corrupt file chain for '{path}': group {current_group} is out of bounds.")
+                break
+
+            file_groups.append(current_group)
+
+            # Stop if we've reached the last group
+            if current_group == target_entry.last_group:
+                break
+
+            # Get next group in chain
+            next_group = self._grt[current_group]
+
+            # Detect circular references
+            if next_group == current_group or next_group in file_groups:
+                self.logger.error(f"Circular reference detected in file chain for '{path}' at group {current_group}.")
+                break
+
+            current_group = next_group
+
+        self.logger.debug(f"File '{path}' uses {len(file_groups)} groups: {file_groups}")
+        return file_groups
+
     def get_free_space(self) -> Tuple[int, int]:
         """
         Calculates free and total space on the disk.

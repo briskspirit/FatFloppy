@@ -135,6 +135,20 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_file_allocation_units(self, path: str) -> List[int]:
+        """
+        Gets the allocation units (clusters, blocks, groups) used by a specific file.
+
+        Args:
+            path: The full path to the file.
+
+        Returns:
+            A list of allocation unit numbers used by the file, in order.
+            Returns an empty list if the file doesn't exist or has no allocated units.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def get_disk_map_layout(self) -> Dict[str, Any]:
         """
         Returns layout information for visualizing the disk map.

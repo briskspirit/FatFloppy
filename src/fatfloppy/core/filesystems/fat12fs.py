@@ -587,6 +587,54 @@ class FATFilesystem(Filesystem):
         self.logger.debug(f"Retrieved {len(allocated_clusters)} allocated clusters")
         return allocated_clusters
 
+    def get_file_allocation_units(self, path: str) -> List[int]:
+        """
+        Gets the list of cluster numbers allocated to a specific file.
+
+        Args:
+            path: The full path to the file.
+
+        Returns:
+            A list of cluster numbers used by the file, in order.
+            Returns an empty list if the file doesn't exist or has no clusters.
+
+        Raises:
+            IOError: If the filesystem is not valid.
+            IsADirectoryError: If the path points to a directory.
+        """
+        if self.get_validity_score() < self.validity_threshold:
+            raise IOError("Filesystem is not valid or not recognized as FAT.")
+
+        path = self._normalize_path(path)
+        self.logger.debug(f"Getting allocation units for file: {path}")
+
+        try:
+            file_entry_info = self._find_path(path)
+        except FileNotFoundError:
+            self.logger.warning(f"File not found: {path}")
+            return []
+
+        if not file_entry_info:
+            return []
+
+        if file_entry_info.is_dir:
+            raise IsADirectoryError(f"Path is a directory, not a file: {path}")
+
+        # Empty file or invalid starting cluster
+        if file_entry_info.size == 0 or file_entry_info.starting_cluster < 2:
+            return []
+
+        # Get the cluster chain for this file
+        cluster_chain = self._get_cluster_chain(file_entry_info.starting_cluster)
+
+        if not cluster_chain:
+            self.logger.warning(
+                f"Could not get cluster chain for file {path} starting at {file_entry_info.starting_cluster}")
+            return []
+
+        self.logger.debug(f"File '{path}' uses clusters: {cluster_chain}")
+        return cluster_chain
+
     def get_display_info(self) -> Dict[str, str]:
         """
         Returns a dictionary of key FAT filesystem parameters for display.

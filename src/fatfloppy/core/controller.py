@@ -277,6 +277,34 @@ class DiskController:
             self.logger.error(f"Error getting allocated units: {e}")
             return []
 
+    def get_file_allocation_units(self, file_path: str) -> Optional[List[int]]:
+        """
+        Get the allocation units (clusters/sectors/blocks) used by a specific file.
+
+        Args:
+            file_path: Full path to the file on the disk
+
+        Returns:
+            List of allocation unit numbers, or None if file not found or filesystem doesn't support it
+        """
+        if not self.filesystem:
+            self.logger.warning("No filesystem available to get file allocation units.")
+            return None
+
+        try:
+            units = self.filesystem.get_file_allocation_units(file_path)
+            self.logger.debug(f"File '{file_path}' uses {len(units)} allocation units: {units}")
+            return units
+        except FileNotFoundError:
+            self.logger.warning(f"File not found: {file_path}")
+            return None
+        except NotImplementedError:
+            self.logger.warning(f"Filesystem {type(self.filesystem).__name__} doesn't support get_file_allocation_units")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error getting allocation units for {file_path}: {e}")
+            return None
+
     def get_free_space(self) -> Optional[Tuple[int, int]]:
         """
         Calculates the free space on the disk.
@@ -734,10 +762,10 @@ class DiskController:
         if not self.driver.physical_format:
             self.logger.error(f"{self.driver.__class__.__name__} has no physical format after loading")
             return False
-        
+
         self.disk.set_geometry(self.driver.physical_format)
         self.physical_format = self.driver.physical_format
-        
+
         if format_info:
             self.logger.warning(f"Applying user format to {self.driver.__class__.__name__} "
                                 "will override embedded metadata")
@@ -746,7 +774,7 @@ class DiskController:
             except Exception as e:
                 self.logger.error(f"Failed to apply user format override: {e}")
                 return False
-        
+
         return True
 
     def _handle_user_format(self, format_info: Dict[str, Any]) -> bool:
@@ -762,29 +790,29 @@ class DiskController:
     def _try_auto_detection(self) -> bool:
         """
         Attempts auto-detection of disk format.
-        
+
         Returns:
             True if auto-detection succeeded and set a valid format.
         """
         self.logger.debug(f"Attempting auto-detection for {self.driver.__class__.__name__}")
         try:
             format_name, fs_config = self.detect_format()
-            
+
             if format_name:
                 self.logger.info(f"Auto-detection successful: format='{format_name}'")
                 return True
-            
+
             if fs_config:
                 self.logger.info(f"Auto-detection found filesystem config: {type(fs_config).__name__}")
                 return True
-            
+
             if self.disk.physical_format:
                 self.logger.info("Auto-detection set geometry without format name")
                 return True
-            
+
             self.logger.warning(f"Auto-detection returned no results for {self.driver.__class__.__name__}")
             return False
-            
+
         except Exception as e:
             self.logger.error(f"Auto-detection raised exception: {e}", exc_info=True)
             return False
@@ -792,7 +820,7 @@ class DiskController:
     def _handle_raw_driver_format(self) -> bool:
         """
         Handles format requirements for raw image drivers.
-        
+
         Raw drivers require explicit format information since they have no metadata.
         """
         if not self.disk.physical_format:
@@ -803,6 +831,6 @@ class DiskController:
                 f"Image size: {img_data_len} bytes"
             )
             return False
-        
+
         self.logger.info(f"Raw driver has geometry set: {self.disk.physical_format}")
         return True
