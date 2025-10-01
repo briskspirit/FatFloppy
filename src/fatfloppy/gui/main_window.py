@@ -709,19 +709,27 @@ class FileBrowserApp(QMainWindow):
 
         self.physical_format_group = QGroupBox("Physical Geometry")
         self.physical_format_info = QLabel("No disk image loaded")
+        # Make text selectable and enable word wrap
+        self.physical_format_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.physical_format_info.setWordWrap(True)
+        self.physical_format_info.setMaximumWidth(600)  # Limit width to prevent excessive expansion
         geometry_layout = QVBoxLayout(self.physical_format_group)
         geometry_layout.addWidget(self.physical_format_info)
         self.physical_format_group.setLayout(geometry_layout)
 
         self.filesystem_group = QGroupBox("Filesystem")
         self.filesystem_info = QLabel("No filesystem detected")
+        # Make text selectable and enable word wrap
+        self.filesystem_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.filesystem_info.setWordWrap(True)
+        self.filesystem_info.setMaximumWidth(600)  # Limit width to prevent excessive expansion
         filesystem_layout = QVBoxLayout(self.filesystem_group)
         filesystem_layout.addWidget(self.filesystem_info)
         self.filesystem_group.setLayout(filesystem_layout)
 
         disk_info_layout.addWidget(self.physical_format_group)
         disk_info_layout.addWidget(self.filesystem_group)
-        disk_info_layout.addStretch(1) # Added stretch to push content to top
+        disk_info_layout.addStretch(1)
         disk_info_widget.setLayout(disk_info_layout)
         self.disk_info_dock.setWidget(disk_info_widget)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.disk_info_dock)
@@ -835,36 +843,83 @@ class FileBrowserApp(QMainWindow):
 
     def _setup_fonts(self) -> None:
         """
-        Configures and sets a monospace font for various UI elements.
-        Tries to find a suitable monospace font, falling back to system default.
+        Configures and sets fonts for various UI elements.
+        Tries to load custom font from assets, then falls back to system monospace fonts.
         """
-        monospace_fonts: List[str] = [
-            "Courier New", "DejaVu Sans Mono", "Consolas", "Menlo", "Liberation Mono", "Monaco", "SF Mono"
-        ]
-        self.app_font = QFont()
-        found_font = False
-        for font_name in monospace_fonts:
-            if QFontDatabase.isFixedPitch(font_name):
-                self.app_font.setFamily(font_name)
-                found_font = True
-                self.logger.debug(f"Using monospace font: {font_name}")
-                break
+        custom_font_loaded = False
 
-        if not found_font:
-            default_monospace = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-            self.app_font = default_monospace
-            self.logger.debug(f"Using system default monospace font: {default_monospace.family()}")
+        # Find the assets directory
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        root_dir = current_dir
+        while not os.path.exists(os.path.join(root_dir, 'assets')) and root_dir != os.path.dirname(root_dir):
+            root_dir = os.path.dirname(root_dir)
 
-        self.app_font.setPointSize(12)
-        self.setFont(self.app_font)
+        font_path = os.path.join(root_dir, 'assets', 'fonts', 'Hack-Regular.ttf')
 
-        # Apply font to specific widgets
+        self.logger.debug(f"Looking for font at: {font_path}")
+        self.logger.debug(f"Font file exists: {os.path.exists(font_path)}")
+
+        if os.path.exists(font_path):
+            # Try to load the font
+            font_id = QFontDatabase.addApplicationFont(font_path)
+            self.logger.debug(f"Font ID returned: {font_id}")
+
+            if font_id != -1:
+                font_families = QFontDatabase.applicationFontFamilies(font_id)
+                self.logger.debug(f"Font families available: {font_families}")
+
+                if font_families:
+                    family_name = font_families[0]
+                    self.app_font = QFont(family_name)
+                    self.app_font.setPointSize(12)
+
+                    # Apply to the application globally
+                    QApplication.instance().setFont(self.app_font)
+
+                    custom_font_loaded = True
+                    self.logger.info(f"Successfully loaded custom font: {family_name}")
+                else:
+                    self.logger.warning(f"Font loaded but no families returned from {font_path}")
+            else:
+                self.logger.warning(f"Failed to load font (addApplicationFont returned -1) from {font_path}")
+        else:
+            self.logger.warning(f"Custom font file not found at {font_path}")
+
+        # Fallback to system monospace fonts if custom font not loaded
+        if not custom_font_loaded:
+            monospace_fonts: List[str] = [
+                "Hack", "Courier New", "DejaVu Sans Mono", "Consolas",
+                "Menlo", "Liberation Mono", "Monaco", "SF Mono"
+            ]
+            self.app_font = QFont()
+            found_font = False
+
+            for font_name in monospace_fonts:
+                # Check using hasFamily instead of deprecated isFixedPitch
+                if QFontDatabase.hasFamily(font_name):
+                    self.app_font.setFamily(font_name)
+                    self.app_font.setPointSize(12)
+                    found_font = True
+                    self.logger.info(f"Using fallback monospace font: {font_name}")
+                    break
+
+            if not found_font:
+                default_monospace = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+                self.app_font = default_monospace
+                self.app_font.setPointSize(12)
+                self.logger.info(f"Using system default monospace font: {default_monospace.family()}")
+
+            # Apply to application
+            QApplication.instance().setFont(self.app_font)
+
+        # Apply font to specific widgets (this ensures they get it even if global setting doesn't work)
         self.tree_widget.setFont(self.app_font)
         self.file_list.setFont(self.app_font)
         self.physical_format_info.setFont(self.app_font)
         self.filesystem_info.setFont(self.app_font)
         self.text_viewer.setFont(self.app_font)
-        self.logger.debug("Application fonts set up.")
+
+        self.logger.info(f"Final font in use: {self.app_font.family()}, Size: {self.app_font.pointSize()}")
 
     def _build_file_dialog_filter(self) -> None:
         """
