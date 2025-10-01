@@ -731,10 +731,13 @@ class FileBrowserApp(QMainWindow):
         self.file_list_dock = QDockWidget("Files", self)
         self.file_list = DragDropTreeWidget(self)
         self.file_list.setHeaderLabels(["Name", "Size", "Date/Time", "Attr"])
+
+        # Allow dragging files out and dropping files in, but prevent internal moves
         self.file_list.setDragEnabled(True)
         self.file_list.setAcceptDrops(True)
         self.file_list.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+
         self.file_list_dock.setWidget(self.file_list)
         header = self.file_list.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -1575,6 +1578,14 @@ class FileBrowserApp(QMainWindow):
 
         if len(selected_items) == 1:
             item = selected_items[0]
+
+            # Safety check: ensure item has the node attribute
+            if not hasattr(item, 'node'):
+                self.logger.warning("Selected item does not have 'node' attribute (possibly from drag-drop). Ignoring.")
+                self._clear_text_viewer_state()
+                self.disk_map_dock.raise_()
+                return
+
             node: FileSystemNode = item.node
 
             if not node.is_dir:
