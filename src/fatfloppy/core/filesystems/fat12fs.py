@@ -14,7 +14,7 @@ import re
 import struct
 import datetime
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, ClassVar
 
 from .fs_base import Filesystem, FileInfo
 from ..format_profile import FormatProfile
@@ -192,7 +192,11 @@ class FATFilesystem(Filesystem):
     manipulation, and file operations like reading, writing, deleting,
     and listing files and directories.
     """
-    VALIDITY_THRESHOLD = 40  # Score above which the filesystem is considered usable
+    # Plugin metadata
+    filesystem_type: ClassVar[str] = "FAT12"
+    filesystem_aliases: ClassVar[List[str]] = ["FAT", "MSDOS"]
+    validity_threshold: ClassVar[int] = 40  # Score above which the filesystem is considered usable
+    VALIDITY_THRESHOLD = validity_threshold  # For backward compatibility with tests
 
     def __init__(self, disk: Disk):
         """
@@ -214,11 +218,6 @@ class FATFilesystem(Filesystem):
         self._cached_validity_score: Optional[int] = None
 
         self._try_initialize()
-
-    @property
-    def filesystem_type(self) -> str:
-        """Returns the filesystem type identifier."""
-        return "FAT12"
 
     @staticmethod
     def create_config_from_params(format_info: Dict[str, Any],
@@ -344,7 +343,7 @@ class FATFilesystem(Filesystem):
             ValueError: If the directory name is not a valid 8.3 filename.
             FileExistsError: If a file with the same name already exists.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Creating directory: {path}")
@@ -427,7 +426,7 @@ class FATFilesystem(Filesystem):
             ValueError: If attempting to delete the root directory.
             OSError: If attempting to delete a non-empty directory.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         if path == "/":
@@ -567,7 +566,7 @@ class FATFilesystem(Filesystem):
         Returns:
             A list of integers representing the used cluster numbers.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD or self.fat_cache is None:
+        if self.get_validity_score() < self.validity_threshold or self.fat_cache is None:
             self.logger.warning("Cannot get allocated units: Filesystem invalid or FAT cache not loaded.")
             return []
         if self._cached_allocated_clusters is not None and not self.fat_dirty:
@@ -588,7 +587,7 @@ class FATFilesystem(Filesystem):
         Returns:
             A dictionary of filesystem properties.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.boot_sector:
+        if self.get_validity_score() < self.validity_threshold or not self.boot_sector:
             return {"Error": "FAT filesystem not valid or BPB missing"}
 
         bs = self.boot_sector
@@ -619,7 +618,7 @@ class FATFilesystem(Filesystem):
             A dictionary containing legend information and callback functions
             to determine the type of each sector on the disk.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.boot_sector:
+        if self.get_validity_score() < self.validity_threshold or not self.boot_sector:
             return {}
         bs = self.boot_sector
         reserved = bs.reserved_sectors
@@ -682,7 +681,7 @@ class FATFilesystem(Filesystem):
         Returns:
             A tuple containing (free_bytes, total_bytes).
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             return 0, 0
         total_data_bytes = self.num_clusters * self.allocation_unit_size
         allocated_count = len(self.get_allocated_units())
@@ -794,7 +793,7 @@ class FATFilesystem(Filesystem):
         Raises:
             IOError: If the filesystem is not valid.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Listing directory: {path}")
@@ -826,7 +825,7 @@ class FATFilesystem(Filesystem):
             FileNotFoundError: If the file cannot be found.
             IsADirectoryError: If the path points to a directory.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Reading file: {path}")
@@ -864,7 +863,7 @@ class FATFilesystem(Filesystem):
             ValueError: If the filename is not a valid 8.3 format.
             IsADirectoryError: If a directory exists at the target path.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Writing file: {path}, size: {len(data)} bytes")

@@ -17,7 +17,7 @@ Key features:
 
 import struct
 import datetime
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, ClassVar
 from dataclasses import dataclass, field
 
 from ..physical_format import PhysicalFormat, TrackFormat
@@ -125,6 +125,11 @@ class H17ImageDriver(DiskIODriver):
     - Maintaining sector metadata for error tracking
     - Supporting all optional metadata blocks
     """
+    # Plugin metadata
+    driver_type: ClassVar[str] = "H17"
+    driver_file_extensions: ClassVar[List[str]] = [".h17"]
+    driver_category: ClassVar[str] = "metadata_based"
+    driver_description: ClassVar[str] = "Heathkit H17 disk image driver"
 
     def __init__(self, file_path: str):
         """
@@ -165,11 +170,6 @@ class H17ImageDriver(DiskIODriver):
             logger.info(f"H17 file '{file_path}' not found. Driver initialized for creation.")
 
     # --- Properties ---
-
-    @property
-    def driver_category(self) -> str:
-        """H17 files are metadata-based with embedded geometry."""
-        return "metadata_based"
 
     @property
     def has_embedded_geometry(self) -> bool:

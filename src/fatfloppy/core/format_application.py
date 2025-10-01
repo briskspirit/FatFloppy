@@ -459,13 +459,16 @@ def create_format_applier(driver: DiskIODriver, disk: Any) -> FormatApplier:
     Raises:
         ValueError: If the driver category is unknown.
     """
-    category = driver.driver_category
+    from .format_applier_registry import FormatApplierRegistry
 
-    if category == "metadata_based":
-        return MetadataBasedFormatApplier(driver, disk)
-    elif category == "raw":
-        return RawImageFormatApplier(driver, disk)
-    elif category == "physical":
-        return PhysicalDriveFormatApplier(driver, disk)
-    else:
-        raise ValueError(f"Unknown driver category: {category}")
+    category = driver.driver_category
+    applier_class = FormatApplierRegistry.get(category)
+
+    if not applier_class:
+        available = FormatApplierRegistry.list_registered_categories()
+        raise ValueError(
+            f"No format applier registered for category '{category}'. "
+            f"Available: {available}"
+        )
+
+    return applier_class(driver, disk)

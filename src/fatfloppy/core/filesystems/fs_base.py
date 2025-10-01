@@ -14,7 +14,7 @@ Classes:
 import datetime
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any, Callable
+from typing import List, Optional, Tuple, Dict, Any, Callable, ClassVar
 
 from ..disk import Disk
 from ..format_profile import FormatProfile
@@ -44,6 +44,13 @@ class Filesystem(ABC):
     filesystems. Subclasses must implement all abstract methods to provide
     concrete functionality for a specific filesystem type.
     """
+    # Plugin metadata (must be set by subclasses)
+    filesystem_type: ClassVar[str] = ""  # e.g., "FAT12", "CPM"
+    filesystem_aliases: ClassVar[List[str]] = []  # e.g., ["FAT", "MSDOS"]
+    validity_threshold: ClassVar[int] = 30
+
+    # Optional: Minimum version required
+    min_fatfloppy_version: ClassVar[Optional[str]] = None
 
     def __init__(self, disk: Disk):
         """
@@ -52,6 +59,8 @@ class Filesystem(ABC):
         Args:
             disk: The Disk object that this filesystem will operate on.
         """
+        if not self.filesystem_type:
+            raise ValueError(f"{self.__class__.__name__} must define filesystem_type")
         self.logger = get_logger(self.__class__.__name__)
         self.disk = disk
 

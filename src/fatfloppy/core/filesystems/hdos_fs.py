@@ -1,3 +1,4 @@
+# src/fatfloppy/core/filesystems/hdos_fs.py
 """
 This module provides a read-only filesystem implementation for the Heathkit
 Disk Operating System (HDOS). It is designed to parse HDOS disk images,
@@ -6,7 +7,7 @@ list directories, and read files based on the "HDOS Disk File Handling" article.
 import datetime
 import struct
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, ClassVar
 
 from .fs_base import FileInfo, Filesystem
 from ..disk import Disk
@@ -119,7 +120,11 @@ class HDOSFilesystem(Filesystem):
     """
     Provides a read-only interface to an HDOS filesystem on a disk image.
     """
-    VALIDITY_THRESHOLD: int = 95
+    # Plugin metadata
+    filesystem_type: ClassVar[str] = "HDOS"
+    filesystem_aliases: ClassVar[List[str]] = []
+    validity_threshold: ClassVar[int] = 95
+    VALIDITY_THRESHOLD = validity_threshold  # For backward compatibility with tests
 
     def __init__(self, disk: Disk):
         """
@@ -137,11 +142,6 @@ class HDOSFilesystem(Filesystem):
         self._cached_validity_score: Optional[int] = None
         self._data_base_lba_cache: Optional[int] = None
         self._num_groups_on_disk: int = 0
-
-    @property
-    def filesystem_type(self) -> str:
-        """Returns the filesystem type identifier."""
-        return "HDOS"
 
     # --- Public API Methods ---
 
@@ -211,7 +211,7 @@ class HDOSFilesystem(Filesystem):
             IOError: If the filesystem is not valid.
             NotImplementedError: If a path other than "/" is provided.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid or not recognized as HDOS.")
         if path != "/":
             raise NotImplementedError("HDOS does not support subdirectories.")
@@ -238,7 +238,7 @@ class HDOSFilesystem(Filesystem):
             IOError: If the filesystem is not valid or a read error occurs.
             FileNotFoundError: If the specified file does not exist.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid or not recognized as HDOS.")
 
         self._initialize()
@@ -328,7 +328,7 @@ class HDOSFilesystem(Filesystem):
         Raises:
             IOError: If the filesystem is not valid, or if there is not enough space.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem not valid.")
 
         try:
@@ -399,7 +399,7 @@ class HDOSFilesystem(Filesystem):
             IOError: If the filesystem is invalid or a system file is targeted.
             FileNotFoundError: If the specified file does not exist.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid.")
         self._initialize()
 
@@ -668,7 +668,7 @@ class HDOSFilesystem(Filesystem):
         Returns:
             The group size in bytes, or 0 if the filesystem is not valid.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             return 0
         self._initialize()
         if not self.label:
@@ -687,7 +687,7 @@ class HDOSFilesystem(Filesystem):
             A dictionary containing legend, color maps, and a function
             to determine sector type for visualization.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             return {}
         self._initialize()
 
@@ -795,7 +795,7 @@ class HDOSFilesystem(Filesystem):
         Returns:
             A sorted list of integers representing allocated group numbers.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             return []
         self._initialize()
         if not self._grt or not self.label:
@@ -911,7 +911,7 @@ class HDOSFilesystem(Filesystem):
         Returns:
             A tuple containing (free_bytes, total_bytes).
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             return 0, 0
         self._initialize()
         if not self._grt or not self.label or not self.disk.physical_format:
@@ -956,7 +956,7 @@ class HDOSFilesystem(Filesystem):
         Returns:
             A dictionary with human-readable information about the HDOS volume.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             return {"Error": "HDOS not detected or not valid."}
         self._initialize()
         if not self.label: return {"Error": "HDOS label could not be read."}

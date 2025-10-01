@@ -23,7 +23,7 @@ Note:
 import copy
 import types
 import logging
-from typing import List, Optional, Tuple, Dict, Any, Set
+from typing import List, Optional, Tuple, Dict, Any, Set, ClassVar
 
 from ..drivers.base_driver import DiskIODriver
 from ..physical_format import PhysicalFormat, TrackFormat
@@ -122,6 +122,11 @@ class GreaseweazleDriver(DiskIODriver):
     """
     Disk I/O driver for Greaseweazle hardware.
     """
+    # Plugin metadata
+    driver_type: ClassVar[str] = "physical"
+    driver_file_extensions: ClassVar[List[str]] = []
+    driver_category: ClassVar[str] = "physical"
+    driver_description: ClassVar[str] = "Greaseweazle physical drive interface"
 
     def __init__(self, device_name: Optional[str] = None, drive: str = "A", drive_size: str = "3.5"):
         """
@@ -166,11 +171,6 @@ class GreaseweazleDriver(DiskIODriver):
         self.scan_track_object: Optional[Any] = None
 
     # --- Properties ---
-
-    @property
-    def driver_category(self) -> str:
-        """Greaseweazle accesses physical hardware."""
-        return "physical"
 
     @property
     def has_embedded_geometry(self) -> bool:
@@ -450,6 +450,7 @@ class GreaseweazleDriver(DiskIODriver):
             result = [False]
 
             def write_track_wrapper():
+                nonlocal result
                 try:
                     flux_list = self._convert_to_flux(cylinder, head)
                     self.usb.seek(cylinder, head)

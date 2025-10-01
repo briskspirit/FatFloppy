@@ -1,62 +1,92 @@
 # src/fatfloppy/core/filesystem_registry.py
 """
-Registry for filesystem implementations.
+Self-contained filesystem registry with automatic plugin discovery.
 
-This module provides a centralized registry pattern for filesystem types,
-allowing new filesystem implementations to be registered dynamically without
-modifying core controller logic.
+This module is completely self-sufficient - it discovers, validates,
+and registers all filesystem plugins automatically on import.
 """
-
 from typing import Dict, Type, List, Optional
 
 from .filesystems.fs_base import Filesystem
+from .plugin_scanner import PluginScanner, PluginValidationError
 from .utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 
 class FilesystemRegistry:
-    """
-    A registry for filesystem implementation classes.
-
-    This allows filesystem types to be registered once and then discovered
-    dynamically throughout the application without hardcoded type checks.
-    """
+    """Registry for filesystem implementations with auto-discovery."""
 
     _registry: Dict[str, Type[Filesystem]] = {}
-    _name_map: Dict[str, str] = {}  # Friendly name -> internal name mapping
+    _name_map: Dict[str, str] = {}
+    _initialized: bool = False
 
     @classmethod
-    def register(
-        cls,
-        fs_type: str,
-        fs_class: Type[Filesystem],
-        aliases: Optional[List[str]] = None
-    ) -> None:
+    def _validate_filesystem(cls, fs_class: Type[Filesystem]) -> None:
         """
-        Registers a filesystem implementation class.
+        Validates a filesystem plugin meets all requirements.
 
         Args:
-            fs_type: The internal type name (typically the class name).
-            fs_class: The filesystem class to register.
-            aliases: Optional list of friendly names for this filesystem
-                    (e.g., ["FAT12", "FAT"] for FATFilesystem).
+            fs_class: The filesystem class to validate
 
-        Example:
-            FilesystemRegistry.register(
-                "FATFilesystem",
-                FATFilesystem,
-                aliases=["FAT12", "FAT"]
-            )
+        Raises:
+            PluginValidationError: If validation fails
         """
-        cls._registry[fs_type] = fs_class
-        cls._name_map[fs_type] = fs_type
+        # Check required class attributes
+        PluginScanner.validate_has_attributes(
+            fs_class,
+            ['filesystem_type', 'validity_threshold']
+        )
 
-        if aliases:
+        # Check abstract methods are implemented
+        PluginScanner.validate_implements_methods(fs_class, Filesystem)
+
+        # Validate specific requirements
+        if not isinstance(fs_class.validity_threshold, int):
+            raise PluginValidationError(
+                f"{fs_class.__name__}.validity_threshold must be an integer"
+            )
+
+        if not (0 <= fs_class.validity_threshold <= 100):
+            raise PluginValidationError(
+                f"{fs_class.__name__}.validity_threshold must be between 0-100"
+            )
+
+    @classmethod
+    def _discover_and_register(cls) -> None:
+        """Discovers and registers all filesystem plugins."""
+        if cls._initialized:
+            return
+
+        logger.info("Starting filesystem plugin discovery...")
+
+        # Discover all filesystem plugins
+        filesystems = PluginScanner.discover_plugins(
+            package_name='fatfloppy.core.filesystems',
+            base_class=Filesystem,
+            validator=cls._validate_filesystem
+        )
+
+        # Register each discovered filesystem
+        for fs_class in filesystems:
+            fs_type = fs_class.filesystem_type
+            aliases = getattr(fs_class, 'filesystem_aliases', [])
+
+            # Register main type
+            cls._registry[fs_type] = fs_class
+            cls._name_map[fs_type] = fs_type
+
+            # Register aliases
             for alias in aliases:
                 cls._name_map[alias] = fs_type
 
-        logger.debug(f"Registered filesystem type: {fs_type} with aliases: {aliases}")
+            logger.info(
+                f"Registered filesystem: {fs_class.__name__} "
+                f"(type={fs_type}, aliases={aliases})"
+            )
+
+        cls._initialized = True
+        logger.info(f"Filesystem discovery complete. Registered {len(cls._registry)} filesystems.")
 
     @classmethod
     def get_by_name(cls, name: str) -> Optional[Type[Filesystem]]:
@@ -64,68 +94,66 @@ class FilesystemRegistry:
         Retrieves a filesystem class by name or alias.
 
         Args:
-            name: The filesystem type name or alias (e.g., "FAT12", "FATFilesystem").
+            name: The filesystem type name or alias
 
         Returns:
-            The corresponding Filesystem class, or None if not found.
+            The corresponding Filesystem class, or None if not found
         """
+        if not cls._initialized:
+            cls._discover_and_register()
+
         internal_name = cls._name_map.get(name)
         if internal_name:
             return cls._registry.get(internal_name)
+
         logger.warning(f"Filesystem type '{name}' not found in registry")
         return None
 
     @classmethod
     def get_all(cls) -> List[Type[Filesystem]]:
-        """
-        Returns a list of all registered filesystem classes.
-
-        Returns:
-            A list of Filesystem class types.
-        """
+        """Returns a list of all registered filesystem classes."""
+        if not cls._initialized:
+            cls._discover_and_register()
         return list(cls._registry.values())
 
     @classmethod
     def list_registered_types(cls) -> List[str]:
-        """
-        Returns a list of all registered filesystem type names.
-
-        Returns:
-            A list of filesystem type identifiers.
-        """
+        """Returns a list of all registered filesystem type names."""
+        if not cls._initialized:
+            cls._discover_and_register()
         return list(cls._registry.keys())
 
+    @classmethod
+    def register_external(
+        cls,
+        fs_type: str,
+        fs_class: Type[Filesystem],
+        aliases: Optional[List[str]] = None
+    ) -> None:
+        """
+        Public API for external plugins to register themselves.
 
-# ============================================================================
-# Auto-register Built-in Filesystems
-# ============================================================================
+        Args:
+            fs_type: The filesystem type name
+            fs_class: The filesystem class
+            aliases: Optional list of aliases
 
-def _register_builtin_filesystems() -> None:
-    """Registers all built-in filesystem implementations."""
-    from .filesystems.fat12fs import FATFilesystem
-    from .filesystems.cpm_fs import CPMFilesystem
-    from .filesystems.hdos_fs import HDOSFilesystem
+        Raises:
+            PluginValidationError: If validation fails
+        """
+        # Validate the external plugin
+        cls._validate_filesystem(fs_class)
 
-    FilesystemRegistry.register(
-        "FATFilesystem",
-        FATFilesystem,
-        aliases=["FAT12", "FAT"]
-    )
+        # Register it
+        cls._registry[fs_type] = fs_class
+        cls._name_map[fs_type] = fs_type
 
-    FilesystemRegistry.register(
-        "CPMFilesystem",
-        CPMFilesystem,
-        aliases=["CPM", "CP/M"]
-    )
+        if aliases:
+            for alias in aliases:
+                cls._name_map[alias] = fs_type
 
-    FilesystemRegistry.register(
-        "HDOSFilesystem",
-        HDOSFilesystem,
-        aliases=["HDOS"]
-    )
-
-    logger.info(f"Registered {len(FilesystemRegistry.list_registered_types())} built-in filesystem types")
+        logger.info(f"Externally registered filesystem: {fs_type}")
 
 
-# Register built-in filesystems when module is imported
-_register_builtin_filesystems()
+# Auto-discover on module import
+FilesystemRegistry._discover_and_register()

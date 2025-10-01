@@ -10,7 +10,7 @@ coordinates to a byte offset within the file.
 
 import copy
 import os
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, ClassVar
 
 from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
@@ -27,6 +27,11 @@ class IMGImageDriver(DiskIODriver):
     the disk's sectors laid out sequentially. A PhysicalFormat must be provided
     to describe the disk geometry and sector ordering.
     """
+    # Plugin metadata
+    driver_type: ClassVar[str] = "IMG"
+    driver_file_extensions: ClassVar[List[str]] = [".img", ".ima", ".dsk"]
+    driver_category: ClassVar[str] = "raw"
+    driver_description: ClassVar[str] = "Raw sector image driver"
 
     def __init__(self, file_path: str, image_data: Optional[bytes] = None):
         """
@@ -98,11 +103,6 @@ class IMGImageDriver(DiskIODriver):
                 raise IOError(f"Failed to read image file {self.file_path}") from e
 
     # -- Properties --
-
-    @property
-    def driver_category(self) -> str:
-        """IMG files are raw binary images requiring external format information."""
-        return "raw"
 
     @property
     def has_embedded_geometry(self) -> bool:

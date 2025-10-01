@@ -1,36 +1,19 @@
+# src/fatfloppy/core/filesystem_factory.py
 """
 Provides factory functions for creating and identifying filesystem handlers.
 
-This module contains the logic for dynamically selecting the correct filesystem
-implementation (e.g., FAT12, CP/M) based on scoring the contents of a disk. It
-maintains a registry of available filesystem types and provides utilities to
-instantiate them.
-
-Functions:
-    create_filesystem: Detects and creates the most likely filesystem for a disk.
-    get_filesystem_class_by_type: Retrieves a filesystem class by its name.
+This module uses the FilesystemRegistry for all filesystem operations.
 """
-from typing import Optional, List, Type
+from typing import Optional, Type
 
 from .disk import Disk
 from .filesystems.fs_base import Filesystem
-from .filesystems.fat12fs import FATFilesystem
-from .filesystems.cpm_fs import CPMFilesystem
-from .filesystems.hdos_fs import HDOSFilesystem
-from .utils.logging_config import get_logger
 from .filesystem_registry import FilesystemRegistry
+from .utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# A registry of all available filesystem implementation classes.
-FILESYSTEM_TYPES: List[Type[Filesystem]] = [
-    FATFilesystem,
-    CPMFilesystem,
-    HDOSFilesystem,
-    # CBMFilesystem, # Example of where another FS would be added
-]
-
-# A minimum score required for a filesystem to be considered a valid candidate.
+# Minimum score required for a filesystem to be considered valid
 MINIMUM_VALIDITY_SCORE = 30
 
 
@@ -38,17 +21,11 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
     """
     Detects and instantiates the most appropriate filesystem for a given disk.
 
-    This function iterates through all registered filesystem types, calculates a
-    validity score for each one against the provided disk, and returns an
-    instance of the class with the highest score, provided it meets the minimum
-    threshold.
-
     Args:
-        disk: The Disk object for which to create a filesystem handler.
+        disk: The Disk object for which to create a filesystem handler
 
     Returns:
-        An instance of a Filesystem subclass if a suitable one is found,
-        otherwise None.
+        An instance of a Filesystem subclass if suitable, otherwise None
     """
     if not disk or not disk.physical_format:
         logger.warning("Cannot create filesystem: Disk or physical format not available.")
@@ -56,19 +33,16 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
 
     logger.debug("Attempting to detect filesystem on disk by scoring...")
 
-    # Import here to avoid circular dependency
-    from .filesystem_registry import FilesystemRegistry
-
     best_fs_instance: Optional[Filesystem] = None
     highest_score: int = -1
     all_scores: dict = {}
+    original_pf = disk.physical_format
 
     for fs_class in FilesystemRegistry.get_all():
-        original_pf = disk.physical_format
         try:
             logger.debug(f"Scoring filesystem type: {fs_class.__name__}")
 
-            # Temporarily apply a canonical geometry if the FS provides one
+            # Temporarily apply canonical geometry if available
             if hasattr(fs_class, 'get_canonical_format') and callable(getattr(fs_class, 'get_canonical_format')):
                 canonical_format = fs_class.get_canonical_format()
                 if canonical_format.physical_format != original_pf:
@@ -87,22 +61,22 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
             logger.error(f"Error while scoring {fs_class.__name__}: {e}", exc_info=False)
             all_scores[fs_class.__name__] = f"Error: {e}"
         finally:
-            # Always restore the original geometry
+            # Always restore original geometry
             if disk.physical_format != original_pf:
                 disk.set_geometry(original_pf)
 
-    # Log all scores for debugging purposes
+    # Log all scores
     logger.debug(f"Filesystem scores: {all_scores}")
 
     if highest_score >= MINIMUM_VALIDITY_SCORE and best_fs_instance:
-        logger.info(f"Selected best match: {best_fs_instance.__class__.__name__} with a score of {highest_score}.")
-        # Re-initialize the best instance with the final, correct geometry
+        logger.info(f"Selected best match: {best_fs_instance.__class__.__name__} with score {highest_score}.")
+        # Re-initialize with final geometry
         if disk.physical_format != original_pf:
             best_fs_instance = type(best_fs_instance)(disk)
-            best_fs_instance.get_validity_score() # Re-run to initialize internal state
+            best_fs_instance.get_validity_score()  # Re-run to initialize
         return best_fs_instance
 
-    logger.warning(f"No valid filesystem type detected (highest score {highest_score} was below threshold {MINIMUM_VALIDITY_SCORE}).")
+    logger.warning(f"No valid filesystem detected (highest score {highest_score} < threshold {MINIMUM_VALIDITY_SCORE}).")
     return None
 
 
@@ -111,17 +85,9 @@ def get_filesystem_class_by_type(fs_type_name: str) -> Optional[Type[Filesystem]
     Retrieves a filesystem class from the registry by its type name.
 
     Args:
-        fs_type_name: The name of the filesystem type (e.g., "FAT12", "CPM").
+        fs_type_name: The name of the filesystem type
 
     Returns:
-        The corresponding Filesystem subclass, or None if not found.
+        The corresponding Filesystem subclass, or None if not found
     """
-    # Import here to avoid circular dependency
-    from .filesystem_registry import FilesystemRegistry
-
-    fs_class = FilesystemRegistry.get_by_name(fs_type_name)
-
-    if not fs_class:
-        logger.warning(f"No filesystem class found for type '{fs_type_name}'")
-
-    return fs_class
+    return FilesystemRegistry.get_by_name(fs_type_name)

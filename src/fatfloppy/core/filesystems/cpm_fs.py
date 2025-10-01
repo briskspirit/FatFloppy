@@ -15,7 +15,7 @@ import struct
 import datetime
 from dataclasses import dataclass, field
 from collections import defaultdict
-from typing import List, Optional, Tuple, Dict, Any, Set
+from typing import List, Optional, Tuple, Dict, Any, Set, ClassVar
 
 from .fs_base import Filesystem, FileInfo
 from ..format_profile import FormatProfile
@@ -135,7 +135,11 @@ class CPMFilesystem(Filesystem):
     This class handles filesystem detection, metadata parsing (DPB), and
     file operations like reading, writing, deleting, and listing files.
     """
-    VALIDITY_THRESHOLD = 50  # Score above which the filesystem is considered usable
+    # Plugin metadata
+    filesystem_type: ClassVar[str] = "CPM"
+    filesystem_aliases: ClassVar[List[str]] = ["CP/M"]
+    validity_threshold: ClassVar[int] = 50
+    VALIDITY_THRESHOLD = validity_threshold  # For backward compatibility with tests
 
     def __init__(self, disk: Disk):
         """
@@ -188,11 +192,6 @@ class CPMFilesystem(Filesystem):
         if self.dpb:
             return self.dpb.block_size
         return 0
-
-    @property
-    def filesystem_type(self) -> str:
-        """Returns the filesystem type identifier."""
-        return "CPM"
 
     @staticmethod
     def create_config_from_params(format_info: Dict[str, Any],
@@ -257,7 +256,7 @@ class CPMFilesystem(Filesystem):
             IOError: If the filesystem is not considered valid.
             FileNotFoundError: If the specified file does not exist.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem not valid")
 
         user, parsed_filename = self._parse_cpm_path(path)
@@ -380,7 +379,7 @@ class CPMFilesystem(Filesystem):
         Returns:
             A list of integers representing the used block numbers.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.dpb:
+        if self.get_validity_score() < self.validity_threshold or not self.dpb:
             return []
         if self._cached_allocation_map is None:
             self._load_allocation_map()
@@ -512,7 +511,7 @@ class CPMFilesystem(Filesystem):
         Returns:
             A tuple containing (free_bytes, total_bytes).
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.dpb:
+        if self.get_validity_score() < self.validity_threshold or not self.dpb:
             return 0, 0
 
         total_alloc_blocks_on_disk = self.dpb.dsm + 1
@@ -634,7 +633,7 @@ class CPMFilesystem(Filesystem):
             IOError: If the filesystem is not valid.
             NotImplementedError: If a path other than "/" is provided.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid or not recognized as CP/M.")
         if path != '/':
             raise NotImplementedError("Subdirectories not supported in CP/M")
@@ -686,7 +685,7 @@ class CPMFilesystem(Filesystem):
             FileNotFoundError: If the file cannot be found.
             ValueError: If the filename format is invalid.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid or not recognized as CP/M.")
 
         path = path.lstrip('/')
@@ -764,7 +763,7 @@ class CPMFilesystem(Filesystem):
                      or the directory is full.
             ValueError: If the DPB is not set.
         """
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD:
+        if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem not valid")
 
         # 1. Preparation & Path Parsing
@@ -993,7 +992,7 @@ class CPMFilesystem(Filesystem):
 
     def _load_allocation_map(self) -> None:
         """Builds a set of all used block numbers by scanning the directory."""
-        if self.get_validity_score() < self.VALIDITY_THRESHOLD or not self.dpb:
+        if self.get_validity_score() < self.validity_threshold or not self.dpb:
             return
 
         self.logger.debug("Building CP/M allocation map by scanning directory entries...")

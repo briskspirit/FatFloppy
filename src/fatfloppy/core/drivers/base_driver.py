@@ -9,7 +9,7 @@ of various formats. All specific driver implementations (e.g., for .IMG or
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, ClassVar
 
 from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
@@ -22,9 +22,21 @@ class DiskIODriver(ABC):
     Subclasses must implement the abstract methods to provide format-specific
     logic for accessing sector data.
     """
+    # Plugin metadata (must be set by subclasses)
+    driver_type: ClassVar[str] = ""  # e.g., "IMG", "IMD", "physical"
+    driver_file_extensions: ClassVar[List[str]] = []  # e.g., [".img", ".ima"]
+    driver_category: ClassVar[str] = ""  # "metadata_based", "raw", or "physical"
+
+    # Optional metadata
+    driver_description: ClassVar[str] = ""
+    min_fatfloppy_version: ClassVar[Optional[str]] = None
 
     def __init__(self):
         """Initializes the base driver."""
+        if not self.driver_type:
+            raise ValueError(f"{self.__class__.__name__} must define driver_type")
+        if not self.driver_category:
+            raise ValueError(f"{self.__class__.__name__} must define driver_category")
         self.logger = get_logger(self.__class__.__name__)
         self.physical_format: Optional[PhysicalFormat] = None
 
@@ -88,21 +100,6 @@ class DiskIODriver(ABC):
         raise NotImplementedError
 
     # --- Capability Methods ---
-
-    @property
-    def driver_category(self) -> str:
-        """
-        Returns the category of this driver.
-
-        Categories determine how the driver handles format detection and application:
-        - 'metadata_based': Driver has self-describing format (IMD, H17)
-        - 'raw': Driver requires external format information (IMG)
-        - 'physical': Driver accesses physical hardware (Greaseweazle)
-
-        Returns:
-            The driver category as a string.
-        """
-        return "raw"  # Default category
 
     @property
     def supports_in_place_formatting(self) -> bool:

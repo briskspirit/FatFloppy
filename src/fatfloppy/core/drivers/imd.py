@@ -17,7 +17,7 @@ import datetime
 import os
 import re
 import struct
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, ClassVar
 
 from ..._version import __version__ as fatfloppy_version
 from ..format_profile import FormatProfile
@@ -148,6 +148,11 @@ class IMDImageDriver(DiskIODriver):
     based on a provided physical format profile. Sector data is cached in memory
     and flushed to the file on demand.
     """
+    # Plugin metadata
+    driver_type: ClassVar[str] = "IMD"
+    driver_file_extensions: ClassVar[List[str]] = [".imd"]
+    driver_category: ClassVar[str] = "metadata_based"
+    driver_description: ClassVar[str] = "ImageDisk format driver"
 
     def __init__(self, file_path: str):
         """
@@ -198,11 +203,6 @@ class IMDImageDriver(DiskIODriver):
             self.comment = f"{self.creation_date.strftime('%d/%m/%Y %H:%M:%S')}\r\nFatFloppy v{fatfloppy_version}"
 
     # --- Properties ---
-
-    @property
-    def driver_category(self) -> str:
-        """IMD files are metadata-based with embedded geometry."""
-        return "metadata_based"
 
     @property
     def has_embedded_geometry(self) -> bool:

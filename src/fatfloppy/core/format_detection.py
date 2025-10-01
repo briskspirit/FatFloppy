@@ -7,7 +7,7 @@ extract format information from that specific source.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple, Any, Dict, List
+from typing import Optional, Tuple, Any, Dict, List, ClassVar
 import copy
 
 from .physical_format import PhysicalFormat, TrackFormat
@@ -22,8 +22,13 @@ from .utils.logging_config import get_logger
 
 class FormatDetector(ABC):
     """Abstract base class for format detection strategies."""
+    # Plugin metadata
+    detector_for_driver: ClassVar[str] = ""  # Driver class name this detects for
 
     def __init__(self, disk, driver, known_formats: Dict[str, FormatProfile]):
+        # The base MetadataBasedDetector doesn't need this check
+        if not self.detector_for_driver and self.__class__.__name__ not in ["MetadataBasedDetector"]:
+            raise ValueError(f"{self.__class__.__name__} must define detector_for_driver")
         self.disk = disk
         self.driver = driver
         self.known_formats = known_formats
@@ -82,7 +87,7 @@ class MetadataBasedDetector(FormatDetector):
         """Attempts to parse the filesystem using the current geometry."""
         try:
             fs = create_filesystem(self.disk)
-            if fs and fs.get_validity_score() >= getattr(fs, 'VALIDITY_THRESHOLD', 30):
+            if fs and fs.get_validity_score() >= fs.validity_threshold:
                 config = fs.get_specific_config()
 
                 # Apply driver-specific volume setup if needed
@@ -146,12 +151,12 @@ class MetadataBasedDetector(FormatDetector):
 
 class IMDFormatDetector(MetadataBasedDetector):
     """Format detector for ImageDisk (.IMD) files."""
-    pass  # Uses base implementation
+    detector_for_driver = "IMDImageDriver"
 
 
 class H17FormatDetector(MetadataBasedDetector):
     """Format detector for H17 (.h17disk) files."""
-    pass  # Uses base implementation
+    detector_for_driver = "H17ImageDriver"
 
 
 class IMGFormatDetector(FormatDetector):
@@ -163,6 +168,7 @@ class IMGFormatDetector(FormatDetector):
     2. Iterate through known profiles by size
     3. Fall back to generic geometry
     """
+    detector_for_driver = "IMGImageDriver"
 
     def detect(self) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         initial_format = copy.deepcopy(self.disk.physical_format) if self.disk.physical_format else None
@@ -194,7 +200,7 @@ class IMGFormatDetector(FormatDetector):
 
         try:
             fs = FATFilesystem(self.disk)
-            if fs.get_validity_score() < FATFilesystem.VALIDITY_THRESHOLD:
+            if fs.get_validity_score() < fs.validity_threshold:
                 return None, None, None
 
             self.logger.info("Direct BPB parse successful")
@@ -277,7 +283,7 @@ class IMGFormatDetector(FormatDetector):
                 fs_class = get_filesystem_class_by_type(profile.filesystem_type)
                 if fs_class:
                     fs = fs_class(self.disk)
-                    if fs.get_validity_score() >= getattr(fs, 'VALIDITY_THRESHOLD', 30):
+                    if fs.get_validity_score() >= fs.validity_threshold:
                         self.logger.info(f"Matched profile: {name}")
                         return name, fs.get_specific_config(), temp_format
 
@@ -319,6 +325,7 @@ class GreaseweazleFormatDetector(FormatDetector):
     3. Check for second head
     4. Iterate through size-matched profiles
     """
+    detector_for_driver = "GreaseweazleDriver"
 
     def __init__(self, disk, driver, known_formats: Dict[str, FormatProfile], drive_size: str):
         super().__init__(disk, driver, known_formats)
@@ -457,7 +464,7 @@ class GreaseweazleFormatDetector(FormatDetector):
                     continue
 
                 fs = fs_class(self.disk)
-                if fs.get_validity_score() < getattr(fs, 'VALIDITY_THRESHOLD', 30):
+                if fs.get_validity_score() < fs.validity_threshold:
                     continue
 
                 # Consistency check
@@ -546,7 +553,6 @@ def create_format_detector(disk, driver, known_formats: Dict[str, FormatProfile]
     Raises:
         ValueError: If no detector is registered for the driver type.
     """
-    # Import here to avoid circular dependency
     from .detector_registry import DetectorRegistry
 
     detector_class = DetectorRegistry.get_detector(driver)
@@ -557,7 +563,7 @@ def create_format_detector(disk, driver, known_formats: Dict[str, FormatProfile]
         )
 
     # Handle special case for Greaseweazle which requires drive_size
-    if detector_class == GreaseweazleFormatDetector:
+    if detector_class.__name__ == 'GreaseweazleFormatDetector':
         drive_size = kwargs.get('drive_size', '3.5')
         return detector_class(disk, driver, known_formats, drive_size)
 
