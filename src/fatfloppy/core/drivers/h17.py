@@ -127,7 +127,7 @@ class H17ImageDriver(DiskIODriver):
     """
     # Plugin metadata
     driver_type: ClassVar[str] = "H17"
-    driver_file_extensions: ClassVar[List[str]] = [".h17"]
+    driver_file_extensions: ClassVar[List[str]] = [".h17", ".h17disk"]
     driver_category: ClassVar[str] = "metadata_based"
     driver_description: ClassVar[str] = "Heathkit H17 disk image driver"
 
