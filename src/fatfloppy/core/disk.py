@@ -59,24 +59,6 @@ class Disk:
                 self.logger.error(f"Disk flush failed: {e}", exc_info=True)
                 raise IOError("Disk flush failed") from e
 
-    def lba_to_chs(self, lba: int) -> Tuple[int, int, int]:
-        """
-        Converts a Logical Block Address (LBA) to CHS coordinates.
-
-        Args:
-            lba: The logical block address to convert.
-
-        Returns:
-            A tuple containing the (cylinder, head, sector).
-
-        Raises:
-            ValueError: If the disk geometry has not been set.
-        """
-        if not self.physical_format:
-            raise ValueError("Disk geometry not set")
-        self.logger.debug(f"Converting LBA {lba} to CHS")
-        return self.physical_format.lba_to_chs(lba)
-
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         """
         Reads a single sector from the disk at the given CHS address.

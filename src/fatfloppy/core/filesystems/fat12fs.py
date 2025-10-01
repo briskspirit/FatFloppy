@@ -21,7 +21,7 @@ from ..format_profile import FormatProfile
 from ..utils.logging_config import get_logger
 from ..disk import Disk
 from ..drivers.base_driver import DiskIODriver
-from ..physical_format import PhysicalFormat, TrackFormat
+from ..physical_format import PhysicalFormat
 
 
 @dataclass
@@ -546,7 +546,7 @@ class FATFilesystem(Filesystem):
         fat_start_lba = boot_sector_config.reserved_sectors
         for i in range(boot_sector_config.num_fats):
             fat_lba = fat_start_lba + (i * boot_sector_config.sectors_per_fat)
-            c, h, s = self.disk.lba_to_chs(fat_lba)
+            c, h, s = self.disk.physical_format.lba_to_chs(fat_lba)
             self.disk.write_sectors(c, h, s, fat_data)
         self.logger.info(f"Wrote {boot_sector_config.num_fats} FATs")
 
@@ -555,7 +555,7 @@ class FATFilesystem(Filesystem):
         root_dir_sectors = (root_dir_bytes + boot_sector_config.bytes_per_sector - 1) // boot_sector_config.bytes_per_sector
         root_dir_data = bytearray(root_dir_sectors * boot_sector_config.bytes_per_sector)
         root_dir_start_lba = fat_start_lba + (boot_sector_config.num_fats * boot_sector_config.sectors_per_fat)
-        c, h, s = self.disk.lba_to_chs(root_dir_start_lba)
+        c, h, s = self.disk.physical_format.lba_to_chs(root_dir_start_lba)
         self.disk.write_sectors(c, h, s, root_dir_data)
         self.logger.info(f"Wrote root directory ({root_dir_sectors} sectors)")
 
@@ -1422,7 +1422,7 @@ class FATFilesystem(Filesystem):
         num_sectors = end_lba - start_lba + 1
 
         try:
-            c, h, s = self.disk.lba_to_chs(start_lba)
+            c, h, s = self.disk.physical_format.lba_to_chs(start_lba)
             all_data = self.disk.read_sectors(c, h, s, num_sectors)
             start_offset_in_data = offset % bps
             end_offset_in_data = start_offset_in_data + length
@@ -1537,7 +1537,7 @@ class FATFilesystem(Filesystem):
 
         # Handle partial first sector
         if offset_in_first_sector != 0:
-            c, h, s = self.disk.lba_to_chs(start_lba)
+            c, h, s = self.disk.physical_format.lba_to_chs(start_lba)
             sector_data = bytearray(self.disk.read_sector(c, h, s))
             bytes_in_sector = min(len(data), bps - offset_in_first_sector)
             sector_data[offset_in_first_sector: offset_in_first_sector + bytes_in_sector] = data[:bytes_in_sector]
@@ -1549,14 +1549,14 @@ class FATFilesystem(Filesystem):
         num_full_sectors = len(data_to_write) // bps
         if num_full_sectors > 0:
             full_sectors_data = data_to_write[:num_full_sectors * bps]
-            c, h, s = self.disk.lba_to_chs(current_lba)
+            c, h, s = self.disk.physical_format.lba_to_chs(current_lba)
             self.disk.write_sectors(c, h, s, full_sectors_data)
             data_to_write = data_to_write[len(full_sectors_data):]
             current_lba += num_full_sectors
 
         # Handle partial last sector
         if data_to_write:
-            c, h, s = self.disk.lba_to_chs(current_lba)
+            c, h, s = self.disk.physical_format.lba_to_chs(current_lba)
             sector_data = bytearray(self.disk.read_sector(c, h, s))
             sector_data[:len(data_to_write)] = data_to_write
             self.disk.write_sector(c, h, s, bytes(sector_data))

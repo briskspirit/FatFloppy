@@ -167,7 +167,7 @@ def mock_fs_setup(request: pytest.FixtureRequest) -> Generator[Tuple[FATFilesyst
         cylinder = temp // heads
         return cylinder, head, sector
 
-    mock_disk.lba_to_chs.side_effect = mock_lba_to_chs
+    mock_disk.lba_to_chs = MagicMock(side_effect=mock_lba_to_chs)
 
     def mock_read_sectors(start_c: int, start_h: int, start_s: int, num_sectors: int) -> bytes:
         """Mocks reading sectors by pulling data from in-memory representations."""

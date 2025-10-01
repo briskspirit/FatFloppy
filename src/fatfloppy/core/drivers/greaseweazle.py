@@ -705,37 +705,6 @@ class GreaseweazleDriver(DiskIODriver):
             flux_list.append(val)
         return flux_list
 
-    def _write_track(self, cylinder: int, head: int) -> bool:
-        """
-        Writes a full track to the disk. (Internal, currently called by `flush`)
-
-        Args:
-            cylinder: The cylinder number.
-            head: The head number.
-
-        Returns:
-            True on success, False on failure.
-        """
-        self.logger.debug(f"Writing track C:{cylinder} H:{head}")
-        track_id = (cylinder, head)
-        if track_id not in self.dirty_sectors:
-            self.logger.debug("No dirty sectors to write")
-            return True
-
-        try:
-            flux_list = self._convert_to_flux(cylinder, head)
-            self.usb.seek(cylinder, head)
-            self.usb.write_track(flux_list=flux_list, cue_at_index=True, terminate_at_index=True)
-            if self.verify_writes:
-                self.track_data.pop(track_id, None)
-                self.dirty_tracks.discard(track_id)
-                self.dirty_sectors.pop(track_id, None)
-                return self._read_track(cylinder, head)
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to write track C:{cylinder} H:{head}: {e}", exc_info=True)
-            return False
-
     def _update_after_write(self, cylinder: int, head: int) -> None:
         """
         Updates internal caches and dirty flags after a successful write.
