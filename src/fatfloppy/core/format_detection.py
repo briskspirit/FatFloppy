@@ -542,17 +542,23 @@ def create_format_detector(disk, driver, known_formats: Dict[str, FormatProfile]
 
     Returns:
         An appropriate FormatDetector subclass instance
-    """
-    from .drivers import IMDImageDriver, H17ImageDriver, IMGImageDriver, GreaseweazleDriver
 
-    if isinstance(driver, IMDImageDriver):
-        return IMDFormatDetector(disk, driver, known_formats)
-    elif isinstance(driver, H17ImageDriver):
-        return H17FormatDetector(disk, driver, known_formats)
-    elif isinstance(driver, IMGImageDriver):
-        return IMGFormatDetector(disk, driver, known_formats)
-    elif isinstance(driver, GreaseweazleDriver):
+    Raises:
+        ValueError: If no detector is registered for the driver type.
+    """
+    # Import here to avoid circular dependency
+    from .detector_registry import DetectorRegistry
+
+    detector_class = DetectorRegistry.get_detector(driver)
+
+    if not detector_class:
+        raise ValueError(
+            f"No format detector registered for driver type: {type(driver).__name__}"
+        )
+
+    # Handle special case for Greaseweazle which requires drive_size
+    if detector_class == GreaseweazleFormatDetector:
         drive_size = kwargs.get('drive_size', '3.5')
-        return GreaseweazleFormatDetector(disk, driver, known_formats, drive_size)
-    else:
-        raise ValueError(f"No detector available for driver type: {type(driver).__name__}")
+        return detector_class(disk, driver, known_formats, drive_size)
+
+    return detector_class(disk, driver, known_formats)

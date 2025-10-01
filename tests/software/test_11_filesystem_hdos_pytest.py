@@ -188,7 +188,7 @@ def test_hdos_format_and_write(hdos_controller: DiskController, tmp_path: Path) 
 
     # 2. Open the blank disk and format it
     assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    format_success = hdos_controller.format_disk(profile_name)
+    format_success = hdos_controller.format_disk_media(profile_name)
     assert format_success, "format_disk command failed"
 
     # 3. Verify the formatted state
@@ -321,7 +321,7 @@ def test_hdos_format_creates_structures(hdos_controller: DiskController, tmp_pat
 
     assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG",
                                      format_info={"format_name": profile_name})
-    assert hdos_controller.format_disk(profile_name)
+    assert hdos_controller.format_disk_media(profile_name)
 
     fs = hdos_controller.filesystem
     assert isinstance(fs, HDOSFilesystem)
@@ -367,7 +367,7 @@ def test_hdos_rgt_lockout_functionality(hdos_controller: DiskController, tmp_pat
 
     assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG",
                                      format_info={"format_name": profile_name})
-    assert hdos_controller.format_disk(profile_name)
+    assert hdos_controller.format_disk_media(profile_name)
 
     fs = hdos_controller.filesystem
 
@@ -432,7 +432,7 @@ def test_hdos_empty_file_operations(hdos_controller: DiskController, tmp_path: P
 
     assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG",
                                      format_info={"format_name": profile_name})
-    assert hdos_controller.format_disk(profile_name)
+    assert hdos_controller.format_disk_media(profile_name)
 
     # Write empty file
     assert hdos_controller.write_file("/EMPTY.TXT", b"")
@@ -474,7 +474,7 @@ def test_hdos_multiple_file_operations(hdos_controller: DiskController, tmp_path
 
     assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG",
                                      format_info={"format_name": profile_name})
-    assert hdos_controller.format_disk(profile_name)
+    assert hdos_controller.format_disk_media(profile_name)
 
     initial_free, _ = hdos_controller.get_free_space()
 
@@ -584,7 +584,7 @@ def test_hdos_text_file_null_trimming(hdos_controller: DiskController, tmp_path:
 
     assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG",
                                      format_info={"format_name": profile_name})
-    assert hdos_controller.format_disk(profile_name)
+    assert hdos_controller.format_disk_media(profile_name)
 
     # 1. Write a text file (will be padded to sector boundary on disk)
     text_content = b"This is a text file"
@@ -626,7 +626,7 @@ def test_hdos_large_file_spanning_many_groups(hdos_controller: DiskController, t
 
     assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG",
                                      format_info={"format_name": profile_name})
-    assert hdos_controller.format_disk(profile_name)
+    assert hdos_controller.format_disk_media(profile_name)
 
     # SPG=2 means 512 bytes per group.
     # To get 60 groups, we need 60 * 512 = 30,720 bytes.
@@ -691,7 +691,7 @@ def test_hdos_filename_edge_cases(hdos_controller: DiskController, tmp_path: Pat
 
     assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG",
                                      format_info={"format_name": profile_name})
-    assert hdos_controller.format_disk(profile_name)
+    assert hdos_controller.format_disk_media(profile_name)
 
     test_content = b"Test content for filename tests"
 

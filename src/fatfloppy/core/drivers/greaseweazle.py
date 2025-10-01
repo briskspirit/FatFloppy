@@ -165,6 +165,168 @@ class GreaseweazleDriver(DiskIODriver):
         self.using_custom_diskdef: bool = False
         self.scan_track_object: Optional[Any] = None
 
+    # --- Properties ---
+
+    @property
+    def driver_category(self) -> str:
+        """Greaseweazle accesses physical hardware."""
+        return "physical"
+
+    @property
+    def has_embedded_geometry(self) -> bool:
+        """Physical disks can be scanned to detect geometry."""
+        return True
+
+    @property
+    def allows_geometry_override(self) -> bool:
+        """Geometry can be set externally to match known formats."""
+        return True
+
+    @property
+    def supports_in_place_formatting(self) -> bool:
+        """Physical disks can be formatted."""
+        return True
+
+    @property
+    def supports_new_image_creation(self) -> bool:
+        """Greaseweazle doesn't create image files, it accesses hardware."""
+        return False
+
+    @property
+    def requires_initialization(self) -> bool:
+        """Greaseweazle needs initialization to measure RPM."""
+        return True
+
+    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+        """
+        Validates Greaseweazle driver state after opening.
+
+        For physical drives, physical_format is not required at open time
+        since it can be detected during I/O operations.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        # Check that Greaseweazle library is available
+        if not GREASEWEAZLE_AVAILABLE:
+            return False, "Greaseweazle library not available"
+
+        # Physical drives don't need physical_format at open time
+        # It will be set during format application or auto-detection
+        return True, None
+
+    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+        """
+        Validates whether the Greaseweazle can be opened.
+
+        Args:
+            source: Device name (can be None for auto-detection).
+            **kwargs: Must contain 'drive_letter' and 'drive_size'.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        if not GREASEWEAZLE_AVAILABLE:
+            return False, "Greaseweazle library not installed"
+
+        drive_letter = kwargs.get('drive_letter', self.drive)
+        drive_size = kwargs.get('drive_size', self.drive_size)
+
+        if drive_letter not in ['A', 'B']:
+            return False, f"Invalid drive letter: {drive_letter}. Must be 'A' or 'B'"
+
+        if drive_size not in ['3.5', '5.25', '8']:
+            return False, f"Invalid drive size: {drive_size}. Must be '3.5', '5.25', or '8'"
+
+        # Note: We can't validate USB connection until initialize() is called
+        return True, None
+
+    def get_format_requirements(self) -> dict:
+        """
+        Returns format requirements for Greaseweazle driver.
+
+        Returns:
+            Dictionary describing what format information is needed.
+        """
+        return {
+            'needs_format_for_open': False,  # Can open without format
+            'needs_format_for_io': False,    # Can scan tracks
+            'can_derive_format': True,       # Can detect via track scanning
+            'preferred_detection_method': 'auto'  # Should auto-detect
+        }
+
+    def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
+        """
+        Validates format compatibility for Greaseweazle driver.
+
+        Args:
+            format_info: Dictionary containing format parameters.
+
+        Returns:
+            Tuple of (is_ready, error_message).
+        """
+        # Check if we have any format information at all
+        has_format = any(k in format_info for k in
+                        ['format_name', 'physical_format', 'cylinders'])
+
+        if not has_format:
+            # No format provided is OK - we can auto-detect
+            return True, None
+
+        # If we have format info, we need to resolve it to validate
+        # Import here to avoid circular dependency
+        from ..format_definitions import FLOPPY_FORMATS
+
+        # Try to resolve to a physical format
+        if 'physical_format' in format_info:
+            pf = format_info['physical_format']
+        elif 'format_name' in format_info:
+            format_name = format_info['format_name']
+            profile = FLOPPY_FORMATS.get(format_name)
+            if not profile or not profile.physical_format:
+                return False, f"Unknown or invalid format name: {format_name}"
+            pf = profile.physical_format
+        elif 'cylinders' in format_info:
+            # Custom geometry - build it to validate
+            from ..physical_format import PhysicalFormat, TrackFormat
+            try:
+                cylinders = format_info.get('cylinders', 80)
+                heads = format_info.get('heads', 2)
+                sectors_per_track = format_info.get('sectors_per_track', 18)
+                bytes_per_sector = format_info.get('bytes_per_sector', 512)
+                encoding = format_info.get('encoding', 'MFM')
+                rate = format_info.get('rate', 500)
+
+                track_format = TrackFormat(
+                    track_start=0, track_end=cylinders - 1,
+                    head_start=0, head_end=heads - 1,
+                    sectors_per_track=sectors_per_track,
+                    encoding=encoding, rate=rate, interleave=1,
+                    bytes_per_sector=bytes_per_sector
+                )
+                pf = PhysicalFormat(
+                    cylinders=cylinders, heads=heads, rpm=300,
+                    heads_inverted=False, bytes_per_sector=bytes_per_sector,
+                    track_formats=[track_format]
+                )
+            except Exception as e:
+                return False, f"Invalid geometry parameters: {e}"
+        else:
+            return False, "No recognizable format information provided"
+
+        # Validate that the format is compatible with the drive size
+        if self.drive_size == "3.5":
+            if pf.cylinders > 84:
+                return False, f"Format has {pf.cylinders} cylinders, 3.5\" drives support max 84"
+        elif self.drive_size == "5.25":
+            if pf.cylinders > 84:
+                return False, f"Format has {pf.cylinders} cylinders, 5.25\" drives support max 84"
+        elif self.drive_size == "8":
+            if pf.cylinders > 80:
+                return False, f"Format has {pf.cylinders} cylinders, 8\" drives support max 80"
+
+        return True, None
+
     # --- Public API ---
 
     def initialize(self) -> None:

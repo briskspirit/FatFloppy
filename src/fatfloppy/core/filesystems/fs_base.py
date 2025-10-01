@@ -19,6 +19,7 @@ from typing import List, Optional, Tuple, Dict, Any, Callable
 from ..disk import Disk
 from ..format_profile import FormatProfile
 from ..utils.logging_config import get_logger
+from ..physical_format import PhysicalFormat
 
 
 @dataclass
@@ -220,3 +221,32 @@ class Filesystem(ABC):
         """
         self.logger.warning("Filesystem check not implemented for this type.")
         return True
+
+    def get_volume_label(self) -> Optional[str]:
+        """
+        Returns the volume label for this filesystem, if supported.
+
+        This is an optional method that filesystems can override to provide
+        volume label information. The base implementation returns None.
+
+        Returns:
+            The volume label as a string, or None if not supported or not available.
+        """
+        return None
+
+    @staticmethod
+    def create_config_from_params(format_info: Dict[str, Any],
+                                   physical_format: PhysicalFormat) -> Optional[Any]:
+        """
+        Creates a filesystem-specific configuration object from parameters.
+
+        Subclasses should override this to provide their config creation logic.
+
+        Args:
+            format_info: Dictionary containing filesystem parameters.
+            physical_format: The physical format of the disk.
+
+        Returns:
+            A filesystem-specific config object, or None if not supported.
+        """
+        return None

@@ -21,6 +21,7 @@ from .fs_base import Filesystem, FileInfo
 from ..format_profile import FormatProfile
 from ..utils.logging_config import get_logger
 from ..disk import Disk
+from ..physical_format import PhysicalFormat
 
 # Standard CP/M Constants
 CPM_SECTOR_SIZE = 128  # Typically, but DPB can specify others for logical mapping
@@ -188,9 +189,57 @@ class CPMFilesystem(Filesystem):
             return self.dpb.block_size
         return 0
 
+    @property
+    def filesystem_type(self) -> str:
+        """Returns the filesystem type identifier."""
+        return "CPM"
+
+    @staticmethod
+    def create_config_from_params(format_info: Dict[str, Any],
+                                   physical_format: PhysicalFormat) -> Optional[CPMDiskParameterBlock]:
+        """
+        Creates a CPMDiskParameterBlock config from parameters.
+
+        Args:
+            format_info: Dictionary containing CP/M parameters.
+            physical_format: The physical format of the disk.
+
+        Returns:
+            A configured CPMDiskParameterBlock object, or None on error.
+        """
+        logger = get_logger("CPMFilesystem")
+
+        try:
+            return CPMDiskParameterBlock(
+                spt=format_info.get("spt", physical_format.track_formats[0].sectors_per_track *
+                    (physical_format.bytes_per_sector // 128)),
+                bsh=format_info.get("bsh", 3),
+                blm=format_info.get("blm", (2**format_info.get("bsh", 3)) - 1),
+                exm=format_info.get("exm", 0),
+                dsm=format_info.get("dsm", (physical_format.total_sectors *
+                    (physical_format.bytes_per_sector // 128)) // (2**format_info.get("bsh", 3)) - 10),
+                drm=format_info.get("drm", 63),
+                al0=format_info.get("al0", 0xC0),
+                al1=format_info.get("al1", 0x00),
+                cks=format_info.get("cks", 0),
+                off=format_info.get("off", 2)
+            )
+        except Exception as e:
+            logger.error(f"Error creating CP/M config: {e}", exc_info=True)
+            return None
+
     # ##################################################################
     # #                        PUBLIC API METHODS                      ##
     # ##################################################################
+
+    def get_volume_label(self) -> Optional[str]:
+        """
+        CP/M does not have a standard volume label concept.
+
+        Returns:
+            Always returns None for CP/M filesystems.
+        """
+        return None
 
     def create_directory(self, path: str) -> None:
         """CP/M does not support hierarchical directories."""

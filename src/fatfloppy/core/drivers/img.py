@@ -10,7 +10,7 @@ coordinates to a byte offset within the file.
 
 import copy
 import os
-from typing import Optional
+from typing import Dict, List, Optional, Tuple, Any
 
 from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
@@ -96,6 +96,119 @@ class IMGImageDriver(DiskIODriver):
                 if isinstance(e, OSError):
                     raise
                 raise IOError(f"Failed to read image file {self.file_path}") from e
+
+    # -- Properties --
+
+    @property
+    def driver_category(self) -> str:
+        """IMG files are raw binary images requiring external format information."""
+        return "raw"
+
+    @property
+    def has_embedded_geometry(self) -> bool:
+        """IMG files have no embedded geometry information."""
+        return False
+
+    @property
+    def allows_geometry_override(self) -> bool:
+        """IMG files require geometry to be set externally."""
+        return True
+
+    @property
+    def supports_in_place_formatting(self) -> bool:
+        """IMG files can be formatted by overwriting their content."""
+        return True
+
+    @property
+    def supports_new_image_creation(self) -> bool:
+        """IMG driver can create new blank image files."""
+        return True
+
+    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+        """
+        Validates IMG driver state after opening.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        # Check that we have image data
+        if not hasattr(self, 'image_data') or not self.image_data:
+            return False, "IMG driver has no image data"
+
+        # For IMG, we don't require physical_format at open time
+        # since it can be set later
+        return True, None
+
+    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+        """
+        Validates whether an IMG file can be opened.
+
+        Args:
+            source: Path to the IMG file.
+            **kwargs: Unused for IMG driver.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        import os
+
+        if not os.path.exists(source):
+            return False, f"IMG file not found: {source}"
+
+        # Check for non-raw formats that might be mistaken for IMG
+        try:
+            with open(source, "rb") as f:
+                header_peek = f.read(34)
+
+            if header_peek.startswith(b'EXTENDED CPC DSK'):
+                return False, "File is EDSK format, not a raw IMG"
+
+            if header_peek.startswith(b'MV - CPC'):
+                return False, "File is Amstrad DSK format, not a raw IMG"
+
+        except Exception as e:
+            return False, f"Cannot read file: {e}"
+
+        return True, None
+
+    def get_format_requirements(self) -> dict:
+        """
+        Returns format requirements for IMG driver.
+
+        Returns:
+            Dictionary describing what format information is needed.
+        """
+        return {
+            'needs_format_for_open': False,  # Can open without format
+            'needs_format_for_io': True,     # But needs format for actual I/O
+            'can_derive_format': True,       # Detection system can figure it out
+            'preferred_detection_method': 'auto'  # Should use auto-detection
+        }
+
+    def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
+        """
+        Validates format compatibility for IMG driver.
+
+        Args:
+            format_info: Dictionary containing format parameters.
+
+        Returns:
+            Tuple of (is_ready, error_message).
+        """
+        # IMG files can accept any format, but warn if size mismatch
+        if 'physical_format' in format_info:
+            pf = format_info['physical_format']
+            expected_size = pf.total_bytes if hasattr(pf, 'total_bytes') else None
+
+            if expected_size and len(self.image_data) != expected_size:
+                message = (f"Format size ({expected_size} bytes) does not match "
+                        f"image size ({len(self.image_data)} bytes). "
+                        f"This may indicate a format mismatch.")
+                logger.warning(message)
+                # Return True but with a warning message
+                return True, message
+
+        return True, None
 
     # --- Public Methods ---
 

@@ -138,7 +138,23 @@ class HDOSFilesystem(Filesystem):
         self._data_base_lba_cache: Optional[int] = None
         self._num_groups_on_disk: int = 0
 
+    @property
+    def filesystem_type(self) -> str:
+        """Returns the filesystem type identifier."""
+        return "HDOS"
+
     # --- Public API Methods ---
+
+    def get_volume_label(self) -> Optional[str]:
+        """
+        Returns the HDOS volume label from the label record.
+
+        Returns:
+            The volume label (title) as a string, or None if not available.
+        """
+        if self.label and self.label.title:
+            return self.label.title.strip()
+        return None
 
     def get_validity_score(self) -> int:
         """

@@ -215,9 +215,121 @@ class FATFilesystem(Filesystem):
 
         self._try_initialize()
 
+    @property
+    def filesystem_type(self) -> str:
+        """Returns the filesystem type identifier."""
+        return "FAT12"
+
+    @staticmethod
+    def create_config_from_params(format_info: Dict[str, Any],
+                                   physical_format: PhysicalFormat) -> Optional[FATVolumeInfo]:
+        """
+        Creates a FATVolumeInfo config from parameters.
+
+        Args:
+            format_info: Dictionary containing FAT12 parameters.
+            physical_format: The physical format of the disk.
+
+        Returns:
+            A configured FATVolumeInfo object, or None on error.
+        """
+        logger = get_logger("FATFilesystem")
+
+        try:
+            total_sectors = physical_format.total_sectors
+            bytes_per_sector = physical_format.bytes_per_sector
+            sectors_per_cluster = format_info.get("sectors_per_cluster", 1)
+            if sectors_per_cluster == 0:
+                sectors_per_cluster = 1
+            reserved_sectors = format_info.get("reserved_sectors", 1)
+            num_fats = format_info.get("num_fats", 2)
+            root_entries = format_info.get("root_entries", 224 if total_sectors > 1440 else 112)
+
+            if bytes_per_sector == 0:
+                logger.error("Bytes per sector cannot be zero")
+                return None
+
+            root_dir_sectors = (root_entries * 32 + bytes_per_sector - 1) // bytes_per_sector
+            available_for_fats_and_data = total_sectors - (reserved_sectors + root_dir_sectors)
+
+            if available_for_fats_and_data < 0:
+                logger.error("Not enough space for reserved and root directory sectors")
+                return None
+
+            sectors_per_fat = 1
+            for _attempt in range(available_for_fats_and_data // (num_fats if num_fats > 0 else 1) + 1):
+                if num_fats == 0:
+                    data_sectors = available_for_fats_and_data
+                else:
+                    data_sectors = total_sectors - (reserved_sectors + (num_fats * sectors_per_fat) + root_dir_sectors)
+
+                if data_sectors < sectors_per_cluster:
+                    break
+
+                num_clusters_current_try = data_sectors // sectors_per_cluster
+                if num_clusters_current_try <= 0:
+                    break
+
+                fat_bytes_needed = ((num_clusters_current_try + 2) * 3 + 1) // 2
+                spf_needed = (fat_bytes_needed + bytes_per_sector - 1) // bytes_per_sector
+
+                if spf_needed <= sectors_per_fat:
+                    break
+                sectors_per_fat = spf_needed
+            else:
+                logger.error("Could not determine consistent sectors_per_fat")
+                return None
+
+            if num_fats > 0:
+                data_s = total_sectors - (reserved_sectors + (num_fats * sectors_per_fat) + root_dir_sectors)
+            else:
+                data_s = available_for_fats_and_data
+
+            if data_s < sectors_per_cluster:
+                logger.error(f"Data sectors ({data_s}) < sectors_per_cluster ({sectors_per_cluster})")
+                return None
+
+            final_num_clusters = data_s // sectors_per_cluster
+            if final_num_clusters <= 0:
+                logger.error(f"Non-positive cluster count: {final_num_clusters}")
+                return None
+
+            if final_num_clusters > FAT12_MAX_CLUSTERS:
+                logger.warning(f"Cluster count ({final_num_clusters}) exceeds FAT12 limit")
+
+            return FATVolumeInfo(
+                bytes_per_sector=bytes_per_sector,
+                sectors_per_cluster=sectors_per_cluster,
+                reserved_sectors=reserved_sectors,
+                num_fats=num_fats,
+                root_entries=root_entries,
+                total_sectors=total_sectors,
+                media_descriptor=format_info.get("media_descriptor", 0xF0),
+                sectors_per_fat=sectors_per_fat,
+                sectors_per_track=physical_format.track_formats[0].sectors_per_track,
+                num_heads=physical_format.heads,
+                hidden_sectors=format_info.get("hidden_sectors", 0),
+                drive_number=format_info.get("drive_number", 0),
+                volume_serial=format_info.get("volume_serial", 0),
+            )
+        except Exception as e:
+            logger.error(f"Error creating FAT12 config: {e}", exc_info=True)
+            return None
+
     # ##################################################################
     # #                        PUBLIC API METHODS                      ##
     # ##################################################################
+
+    def get_volume_label(self) -> Optional[str]:
+        """
+        Returns the FAT volume label from the boot sector.
+
+        Returns:
+            The volume label as a string, or None if not available.
+        """
+        if self.boot_sector and self.boot_sector.volume_label:
+            return self.boot_sector.volume_label.strip()
+        return None
 
     def create_directory(self, path: str) -> None:
         """

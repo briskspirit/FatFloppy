@@ -244,7 +244,7 @@ def test_cpm_format_and_write(cpm_controller: DiskController, tmp_path: Path) ->
 
     # 2. Open the blank disk and format it
     assert cpm_controller.open_disk(str(blank_img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    format_success = cpm_controller.format_disk(profile_name)
+    format_success = cpm_controller.format_disk_media(profile_name)
     assert format_success, "format_disk command failed"
 
     # 3. Verify the formatted state
@@ -288,7 +288,7 @@ def test_cpm_directory_full_error(cpm_controller: DiskController, tmp_path: Path
     img_path = tmp_path / "dir_full.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Fill the directory completely
     dpb = cpm_controller.filesystem.dpb
@@ -322,7 +322,7 @@ def test_cpm_disk_full_error(cpm_controller: DiskController, tmp_path: Path) -> 
     img_path = tmp_path / "disk_full.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Calculate and create data to fill most of the disk
     free_bytes, _ = cpm_controller.get_free_space()
@@ -404,7 +404,7 @@ def test_cpm_single_byte_file_write_read(cpm_controller: DiskController, tmp_pat
     img_path = tmp_path / "small_file_test.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Write a minimal file (1 byte)
     minimal_data = b"X"
@@ -438,7 +438,7 @@ def test_cpm_file_exact_extent_boundary(cpm_controller: DiskController, tmp_path
     img_path = tmp_path / "extent_boundary.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Write exactly 16KB (one extent)
     exact_extent_data = b'X' * 16384
@@ -467,7 +467,7 @@ def test_cpm_file_multiple_extents(cpm_controller: DiskController, tmp_path: Pat
     img_path = tmp_path / "multi_extent.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Write 40KB (spans 3 extents: 16KB + 16KB + 8KB)
     multi_extent_data = bytes(range(256)) * 160  # 40KB with pattern
@@ -500,7 +500,7 @@ def test_cpm_user_areas_multiple_files(cpm_controller: DiskController, tmp_path:
     img_path = tmp_path / "user_areas.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Write files to different user areas
     test_data = {
@@ -545,7 +545,7 @@ def test_cpm_same_filename_different_users(cpm_controller: DiskController, tmp_p
     img_path = tmp_path / "same_name.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Write same filename to multiple user areas
     assert cpm_controller.write_file("/U0:TEST.TXT", b"Content from user 0")
@@ -579,7 +579,7 @@ def test_cpm_invalid_filename_handling(cpm_controller: DiskController, tmp_path:
     img_path = tmp_path / "invalid_names.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Try to read a file without extension (controller catches exception and returns None)
     result = cpm_controller.read_file("/NOEXTENSION")
@@ -616,7 +616,7 @@ def test_cpm_delete_specific_user_file(cpm_controller: DiskController, tmp_path:
     img_path = tmp_path / "delete_user.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Create same filename in multiple user areas
     assert cpm_controller.write_file("/U0:DATA.BIN", b"User 0 data")
@@ -655,7 +655,7 @@ def test_cpm_overwrite_existing_file(cpm_controller: DiskController, tmp_path: P
     img_path = tmp_path / "overwrite.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Write initial file
     initial_data = b"Initial content that is moderately long"
@@ -695,7 +695,7 @@ def test_cpm_free_space_tracking(cpm_controller: DiskController, tmp_path: Path)
     img_path = tmp_path / "freespace.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Get initial free space
     initial_free, total = cpm_controller.get_free_space()
@@ -742,7 +742,7 @@ def test_cpm_file_with_no_extension(cpm_controller: DiskController, tmp_path: Pa
     img_path = tmp_path / "no_ext.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # To create a file with no extension, we can specify a trailing dot
     test_data = b"Content without extension"
@@ -776,7 +776,7 @@ def test_cpm_allocated_blocks_consistency(cpm_controller: DiskController, tmp_pa
     img_path = tmp_path / "alloc_blocks.img"
     img_path.write_bytes(b'\x00' * profile.physical_format.total_bytes)
     assert cpm_controller.open_disk(str(img_path), disk_type="IMG", format_info={"format_name": profile_name})
-    assert cpm_controller.format_disk(profile_name)
+    assert cpm_controller.format_disk_media(profile_name)
 
     # Initially, only directory blocks should be allocated
     initial_allocated = cpm_controller.filesystem.get_allocated_units()

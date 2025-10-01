@@ -164,6 +164,152 @@ class H17ImageDriver(DiskIODriver):
         else:
             logger.info(f"H17 file '{file_path}' not found. Driver initialized for creation.")
 
+    # --- Properties ---
+
+    @property
+    def driver_category(self) -> str:
+        """H17 files are metadata-based with embedded geometry."""
+        return "metadata_based"
+
+    @property
+    def has_embedded_geometry(self) -> bool:
+        """H17 files contain complete geometry and volume information."""
+        return True
+
+    @property
+    def allows_geometry_override(self) -> bool:
+        """H17 geometry can be overridden but may cause inconsistencies."""
+        return True
+
+    @property
+    def supports_in_place_formatting(self) -> bool:
+        """H17 files cannot be reformatted in place."""
+        return False
+
+    @property
+    def supports_new_image_creation(self) -> bool:
+        """H17 driver can create new formatted images."""
+        return True
+
+    def initialize_new_image(self, physical_format: PhysicalFormat,
+                            profile: Optional[Any] = None) -> None:
+        """
+        Initializes a new blank H17 image structure.
+
+        Args:
+            physical_format: The physical format for the new image.
+            profile: Optional FormatProfile with additional metadata.
+        """
+        sides = physical_format.heads
+        tracks = physical_format.cylinders
+
+        # Determine volume scheme from profile if available
+        scheme = 'hdos'
+        hdos_volume = 1
+        label = None
+
+        if profile and hasattr(profile, 'filesystem_type'):
+            scheme = 'cpm' if profile.filesystem_type == 'CPM' else 'hdos'
+
+            if (profile.filesystem_config and
+                hasattr(profile.filesystem_config, 'volume_number')):
+                hdos_volume = profile.filesystem_config.volume_number
+
+            if (profile.filesystem_config and
+                hasattr(profile.filesystem_config, 'title')):
+                label = profile.filesystem_config.title
+
+        self.format_h17(
+            sides=sides,
+            tracks=tracks,
+            scheme=scheme,
+            hdos_volume=hdos_volume,
+            label=label,
+            comment="Created by FatFloppy"
+        )
+
+    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+        """
+        Validates H17 driver state after opening.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        if not self.file_path:
+            return False, "H17 driver has no file path"
+
+        # H17 should always have format if file exists
+        if self._file_exists() and not self.physical_format:
+            return False, "H17 file exists but no physical format derived"
+
+        return True, None
+
+    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+        """
+        Validates whether an H17 file can be opened.
+
+        Args:
+            source: Path to the H17 file.
+            **kwargs: Unused for H17 driver.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        import os
+
+        if not os.path.exists(source):
+            return False, f"H17 file not found: {source}"
+
+        # Quick validation: check for H17 magic number
+        try:
+            with open(source, "rb") as f:
+                magic = f.read(4)
+
+            if magic != b'H17D':
+                return False, "Invalid H17 magic number (expected 'H17D')"
+
+        except Exception as e:
+            return False, f"Cannot validate H17 file: {e}"
+
+        return True, None
+
+    def get_format_requirements(self) -> dict:
+        """
+        Returns format requirements for H17 driver.
+
+        Returns:
+            Dictionary describing what format information is needed.
+        """
+        return {
+            'needs_format_for_open': False,
+            'needs_format_for_io': False,
+            'can_derive_format': True,
+            'preferred_detection_method': 'embedded'
+        }
+
+    def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
+        """
+        Validates format compatibility for H17 driver.
+
+        Args:
+            format_info: Dictionary containing format parameters.
+
+        Returns:
+            Tuple of (is_ready, error_message).
+        """
+        if not self._file_exists():
+            # Creating new image, format is required
+            if 'physical_format' not in format_info:
+                return False, "Physical format required for creating new H17 image"
+            return True, None
+
+        # H17 files should not have format overridden
+        warning = ("H17 files contain volume information that is tied to their "
+                "embedded geometry. Overriding format may cause corruption.")
+        logger.warning(warning)
+
+        return True, warning
+
     # --- Public API Methods ---
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:

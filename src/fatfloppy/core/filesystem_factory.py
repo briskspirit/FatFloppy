@@ -18,6 +18,7 @@ from .filesystems.fat12fs import FATFilesystem
 from .filesystems.cpm_fs import CPMFilesystem
 from .filesystems.hdos_fs import HDOSFilesystem
 from .utils.logging_config import get_logger
+from .filesystem_registry import FilesystemRegistry
 
 logger = get_logger(__name__)
 
@@ -55,15 +56,18 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
 
     logger.debug("Attempting to detect filesystem on disk by scoring...")
 
+    # Import here to avoid circular dependency
+    from .filesystem_registry import FilesystemRegistry
+
     best_fs_instance: Optional[Filesystem] = None
     highest_score: int = -1
     all_scores: dict = {}
 
-    for fs_class in FILESYSTEM_TYPES:
+    for fs_class in FilesystemRegistry.get_all():
         original_pf = disk.physical_format
         try:
             logger.debug(f"Scoring filesystem type: {fs_class.__name__}")
-            
+
             # Temporarily apply a canonical geometry if the FS provides one
             if hasattr(fs_class, 'get_canonical_format') and callable(getattr(fs_class, 'get_canonical_format')):
                 canonical_format = fs_class.get_canonical_format()
@@ -86,7 +90,6 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
             # Always restore the original geometry
             if disk.physical_format != original_pf:
                 disk.set_geometry(original_pf)
-
 
     # Log all scores for debugging purposes
     logger.debug(f"Filesystem scores: {all_scores}")
@@ -113,15 +116,12 @@ def get_filesystem_class_by_type(fs_type_name: str) -> Optional[Type[Filesystem]
     Returns:
         The corresponding Filesystem subclass, or None if not found.
     """
-    for fs_class in FILESYSTEM_TYPES:
-        # This mapping allows for user-friendly names like "FAT12" to map
-        # to the internal class name "FATFilesystem".
-        if fs_type_name == "FAT12" and fs_class.__name__ == "FATFilesystem":
-            return fs_class
-        if fs_type_name == "CPM" and fs_class.__name__ == "CPMFilesystem":
-            return fs_class
-        if fs_type_name == "HDOS" and fs_class.__name__ == "HDOSFilesystem":
-            return fs_class
+    # Import here to avoid circular dependency
+    from .filesystem_registry import FilesystemRegistry
 
-    logger.warning(f"No filesystem class found for type '{fs_type_name}'")
-    return None
+    fs_class = FilesystemRegistry.get_by_name(fs_type_name)
+
+    if not fs_class:
+        logger.warning(f"No filesystem class found for type '{fs_type_name}'")
+
+    return fs_class

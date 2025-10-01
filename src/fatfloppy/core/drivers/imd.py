@@ -17,7 +17,7 @@ import datetime
 import os
 import re
 import struct
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 from ..._version import __version__ as fatfloppy_version
 from ..format_profile import FormatProfile
@@ -196,6 +196,138 @@ class IMDImageDriver(DiskIODriver):
             self.creation_date = datetime.datetime.now()
             self.imd_version = "IMD 1.18"
             self.comment = f"{self.creation_date.strftime('%d/%m/%Y %H:%M:%S')}\r\nFatFloppy v{fatfloppy_version}"
+
+    # --- Properties ---
+
+    @property
+    def driver_category(self) -> str:
+        """IMD files are metadata-based with embedded geometry."""
+        return "metadata_based"
+
+    @property
+    def has_embedded_geometry(self) -> bool:
+        """IMD files contain complete geometry information."""
+        return True
+
+    @property
+    def allows_geometry_override(self) -> bool:
+        """
+        IMD files can have geometry overridden, but this may cause inconsistencies.
+        """
+        return True
+
+    @property
+    def supports_in_place_formatting(self) -> bool:
+        """
+        IMD files cannot be formatted in place as their structure is track-based.
+        """
+        return False
+
+    @property
+    def supports_new_image_creation(self) -> bool:
+        """IMD driver can create new formatted images."""
+        return True
+
+    def initialize_new_image(self, physical_format: PhysicalFormat,
+                            profile: Optional[Any] = None) -> None:
+        """
+        Initializes a new blank IMD image structure.
+
+        Args:
+            physical_format: The physical format for the new image.
+            profile: Optional FormatProfile with additional metadata.
+        """
+        self.format_imd(profile if profile else
+                       FormatProfile("temp", "Temp", physical_format, "Unknown", None),
+                       fill_byte=0xE5)
+
+    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+        """
+        Validates IMD driver state after opening.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        if not self.file_path:
+            return False, "IMD driver has no file path"
+
+        # If file was loaded, we should have physical format
+        if self.file_loaded and not self.physical_format:
+            return False, "IMD file loaded but no physical format derived"
+
+        return True, None
+
+    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+        """
+        Validates whether an IMD file can be opened.
+
+        Args:
+            source: Path to the IMD file.
+            **kwargs: Unused for IMD driver.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        import os
+
+        if not os.path.exists(source):
+            return False, f"IMD file not found: {source}"
+
+        # Quick validation: check for IMD header
+        try:
+            with open(source, "rb") as f:
+                header = f.read(128)
+
+            if b'\x1A' not in header:
+                return False, "Missing IMD header terminator (0x1A)"
+
+            # Check for IMD version string
+            header_text = header[:header.find(b'\x1A')].decode('ascii', errors='ignore')
+            if 'IMD' not in header_text.upper():
+                return False, "Does not appear to be a valid IMD file"
+
+        except Exception as e:
+            return False, f"Cannot validate IMD file: {e}"
+
+        return True, None
+
+    def get_format_requirements(self) -> dict:
+        """
+        Returns format requirements for IMD driver.
+
+        Returns:
+            Dictionary describing what format information is needed.
+        """
+        return {
+            'needs_format_for_open': False,  # Can open without format
+            'needs_format_for_io': False,    # Has embedded format
+            'can_derive_format': True,       # Derives from file structure
+            'preferred_detection_method': 'embedded'  # Uses embedded metadata
+        }
+
+    def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
+        """
+        Validates format compatibility for IMD driver.
+
+        Args:
+            format_info: Dictionary containing format parameters.
+
+        Returns:
+            Tuple of (is_ready, error_message).
+        """
+        if not self.file_loaded:
+            # Creating new image, format is required
+            if 'physical_format' not in format_info:
+                return False, "Physical format required for creating new IMD image"
+            return True, None
+
+        # Applying format to existing IMD file - warn about override
+        warning = ("Applying external format to IMD file will override "
+                "the format derived from the file structure. This may "
+                "cause read errors if the formats don't match.")
+        logger.warning(warning)
+
+        return True, warning
 
     # --- Public Methods ---
 
