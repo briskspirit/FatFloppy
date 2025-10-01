@@ -36,30 +36,32 @@ DIR_NEXT_BLOCK_PTR_OFFSET = 510  # <H, little-endian>
 # LBA (0-based) for the critical Label Identification Sector
 HDOS_LABEL_SECTOR_LBA = 9  # Track 0, Sector 10
 HDOS_RGT_SECTOR_LBA = 10  # Track 1, Sector 1 (RGT.SYS location)
-HDOS_SYSTEM_FILES = {'RGT.SYS', 'GRT.SYS', 'DIRECT.SYS', 'HDOS.SYS'}  # Protected system files
+HDOS_SYSTEM_FILES = {'RGT.SYS', 'GRT.SYS', 'HDOS.SYS'}  # Flags = 0xF0
+HDOS_DIRECT_SYS = {'DIRECT.SYS'}  # Flags = 0xE0
+# System file flag constants
+FLAGS_SYSTEM_CORE = 0xF0  # System|Locked|WriteProtect|Contiguous
+FLAGS_DIRECT = 0xE0       # System|Locked|WriteProtect
 
 logger = get_logger("HDOSFilesystem")
 
 
 @dataclass
 class HDOSDirectoryEntry:
-    """Represents a single 23-byte HDOS directory entry."""
+    """Represents a single 23-byte HDOS directory entry (pre-3.0 format)."""
     raw_name: bytes
     name: str
     ext: str
-    cluster_factor: int  # Sectors per group for THIS file's read operations
+    cluster_factor: int  # Raw value from byte 13 (label.cluster_factor + 1)
+                         # NOTE: For I/O operations, always use label.cluster_factor
     first_group: int
     last_group: int
-    last_sector_index: int  # 1-based count of sectors used in the last group (0 means empty file)
+    last_sector_index: int
     creation_date: datetime.datetime
     modification_date: datetime.datetime
+    attributes: str = "-"  # S=System, L=Locked, W=WriteProtect, C=Contiguous
 
     def get_filename(self) -> str:
-        """Constructs the full 8.3 filename from the entry.
-
-        Returns:
-            The filename in "NAME.EXT" or "NAME" format.
-        """
+        """Constructs the full 8.3 filename from the entry."""
         return f"{self.name}.{self.ext}" if self.ext else self.name
 
 
@@ -205,19 +207,7 @@ class HDOSFilesystem(Filesystem):
         return self._cached_validity_score
 
     def list_directory(self, path: str) -> List[FileInfo]:
-        """
-        Lists all files in the root directory.
-
-        Args:
-            path: The directory path to list (must be "/").
-
-        Returns:
-            A list of FileInfo objects for each file in the directory.
-
-        Raises:
-            IOError: If the filesystem is not valid.
-            NotImplementedError: If a path other than "/" is provided.
-        """
+        """Lists all files in the root directory."""
         if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem is not valid or not recognized as HDOS.")
         if path != "/":
@@ -228,7 +218,7 @@ class HDOSFilesystem(Filesystem):
             size=self._calculate_file_size(e),
             is_dir=False,
             datetime=e.modification_date,
-            attributes="-")
+            attributes=e.attributes)
             for e in self._dir_entries]
 
     def read_file(self, path: str) -> bytes:
@@ -327,13 +317,6 @@ class HDOSFilesystem(Filesystem):
     def write_file(self, path: str, data: bytes) -> None:
         """
         Writes data to a new file on the disk. Deletes existing file if present.
-
-        Args:
-            path: The full path of the file to write.
-            data: The byte content to write to the file.
-
-        Raises:
-            IOError: If the filesystem is not valid, or if there is not enough space.
         """
         if self.get_validity_score() < self.validity_threshold:
             raise IOError("Filesystem not valid.")
@@ -351,12 +334,12 @@ class HDOSFilesystem(Filesystem):
 
         if num_groups_needed == 0:
             self._create_empty_file_entry(path)
-            # Flush and refresh cache so empty file is visible
             self.disk.flush()
             self._dir_entries = None
             self._init_completed = False
             return
 
+        # Allocate groups (same as before)
         allocated_groups = []
         current_group = self._grt[0]
         for _ in range(num_groups_needed):
@@ -370,7 +353,7 @@ class HDOSFilesystem(Filesystem):
             self._grt[allocated_groups[i]] = allocated_groups[i + 1]
         self._grt[allocated_groups[-1]] = 0
 
-        # Zero-pad data to clear any leftover content in allocated groups
+        # Write data (same as before)
         padded_data = data.ljust(num_sectors_needed * HDOS_BYTES_PER_SECTOR, b'\x00')
         data_area_start_lba = self._data_base_lba()
         for i, group_num in enumerate(allocated_groups):
@@ -384,7 +367,8 @@ class HDOSFilesystem(Filesystem):
                     end = start + HDOS_BYTES_PER_SECTOR
                     self._write_lba(lba, padded_data[start:end])
 
-        self._create_and_write_dir_entry(path, allocated_groups, num_sectors_needed)
+        # Create directory entry with cluster factor
+        self._create_and_write_dir_entry(path, allocated_groups, num_sectors_needed, spg)
 
         self._write_lba(self.label.grt_start_block, self._grt)
         self.disk.flush()
@@ -418,7 +402,8 @@ class HDOSFilesystem(Filesystem):
         search_filename = f"{name_part}.{ext_part}" if ext_part else name_part
 
         # Protect system files from deletion
-        if search_filename in HDOS_SYSTEM_FILES or filename_upper in HDOS_SYSTEM_FILES:
+        all_protected = HDOS_SYSTEM_FILES | HDOS_DIRECT_SYS
+        if search_filename in all_protected or filename_upper in all_protected:
             raise IOError(f"Cannot delete system file: {filename_upper}")
 
         found_entry = None
@@ -1066,29 +1051,65 @@ class HDOSFilesystem(Filesystem):
     def _parse_single_dir_entry(self, data: bytes) -> Optional[HDOSDirectoryEntry]:
         """
         Helper to parse a single 23-byte directory entry.
-
-        Args:
-            data: The raw 23-byte entry.
-
-        Returns:
-            An HDOSDirectoryEntry object if valid, otherwise None.
+        Uses pre-HDOS 3.0 format based on real disk analysis.
         """
         if not data or len(data) < HDOS_DIR_ENTRY_SIZE or data[0] in (0x00, 0xFF, 0xFE):
             return None
 
+        # Log raw bytes in hex for debugging
+        hex_dump = ' '.join(f'{b:02X}' for b in data)
+        logger.debug(f"Raw directory entry: {hex_dump}")
+
+        # Parse fields
         name_bytes = data[0:8]
+        ext_bytes = data[8:11]
+        byte_11 = data[11]  # Project - expect 0
+        byte_12 = data[12]  # Version - expect 0 (not 1!)
+        cluster_factor = data[13]  # Sectors per group for this file
+        flags_byte = data[14]
+        byte_15 = data[15]  # Reserved - expect 0 (not 0xFF!)
+        first_group = data[16]
+        last_group = data[17]
+        last_sector_index = data[18]
+        creation_date_bytes = data[19:21]
+        mod_date_bytes = data[21:23]
+
+        # Decode name and extension
         name = "".join(chr(b & 0x7F) for b in name_bytes).strip('\x00').strip()
-        if not name: return None
-        ext = "".join(chr(b & 0x7F) for b in data[8:11]).strip('\x00').strip()
+        if not name:
+            return None
+        ext = "".join(chr(b & 0x7F) for b in ext_bytes).strip('\x00').strip()
+
+        # Parse dates
+        creation_date = self._parse_date(creation_date_bytes)
+        mod_date = self._parse_date(mod_date_bytes)
+
+        # Build attributes string from flags (pre-3.0 interpretation)
+        attributes = ""
+        if flags_byte & 0x80: attributes += "S"  # System
+        if flags_byte & 0x40: attributes += "L"  # Locked
+        if flags_byte & 0x20: attributes += "W"  # Write Protected
+        if flags_byte & 0x10: attributes += "C"  # Contiguous
+        if not attributes:
+            attributes = "-"
+
+        # Log decoded info
+        logger.debug(f"  File: {name}.{ext if ext else ''}, Flags: 0x{flags_byte:02X} ({attributes})")
+        logger.debug(f"  Cluster factor: {cluster_factor}, Groups: {first_group}-{last_group}, LSI: {last_sector_index}")
+        logger.debug(f"  Bytes 11,12,15: {byte_11},{byte_12},{byte_15} (expect 0,0,0)")
+        logger.debug(f"  Created: {creation_date}, Modified: {mod_date}")
 
         return HDOSDirectoryEntry(
-            raw_name=name_bytes, name=name, ext=ext,
-            cluster_factor=data[13],
-            first_group=data[16],
-            last_group=data[17],
-            last_sector_index=data[18],
-            creation_date=self._parse_date(data[19:21]),
-            modification_date=self._parse_date(data[21:23]),
+            raw_name=name_bytes,
+            name=name,
+            ext=ext,
+            cluster_factor=cluster_factor,
+            first_group=first_group,
+            last_group=last_group,
+            last_sector_index=last_sector_index,
+            creation_date=creation_date,
+            modification_date=mod_date,
+            attributes=attributes
         )
 
     def _calculate_file_size(self, entry: HDOSDirectoryEntry) -> int:
@@ -1183,48 +1204,72 @@ class HDOSFilesystem(Filesystem):
         # Locked out if: 0x00, or negative (0x80-0xFF)
         return rgt_value == 0x00 or rgt_value >= 0x80
 
-    def _create_and_write_dir_entry(self, path: str, allocated_groups: List[int], num_sectors: int) -> None:
+    def _create_and_write_dir_entry(self, path: str, allocated_groups: List[int],
+                                num_sectors: int, cluster_factor: Optional[int] = None) -> None:
         """
         Finds a free slot and writes a new directory entry to the disk.
+        Uses pre-HDOS 3.0 format based on real disk analysis.
 
         Args:
             path: The filename path.
-            allocated_groups: A list of group numbers allocated for the file.
-            num_sectors: The total number of sectors used by the file.
-
-        Raises:
-            IOError: If no free directory space can be found.
+            allocated_groups: List of group numbers allocated for the file.
+            num_sectors: Total number of sectors used by the file.
+            cluster_factor: Sectors per group for this file (defaults to label cluster factor).
         """
-        name, ext = (path.strip("/").upper().split('.') + [''])[:2]
-        name_bytes = name.ljust(8).encode('ascii')[:8]  # Ensure exactly 8 bytes
-        ext_bytes = ext.ljust(3).encode('ascii')[:3]    # Ensure exactly 3 bytes
+        filename_upper = path.strip("/").upper()
+        name, ext = (filename_upper.split('.') + [''])[:2]
+        name_bytes = name.ljust(8).encode('ascii')[:8]
+        ext_bytes = ext.ljust(3).encode('ascii')[:3]
 
-        spg = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        # Use provided cluster factor or fall back to label
+        if cluster_factor is None:
+            cluster_factor = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+
+        spg = cluster_factor
         lsi = (num_sectors - 1) % spg + 1 if num_sectors > 0 else 0
 
         now = datetime.datetime.now()
-        date_packed = (((now.year - 1970) << 9) | (now.month << 5) | now.day)
 
+        # Cap year offset at 63 (max for 6-bit field)
+        year_offset = min(now.year - 1970, 63)
+        if now.year - 1970 > 63:
+            logger.warning(f"Year {now.year} exceeds HDOS limit, capping to 2033")
+
+        date_packed = ((year_offset << 9) | (now.month << 5) | now.day)
+
+        # Determine flags based on filename
+        flags = 0
+        if filename_upper in HDOS_SYSTEM_FILES:
+            flags = FLAGS_SYSTEM_CORE  # 0xF0
+            logger.debug(f"Setting system file flags 0xF0 for {filename_upper}")
+        elif filename_upper in HDOS_DIRECT_SYS:
+            flags = FLAGS_DIRECT  # 0xE0
+            logger.debug(f"Setting DIRECT.SYS flags 0xE0 for {filename_upper}")
+
+        # Build entry using real HDOS pre-3.0 format
         entry_bytes = bytearray(HDOS_DIR_ENTRY_SIZE)
         entry_bytes[0:8] = name_bytes
         entry_bytes[8:11] = ext_bytes
-        entry_bytes[13] = spg
+        entry_bytes[11] = 0  # Project - always 0
+        entry_bytes[12] = 0  # Version - always 0 (NOT 1 as spec suggested!)
+        entry_bytes[13] = cluster_factor + 1  # HDOS quirk: store cluster_factor + 1
+        entry_bytes[14] = flags  # Flags byte
+        entry_bytes[15] = 0  # Reserved - always 0 (NOT 0xFF as spec suggested!)
         entry_bytes[16] = allocated_groups[0] if allocated_groups else 0
         entry_bytes[17] = allocated_groups[-1] if allocated_groups else 0
         entry_bytes[18] = lsi
         struct.pack_into("<H", entry_bytes, 19, date_packed)
         struct.pack_into("<H", entry_bytes, 21, date_packed)
 
+        # Find free slot and write
         current_dir_lba = self.label.dir_start_block
-        for _ in range(20):  # Safety break
+        for _ in range(20):
             if current_dir_lba == 0:
                 raise IOError("No free directory space.")
 
-            # Read directory block (2 sectors = 512 bytes)
             sector1 = self._read_lba(current_dir_lba)
             sector2 = self._read_lba(current_dir_lba + 1)
 
-            # Ensure each sector is exactly 256 bytes
             if len(sector1) != HDOS_BYTES_PER_SECTOR:
                 raise IOError(f"Directory sector 1 size mismatch: {len(sector1)} != {HDOS_BYTES_PER_SECTOR}")
             if len(sector2) != HDOS_BYTES_PER_SECTOR:
@@ -1237,9 +1282,9 @@ class HDOSFilesystem(Filesystem):
                 if dir_data[offset] in (0x00, 0xFF, 0xFE):
                     dir_data[offset:offset + HDOS_DIR_ENTRY_SIZE] = entry_bytes
 
-                    # Write back both sectors with exact sizes
                     self._write_lba(current_dir_lba, bytes(dir_data[:HDOS_BYTES_PER_SECTOR]))
                     self._write_lba(current_dir_lba + 1, bytes(dir_data[HDOS_BYTES_PER_SECTOR:HDOS_BYTES_PER_SECTOR * 2]))
+                    logger.info(f"Wrote directory entry for {filename_upper} with flags 0x{flags:02X}")
                     return
 
             current_dir_lba = struct.unpack_from("<H", dir_data, DIR_NEXT_BLOCK_PTR_OFFSET)[0]
@@ -1247,13 +1292,9 @@ class HDOSFilesystem(Filesystem):
         raise IOError("Could not find a free directory entry slot.")
 
     def _create_empty_file_entry(self, path: str) -> None:
-        """
-        Creates a directory entry for a zero-byte file.
-
-        Args:
-            path: The filename path.
-        """
-        self._create_and_write_dir_entry(path, [], 0)
+        """Creates a directory entry for a zero-byte file."""
+        spg = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        self._create_and_write_dir_entry(path, [], 0, spg)
         self.disk.flush()
         logger.info(f"Successfully wrote empty file '{path}'.")
 
@@ -1281,18 +1322,16 @@ class HDOSFilesystem(Filesystem):
     def _parse_date(self, date_bytes: bytes) -> datetime.datetime:
         """
         Parses a 2-byte HDOS date field.
-
-        Args:
-            date_bytes: The 2 bytes representing the date.
-
-        Returns:
-            A datetime object, or a default date if parsing fails.
+        Year field is 6 bits, so maximum offset is 63 years from 1970.
         """
         word = struct.unpack_from("<H", date_bytes)[0]
         day = word & 0x1F
         month = (word >> 5) & 0x0F
-        year = (word >> 9) + 1970
+        year_offset = (word >> 9) & 0x3F  # Mask to 6 bits (max 63)
+        year = 1970 + year_offset
         try:
+            if not (1 <= month <= 12 and 1 <= day <= 31):
+                return HDOS_DEFAULT_DATETIME
             return datetime.datetime(year, month, day)
         except (ValueError, TypeError):
             return HDOS_DEFAULT_DATETIME
