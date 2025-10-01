@@ -143,6 +143,13 @@ class HDOSFilesystem(Filesystem):
         self._data_base_lba_cache: Optional[int] = None
         self._num_groups_on_disk: int = 0
 
+    @staticmethod
+    def configs_match(config1: Any, config2: Any) -> bool:
+        if not isinstance(config1, HDOSLabelRecord) or not isinstance(config2, HDOSLabelRecord):
+            return False
+        # HDOS match is primarily based on physical format; if configs are present, it's a match.
+        return True
+
     # --- Public API Methods ---
 
     def get_volume_label(self) -> Optional[str]:

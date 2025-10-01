@@ -22,9 +22,12 @@ class GreaseweazleFormatDetector(FormatDetector):
     """
     detector_for_driver = "GreaseweazleDriver"
 
-    def __init__(self, disk, driver, known_formats: Dict[str, FormatProfile], drive_size: str):
+    def __init__(self, disk, driver, known_formats: Dict[str, FormatProfile]):
         super().__init__(disk, driver, known_formats)
-        self.drive_size = drive_size
+        # Get drive_size from the driver
+        if not hasattr(driver, 'drive_size'):
+            raise ValueError("GreaseweazleFormatDetector requires a driver with a 'drive_size' attribute.")
+        self.drive_size = driver.drive_size
 
     def detect(self) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         # Start with a default geometry based on drive size
@@ -229,37 +232,3 @@ class GreaseweazleFormatDetector(FormatDetector):
 
         self.logger.info("Using detected geometry as fallback")
         return None, fs_config, base_format
-
-
-def create_format_detector(disk, driver, known_formats: Dict[str, FormatProfile],
-                           **kwargs) -> FormatDetector:
-    """
-    Factory function to create the appropriate detector for a driver.
-
-    Args:
-        disk: The Disk object
-        driver: The DiskIODriver instance
-        known_formats: Dictionary of known format profiles
-        **kwargs: Additional arguments (e.g., drive_size for Greaseweazle)
-
-    Returns:
-        An appropriate FormatDetector subclass instance
-
-    Raises:
-        ValueError: If no detector is registered for the driver type.
-    """
-    from .detector_registry import DetectorRegistry
-
-    detector_class = DetectorRegistry.get_detector(driver)
-
-    if not detector_class:
-        raise ValueError(
-            f"No format detector registered for driver type: {type(driver).__name__}"
-        )
-
-    # Handle special case for Greaseweazle which requires drive_size
-    if detector_class.__name__ == 'GreaseweazleFormatDetector':
-        drive_size = kwargs.get('drive_size', '3.5')
-        return detector_class(disk, driver, known_formats, drive_size)
-
-    return detector_class(disk, driver, known_formats)

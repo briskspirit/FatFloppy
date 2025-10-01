@@ -220,6 +220,13 @@ class FATFilesystem(Filesystem):
         self._try_initialize()
 
     @staticmethod
+    def configs_match(config1: Any, config2: Any) -> bool:
+        if not isinstance(config1, FATVolumeInfo) or not isinstance(config2, FATVolumeInfo):
+            return False
+        # For FAT, matching total sectors is a strong indicator.
+        return config1.total_sectors == config2.total_sectors
+
+    @staticmethod
     def create_config_from_params(format_info: Dict[str, Any],
                                    physical_format: PhysicalFormat) -> Optional[FATVolumeInfo]:
         """

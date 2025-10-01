@@ -262,7 +262,8 @@ def open_disk_for_rw_tests(
     mock_boot_sector_bytes = bsd.to_bytes()
 
     # Act
-    with patch("fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes), \
+    with patch("fatfloppy.core.drivers.greaseweazle.create_greaseweazle_diskdef", return_value=mock_custom_diskdef_instance), \
+         patch("fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes), \
          patch("fatfloppy.core.controller.create_filesystem", return_value=mock_fs):
         mock_with_drive_selected.side_effect = lambda func, *args, **kwargs: func()
         success = controller.open_disk(None, "physical", "A", "3.5", format_info=format_info_dict)

@@ -493,25 +493,6 @@ class GreaseweazleDriver(DiskIODriver):
 
         self.logger.info("Flush operation completed")
 
-    def set_physical_format(self, physical_format: PhysicalFormat) -> None:
-        """
-        Sets the physical disk format for the driver to use.
-
-        Args:
-            physical_format: The format definition for the disk.
-
-        Raises:
-            TypeError: If the provided object is not a `PhysicalFormat`.
-        """
-        self.logger.debug("Setting physical format")
-        if not isinstance(physical_format, PhysicalFormat):
-            raise TypeError("physical_format must be a PhysicalFormat object")
-        self.physical_format = copy.deepcopy(physical_format)
-        self.fmt_cls = None
-        self.using_custom_diskdef = False
-        self.last_successful_format = None
-        self.logger.info(f"Physical format set: Cyls={physical_format.cylinders}, Heads={physical_format.heads}")
-
     # --- Private Helper Methods ---
 
     def _create_and_set_custom_diskdef(self) -> None:

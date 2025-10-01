@@ -194,6 +194,16 @@ class CPMFilesystem(Filesystem):
         return 0
 
     @staticmethod
+    def configs_match(config1: Any, config2: Any) -> bool:
+        if not isinstance(config1, CPMDiskParameterBlock) or not isinstance(config2, CPMDiskParameterBlock):
+            return False
+        # Compare key DPB fields to determine a match.
+        return (config1.spt == config2.spt and
+                config1.bsh == config2.bsh and
+                config1.dsm == config2.dsm and
+                config1.off == config2.off)
+
+    @staticmethod
     def create_config_from_params(format_info: Dict[str, Any],
                                    physical_format: PhysicalFormat) -> Optional[CPMDiskParameterBlock]:
         """

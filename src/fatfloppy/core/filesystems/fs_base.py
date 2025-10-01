@@ -64,6 +64,22 @@ class Filesystem(ABC):
         self.logger = get_logger(self.__class__.__name__)
         self.disk = disk
 
+    @staticmethod
+    @abstractmethod
+    def configs_match(config1: Any, config2: Any) -> bool:
+        """
+        Compares two filesystem-specific configuration objects for equality.
+        This is used by the format detector to match profiles.
+
+        Args:
+            config1: The first configuration object.
+            config2: The second configuration object.
+
+        Returns:
+            True if the configurations are considered a match, False otherwise.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def create_directory(self, path: str) -> None:
         """
