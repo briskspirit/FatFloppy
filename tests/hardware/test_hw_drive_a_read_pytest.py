@@ -103,7 +103,7 @@ def prepared_controller(
             allow_module_level=True
         )
 
-    if not controller.filesystem or not controller.filesystem.is_valid():
+    if not controller.filesystem or controller.filesystem.get_validity_score() < controller.filesystem.validity_threshold:
         controller.close_disk()
         pytest.skip(
             f"No valid filesystem detected on drive {TARGET_DRIVE} after preparation.",

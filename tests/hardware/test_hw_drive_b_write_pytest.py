@@ -108,7 +108,7 @@ def prepared_controller(pytestconfig: Config) -> Generator[DiskController, None,
             allow_module_level=True
         )
 
-    if not controller.filesystem or not controller.filesystem.is_valid():
+    if not controller.filesystem or controller.filesystem.get_validity_score() < controller.filesystem.validity_threshold:
         controller.close_disk()
         pytest.skip(
             f"Filesystem not valid after opening Drive {TARGET_DRIVE} with format {PROFILE_NAME}",
