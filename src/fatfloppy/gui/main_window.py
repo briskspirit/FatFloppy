@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QPointF, Qt, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPalette, QAction
-from PyQt6.QtWidgets import (QAbstractItemView, QApplication,
+from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QSizePolicy,
                              QDockWidget, QFileDialog, QGraphicsView, QGroupBox,
                              QHBoxLayout, QHeaderView, QInputDialog, QLabel,
                              QMainWindow, QMessageBox, QPlainTextEdit,
@@ -59,9 +59,10 @@ class FileBrowserApp(QMainWindow):
         self.selected_file_path: Optional[str] = None
         self.selected_file_units: List[int] = []
 
-        # Text Editor State
+        # Text Editor / Hex Viewer State
         self.original_text_content: Optional[str] = None
         self.text_editor_modified: bool = False
+        self.current_hex_file_path: Optional[str] = None
 
         # Store discovered driver info
         self.greaseweazle_available: bool = GREASEWEAZLE_AVAILABLE
@@ -603,10 +604,55 @@ class FileBrowserApp(QMainWindow):
             self.total_space,
             self.app_font,
             text_color,
-            selected_file_units=self.selected_file_units,  # NEW
-            selected_file_path=self.selected_file_path      # NEW
+            selected_file_units=self.selected_file_units,
+            selected_file_path=self.selected_file_path
         )
         self.logger.debug(f"Disk map drawn for head {self.current_head}.")
+
+    @pyqtSlot()
+    def view_file_content(self) -> None:
+        """
+        Views the selected file in either text editor or hex viewer.
+        Clears the other viewer to ensure only one file is displayed at a time.
+        """
+        selected_items = self.file_list.selectedItems()
+        if len(selected_items) != 1:
+            QMessageBox.information(self, "Info", "Please select a single file to view.")
+            return
+        
+        item = selected_items[0]
+        
+        if not hasattr(item, 'node'):
+            QMessageBox.warning(self, "Warning", "Invalid item selected.")
+            return
+        
+        node: FileSystemNode = item.node
+        
+        if node.is_dir:
+            QMessageBox.information(self, "Info", "Cannot view directory contents.")
+            return
+        
+        file_path = self._build_full_path(node.name)
+        
+        try:
+            content_bytes = self.controller.read_file(file_path)
+            if content_bytes is None:
+                QMessageBox.warning(self, "Warning", f"Could not read file: {node.name}")
+                return
+            
+            # Determine if file is text or binary
+            if self._is_text_file(content_bytes):
+                # Clear hex viewer and load text editor
+                self._clear_hex_viewer_state()
+                self._load_text_editor(file_path, node.name, content_bytes)
+            else:
+                # Clear text editor and load hex viewer
+                self._clear_text_viewer_state()
+                self._load_hex_viewer(file_path, node.name, content_bytes)
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error reading file: {str(e)}")
+            self.logger.exception(f"Error reading file {file_path} for viewing.")
 
     # ##################################################################
     # Private UI Setup Methods
@@ -660,6 +706,41 @@ class FileBrowserApp(QMainWindow):
         self.toolbar = QToolBar("Main Toolbar", self)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
 
+        # LEFT SIDE - Disk Operations
+        create_image_action = QAction("Create Image", self)
+        create_image_action.setToolTip("Create a new blank disk image")
+        create_image_action.triggered.connect(self.create_disk_image)
+        self.toolbar.addAction(create_image_action)
+
+        open_image_action = QAction("Open Image", self)
+        open_image_action.setToolTip("Open a disk image file")
+        open_image_action.triggered.connect(self.open_disk_image_file)
+        self.toolbar.addAction(open_image_action)
+
+        open_floppy_action = QAction("Open Floppy", self)
+        open_floppy_action.setToolTip("Open a physical floppy drive")
+        open_floppy_action.triggered.connect(self.open_physical_floppy)
+        if not self.greaseweazle_available:
+            open_floppy_action.setEnabled(False)
+            self.logger.info("Greaseweazle not available, 'Open Floppy' disabled in toolbar.")
+        self.toolbar.addAction(open_floppy_action)
+
+        # Add spacer to push file operations to the right
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.toolbar.addWidget(spacer)
+
+        # RIGHT SIDE - File/Directory Operations
+        view_action = QAction("View File", self)
+        view_action.setToolTip("View selected file content")
+        view_action.triggered.connect(self.view_file_content)
+        self.toolbar.addAction(view_action)
+
+        add_file_action = QAction("Add File", self)
+        add_file_action.setToolTip("Add a file to current directory")
+        add_file_action.triggered.connect(self.add_file)
+        self.toolbar.addAction(add_file_action)
+
         extract_action = QAction("Extract", self)
         extract_action.setToolTip("Extract selected item(s) to local filesystem")
         extract_action.triggered.connect(self.extract_selected_items)
@@ -675,10 +756,6 @@ class FileBrowserApp(QMainWindow):
         create_dir_action.triggered.connect(self.create_directory)
         self.toolbar.addAction(create_dir_action)
 
-        add_file_action = QAction("Add File", self)
-        add_file_action.setToolTip("Add a file to current directory")
-        add_file_action.triggered.connect(self.add_file)
-        self.toolbar.addAction(add_file_action)
         self.logger.debug("Toolbars created.")
 
     def _create_docks(self) -> None:
@@ -688,6 +765,7 @@ class FileBrowserApp(QMainWindow):
         self._create_file_list_dock()
         self._create_disk_map_dock()
         self._create_text_editor_dock()
+        self._create_hex_viewer_dock()
         self.logger.debug("Docks created.")
 
     def _create_tree_dock(self) -> None:
@@ -712,7 +790,11 @@ class FileBrowserApp(QMainWindow):
         # Make text selectable and enable word wrap
         self.physical_format_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.physical_format_info.setWordWrap(True)
-        self.physical_format_info.setMaximumWidth(600)  # Limit width to prevent excessive expansion
+        # Don't set maximum width - let it size naturally with word wrap
+        self.physical_format_info.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Minimum
+        )
         geometry_layout = QVBoxLayout(self.physical_format_group)
         geometry_layout.addWidget(self.physical_format_info)
         self.physical_format_group.setLayout(geometry_layout)
@@ -722,7 +804,11 @@ class FileBrowserApp(QMainWindow):
         # Make text selectable and enable word wrap
         self.filesystem_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.filesystem_info.setWordWrap(True)
-        self.filesystem_info.setMaximumWidth(600)  # Limit width to prevent excessive expansion
+        # Don't set maximum width - let it size naturally with word wrap
+        self.filesystem_info.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Minimum
+        )
         filesystem_layout = QVBoxLayout(self.filesystem_group)
         filesystem_layout.addWidget(self.filesystem_info)
         self.filesystem_group.setLayout(filesystem_layout)
@@ -816,20 +902,51 @@ class FileBrowserApp(QMainWindow):
         self.text_viewer_dock.setWidget(text_viewer_widget)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.text_viewer_dock)
 
+    def _create_hex_viewer_dock(self) -> None:
+        """Creates and configures the hex viewer dock."""
+        self.hex_viewer_dock = QDockWidget("Hex Viewer", self)
+        hex_viewer_widget = QWidget()
+        hex_viewer_layout = QVBoxLayout(hex_viewer_widget)
+        hex_viewer_layout.setContentsMargins(2, 2, 2, 2)
+        hex_viewer_layout.setSpacing(4)
+
+        self.hex_viewer = QPlainTextEdit()
+        self.hex_viewer.setReadOnly(True)
+        self.hex_viewer.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+
+        # Ensure monospace font (will be set again in _setup_fonts)
+        # Set a fixed tab width for proper alignment
+        font_metrics = self.hex_viewer.fontMetrics()
+        self.hex_viewer.setTabStopDistance(font_metrics.horizontalAdvance(' ') * 8)
+
+        hex_viewer_layout.addWidget(self.hex_viewer)
+        hex_viewer_widget.setLayout(hex_viewer_layout)
+        self.hex_viewer_dock.setWidget(hex_viewer_widget)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.hex_viewer_dock)
+
     def _setup_dock_layout(self) -> None:
         """Arranges and resizes the dockable widgets."""
         self.splitDockWidget(self.tree_dock, self.disk_info_dock, Qt.Orientation.Vertical)
         self.splitDockWidget(self.file_list_dock, self.disk_map_dock, Qt.Orientation.Horizontal)
+
+        # Tab the viewers together: disk map, text editor, hex viewer
         self.tabifyDockWidget(self.disk_map_dock, self.text_viewer_dock)
-        self.disk_map_dock.raise_()
+        self.tabifyDockWidget(self.text_viewer_dock, self.hex_viewer_dock)
+        self.disk_map_dock.raise_()  # Show disk map by default
 
         # Set initial sizes for docks
-        # Note: resizeDocks operates on a list of docks and a list of sizes
-        # The sizes are relative, so [200, 500] means first dock takes 200 units, second takes 500 units.
-        # This can be tricky to get pixel-perfect without testing.
-        self.resizeDocks([self.tree_dock, self.file_list_dock], [200, 500], Qt.Orientation.Horizontal)
-        self.resizeDocks([self.file_list_dock, self.disk_map_dock], [500, 700], Qt.Orientation.Horizontal)
-        self.resizeDocks([self.tree_dock, self.disk_info_dock], [600, 200], Qt.Orientation.Vertical)
+        self.resizeDocks([self.tree_dock, self.file_list_dock], [200, 1000], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.file_list_dock, self.disk_map_dock], [400, 600], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.tree_dock, self.disk_info_dock], [400, 400], Qt.Orientation.Vertical)
+
+        # Set size policies
+        self.tree_dock.setMinimumWidth(320)
+        self.tree_dock.setMaximumWidth(400)
+        self.disk_info_dock.setMinimumWidth(150)
+        self.disk_info_dock.setMaximumWidth(400)
+        self.file_list_dock.setMinimumWidth(400)
+        self.disk_map_dock.setMinimumWidth(300)
+
         self.logger.debug("Dock layout configured.")
 
     def _connect_signals_slots(self) -> None:
@@ -854,7 +971,7 @@ class FileBrowserApp(QMainWindow):
         while not os.path.exists(os.path.join(root_dir, 'assets')) and root_dir != os.path.dirname(root_dir):
             root_dir = os.path.dirname(root_dir)
 
-        font_path = os.path.join(root_dir, 'assets', 'fonts', 'Hack-Regular.ttf')
+        font_path = os.path.join(root_dir, 'assets', 'fonts', 'JetBrainsMono-Regular.ttf')
 
         self.logger.debug(f"Looking for font at: {font_path}")
         self.logger.debug(f"Font file exists: {os.path.exists(font_path)}")
@@ -888,7 +1005,7 @@ class FileBrowserApp(QMainWindow):
         # Fallback to system monospace fonts if custom font not loaded
         if not custom_font_loaded:
             monospace_fonts: List[str] = [
-                "Hack", "Courier New", "DejaVu Sans Mono", "Consolas",
+                "JetBrainsMono", "Courier New", "DejaVu Sans Mono", "Consolas",
                 "Menlo", "Liberation Mono", "Monaco", "SF Mono"
             ]
             self.app_font = QFont()
@@ -913,11 +1030,17 @@ class FileBrowserApp(QMainWindow):
             QApplication.instance().setFont(self.app_font)
 
         # Apply font to specific widgets (this ensures they get it even if global setting doesn't work)
+        # Apply font to specific widgets
         self.tree_widget.setFont(self.app_font)
         self.file_list.setFont(self.app_font)
         self.physical_format_info.setFont(self.app_font)
         self.filesystem_info.setFont(self.app_font)
         self.text_viewer.setFont(self.app_font)
+        self.hex_viewer.setFont(self.app_font)
+
+        # Update tab stops for hex viewer after font is set
+        font_metrics = self.hex_viewer.fontMetrics()
+        self.hex_viewer.setTabStopDistance(font_metrics.horizontalAdvance(' ') * 8)
 
         self.logger.info(f"Final font in use: {self.app_font.family()}, Size: {self.app_font.pointSize()}")
 
@@ -1000,6 +1123,10 @@ class FileBrowserApp(QMainWindow):
         self.head_action.setText("Switch Head")
         self.statusBar().showMessage("Ready")
         self._clear_text_viewer_state()
+        self._clear_hex_viewer_state()
+        self.hex_viewer.clear()
+        self.current_hex_file_path = None
+        self.hex_viewer_dock.setWindowTitle("Hex Viewer")
         self.disk_map_dock.raise_()
         self.logger.debug("UI reset complete.")
 
@@ -1605,9 +1732,7 @@ class FileBrowserApp(QMainWindow):
     def _on_file_list_selection_changed(self) -> None:
         """
         Slot to handle changes in the file list selection.
-        Manages saving/discarding changes in the text editor and
-        loads the content of selected files into the editor.
-        Also tracks selected file for disk map highlighting.
+        Clears viewers and switches to disk map when selection changes.
         """
         if self.text_editor_modified:
             reply = QMessageBox.warning(
@@ -1628,25 +1753,30 @@ class FileBrowserApp(QMainWindow):
         # Clear previous file selection tracking
         self.selected_file_path = None
         self.selected_file_units = []
+        
+        # Clear both text editor and hex viewer when selection changes
+        self._clear_text_viewer_state()
+        self._clear_hex_viewer_state()
+        
+        # Switch to disk map
+        self.disk_map_dock.raise_()
 
         selected_items = self.file_list.selectedItems()
-
+        
         if len(selected_items) == 1:
             item = selected_items[0]
-
+            
             # Safety check: ensure item has the node attribute
             if not hasattr(item, 'node'):
                 self.logger.warning("Selected item does not have 'node' attribute (possibly from drag-drop). Ignoring.")
-                self._clear_text_viewer_state()
-                self.disk_map_dock.raise_()
                 return
-
+            
             node: FileSystemNode = item.node
-
+            
             if not node.is_dir:
                 file_path = self._build_full_path(node.name)
                 self.selected_file_path = file_path
-
+                
                 # Get allocation units for this file
                 if self.controller:
                     units = self.controller.get_file_allocation_units(file_path)
@@ -1655,47 +1785,9 @@ class FileBrowserApp(QMainWindow):
                         self.logger.debug(f"File '{node.name}' uses {len(units)} units: {units[:10]}{'...' if len(units) > 10 else ''}")
                     else:
                         self.logger.debug(f"File '{node.name}' has no allocation units (empty or error)")
-
-                # Redraw disk map with highlighted file
-                self.draw_disk_map()
-
-                # Handle text editor loading (existing logic)
-                if node.size <= 51200:  # 50 KB limit
-                    try:
-                        content_bytes = self.controller.read_file(file_path)
-                        if content_bytes is not None and self._is_text_file(content_bytes):
-                            content_text = ""
-                            fs_type = self.controller.filesystem.get_display_info().get("Filesystem Type", "Unknown")
-                            if fs_type == "CP/M":
-                                cleaned_bytes = bytes([b & 0x7F for b in content_bytes])
-                                content_text = cleaned_bytes.decode('ascii', errors='replace')
-                            else:
-                                content_text = content_bytes.decode('cp437', errors='replace')
-
-                            content_text = content_text.replace('\r\n', '\n').replace('\r', '\n')
-
-                            self.text_viewer.blockSignals(True)
-                            self.text_viewer.setPlainText(content_text)
-                            self.text_viewer.blockSignals(False)
-                            self.original_text_content = content_text
-                            self.current_file_path = file_path
-                            self.text_editor_modified = False
-                            self.save_button.setEnabled(False)
-                            self.discard_button.setEnabled(False)
-                            self.text_viewer_dock.raise_()
-                            self.text_viewer_dock.setWindowTitle(f"Text Editor - {node.name}")
-                            self.logger.info(f"Loaded '{node.name}' into text editor.")
-                            return
-                    except Exception as e:
-                        self.logger.error(f"Error reading/processing file {file_path} for text view: {e}", exc_info=True)
-                else:
-                    self.logger.info(f"File '{node.name}' too large ({node.size} bytes) for text editor. Limit is 50KB.")
-        else:
-            # Multiple items or no items selected - clear selection and redraw
-            self.draw_disk_map()
-
-        self._clear_text_viewer_state()
-        self.disk_map_dock.raise_()
+        
+        # Redraw disk map with highlighted file
+        self.draw_disk_map()
 
     def _clear_text_viewer_state(self) -> None:
         """
@@ -1711,6 +1803,15 @@ class FileBrowserApp(QMainWindow):
         self.discard_button.setEnabled(False)
         self.text_viewer_dock.setWindowTitle("Text Viewer")
         self.logger.debug("Text viewer state cleared.")
+
+    def _clear_hex_viewer_state(self) -> None:
+        """
+        Clears the hex viewer content and resets its state.
+        """
+        self.hex_viewer.clear()
+        self.current_hex_file_path = None
+        self.hex_viewer_dock.setWindowTitle("Hex Viewer")
+        self.logger.debug("Hex viewer state cleared.")
 
     def _is_text_file(self, content: bytes, check_bytes: int = 4096) -> bool:
         """
@@ -1760,6 +1861,80 @@ class FileBrowserApp(QMainWindow):
             self.save_button.setEnabled(False)
             self.discard_button.setEnabled(False)
             self.logger.debug("Text editor changed, but no original content set.")
+
+    def _load_text_editor(self, file_path: str, filename: str, content_bytes: bytes) -> None:
+        """Loads file content into the text editor."""
+        try:
+            fs_type = self.controller.filesystem.get_display_info().get("Filesystem Type", "Unknown")
+            if fs_type == "CP/M":
+                cleaned_bytes = bytes([b & 0x7F for b in content_bytes])
+                content_text = cleaned_bytes.decode('ascii', errors='replace')
+            else:
+                content_text = content_bytes.decode('cp437', errors='replace')
+
+            content_text = content_text.replace('\r\n', '\n').replace('\r', '\n')
+
+            self.text_viewer.blockSignals(True)
+            self.text_viewer.setPlainText(content_text)
+            self.text_viewer.blockSignals(False)
+            self.original_text_content = content_text
+            self.current_file_path = file_path
+            self.text_editor_modified = False
+            self.save_button.setEnabled(False)
+            self.discard_button.setEnabled(False)
+            self.text_viewer_dock.setWindowTitle(f"Text Editor - {filename}")
+            self.text_viewer_dock.raise_()
+            self.logger.info(f"Loaded '{filename}' into text editor.")
+        except Exception as e:
+            self.logger.error(f"Error loading text editor: {e}", exc_info=True)
+            QMessageBox.warning(self, "Warning", f"Could not display as text: {str(e)}")
+
+    def _load_hex_viewer(self, file_path: str, filename: str, content_bytes: bytes) -> None:
+        """Loads file content into the hex viewer."""
+        try:
+            hex_lines = []
+            bytes_per_line = 16
+
+            for offset in range(0, len(content_bytes), bytes_per_line):
+                chunk = content_bytes[offset:offset + bytes_per_line]
+
+                # Offset column (8 chars)
+                offset_str = f"{offset:08X}"
+
+                # Hex bytes - always 16 positions, padding with spaces for incomplete lines
+                hex_parts = []
+                for i in range(bytes_per_line):
+                    if i < len(chunk):
+                        hex_parts.append(f"{chunk[i]:02X}")
+                    else:
+                        hex_parts.append("  ")  # Two spaces for missing bytes
+
+                # Group hex bytes in pairs of 2 for readability
+                hex_str = ' '.join(hex_parts[:8]) + '  ' + ' '.join(hex_parts[8:])
+
+                # ASCII representation - pad with spaces for incomplete lines
+                ascii_chars = []
+                for i in range(bytes_per_line):
+                    if i < len(chunk):
+                        b = chunk[i]
+                        ascii_chars.append(chr(b) if 32 <= b < 127 else '.')
+                    else:
+                        ascii_chars.append(' ')
+                ascii_str = ''.join(ascii_chars)
+
+                # Format: OFFSET  HEX(8) HEX(8)  ASCII
+                hex_lines.append(f"{offset_str}  {hex_str}  {ascii_str}")
+
+            hex_content = '\n'.join(hex_lines)
+
+            self.hex_viewer.setPlainText(hex_content)
+            self.current_hex_file_path = file_path
+            self.hex_viewer_dock.setWindowTitle(f"Hex Viewer - {filename} ({len(content_bytes)} bytes)")
+            self.hex_viewer_dock.raise_()
+            self.logger.info(f"Loaded '{filename}' into hex viewer.")
+        except Exception as e:
+            self.logger.error(f"Error loading hex viewer: {e}", exc_info=True)
+            QMessageBox.warning(self, "Warning", f"Could not display hex view: {str(e)}")
 
 
 def run_gui() -> None:

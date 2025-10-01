@@ -7,9 +7,9 @@ import os
 import tempfile
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, QUrl, QMimeData
-from PyQt6.QtGui import QDrag, QDragEnterEvent, QDragMoveEvent, QDropEvent
-from PyQt6.QtWidgets import QMessageBox, QTreeWidget, QWidget
+from PyQt6.QtCore import Qt, QUrl, QMimeData, QPoint
+from PyQt6.QtGui import QDrag, QDragEnterEvent, QDragMoveEvent, QDropEvent, QAction, QContextMenuEvent
+from PyQt6.QtWidgets import QMessageBox, QTreeWidget, QWidget, QMenu
 
 
 class DragDropTreeWidget(QTreeWidget):
@@ -32,6 +32,66 @@ class DragDropTreeWidget(QTreeWidget):
         self.setDragDropMode(QTreeWidget.DragDropMode.DragDrop)
         self.parent_widget = parent
         self._temp_extraction_dir = None
+
+        # Enable context menu
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    # ##################################################################
+    # Context Menu
+    # ##################################################################
+
+    def _show_context_menu(self, position: QPoint) -> None:
+        """
+        Shows a context menu for file operations.
+
+        Args:
+            position: The position where the context menu was requested.
+        """
+        # Get the item at the click position
+        item = self.itemAt(position)
+        if not item or not hasattr(item, 'node'):
+            return
+
+        node = item.node
+
+        # Create context menu
+        menu = QMenu(self)
+
+        # View action (only for files)
+        if not node.is_dir:
+            view_action = QAction("View", self)
+            view_action.triggered.connect(lambda: self._context_view_file())
+            menu.addAction(view_action)
+            menu.addSeparator()
+
+        # Extract action
+        extract_action = QAction("Extract", self)
+        extract_action.triggered.connect(lambda: self._context_extract())
+        menu.addAction(extract_action)
+
+        # Delete action
+        delete_action = QAction("Delete", self)
+        delete_action.triggered.connect(lambda: self._context_delete())
+        menu.addAction(delete_action)
+
+        # Show the menu at the cursor position
+        menu.exec(self.viewport().mapToGlobal(position))
+
+    def _context_view_file(self) -> None:
+        """Context menu handler for View action."""
+        if hasattr(self.parent_widget, 'view_file_content'):
+            self.parent_widget.view_file_content()
+
+    def _context_extract(self) -> None:
+        """Context menu handler for Extract action."""
+        if hasattr(self.parent_widget, 'extract_selected_items'):
+            self.parent_widget.extract_selected_items()
+
+    def _context_delete(self) -> None:
+        """Context menu handler for Delete action."""
+        if hasattr(self.parent_widget, 'delete_selected_items'):
+            self.parent_widget.delete_selected_items()
 
     # ##################################################################
     # Drag-out (Extract) Handlers

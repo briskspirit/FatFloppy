@@ -106,6 +106,7 @@ class DiskMapView:
         self._draw_legend(layout_info, app_font, text_color)
         self._draw_stats(current_head, free_space, total_space, app_font, text_color)
         self._draw_sectors(geometry, current_head, layout_info)
+        self._draw_physical_layout_note(app_font, text_color)
 
     # ##################################################################
     # Private Drawing Helper Methods
@@ -155,6 +156,31 @@ class DiskMapView:
             center_x = (self.view.width() - text_rect.width()) / 2
             center_y = (self.view.height() - text_rect.height()) / 2
             text_item.setPos(center_x, center_y)
+        self.scene.addItem(text_item)
+
+    def _draw_physical_layout_note(self, font: QFont, color: QColor) -> None:
+        """Draws a note explaining this is the physical disk layout."""
+        note_x = self.view.width() - 10
+        note_y = self.view.height() - 15
+
+        note_text = "Physical disk layout (sectors may appear non-sequential due to interleaving)"
+        text_item = QGraphicsSimpleTextItem(note_text)
+
+        # Use a smaller font for the note
+        note_font = QFont(font)
+        note_font.setPointSize(max(8, font.pointSize() - 2))
+        note_font.setItalic(True)
+        text_item.setFont(note_font)
+
+        # Make it slightly transparent/gray
+        note_color = QColor(color)
+        note_color.setAlpha(180)
+        text_item.setBrush(QBrush(note_color))
+
+        # Position at bottom right
+        text_rect = text_item.boundingRect()
+        text_item.setPos(note_x - text_rect.width(), note_y)
+
         self.scene.addItem(text_item)
 
     def _draw_no_disk_message(self, font: QFont, color: QColor) -> None:
@@ -344,7 +370,7 @@ class DiskMapView:
     def _draw_stats(self, current_head: int, free_space: int, total_space: int, font: QFont, color: QColor) -> None:
         """Draws the disk space statistics text."""
         stats_x = 10
-        stats_y = self.view.height() - 60
+        stats_y = self.view.height() - 80
         unit_name = "units"
         stats_content = (
             f"Head: {current_head}\n"
