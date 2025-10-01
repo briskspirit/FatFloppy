@@ -257,6 +257,31 @@ class IMDImageDriver(DiskIODriver):
 
         return True, None
 
+    def set_physical_format(self, physical_format: PhysicalFormat) -> None:
+        """
+        Sets the physical format of the disk.
+
+        This will override the format derived from the IMD file's metadata,
+        so a warning is issued.
+
+        Args:
+            physical_format: The PhysicalFormat object to apply.
+
+        Raises:
+            TypeError: If the provided object is not a PhysicalFormat.
+        """
+        if not isinstance(physical_format, PhysicalFormat):
+            raise TypeError("Expected PhysicalFormat object")
+
+        # The driver is now responsible for issuing its own warning.
+        if self.file_loaded:
+            self.logger.warning(
+                "Applying an external physical format to an already loaded IMD file. "
+                "This will override the geometry derived from the file's metadata."
+            )
+
+        self.physical_format = copy.deepcopy(physical_format)
+
     def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
         """
         Validates whether an IMD file can be opened.

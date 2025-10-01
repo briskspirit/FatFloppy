@@ -241,6 +241,27 @@ class GreaseweazleDriver(DiskIODriver):
         # Note: We can't validate USB connection until initialize() is called
         return True, None
 
+    def set_physical_format(self, physical_format: PhysicalFormat) -> None:
+        """
+        Sets the physical disk format and recreates the Greaseweazle diskdef.
+        """
+        self.logger.debug("Setting physical format for Greaseweazle driver")
+        if not isinstance(physical_format, PhysicalFormat):
+            raise TypeError("physical_format must be a PhysicalFormat object")
+
+        self.physical_format = copy.deepcopy(physical_format)
+
+        # Reset any cached format info
+        self.fmt_cls = None
+        self.using_custom_diskdef = False
+        self.last_successful_format = None
+
+        # This is the crucial part: The driver itself is now responsible
+        # for updating its internal state when the format is set.
+        self._create_and_set_custom_diskdef()
+
+        self.logger.info(f"Physical format set and diskdef recreated: Cyls={physical_format.cylinders}, Heads={physical_format.heads}")
+
     def get_format_requirements(self) -> dict:
         """
         Returns format requirements for Greaseweazle driver.
