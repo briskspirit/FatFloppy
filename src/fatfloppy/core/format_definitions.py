@@ -879,6 +879,7 @@ FLOPPY_FORMATS: Dict[str, FormatProfile] = {
             sectors_per_cluster=1,
         ),
     ),
+    # --- CP/M Formats ---
     # Standard IBM 3740 compatible format
     "cpm_8_sssd_250k": FormatProfile(
         name="cpm_8_sssd_250k",
@@ -967,6 +968,34 @@ FLOPPY_FORMATS: Dict[str, FormatProfile] = {
             al1=0x00,
             cks=0,
             off=2,
+        ),
+    ),
+    "cpm_5.25_100k": FormatProfile(
+        name="cpm_5.25_100k",
+        description="5.25\" SSSD 100KB CP/M 2.2 (40 tracks, 1 head, 10 sectors/track)",
+        physical_format=PhysicalFormat(
+            cylinders=40,
+            heads=1,
+            rpm=300,
+            heads_inverted=False,
+            bytes_per_sector=256,
+            image_in_sector_id_order=True,
+            track_formats=[
+                TrackFormat(0, 39, 0, 0, 10, "FM", 250, interleave=4, id_start=1, gap1_bytes=45, gap2_bytes=12, gap3_bytes=30) # Gap values are from H17 manual, DO NOT CHANGE
+            ],
+        ),
+        filesystem_type="CPM",
+        filesystem_config=CPMDiskParameterBlock(
+            spt=20,    # 10 physical sectors × (256/128) = 20 logical sectors
+            bsh=3,     # Block shift: 1024 byte blocks
+            blm=7,     # Block mask: 2^3 - 1 = 7
+            exm=0,     # Extent mask: 0 for 16KB extents
+            dsm=92,    # (100KB - 3 tracks reserved - directory) / 1KB ≈ 92 blocks
+            drm=63,    # 64 directory entries - 1
+            al0=0xC0,  # First 2 blocks for directory
+            al1=0x00,
+            cks=0,     # No directory checksumming
+            off=3,     # 3 reserved tracks (tracks 0, 1, 2)
         ),
     ),
     # --- HDOS 2.0 / 3.0 Formats ---
