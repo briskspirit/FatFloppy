@@ -619,27 +619,27 @@ class FileBrowserApp(QMainWindow):
         if len(selected_items) != 1:
             QMessageBox.information(self, "Info", "Please select a single file to view.")
             return
-        
+
         item = selected_items[0]
-        
+
         if not hasattr(item, 'node'):
             QMessageBox.warning(self, "Warning", "Invalid item selected.")
             return
-        
+
         node: FileSystemNode = item.node
-        
+
         if node.is_dir:
             QMessageBox.information(self, "Info", "Cannot view directory contents.")
             return
-        
+
         file_path = self._build_full_path(node.name)
-        
+
         try:
             content_bytes = self.controller.read_file(file_path)
             if content_bytes is None:
                 QMessageBox.warning(self, "Warning", f"Could not read file: {node.name}")
                 return
-            
+
             # Determine if file is text or binary
             if self._is_text_file(content_bytes):
                 # Clear hex viewer and load text editor
@@ -649,7 +649,7 @@ class FileBrowserApp(QMainWindow):
                 # Clear text editor and load hex viewer
                 self._clear_text_viewer_state()
                 self._load_hex_viewer(file_path, node.name, content_bytes)
-                
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error reading file: {str(e)}")
             self.logger.exception(f"Error reading file {file_path} for viewing.")
@@ -1029,14 +1029,40 @@ class FileBrowserApp(QMainWindow):
             # Apply to application
             QApplication.instance().setFont(self.app_font)
 
-        # Apply font to specific widgets (this ensures they get it even if global setting doesn't work)
-        # Apply font to specific widgets
+        # Apply font globally to the application first
+        QApplication.instance().setFont(self.app_font)
+
+        # Then explicitly set it on the main window
+        self.setFont(self.app_font)
+
+        # Apply font to all specific widgets
         self.tree_widget.setFont(self.app_font)
         self.file_list.setFont(self.app_font)
         self.physical_format_info.setFont(self.app_font)
         self.filesystem_info.setFont(self.app_font)
         self.text_viewer.setFont(self.app_font)
         self.hex_viewer.setFont(self.app_font)
+
+        # Apply to group boxes (for their titles)
+        self.physical_format_group.setFont(self.app_font)
+        self.filesystem_group.setFont(self.app_font)
+
+        # Apply to dock widgets (for their titles)
+        self.tree_dock.setFont(self.app_font)
+        self.disk_info_dock.setFont(self.app_font)
+        self.file_list_dock.setFont(self.app_font)
+        self.disk_map_dock.setFont(self.app_font)
+        self.text_viewer_dock.setFont(self.app_font)
+        self.hex_viewer_dock.setFont(self.app_font)
+
+        # Apply to toolbar
+        self.toolbar.setFont(self.app_font)
+
+        # Apply to menu bar
+        self.menuBar().setFont(self.app_font)
+
+        # Apply to status bar
+        self.statusBar().setFont(self.app_font)
 
         # Update tab stops for hex viewer after font is set
         font_metrics = self.hex_viewer.fontMetrics()
@@ -1753,30 +1779,30 @@ class FileBrowserApp(QMainWindow):
         # Clear previous file selection tracking
         self.selected_file_path = None
         self.selected_file_units = []
-        
+
         # Clear both text editor and hex viewer when selection changes
         self._clear_text_viewer_state()
         self._clear_hex_viewer_state()
-        
+
         # Switch to disk map
         self.disk_map_dock.raise_()
 
         selected_items = self.file_list.selectedItems()
-        
+
         if len(selected_items) == 1:
             item = selected_items[0]
-            
+
             # Safety check: ensure item has the node attribute
             if not hasattr(item, 'node'):
                 self.logger.warning("Selected item does not have 'node' attribute (possibly from drag-drop). Ignoring.")
                 return
-            
+
             node: FileSystemNode = item.node
-            
+
             if not node.is_dir:
                 file_path = self._build_full_path(node.name)
                 self.selected_file_path = file_path
-                
+
                 # Get allocation units for this file
                 if self.controller:
                     units = self.controller.get_file_allocation_units(file_path)
@@ -1785,7 +1811,7 @@ class FileBrowserApp(QMainWindow):
                         self.logger.debug(f"File '{node.name}' uses {len(units)} units: {units[:10]}{'...' if len(units) > 10 else ''}")
                     else:
                         self.logger.debug(f"File '{node.name}' has no allocation units (empty or error)")
-        
+
         # Redraw disk map with highlighted file
         self.draw_disk_map()
 
