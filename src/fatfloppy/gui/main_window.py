@@ -7,13 +7,13 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QPointF, Qt, pyqtSlot
+from PyQt6.QtCore import QPointF, Qt, QSettings, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPalette, QAction
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QSizePolicy,
                              QDockWidget, QFileDialog, QGraphicsView, QGroupBox,
                              QHBoxLayout, QHeaderView, QInputDialog, QLabel,
                              QMainWindow, QMessageBox, QPlainTextEdit,
-                             QPushButton, QToolBar, QTreeWidget,
+                             QPushButton, QToolBar, QTreeWidget, QMenu,
                              QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ..core.controller import DiskController
@@ -33,6 +33,7 @@ class FileBrowserApp(QMainWindow):
     Main application window for the FatFloppy Disk Browser.
     Provides a GUI for interacting with floppy disk images and physical floppies.
     """
+    MAX_RECENT_FILES = 10
 
     logger: logging.Logger = get_logger(__name__)
 
@@ -171,10 +172,22 @@ class FileBrowserApp(QMainWindow):
             self.logger.debug("Open Disk Image file dialog cancelled.")
             return
 
+        self._open_disk_image_by_path(file_path)
+
+    def _open_disk_image_by_path(self, file_path: str) -> None:
+        """
+        Opens a disk image file at the specified path.
+
+        Args:
+            file_path: The path to the disk image file to open.
+        """
+        if not file_path or not os.path.exists(file_path):
+            self.logger.warning(f"File path does not exist: {file_path}")
+            return
+
         _, ext = os.path.splitext(file_path)
         ext_lower = ext.lower()
 
-        # --- DYNAMIC DRIVER SELECTION ---
         # Use the map to find the driver type, defaulting to 'IMG' if not found
         disk_type = self.extension_to_driver_map.get(ext_lower, "IMG")
         self.logger.info(f"File extension '{ext_lower}' mapped to driver type '{disk_type}'.")
@@ -188,6 +201,7 @@ class FileBrowserApp(QMainWindow):
             if self.controller.open_disk(file_path, disk_type):
                 self.logger.info(f"Successfully opened disk image: {file_path} (Type: {disk_type})")
                 self.current_file_path = file_path
+                self._add_to_recent_files(file_path)
                 self.refresh_filesystem_ui()
 
                 if self.controller.physical_format and self.controller.physical_format.heads > 1:
@@ -660,11 +674,19 @@ class FileBrowserApp(QMainWindow):
 
     def _init_ui(self) -> None:
         """Initializes and lays out the main UI components of the application."""
+        settings = QSettings("FatFloppy", "FatFloppy")
+        restore_dock_layout = settings.value("window/restore_dock_layout", False, type=bool)
+
         self._init_window_settings()
         self._create_menus()
         self._create_toolbars()
         self._create_docks()
-        self._setup_dock_layout()
+
+        # Only setup default layout if NOT restoring custom layout
+        if not restore_dock_layout:
+            self._setup_dock_layout()
+
+        self._load_window_state()
         self._connect_signals_slots()
         self.logger.debug("UI components initialized.")
 
@@ -688,18 +710,225 @@ class FileBrowserApp(QMainWindow):
         open_image_action.triggered.connect(self.open_disk_image_file)
         file_menu.addAction(open_image_action)
 
+        # Recent Files submenu
+        self.recent_files_menu = QMenu("Recent Files", self)
+        file_menu.addMenu(self.recent_files_menu)
+        self._update_recent_files_menu()  # Populate it initially
+
+        file_menu.addSeparator()
+
         open_floppy_action = QAction("Open Physical Floppy", self)
         open_floppy_action.triggered.connect(self.open_physical_floppy)
         if not self.greaseweazle_available:
             open_floppy_action.setEnabled(False)
             self.logger.info("Greaseweazle not available, 'Open Physical Floppy' disabled.")
         file_menu.addAction(open_floppy_action)
+
         file_menu.addSeparator()
 
         exit_action = QAction("Exit", self)
+        exit_action.setMenuRole(QAction.MenuRole.QuitRole)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        # View Menu
+        view_menu = menu_bar.addMenu("&View")
+
+        save_layout_action = QAction("Save Current Layout", self)
+        save_layout_action.triggered.connect(self._save_current_layout)
+        view_menu.addAction(save_layout_action)
+
+        reset_layout_action = QAction("Reset to Default Layout", self)
+        reset_layout_action.triggered.connect(self._reset_layout)
+        view_menu.addAction(reset_layout_action)
+
+        view_menu.addSeparator()
+
+        # Add checkbox for auto-restore custom layout
+        self.restore_layout_action = QAction("Restore Custom Layout on Startup", self)
+        self.restore_layout_action.setCheckable(True)
+        settings = QSettings("FatFloppy", "FatFloppy")
+        self.restore_layout_action.setChecked(settings.value("window/restore_dock_layout", False, type=bool))
+        self.restore_layout_action.triggered.connect(self._toggle_restore_layout)
+        view_menu.addAction(self.restore_layout_action)
+
         self.logger.debug("Menus created.")
+
+    def _save_current_layout(self) -> None:
+        """Saves the current dock layout exactly as it is."""
+        settings = QSettings("FatFloppy", "FatFloppy")
+        current_state = self.saveState()
+        settings.setValue("window/state", current_state)
+        settings.setValue("window/restore_dock_layout", True)
+        self.restore_layout_action.setChecked(True)
+
+        # Debug: log what we're saving
+        self.logger.info(f"Saved custom dock layout (state size: {len(current_state)} bytes)")
+
+        QMessageBox.information(
+            self, "Layout Saved",
+            "Current layout saved and will be restored on next startup."
+        )
+
+    def _reset_layout(self) -> None:
+        """Resets the dock layout to default configuration."""
+        reply = QMessageBox.question(
+            self, "Reset Layout",
+            "Reset all dock positions to default layout?\n\n"
+            "The application will restart to apply changes.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Clear custom layout settings
+            settings = QSettings("FatFloppy", "FatFloppy")
+            settings.setValue("window/restore_dock_layout", False)
+            settings.remove("window/state")
+            self.restore_layout_action.setChecked(False)
+
+            self.logger.info("Layout reset to defaults, restart required")
+
+            # Inform user and offer to restart
+            restart_reply = QMessageBox.question(
+                self, "Restart Required",
+                "Layout has been reset to defaults.\n\n"
+                "Restart now to apply changes?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
+
+            if restart_reply == QMessageBox.StandardButton.Yes:
+                # Save any current work before restarting
+                if self.text_editor_modified:
+                    save_reply = QMessageBox.question(
+                        self, "Unsaved Changes",
+                        "Save changes in text editor before restarting?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                        QMessageBox.StandardButton.Yes
+                    )
+                    if save_reply == QMessageBox.StandardButton.Yes:
+                        if not self.save_file():
+                            return
+                    elif save_reply == QMessageBox.StandardButton.Cancel:
+                        return
+
+                # Restart the application
+                QApplication.quit()
+                import sys
+                import subprocess
+                subprocess.Popen([sys.executable] + sys.argv)
+
+    def _toggle_restore_layout(self, checked: bool) -> None:
+        """Toggles whether custom layout should be restored on startup."""
+        settings = QSettings("FatFloppy", "FatFloppy")
+        settings.setValue("window/restore_dock_layout", checked)
+
+        if checked:
+            # When enabling, tell user they need to use "Save Current Layout"
+            QMessageBox.information(
+                self, "Custom Layout Enabled",
+                "Custom layout restoration is now enabled.\n\n"
+                "Use 'View > Save Current Layout' to save your current arrangement.\n"
+                "The saved layout will be restored on next startup."
+            )
+            self.logger.info("Custom layout restoration enabled")
+        else:
+            self.logger.info("Custom layout restoration disabled - will use defaults on next startup")
+
+    def _load_recent_files(self) -> List[str]:
+        """Loads the list of recent files from settings."""
+        settings = QSettings("FatFloppy", "FatFloppy")
+        recent = settings.value("recent_files", [])
+        if recent is None:
+            recent = []
+        elif isinstance(recent, str):
+            recent = [recent]
+        self.logger.debug(f"Loaded {len(recent)} recent files from settings")
+        return recent
+
+    def _save_recent_files(self, recent_files: List[str]) -> None:
+        """Saves the list of recent files to settings."""
+        settings = QSettings("FatFloppy", "FatFloppy")
+        settings.setValue("recent_files", recent_files)
+        self.logger.debug(f"Saved {len(recent_files)} recent files to settings")
+
+    def _add_to_recent_files(self, file_path: str) -> None:
+        """
+        Adds a file to the recent files list.
+
+        Args:
+            file_path: The absolute path to the file to add.
+        """
+        if not file_path or not os.path.exists(file_path):
+            return
+
+        recent_files = self._load_recent_files()
+
+        # Remove if already in list
+        if file_path in recent_files:
+            recent_files.remove(file_path)
+
+        # Add to front
+        recent_files.insert(0, file_path)
+
+        # Keep only MAX_RECENT_FILES
+        recent_files = recent_files[:self.MAX_RECENT_FILES]
+
+        self._save_recent_files(recent_files)
+        self._update_recent_files_menu()
+        self.logger.debug(f"Added '{file_path}' to recent files")
+
+    def _update_recent_files_menu(self) -> None:
+        """Updates the Recent Files submenu with current recent files."""
+        self.recent_files_menu.clear()
+        recent_files = self._load_recent_files()
+
+        if not recent_files:
+            no_recent_action = QAction("No recent files", self)
+            no_recent_action.setEnabled(False)
+            self.recent_files_menu.addAction(no_recent_action)
+            return
+
+        for file_path in recent_files:
+            if os.path.exists(file_path):
+                action = QAction(os.path.basename(file_path), self)
+                action.setToolTip(file_path)
+                action.triggered.connect(lambda checked, path=file_path: self._open_recent_file(path))
+                self.recent_files_menu.addAction(action)
+
+        self.recent_files_menu.addSeparator()
+        clear_action = QAction("Clear Recent Files", self)
+        clear_action.triggered.connect(self._clear_recent_files)
+        self.recent_files_menu.addAction(clear_action)
+
+    def _open_recent_file(self, file_path: str) -> None:
+        """
+        Opens a recent file.
+
+        Args:
+            file_path: The path to the file to open.
+        """
+        if not os.path.exists(file_path):
+            QMessageBox.warning(
+                self, "File Not Found",
+                f"The file '{file_path}' no longer exists and will be removed from recent files."
+            )
+            recent_files = self._load_recent_files()
+            if file_path in recent_files:
+                recent_files.remove(file_path)
+                self._save_recent_files(recent_files)
+                self._update_recent_files_menu()
+            return
+
+        # Use the new helper method that takes a file path
+        self._open_disk_image_by_path(file_path)
+
+    def _clear_recent_files(self) -> None:
+        """Clears the recent files list."""
+        self._save_recent_files([])
+        self._update_recent_files_menu()
+        self.logger.info("Cleared recent files list")
 
     def _create_toolbars(self) -> None:
         """Creates the main toolbar and adds actions."""
@@ -771,6 +1000,7 @@ class FileBrowserApp(QMainWindow):
     def _create_tree_dock(self) -> None:
         """Creates and configures the directory tree dock."""
         self.tree_dock = QDockWidget("Directory Tree", self)
+        self.tree_dock.setObjectName("TreeDock")  # CRITICAL for state restoration
         self.tree_widget = QTreeWidget()
         self.tree_widget.setHeaderLabel("Directories")
         self.tree_widget.itemClicked.connect(self.select_directory)
@@ -780,6 +1010,7 @@ class FileBrowserApp(QMainWindow):
     def _create_disk_info_dock(self) -> None:
         """Creates and configures the disk information dock."""
         self.disk_info_dock = QDockWidget("Disk Information", self)
+        self.disk_info_dock.setObjectName("DiskInfoDock")  # CRITICAL for state restoration
         disk_info_widget = QWidget()
         disk_info_layout = QVBoxLayout(disk_info_widget)
         disk_info_layout.setContentsMargins(5, 5, 5, 5)
@@ -787,10 +1018,8 @@ class FileBrowserApp(QMainWindow):
 
         self.physical_format_group = QGroupBox("Physical Geometry")
         self.physical_format_info = QLabel("No disk image loaded")
-        # Make text selectable and enable word wrap
         self.physical_format_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.physical_format_info.setWordWrap(True)
-        # Don't set maximum width - let it size naturally with word wrap
         self.physical_format_info.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Minimum
@@ -801,10 +1030,8 @@ class FileBrowserApp(QMainWindow):
 
         self.filesystem_group = QGroupBox("Filesystem")
         self.filesystem_info = QLabel("No filesystem detected")
-        # Make text selectable and enable word wrap
         self.filesystem_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.filesystem_info.setWordWrap(True)
-        # Don't set maximum width - let it size naturally with word wrap
         self.filesystem_info.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Minimum
@@ -823,10 +1050,11 @@ class FileBrowserApp(QMainWindow):
     def _create_file_list_dock(self) -> None:
         """Creates and configures the file list dock."""
         self.file_list_dock = QDockWidget("Files", self)
+        self.file_list_dock.setObjectName("FileListDock")  # CRITICAL for state restoration
         self.file_list = DragDropTreeWidget(self)
+        self.file_list.itemDoubleClicked.connect(self._on_file_double_clicked)
         self.file_list.setHeaderLabels(["Name", "Size", "Date/Time", "Attr"])
 
-        # Allow dragging files out and dropping files in, but prevent internal moves
         self.file_list.setDragEnabled(True)
         self.file_list.setAcceptDrops(True)
         self.file_list.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
@@ -844,6 +1072,7 @@ class FileBrowserApp(QMainWindow):
     def _create_disk_map_dock(self) -> None:
         """Creates and configures the disk map dock."""
         self.disk_map_dock = QDockWidget("Disk Map", self)
+        self.disk_map_dock.setObjectName("DiskMapDock")  # CRITICAL for state restoration
         self.disk_map = DiskMapView(self)
         self.disk_map_view = self.disk_map.view
 
@@ -871,6 +1100,7 @@ class FileBrowserApp(QMainWindow):
     def _create_text_editor_dock(self) -> None:
         """Creates and configures the text editor dock."""
         self.text_viewer_dock = QDockWidget("Text Editor", self)
+        self.text_viewer_dock.setObjectName("TextEditorDock")  # CRITICAL for state restoration
         text_viewer_widget = QWidget()
         text_viewer_layout = QVBoxLayout(text_viewer_widget)
         text_viewer_layout.setContentsMargins(2, 2, 2, 2)
@@ -885,7 +1115,7 @@ class FileBrowserApp(QMainWindow):
 
         self.save_button = QPushButton("Save Changes")
         self.save_button.clicked.connect(self.save_file)
-        self.save_button.setEnabled(False)  # Start disabled
+        self.save_button.setEnabled(False)
 
         self.discard_button = QPushButton("Discard Changes")
         self.discard_button.clicked.connect(self.discard_changes)
@@ -905,6 +1135,7 @@ class FileBrowserApp(QMainWindow):
     def _create_hex_viewer_dock(self) -> None:
         """Creates and configures the hex viewer dock."""
         self.hex_viewer_dock = QDockWidget("Hex Viewer", self)
+        self.hex_viewer_dock.setObjectName("HexViewerDock")  # CRITICAL for state restoration
         hex_viewer_widget = QWidget()
         hex_viewer_layout = QVBoxLayout(hex_viewer_widget)
         hex_viewer_layout.setContentsMargins(2, 2, 2, 2)
@@ -914,8 +1145,6 @@ class FileBrowserApp(QMainWindow):
         self.hex_viewer.setReadOnly(True)
         self.hex_viewer.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
 
-        # Ensure monospace font (will be set again in _setup_fonts)
-        # Set a fixed tab width for proper alignment
         font_metrics = self.hex_viewer.fontMetrics()
         self.hex_viewer.setTabStopDistance(font_metrics.horizontalAdvance(' ') * 8)
 
@@ -923,6 +1152,31 @@ class FileBrowserApp(QMainWindow):
         hex_viewer_widget.setLayout(hex_viewer_layout)
         self.hex_viewer_dock.setWidget(hex_viewer_widget)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.hex_viewer_dock)
+
+
+    @pyqtSlot(QTreeWidgetItem, int)
+    def _on_file_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        """
+        Handles double-click on a file list item.
+        Opens files in viewer, navigates into directories.
+
+        Args:
+            item: The item that was double-clicked.
+            column: The column that was double-clicked.
+        """
+        if not hasattr(item, 'node'):
+            return
+
+        node: FileSystemNode = item.node
+
+        if node.is_dir:
+            # Double-click on directory: navigate into it
+            new_path = self._build_full_path(node.name)
+            self._navigate_to_path(new_path)
+            self.logger.debug(f"Navigated to directory: {new_path}")
+        else:
+            # Double-click on file: view it
+            self.view_file_content()
 
     def _setup_dock_layout(self) -> None:
         """Arranges and resizes the dockable widgets."""
@@ -946,6 +1200,12 @@ class FileBrowserApp(QMainWindow):
         self.disk_info_dock.setMaximumWidth(400)
         self.file_list_dock.setMinimumWidth(400)
         self.disk_map_dock.setMinimumWidth(300)
+
+        # Save this as the default state (only once)
+        settings = QSettings("FatFloppy", "FatFloppy")
+        if not settings.contains("window/default_state"):
+            settings.setValue("window/default_state", self.saveState())
+            self.logger.debug("Saved default dock layout state")
 
         self.logger.debug("Dock layout configured.")
 
@@ -1069,6 +1329,48 @@ class FileBrowserApp(QMainWindow):
         self.hex_viewer.setTabStopDistance(font_metrics.horizontalAdvance(' ') * 8)
 
         self.logger.info(f"Final font in use: {self.app_font.family()}, Size: {self.app_font.pointSize()}")
+
+    def _load_window_state(self) -> None:
+        """Loads and restores the window geometry and optionally dock positions from settings."""
+        settings = QSettings("FatFloppy", "FatFloppy")
+
+        # Always restore window geometry
+        geometry = settings.value("window/geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+            self.logger.debug("Restored window geometry from settings")
+        else:
+            self.resize(1400, 900)
+            self.logger.debug("Using default window size")
+
+        # Restore dock state if enabled
+        restore_dock_layout = settings.value("window/restore_dock_layout", False, type=bool)
+
+        if restore_dock_layout:
+            state = settings.value("window/state")
+            if state:
+                # restoreState will override the default layout from _setup_dock_layout()
+                success = self.restoreState(state)
+                if success:
+                    self.logger.info(f"Restored custom dock layout (state size: {len(state)} bytes)")
+                else:
+                    self.logger.warning("Failed to restore custom dock layout - state may be corrupted")
+            else:
+                self.logger.warning("Custom dock layout enabled but no saved state found - using defaults")
+        else:
+            self.logger.info("Using default dock layout")
+
+        self.logger.info("Window state loaded")
+
+    def _save_window_state(self) -> None:
+        """Saves the current window geometry to settings. Does NOT save dock state - that's manual only."""
+        settings = QSettings("FatFloppy", "FatFloppy")
+        settings.setValue("window/geometry", self.saveGeometry())
+
+        # NOTE: We deliberately do NOT save dock state here
+        # Dock state is only saved when user explicitly clicks "Save Current Layout"
+        # This prevents accidental overwriting of carefully arranged layouts
+        self.logger.debug("Saved window geometry (dock state NOT auto-saved)")
 
     def _build_file_dialog_filter(self) -> None:
         """
@@ -1480,6 +1782,31 @@ class FileBrowserApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to extract file {source_path}: {str(e)}")
             self.logger.exception(f"Error extracting file {source_path}.")
+
+    def closeEvent(self, event) -> None:
+        """
+        Handles the window close event.
+        Saves window state and prompts for unsaved changes.
+        """
+        if self.text_editor_modified:
+            reply = QMessageBox.question(
+                self, "Unsaved Changes",
+                f"Do you want to save changes to {os.path.basename(self.current_file_path)}?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel
+            )
+
+            if reply == QMessageBox.StandardButton.Save:
+                if not self.save_file():
+                    event.ignore()
+                    return
+            elif reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+
+        # Save window state before closing
+        self._save_window_state()
+        event.accept()
 
     def _extract_directory(self, source_dir_path: str, local_dir_path: str) -> None:
         """
@@ -1976,11 +2303,16 @@ def run_gui() -> None:
 
     app = QApplication(sys.argv)
 
-    # Set application metadata
+    # Set application metadata BEFORE creating any windows
     app.setApplicationName("FatFloppy")
     app.setApplicationDisplayName("FatFloppy")
     app.setOrganizationName("FatFloppy")
     app.setOrganizationDomain("fatfloppy.local")
+
+    # Set the menuRole to make macOS treat it properly
+    # This should be done in the menu creation, but let's also set desktop file name
+    if sys.platform == 'darwin':
+        app.setDesktopFileName("FatFloppy")
 
     # Set application icon
     current_dir = os.path.dirname(os.path.abspath(__file__))

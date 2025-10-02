@@ -218,8 +218,14 @@ class DragDropTreeWidget(QTreeWidget):
         # Accept external file drops
         if event.mimeData().hasUrls():
             event.accept()
+            self.setStyleSheet("QTreeWidget { background-color: #E8F4F8; border: 2px dashed #2196F3; }")
         else:
             event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:
+        """Resets the visual feedback when drag leaves the widget."""
+        self.setStyleSheet("")
+        super().dragLeaveEvent(event)
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
         """
@@ -242,6 +248,9 @@ class DragDropTreeWidget(QTreeWidget):
         Handles the drop event.
         Rejects internal drops.
         """
+        # Reset visual feedback
+        self.setStyleSheet("")
+
         # Reject internal drag-and-drop (prevent dropping items back into the list)
         if event.source() == self:
             event.ignore()
