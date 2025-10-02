@@ -762,8 +762,19 @@ class FileBrowserApp(QMainWindow):
         settings.setValue("window/restore_dock_layout", True)
         self.restore_layout_action.setChecked(True)
 
-        # Debug: log what we're saving
-        self.logger.info(f"Saved custom dock layout (state size: {len(current_state)} bytes)")
+        # Save floating dock geometries
+        floating_geometries = {}
+        for dock_name in ["TreeDock", "DiskInfoDock", "FileListDock", "DiskMapDock", "TextEditorDock", "HexViewerDock"]:
+            dock = self.findChild(QDockWidget, dock_name)
+            if dock and dock.isFloating():
+                floating_geometries[dock_name] = dock.saveGeometry()
+
+        if floating_geometries:
+            settings.setValue("window/floating_geometries", floating_geometries)
+            self.logger.info(f"Saved custom dock layout with {len(floating_geometries)} floating dock(s)")
+        else:
+            settings.remove("window/floating_geometries")
+            self.logger.info(f"Saved custom dock layout (state size: {len(current_state)} bytes)")
 
         QMessageBox.information(
             self, "Layout Saved",
@@ -1349,10 +1360,18 @@ class FileBrowserApp(QMainWindow):
         if restore_dock_layout:
             state = settings.value("window/state")
             if state:
-                # restoreState will override the default layout from _setup_dock_layout()
                 success = self.restoreState(state)
                 if success:
                     self.logger.info(f"Restored custom dock layout (state size: {len(state)} bytes)")
+
+                    # Restore floating dock geometries
+                    floating_geometries = settings.value("window/floating_geometries")
+                    if floating_geometries:
+                        for dock_name, dock_geometry in floating_geometries.items():
+                            dock = self.findChild(QDockWidget, dock_name)
+                            if dock and dock.isFloating():
+                                dock.restoreGeometry(dock_geometry)
+                                self.logger.debug(f"Restored floating geometry for {dock_name}")
                 else:
                     self.logger.warning("Failed to restore custom dock layout - state may be corrupted")
             else:
@@ -1363,13 +1382,22 @@ class FileBrowserApp(QMainWindow):
         self.logger.info("Window state loaded")
 
     def _save_window_state(self) -> None:
-        """Saves the current window geometry to settings. Does NOT save dock state - that's manual only."""
+        """Saves the current window geometry and dock state to settings."""
         settings = QSettings("FatFloppy", "FatFloppy")
         settings.setValue("window/geometry", self.saveGeometry())
 
-        # NOTE: We deliberately do NOT save dock state here
-        # Dock state is only saved when user explicitly clicks "Save Current Layout"
-        # This prevents accidental overwriting of carefully arranged layouts
+        # Save floating dock geometries separately
+        floating_geometries = {}
+        for dock_name in ["TreeDock", "DiskInfoDock", "FileListDock", "DiskMapDock", "TextEditorDock", "HexViewerDock"]:
+            dock = self.findChild(QDockWidget, dock_name)
+            if dock and dock.isFloating():
+                floating_geometries[dock_name] = dock.saveGeometry()
+
+        if floating_geometries:
+            settings.setValue("window/floating_geometries", floating_geometries)
+        else:
+            settings.remove("window/floating_geometries")
+
         self.logger.debug("Saved window geometry (dock state NOT auto-saved)")
 
     def _build_file_dialog_filter(self) -> None:
