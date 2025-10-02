@@ -998,6 +998,65 @@ FLOPPY_FORMATS: Dict[str, FormatProfile] = {
             off=3,     # 3 reserved tracks (tracks 0, 1, 2)
         ),
     ),
+    "cpm_8_mits_dsk_308k": FormatProfile(
+        name="cpm_8_mits_altair_308k",
+        description="8\" SSSD MITS Altair 308KB (77 tracks, 32 hard sectors/track, 128 bytes/sector)",
+        physical_format=PhysicalFormat(
+            cylinders=77,
+            heads=1,
+            rpm=360,
+            heads_inverted=False,
+            bytes_per_sector=128,
+            image_in_sector_id_order=True,  # .DSK format stores in physical order with 2:1 interleave
+            track_formats=[
+                # System tracks (0-5) - no sector metadata, sequential physical layout
+                TrackFormat(
+                    track_start=0,
+                    track_end=5,
+                    head_start=0,
+                    head_end=0,
+                    sectors_per_track=32,
+                    bytes_per_sector=128,
+                    encoding="FM",
+                    rate=250,
+                    interleave=1,
+                    sector_translation_table=[1, 9, 17, 25, 3, 11, 19, 27, 5, 13, 21, 29, 7, 15, 23, 31, 2, 10, 18, 26, 4, 12, 20, 28, 6, 14, 22, 30, 8, 16, 24, 32],
+                    id_start=1,
+                    iam_present=False,
+                    gap3_bytes=0,  # Hard sectored - gaps determined by index holes
+                ),
+                # Data tracks (6-76) - 2:1 split interleave
+                TrackFormat(
+                    track_start=6,
+                    track_end=76,
+                    head_start=0,
+                    head_end=0,
+                    sectors_per_track=32,
+                    bytes_per_sector=128,
+                    encoding="FM",
+                    rate=250,
+                    interleave=1,  # No need for interleave when in physical order, but keeping for consistency
+                    sector_translation_table=[1, 9, 17, 25, 3, 11, 19, 27, 5, 13, 21, 29, 7, 15, 23, 31, 18, 26, 2, 10, 20, 28, 4, 12, 22, 30, 6, 14, 24, 32, 8, 16],
+                    id_start=1,
+                    iam_present=False,
+                    gap3_bytes=0,
+                ),
+            ],
+        ),
+        filesystem_type="CPM",
+        filesystem_config=CPMDiskParameterBlock(
+            spt=32,    # 32 logical sectors per track
+            bsh=4,     # Block shift: 2^4 = 16 => 2048 byte blocks (NOT 1024!)
+            blm=15,    # Block mask: 2^4 - 1 = 15 (NOT 7!)
+            exm=0,     # Extent mask: 0 for 16KB extents with 2KB blocks
+            dsm=147,   # (77-2)*32*128/2048 - 2 = 150 - 2 - 1 = 147
+            drm=63,    # Directory entries: 64 - 1 = 63
+            al0=0xC0,  # Directory uses first 2 blocks (11000000)
+            al1=0x00,
+            cks=0,     # No directory checksumming
+            off=2,     # 2 reserved tracks (0-1)
+        ),
+    ),
     # --- HDOS 2.0 / 3.0 Formats ---
     # NOTE: HDOS 2.0+ INIT places the DIR and GRT at lower LBAs than HDOS 1.x.
     # We use representative values from real disks as defaults for formatting.
