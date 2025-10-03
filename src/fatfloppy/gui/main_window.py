@@ -4,8 +4,7 @@ import datetime
 import logging
 import os
 import re
-import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Callable, Tuple
 
 from PyQt6.QtCore import QPointF, Qt, QSettings, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPalette, QAction
@@ -174,6 +173,51 @@ class FileBrowserApp(QMainWindow):
 
         self._open_disk_image_by_path(file_path)
 
+    def _read_file_threaded(self, path: str, on_success: Callable) -> None:
+        """Thread-safe file reading."""
+        def operation():
+            return self.controller.read_file(path)
+
+        def success_handler(content):
+            if content is not None:
+                on_success(content)
+            else:
+                QMessageBox.warning(self, "Warning", f"Could not read file: {path}")
+
+        self._run_threaded_operation(
+            operation,
+            f"Reading {os.path.basename(path)}",
+            on_success=success_handler,
+            cancelable=False
+        )
+
+    def _write_file_threaded(self, path: str, data: bytes, on_success: Callable) -> None:
+        """Thread-safe file writing."""
+        def operation():
+            success = self.controller.write_file(path, data)
+            if not success:
+                raise Exception("Write operation returned False")
+            return success
+
+        self._run_threaded_operation(
+            operation,
+            f"Writing {os.path.basename(path)}",
+            on_success=on_success,
+            cancelable=False
+        )
+
+    def _list_directory_threaded(self, path: str, on_success: Callable) -> None:
+        """Thread-safe directory listing."""
+        def operation():
+            return self.controller.list_directory(path)
+
+        self._run_threaded_operation(
+            operation,
+            f"Reading directory {path}",
+            on_success=on_success,
+            cancelable=False
+        )
+
     def _open_disk_image_by_path(self, file_path: str) -> None:
         """
         Opens a disk image file at the specified path.
@@ -226,10 +270,9 @@ class FileBrowserApp(QMainWindow):
 
     @pyqtSlot()
     def open_physical_floppy(self) -> None:
-        """
-        Opens a physical floppy drive using Greaseweazle.
-        """
+        """Opens a physical floppy drive using Greaseweazle."""
         self.logger.debug("Attempting to open a physical floppy.")
+
         try:
             dialog = DriveSelectionDialog(self)
             if not dialog.exec():
@@ -238,13 +281,36 @@ class FileBrowserApp(QMainWindow):
 
             drive_letter, drive_size, format_info = dialog.get_selection()
             self.logger.info(f"Opening physical floppy: Drive {drive_letter}, Size {drive_size}, Format {format_info}")
-            self.controller = DiskController()
-            self.statusBar().showMessage(f"Opening physical floppy drive {drive_letter}...")
-            QApplication.processEvents()
 
-            if self.controller.open_disk(None, "physical", drive_letter=drive_letter, drive_size=drive_size, format_info=format_info):
-                self.logger.info(f"Successfully opened physical floppy on drive {drive_letter}.")
-                self.current_file_path = None # Physical floppy has no file path
+            # Define the operation
+            def open_operation(progress_callback=None):
+                if progress_callback:
+                    progress_callback(0, 100, "Initializing device...")
+
+                controller = DiskController()
+
+                if progress_callback:
+                    progress_callback(30, 100, "Opening drive...")
+
+                success = controller.open_disk(
+                    None, "physical",
+                    drive_letter=drive_letter,
+                    drive_size=drive_size,
+                    format_info=format_info
+                )
+
+                if not success:
+                    raise Exception("Failed to open physical floppy")
+
+                if progress_callback:
+                    progress_callback(100, 100, "Complete")
+
+                return controller
+
+            # Define success handler
+            def on_success(controller):
+                self.controller = controller
+                self.current_file_path = None
                 self.refresh_filesystem_ui()
 
                 if self.controller.physical_format and self.controller.physical_format.heads > 1:
@@ -254,15 +320,33 @@ class FileBrowserApp(QMainWindow):
                     self.head_action.setEnabled(False)
                     self.head_action.setText("Single-sided disk")
 
-                format_name = self.controller.detect_format()
+                format_name, _ = self.controller.detect_format()
                 format_text = f" using {format_name}" if format_name else ""
                 if format_info and not format_info.get("profile_name"):
                     format_text += f" (Custom format: {format_info.get('cylinders')}x{format_info.get('heads')}x{format_info.get('sectors_per_track')})"
-                self.statusBar().showMessage(f"Loaded physical floppy{format_text} (Drive: {drive_letter}, Size: {drive_size}\")")
-            else:
+                self.statusBar().showMessage(
+                    f"Loaded physical floppy{format_text} (Drive: {drive_letter}, Size: {drive_size}\")"
+                )
+                self.logger.info(f"Successfully opened physical floppy on drive {drive_letter}.")
+
+            # Define error handler
+            def on_error(exception):
                 self.reset_ui()
-                QMessageBox.critical(self, "Error", "Failed to open physical floppy")
-                self.logger.error(f"Failed to open physical floppy: Drive {drive_letter}, Size {drive_size}, Format {format_info}")
+                QMessageBox.critical(
+                    self, "Error",
+                    f"Failed to open physical floppy: {str(exception)}"
+                )
+                self.logger.exception("Error opening physical floppy.")
+
+            # Run in thread
+            self._run_threaded_operation(
+                open_operation,
+                "Opening Physical Floppy",
+                on_success=on_success,
+                on_error=on_error,
+                cancelable=False
+            )
+
         except Exception as e:
             self.reset_ui()
             QMessageBox.critical(self, "Error", f"Failed to open physical floppy: {str(e)}")
@@ -280,35 +364,100 @@ class FileBrowserApp(QMainWindow):
 
         self.logger.debug(f"Extracting {len(selected_items)} selected item(s).")
 
+        # Check if using physical drive
+        is_physical = (self.controller.driver and
+                    self.controller.driver.driver_category == "physical")
+
         if len(selected_items) == 1:
             item = selected_items[0]
             node: FileSystemNode = item.node
             source_path = self._build_full_path(node.name)
+
             if node.is_dir:
                 base_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Extract To")
                 if not base_dir:
                     return
                 local_dir_path = os.path.join(base_dir, node.name)
-                self._extract_directory(source_path, local_dir_path)
+
+                if is_physical:
+                    def extract_op(progress_callback=None):
+                        self._extract_directory(source_path, local_dir_path, progress_callback)
+                        return True
+
+                    self._run_threaded_operation(
+                        extract_op,
+                        f"Extracting {node.name}",
+                        on_success=lambda _: self.statusBar().showMessage("Extraction complete."),
+                        cancelable=False
+                    )
+                else:
+                    self._extract_directory(source_path, local_dir_path)
+                    self.statusBar().showMessage("Extraction complete.")
             else:
                 save_path, _ = QFileDialog.getSaveFileName(self, "Save File", node.name)
                 if not save_path:
                     return
-                self._extract_file(source_path, save_path)
+
+                if is_physical:
+                    def extract_op(progress_callback=None):
+                        if progress_callback:
+                            progress_callback(0, 1, f"Extracting {node.name}...")
+                        self._extract_file(source_path, save_path)
+                        if progress_callback:
+                            progress_callback(1, 1, "Complete")
+                        return True
+
+                    self._run_threaded_operation(
+                        extract_op,
+                        f"Extracting {node.name}",
+                        on_success=lambda _: self.statusBar().showMessage("Extraction complete."),
+                        cancelable=False
+                    )
+                else:
+                    self._extract_file(source_path, save_path)
+                    self.statusBar().showMessage("Extraction complete.")
         else:
             base_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Extract To")
             if not base_dir:
                 return
-            for item in selected_items:
-                node = item.node
-                source_path = self._build_full_path(node.name)
-                if node.is_dir:
-                    local_dir_path = os.path.join(base_dir, node.name)
-                    self._extract_directory(source_path, local_dir_path)
-                else:
-                    local_file_path = os.path.join(base_dir, node.name)
-                    self._extract_file(source_path, local_file_path)
-        self.statusBar().showMessage("Extraction complete.")
+
+            if is_physical:
+                def extract_multiple_op(progress_callback=None):
+                    total = len(selected_items)
+                    for idx, item in enumerate(selected_items):
+                        node = item.node
+                        if progress_callback:
+                            progress_callback(idx, total, f"Extracting {node.name}...")
+
+                        source_path = self._build_full_path(node.name)
+                        if node.is_dir:
+                            local_dir_path = os.path.join(base_dir, node.name)
+                            self._extract_directory(source_path, local_dir_path)
+                        else:
+                            local_file_path = os.path.join(base_dir, node.name)
+                            self._extract_file(source_path, local_file_path)
+
+                    if progress_callback:
+                        progress_callback(total, total, "Complete")
+                    return True
+
+                self._run_threaded_operation(
+                    extract_multiple_op,
+                    f"Extracting {len(selected_items)} items",
+                    on_success=lambda _: self.statusBar().showMessage("Extraction complete."),
+                    cancelable=False
+                )
+            else:
+                for item in selected_items:
+                    node = item.node
+                    source_path = self._build_full_path(node.name)
+                    if node.is_dir:
+                        local_dir_path = os.path.join(base_dir, node.name)
+                        self._extract_directory(source_path, local_dir_path)
+                    else:
+                        local_file_path = os.path.join(base_dir, node.name)
+                        self._extract_file(source_path, local_file_path)
+                self.statusBar().showMessage("Extraction complete.")
 
     @pyqtSlot()
     def delete_selected_items(self) -> None:
@@ -327,34 +476,82 @@ class FileBrowserApp(QMainWindow):
             msg = f"Are you sure you want to delete '{paths_to_delete[0]}'?"
         else:
             msg = f"Are you sure you want to delete {len(paths_to_delete)} items?"
+
         reply = QMessageBox.question(self, "Confirm Deletion", msg,
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes:
             self.logger.debug("Deletion cancelled by user.")
             return
 
-        failed_paths: List[str] = []
-        for path in paths_to_delete:
-            try:
-                success = self.controller.delete_item_recursive(path)
-                if not success:
-                    failed_paths.append(path)
-                    self.logger.warning(f"Failed to delete item: {path}")
-            except Exception as e:
-                failed_paths.append(path)
-                self.logger.error(f"Error deleting item {path}: {e}", exc_info=True)
-
         current_path = self.current_path
-        self.refresh_filesystem_ui(current_path)
 
-        if not failed_paths:
-            self.statusBar().showMessage(f"Deleted {len(paths_to_delete)} item(s)")
-            self.logger.info(f"Successfully deleted {len(paths_to_delete)} item(s).")
+        # Check if using physical drive
+        is_physical = (self.controller.driver and
+                    self.controller.driver.driver_category == "physical")
+
+        if is_physical:
+            def delete_op(progress_callback=None):
+                failed_paths: List[str] = []
+                total = len(paths_to_delete)
+
+                for idx, path in enumerate(paths_to_delete):
+                    if progress_callback:
+                        progress_callback(idx, total, f"Deleting {os.path.basename(path)}...")
+
+                    try:
+                        success = self.controller.delete_item_recursive(path)
+                        if not success:
+                            failed_paths.append(path)
+                            self.logger.warning(f"Failed to delete item: {path}")
+                    except Exception as e:
+                        failed_paths.append(path)
+                        self.logger.error(f"Error deleting item {path}: {e}", exc_info=True)
+
+                if progress_callback:
+                    progress_callback(total, total, "Complete")
+
+                return failed_paths
+
+            def on_delete_success(failed_paths):
+                self.refresh_filesystem_ui(current_path)
+
+                if not failed_paths:
+                    self.statusBar().showMessage(f"Deleted {len(paths_to_delete)} item(s)")
+                    self.logger.info(f"Successfully deleted {len(paths_to_delete)} item(s).")
+                else:
+                    failed_msg = "Failed to delete:\n" + "\n".join(failed_paths)
+                    QMessageBox.warning(self, "Deletion Failed", failed_msg)
+                    self.statusBar().showMessage(f"Deleted {len(paths_to_delete) - len(failed_paths)} item(s), {len(failed_paths)} failed.")
+                    self.logger.warning(f"Deletion completed with {len(failed_paths)} failures.")
+
+            self._run_threaded_operation(
+                delete_op,
+                f"Deleting {len(paths_to_delete)} item(s)",
+                on_success=on_delete_success,
+                cancelable=False
+            )
         else:
-            failed_msg = "Failed to delete:\n" + "\n".join(failed_paths)
-            QMessageBox.warning(self, "Deletion Failed", failed_msg)
-            self.statusBar().showMessage(f"Deleted {len(paths_to_delete) - len(failed_paths)} item(s), {len(failed_paths)} failed.")
-            self.logger.warning(f"Deletion completed with {len(failed_paths)} failures.")
+            failed_paths: List[str] = []
+            for path in paths_to_delete:
+                try:
+                    success = self.controller.delete_item_recursive(path)
+                    if not success:
+                        failed_paths.append(path)
+                        self.logger.warning(f"Failed to delete item: {path}")
+                except Exception as e:
+                    failed_paths.append(path)
+                    self.logger.error(f"Error deleting item {path}: {e}", exc_info=True)
+
+            self.refresh_filesystem_ui(current_path)
+
+            if not failed_paths:
+                self.statusBar().showMessage(f"Deleted {len(paths_to_delete)} item(s)")
+                self.logger.info(f"Successfully deleted {len(paths_to_delete)} item(s).")
+            else:
+                failed_msg = "Failed to delete:\n" + "\n".join(failed_paths)
+                QMessageBox.warning(self, "Deletion Failed", failed_msg)
+                self.statusBar().showMessage(f"Deleted {len(paths_to_delete) - len(failed_paths)} item(s), {len(failed_paths)} failed.")
+                self.logger.warning(f"Deletion completed with {len(failed_paths)} failures.")
 
     @pyqtSlot()
     def create_directory(self) -> None:
@@ -373,20 +570,56 @@ class FileBrowserApp(QMainWindow):
             self.logger.debug("Create Directory dialog cancelled or no name entered.")
             return
 
-        try:
-            full_path = f"{current_path}/{dir_name}".replace("//", "/")
-            self.logger.info(f"Attempting to create directory: {full_path}")
-            success = self.controller.create_directory(full_path)
-            if success:
+        full_path = f"{current_path}/{dir_name}".replace("//", "/")
+        self.logger.info(f"Attempting to create directory: {full_path}")
+
+        # Check if using physical drive
+        is_physical = (self.controller.driver and
+                    self.controller.driver.driver_category == "physical")
+
+        if is_physical:
+            def create_dir_op(progress_callback=None):
+                if progress_callback:
+                    progress_callback(0, 1, f"Creating {dir_name}...")
+
+                success = self.controller.create_directory(full_path)
+                if not success:
+                    raise Exception(f"Failed to create directory {dir_name}")
+
+                if progress_callback:
+                    progress_callback(1, 1, "Complete")
+
+                return True
+
+            def on_create_success(_):
                 self.refresh_filesystem_ui(current_path)
                 self.statusBar().showMessage(f"Created directory {dir_name} in {current_path}")
                 self.logger.info(f"Successfully created directory: {full_path}")
-            else:
-                QMessageBox.warning(self, "Warning", f"Failed to create directory {dir_name}. It might already exist or name is invalid.")
+
+            def on_create_error(exception):
+                QMessageBox.warning(self, "Warning", str(exception))
                 self.logger.warning(f"Failed to create directory {full_path}.")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create directory: {str(e)}")
-            self.logger.exception(f"Error creating directory {full_path}.")
+
+            self._run_threaded_operation(
+                create_dir_op,
+                f"Creating directory {dir_name}",
+                on_success=on_create_success,
+                on_error=on_create_error,
+                cancelable=False
+            )
+        else:
+            try:
+                success = self.controller.create_directory(full_path)
+                if success:
+                    self.refresh_filesystem_ui(current_path)
+                    self.statusBar().showMessage(f"Created directory {dir_name} in {current_path}")
+                    self.logger.info(f"Successfully created directory: {full_path}")
+                else:
+                    QMessageBox.warning(self, "Warning", f"Failed to create directory {dir_name}. It might already exist or name is invalid.")
+                    self.logger.warning(f"Failed to create directory {full_path}.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to create directory: {str(e)}")
+                self.logger.exception(f"Error creating directory {full_path}.")
 
     @pyqtSlot()
     def add_file(self) -> None:
@@ -403,85 +636,161 @@ class FileBrowserApp(QMainWindow):
             self.logger.debug("Add File dialog cancelled.")
             return
 
-        base_name = os.path.basename(file_path)
-        base_name = self._format_83_filename(base_name)
-        new_name, ok = QInputDialog.getText(self, "File Name",
-                                            "Enter file name (8.3 format):",
-                                            text=base_name)
-        if not ok or not new_name:
-            self.logger.debug("File name input dialog cancelled or no name entered.")
-            return
+        # Use import_multiple_paths with auto_name=False to prompt for name
+        self.import_multiple_paths([file_path], self.current_path, auto_name=False)
 
-        try:
-            self._add_file_to_disk(file_path, new_name, self.current_path)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to add file: {str(e)}")
-            self.logger.exception(f"Error adding file {file_path} to {self.current_path}/{new_name}.")
-
-    @pyqtSlot(str, str, bool)
-    def import_path(self, local_path: str, target_path: str, auto_name: bool) -> None:
+    def import_multiple_paths(self, file_paths: List[str], target_path: str, auto_name: bool = True) -> None:
         """
-        Imports a local file or directory into the disk image.
+        Imports multiple files/directories at once with progress tracking.
+        Can also handle single files.
 
         Args:
-            local_path: The path to the local file or directory.
-            target_path: The target path on the disk image.
-            auto_name: If True, a unique 8.3 name will be generated.
-                       If False for a file, a dialog will ask for the name.
+            file_paths: List of local file/directory paths to import.
+            target_path: Target path on the disk image.
+            auto_name: If True, generates unique names automatically. If False, prompts for name (only works with single file).
         """
-        local_path = os.path.normpath(local_path)
-        self.logger.info(f"Importing local path '{local_path}' to target '{target_path}' (auto_name={auto_name}).")
+        if not file_paths:
+            return
 
-        if os.path.isfile(local_path):
-            if not auto_name:
-                base_name = os.path.basename(local_path)
-                base_name = self._format_83_filename(base_name)
-                new_name, ok = QInputDialog.getText(self, "File Name",
-                                                    f"Enter file name for {base_name} (8.3 format):",
-                                                    text=base_name)
-                if not ok or not new_name:
-                    self.logger.debug("File name input cancelled for non-auto-named import.")
-                    return
-                existing_names = [item['name'].upper() for item in self.controller.list_directory(target_path)]
-                if new_name.upper() in existing_names:
-                    QMessageBox.warning(self, "Warning", f"File '{new_name}' already exists in {target_path}")
-                    self.logger.warning(f"File '{new_name}' already exists, import aborted.")
-                    return
-                try:
-                    self._add_file_to_disk(local_path, new_name, target_path)
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to add file: {str(e)}")
-                    self.logger.exception(f"Error adding specific file {local_path} to {target_path}/{new_name}.")
-            else:
-                original_name = os.path.basename(local_path)
-                new_name = self._generate_unique_83_name(original_name, target_path, is_dir=False)
-                try:
-                    self._add_file_to_disk(local_path, new_name, target_path)
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to add file: {str(e)}")
-                    self.logger.exception(f"Error adding auto-named file {local_path} to {target_path}/{new_name}.")
-        elif os.path.isdir(local_path):
-            original_name = os.path.basename(local_path)
-            if not original_name:
-                QMessageBox.critical(self, "Error", f"Invalid directory name: empty name for path {local_path}")
-                self.logger.error(f"Attempted to import directory with empty name: {local_path}")
+        # Handle single file without auto-naming (interactive mode)
+        if len(file_paths) == 1 and os.path.isfile(file_paths[0]) and not auto_name:
+            local_path = file_paths[0]
+            base_name = os.path.basename(local_path)
+            base_name = self._format_83_filename(base_name)
+            new_name, ok = QInputDialog.getText(
+                self, "File Name",
+                f"Enter file name for {base_name} (8.3 format):",
+                text=base_name
+            )
+            if not ok or not new_name:
+                self.logger.debug("File name input cancelled for import.")
                 return
-            new_dir_name = self._generate_unique_83_name(original_name, target_path, is_dir=True)
-            new_dir_path = f"{target_path}/{new_dir_name}" if target_path != "/" else f"/{new_dir_name}"
-            try:
-                self.logger.info(f"Creating directory '{new_dir_path}' for import from '{local_path}'.")
-                success = self.controller.create_directory(new_dir_path)
-                if not success:
-                    raise Exception("Failed to create directory")
-                for item in os.listdir(local_path):
-                    item_path = os.path.join(local_path, item)
-                    self.import_path(item_path, new_dir_path, auto_name=True)
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to import directory: {str(e)}")
-                self.logger.exception(f"Error importing directory {local_path} to {new_dir_path}.")
 
-        self.refresh_filesystem_ui(target_path)
-        self.statusBar().showMessage(f"Imported '{os.path.basename(local_path)}' to '{target_path}'")
+            existing_names = [item['name'].upper() for item in self.controller.list_directory(target_path)]
+            if new_name.upper() in existing_names:
+                QMessageBox.warning(self, "Warning", f"File '{new_name}' already exists in {target_path}")
+                self.logger.warning(f"File '{new_name}' already exists, import aborted.")
+                return
+
+            # Use the user-provided name instead of auto-generating
+            file_paths_with_names = [(local_path, new_name)]
+        else:
+            # Auto-name mode: generate names for all files
+            file_paths_with_names = []
+            for local_path in file_paths:
+                local_path = os.path.normpath(local_path)
+                if os.path.isfile(local_path):
+                    original_name = os.path.basename(local_path)
+                    new_name = self._generate_unique_83_name(original_name, target_path, is_dir=False)
+                    file_paths_with_names.append((local_path, new_name))
+                elif os.path.isdir(local_path):
+                    original_name = os.path.basename(local_path)
+                    if not original_name:
+                        continue
+                    new_name = self._generate_unique_83_name(original_name, target_path, is_dir=True)
+                    file_paths_with_names.append((local_path, new_name))
+
+        self.logger.info(f"Importing {len(file_paths_with_names)} items to '{target_path}'.")
+
+        # Check if using physical drive
+        is_physical = (self.controller.driver and
+                    self.controller.driver.driver_category == "physical")
+
+        if is_physical:
+            def import_multiple_op(progress_callback=None):
+                total = len(file_paths_with_names)
+
+                for idx, (local_path, dest_name) in enumerate(file_paths_with_names):
+                    if progress_callback:
+                        progress_callback(idx, total, f"Importing {dest_name}...")
+
+                    if os.path.isfile(local_path):
+                        self._add_file_to_disk(local_path, dest_name, target_path)
+
+                    elif os.path.isdir(local_path):
+                        new_dir_path = f"{target_path}/{dest_name}" if target_path != "/" else f"/{dest_name}"
+
+                        success = self.controller.create_directory(new_dir_path)
+                        if not success:
+                            self.logger.error(f"Failed to create directory {dest_name}")
+                            continue
+
+                        # Import directory contents
+                        self._import_directory_recursive(local_path, new_dir_path, progress_callback)
+
+                if progress_callback:
+                    progress_callback(total, total, "Complete")
+                return total
+
+            def on_success(count):
+                self.refresh_filesystem_ui(target_path)
+                item_word = "item" if count == 1 else "items"
+                self.statusBar().showMessage(f"Imported {count} {item_word} to '{target_path}'")
+
+            def on_error(exception):
+                QMessageBox.critical(self, "Error", f"Failed to import items: {str(exception)}")
+                self.logger.exception("Error importing items.")
+
+            item_word = "item" if len(file_paths_with_names) == 1 else "items"
+            self._run_threaded_operation(
+                import_multiple_op,
+                f"Importing {len(file_paths_with_names)} {item_word}",
+                on_success=on_success,
+                on_error=on_error,
+                cancelable=False
+            )
+        else:
+            # Non-physical drives: process synchronously
+            for local_path, dest_name in file_paths_with_names:
+                if os.path.isfile(local_path):
+                    self._add_file_to_disk(local_path, dest_name, target_path)
+                elif os.path.isdir(local_path):
+                    new_dir_path = f"{target_path}/{dest_name}" if target_path != "/" else f"/{dest_name}"
+                    success = self.controller.create_directory(new_dir_path)
+                    if not success:
+                        self.logger.error(f"Failed to create directory {dest_name}")
+                        continue
+
+                    # Import directory contents
+                    items = os.listdir(local_path)
+                    sub_paths = [os.path.join(local_path, item) for item in items]
+                    self.import_multiple_paths(sub_paths, new_dir_path, auto_name=True)
+
+            self.refresh_filesystem_ui(target_path)
+            item_word = "item" if len(file_paths_with_names) == 1 else "items"
+            self.statusBar().showMessage(f"Imported {len(file_paths_with_names)} {item_word} to '{target_path}'")
+
+    def _import_directory_recursive(self, local_path: str, target_path: str, progress_callback=None) -> None:
+        """
+        Helper for recursive directory import from within a worker thread.
+        Does NOT update GUI.
+
+        Args:
+            local_path: Local directory path to import.
+            target_path: Target path on disk image.
+            progress_callback: Optional callback for progress reporting.
+        """
+        dir_name = os.path.basename(local_path)
+        new_name = self._generate_unique_83_name(dir_name, target_path, is_dir=True)
+        new_path = f"{target_path}/{new_name}" if target_path != "/" else f"/{new_name}"
+
+        success = self.controller.create_directory(new_path)
+        if not success:
+            raise Exception(f"Failed to create directory {new_name}")
+
+        items = os.listdir(local_path)
+        total_items = len(items)
+
+        for idx, item in enumerate(items):
+            if progress_callback:
+                progress_callback(idx, total_items, f"Importing {item}...")
+
+            item_path = os.path.join(local_path, item)
+            if os.path.isfile(item_path):
+                item_name = self._generate_unique_83_name(os.path.basename(item_path), new_path, is_dir=False)
+                self._add_file_to_disk(item_path, item_name, new_path)
+            elif os.path.isdir(item_path):
+                self._import_directory_recursive(item_path, new_path)
 
     @pyqtSlot()
     def save_file(self) -> bool:
@@ -494,32 +803,68 @@ class FileBrowserApp(QMainWindow):
         success = False
         if self.current_file_path and self.text_editor_modified:
             self.logger.info(f"Saving changes to {self.current_file_path}")
+
             try:
                 current_text = self.text_viewer.toPlainText()
-                # Normalize line endings to CR+LF for DOS/CP/M compatibility
                 normalized_text = current_text.replace('\n', '\r\n')
 
                 content_bytes = b''
                 fs_type = self.controller.filesystem.get_display_info().get("Filesystem Type", "Unknown")
 
                 if fs_type == "CP/M":
-                    # For CP/M, strip high bit as often 7-bit ASCII is expected
                     content_bytes = bytes([b & 0x7F for b in normalized_text.encode('ascii', errors='replace')])
-                else:  # Default to FAT/MS-DOS style (CP437)
+                else:
                     content_bytes = normalized_text.encode('cp437', errors='replace')
 
-                if self.controller.write_file(self.current_file_path, content_bytes):
-                    self.statusBar().showMessage(f"Saved changes to {os.path.basename(self.current_file_path)}")
-                    self.original_text_content = current_text
-                    self.text_editor_modified = False
-                    self.save_button.setEnabled(False)
-                    self.discard_button.setEnabled(False)
-                    self.refresh_filesystem_ui(preserve_path=self.current_path)
+                # Check if using physical drive
+                is_physical = (self.controller.driver and
+                            self.controller.driver.driver_category == "physical")
+
+                if is_physical:
+                    file_path = self.current_file_path
+                    current_path = self.current_path
+
+                    def save_op():
+                        if not self.controller.write_file(file_path, content_bytes):
+                            raise Exception("Write operation failed")
+                        return current_text
+
+                    def on_save_success(saved_text):
+                        self.statusBar().showMessage(f"Saved changes to {os.path.basename(file_path)}")
+                        self.original_text_content = saved_text
+                        self.text_editor_modified = False
+                        self.save_button.setEnabled(False)
+                        self.discard_button.setEnabled(False)
+                        self.refresh_filesystem_ui(preserve_path=current_path)
+                        self.logger.info(f"Successfully saved {file_path}")
+
+                    def on_save_error(exception):
+                        QMessageBox.warning(self, "Save Failed", f"Could not write changes: {str(exception)}")
+                        self.logger.warning(f"Failed to write file data for {file_path}")
+
+                    self._run_threaded_operation(
+                        save_op,
+                        f"Saving {os.path.basename(file_path)}",
+                        on_success=on_save_success,
+                        on_error=on_save_error,
+                        cancelable=False
+                    )
+                    # For threaded operation, return True immediately as the operation is queued
                     success = True
-                    self.logger.info(f"Successfully saved {self.current_file_path}")
                 else:
-                    QMessageBox.warning(self, "Save Failed", f"Could not write changes to {self.current_file_path}")
-                    self.logger.warning(f"Failed to write file data for {self.current_file_path}")
+                    if self.controller.write_file(self.current_file_path, content_bytes):
+                        self.statusBar().showMessage(f"Saved changes to {os.path.basename(self.current_file_path)}")
+                        self.original_text_content = current_text
+                        self.text_editor_modified = False
+                        self.save_button.setEnabled(False)
+                        self.discard_button.setEnabled(False)
+                        self.refresh_filesystem_ui(preserve_path=self.current_path)
+                        success = True
+                        self.logger.info(f"Successfully saved {self.current_file_path}")
+                    else:
+                        QMessageBox.warning(self, "Save Failed", f"Could not write changes to {self.current_file_path}")
+                        self.logger.warning(f"Failed to write file data for {self.current_file_path}")
+
             except UnicodeEncodeError as e:
                 QMessageBox.critical(self, "Encoding Error", f"Text contains characters not supported by the target encoding: {e}")
                 self.logger.error(f"Encoding error when saving {self.current_file_path}: {e}")
@@ -625,48 +970,55 @@ class FileBrowserApp(QMainWindow):
 
     @pyqtSlot()
     def view_file_content(self) -> None:
-        """
-        Views the selected file in either text editor or hex viewer.
-        Clears the other viewer to ensure only one file is displayed at a time.
-        """
+        """Views the selected file - threaded for physical drives."""
         selected_items = self.file_list.selectedItems()
         if len(selected_items) != 1:
             QMessageBox.information(self, "Info", "Please select a single file to view.")
             return
 
         item = selected_items[0]
-
         if not hasattr(item, 'node'):
             QMessageBox.warning(self, "Warning", "Invalid item selected.")
             return
 
         node: FileSystemNode = item.node
-
         if node.is_dir:
             QMessageBox.information(self, "Info", "Cannot view directory contents.")
             return
 
         file_path = self._build_full_path(node.name)
 
-        try:
-            content_bytes = self.controller.read_file(file_path)
-            if content_bytes is None:
-                QMessageBox.warning(self, "Warning", f"Could not read file: {node.name}")
-                return
+        # Check if using physical drive
+        is_physical = (self.controller.driver and
+                    self.controller.driver.driver_category == "physical")
 
-            # Determine if file is text or binary
-            if self._is_text_file(content_bytes):
-                # Clear hex viewer and load text editor
-                self._clear_hex_viewer_state()
-                self._load_text_editor(file_path, node.name, content_bytes)
-            else:
-                # Clear text editor and load hex viewer
-                self._clear_text_viewer_state()
-                self._load_hex_viewer(file_path, node.name, content_bytes)
+        if is_physical:
+            # Thread the operation
+            def on_read_success(content_bytes):
+                if self._is_text_file(content_bytes):
+                    self._clear_hex_viewer_state()
+                    self._load_text_editor(file_path, node.name, content_bytes)
+                else:
+                    self._clear_text_viewer_state()
+                    self._load_hex_viewer(file_path, node.name, content_bytes)
 
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error reading file: {str(e)}")
-            self.logger.exception(f"Error reading file {file_path} for viewing.")
+            self._read_file_threaded(file_path, on_read_success)
+        else:
+            # Direct read for image files (fast enough)
+            try:
+                content_bytes = self.controller.read_file(file_path)
+                if content_bytes is None:
+                    QMessageBox.warning(self, "Warning", f"Could not read file: {node.name}")
+                    return
+
+                if self._is_text_file(content_bytes):
+                    self._clear_hex_viewer_state()
+                    self._load_text_editor(file_path, node.name, content_bytes)
+                else:
+                    self._clear_text_viewer_state()
+                    self._load_hex_viewer(file_path, node.name, content_bytes)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Error reading file: {str(e)}")
 
     # ##################################################################
     # Private UI Setup Methods
@@ -1836,28 +2188,40 @@ class FileBrowserApp(QMainWindow):
         self._save_window_state()
         event.accept()
 
-    def _extract_directory(self, source_dir_path: str, local_dir_path: str) -> None:
+    def _extract_directory(self, source_dir_path: str, local_dir_path: str, progress_callback=None) -> None:
         """
         Recursively extracts a directory and its contents from the disk image.
 
         Args:
             source_dir_path: The full path to the directory on the disk image.
             local_dir_path: The full path to create the directory locally.
+            progress_callback: Optional callback for progress reporting.
         """
         try:
             self.logger.info(f"Extracting directory '{source_dir_path}' to '{local_dir_path}'.")
             os.makedirs(local_dir_path, exist_ok=True)
             items = self.controller.list_directory(source_dir_path)
+
+            total_items = len([i for i in items if i["name"] not in [".", ".."]])
+            current_item = 0
+
             for item in items:
                 item_name = item["name"]
                 if item_name in [".", ".."]:
                     continue
+
+                if progress_callback:
+                    progress_callback(current_item, total_items, f"Extracting {item_name}...")
+
                 item_source_path = os.path.normpath(os.path.join(source_dir_path, item_name))
                 item_local_path = os.path.join(local_dir_path, item_name)
                 if item["is_dir"]:
                     self._extract_directory(item_source_path, item_local_path)
                 else:
                     self._extract_file(item_source_path, item_local_path)
+
+                current_item += 1
+
             self.logger.info(f"Successfully extracted directory {source_dir_path}.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to extract directory {source_dir_path}: {str(e)}")
@@ -1942,6 +2306,7 @@ class FileBrowserApp(QMainWindow):
     def _add_file_to_disk(self, file_path: str, dest_name: str, dest_path: str) -> None:
         """
         Internal helper to read a local file and write it to the disk image.
+        Does NOT refresh UI - caller is responsible for that.
 
         Args:
             file_path: Path to the local file.
@@ -1954,13 +2319,9 @@ class FileBrowserApp(QMainWindow):
 
         full_path = os.path.normpath(f"{dest_path}/{dest_name}")
         success = self.controller.write_file(full_path, file_data)
-        if success:
-            self.refresh_filesystem_ui(dest_path)
-            self.statusBar().showMessage(f"Added file {dest_name} to {dest_path}")
-            self.logger.info(f"Successfully added file {dest_name}.")
-        else:
-            QMessageBox.warning(self, "Warning", f"Failed to add file {dest_name}")
-            self.logger.warning(f"Failed to add file {dest_name} to {dest_path}.")
+        if not success:
+            raise Exception(f"Failed to write file {dest_name}")
+        self.logger.info(f"Successfully added file {dest_name}.")
 
     def _generate_unique_83_name(self, original_name: str, target_path: str, is_dir: bool) -> str:
         """
@@ -2242,6 +2603,75 @@ class FileBrowserApp(QMainWindow):
             self.save_button.setEnabled(False)
             self.discard_button.setEnabled(False)
             self.logger.debug("Text editor changed, but no original content set.")
+
+    def _run_threaded_operation(
+        self,
+        operation: Callable,
+        operation_name: str,
+        on_success: Optional[Callable] = None,
+        on_error: Optional[Callable] = None,
+        cancelable: bool = False,
+        *args,
+        **kwargs
+    ) -> None:
+        """
+        Run a disk operation in a background thread with progress dialog.
+
+        Args:
+            operation: The function to run in background
+            operation_name: Name for progress dialog
+            on_success: Callback for successful completion (receives result)
+            on_error: Callback for errors (receives exception)
+            cancelable: Whether operation can be cancelled
+            *args, **kwargs: Arguments for the operation
+        """
+        from .worker import DiskOperationWorker
+        from .progress_dialog import ProgressDialog
+
+        # Create progress dialog
+        progress = ProgressDialog(
+            title=operation_name,
+            message=f"{operation_name}...",
+            cancelable=cancelable,
+            parent=self
+        )
+
+        # Create worker thread
+        worker = DiskOperationWorker(operation, *args, **kwargs)
+
+        # Connect signals
+        worker.progress.connect(progress.update_progress)
+
+        def on_finished(result):
+            progress.accept()
+            if on_success:
+                on_success(result)
+
+        def on_worker_error(exception):
+            progress.reject()
+            if on_error:
+                on_error(exception)
+            else:
+                # Default error handling
+                QMessageBox.critical(
+                    self, "Error",
+                    f"{operation_name} failed: {str(exception)}"
+                )
+                self.logger.exception(f"Threaded operation '{operation_name}' failed")
+
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_worker_error)
+
+        # Handle cancellation
+        if cancelable:
+            progress.rejected.connect(worker.cancel)
+
+        # Start worker and show progress
+        worker.start()
+        progress.exec()
+
+        # Wait for thread to finish (important!)
+        worker.wait()
 
     def _load_text_editor(self, file_path: str, filename: str, content_bytes: bytes) -> None:
         """Loads file content into the text editor."""

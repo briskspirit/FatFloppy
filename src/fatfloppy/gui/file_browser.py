@@ -279,10 +279,7 @@ class DragDropTreeWidget(QTreeWidget):
 
         current_path = self.parent_widget.current_path
 
-        # If a single file is dropped, import it directly without auto-naming.
-        if len(file_paths) == 1 and os.path.isfile(file_paths[0]):
-            self.parent_widget.import_path(file_paths[0], current_path, auto_name=False)
-        else:
-            # For multiple files/folders, use auto-naming for each item.
-            for file_path in file_paths:
-                self.parent_widget.import_path(file_path, current_path, auto_name=True)
+        # If a single file is dropped, import it without auto-naming (prompts user).
+        # For multiple files/folders, use auto-naming.
+        auto_name = not (len(file_paths) == 1 and os.path.isfile(file_paths[0]))
+        self.parent_widget.import_multiple_paths(file_paths, current_path, auto_name=auto_name)
