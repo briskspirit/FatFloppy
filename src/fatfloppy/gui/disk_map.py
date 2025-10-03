@@ -35,7 +35,10 @@ class ResizableGraphicsView(QGraphicsView):
 
 class DiskMapView:
     """
-    Manages the visualization of a floppy disk's physical layout.
+    Manages the visualization of a floppy disk's logical layout.
+
+    Sectors are drawn sequentially (0, 1, 2, ...) around the disk,
+    representing the logical block addressing scheme.
     """
 
     def __init__(self, parent: QWidget) -> None:
@@ -101,12 +104,12 @@ class DiskMapView:
 
         # Add "Selected File" to legend if we have a selection
         if self._selected_units and layout_info.get('legend'):
-            layout_info['legend'].insert(0, ("Selected File", "#FFD700"))
+            layout_info['legend'].insert(0, ("Selected File", "#00FF00"))
 
         self._draw_legend(layout_info, app_font, text_color)
         self._draw_stats(current_head, free_space, total_space, app_font, text_color)
         self._draw_sectors(geometry, current_head, layout_info)
-        self._draw_physical_layout_note(app_font, text_color)
+        self._draw_logical_layout_note(app_font, text_color)
 
     # ##################################################################
     # Private Drawing Helper Methods
@@ -158,12 +161,12 @@ class DiskMapView:
             text_item.setPos(center_x, center_y)
         self.scene.addItem(text_item)
 
-    def _draw_physical_layout_note(self, font: QFont, color: QColor) -> None:
-        """Draws a note explaining this is the physical disk layout."""
+    def _draw_logical_layout_note(self, font: QFont, color: QColor) -> None:
+        """Draws a note explaining this is the logical disk layout."""
         note_x = self.view.width() - 10
         note_y = self.view.height() - 15
 
-        note_text = "Physical disk layout (sectors may appear non-sequential due to interleaving)"
+        note_text = "Logical disk layout (sectors numbered sequentially 0, 1, 2, ...)"
         text_item = QGraphicsSimpleTextItem(note_text)
 
         # Use a smaller font for the note
@@ -188,13 +191,23 @@ class DiskMapView:
         self._draw_message("No disk loaded or geometry unknown", font, color)
 
     def _draw_sectors(self, geometry: Any, current_head: int, layout_info: Dict[str, Any]) -> None:
-        """Draws the cylinders and sectors of the disk."""
+        """Draws the cylinders and sectors of the disk in logical order."""
         view_width, view_height = self.view.width(), self.view.height()
         x0, y0 = view_width / 2, view_height / 2
         r_min = min(view_width, view_height) * 0.1
         r_max = min(view_width, view_height) * 0.45
         num_cylinders = max(1, geometry.cylinders)
-        use_lba_for_color = not geometry.has_variable_bps
+
+        # Calculate starting LBA for this head
+        starting_lba = 0
+        for c in range(num_cylinders):
+            for h in range(current_head):
+                try:
+                    starting_lba += geometry.get_sectors_per_track(c, h)
+                except ValueError:
+                    pass
+
+        current_lba = starting_lba
 
         for c in range(num_cylinders):
             try:
@@ -210,9 +223,11 @@ class DiskMapView:
 
             for i in range(sectors_per_track):
                 self._draw_single_sector(
-                    c, current_head, i, sectors_per_track, angle_per_sector_deg,
-                    r_inner, r_outer, x0, y0, geometry, layout_info, use_lba_for_color
+                    c, current_head, i, current_lba, sectors_per_track,
+                    angle_per_sector_deg, r_inner, r_outer, x0, y0,
+                    geometry, layout_info
                 )
+                current_lba += 1
 
             # Draw radial lines separating sectors
             for sector_idx in range(sectors_per_track):
@@ -243,23 +258,37 @@ class DiskMapView:
             self.scene.addItem(index_hole)
 
     def _draw_single_sector(
-        self, c: int, h: int, i: int, sectors_per_track: int, angle_per_sector_deg: float,
-        r_inner: float, r_outer: float, x0: float, y0: float, geometry: Any,
-        layout_info: Dict[str, Any], use_lba_for_color: bool
+        self, c: int, h: int, logical_index: int, lba: int, sectors_per_track: int,
+        angle_per_sector_deg: float, r_inner: float, r_outer: float, x0: float,
+        y0: float, geometry: Any, layout_info: Dict[str, Any]
     ) -> None:
-        """Draws a single sector polygon with color and tooltip."""
-        lba = -1
-        sector_num = i + 1  # Assuming sectors are 1-based for CHS
+        """
+        Draws a single sector polygon with color and tooltip.
 
+        Args:
+            c: Cylinder number
+            h: Head number
+            logical_index: Logical position on this track (0-based)
+            lba: The logical block address of this sector
+            sectors_per_track: Number of sectors on this track
+            angle_per_sector_deg: Angle per sector in degrees
+            r_inner, r_outer: Inner and outer radii
+            x0, y0: Center coordinates
+            geometry: Physical format object
+            layout_info: Layout information dictionary
+        """
         try:
-            if use_lba_for_color:
-                lba = geometry.chs_to_lba(c, h, sector_num)
+            # Get physical sector ID for tooltip/debugging
+            track_format = geometry.get_track_format(c, h)
+            physical_sector_id = track_format.logical_to_physical_sector(logical_index)
 
-            color_hex = self._get_sector_color(lba, c, h, sector_num, layout_info, use_lba_for_color)
+            # Get color based on LBA
+            color_hex = self._get_sector_color(lba, layout_info)
             color = QColor(color_hex)
 
-            theta_start = math.radians(i * angle_per_sector_deg)
-            theta_end = math.radians((i + 1) * angle_per_sector_deg)
+            # Draw the sector wedge
+            theta_start = math.radians(logical_index * angle_per_sector_deg)
+            theta_end = math.radians((logical_index + 1) * angle_per_sector_deg)
 
             inner_points = DiskMapView.generate_arc_points(x0, y0, r_inner, theta_start, theta_end, 20)
             outer_points = DiskMapView.generate_arc_points(x0, y0, r_outer, theta_end, theta_start, 20)
@@ -269,21 +298,14 @@ class DiskMapView:
             polygon.setPen(QPen(Qt.GlobalColor.black, 0.5))
 
             # Create tooltip
-            tooltip = self._create_sector_tooltip(lba, c, h, sector_num, layout_info, use_lba_for_color)
+            tooltip = self._create_sector_tooltip(lba, c, h, physical_sector_id, layout_info)
             polygon.setToolTip(tooltip)
 
             self.scene.addItem(polygon)
 
-        except ValueError as e:
-            app_logger = self._get_app_logger()
-            log_msg = f"Error getting LBA for C:{c} H:{h} S:{sector_num}: {e}"
-            if app_logger:
-                app_logger.error(log_msg)
-            else:
-                logger.error(log_msg)
         except Exception as e:
             app_logger = self._get_app_logger()
-            log_msg = f"Error drawing sector C:{c} H:{h} S:{sector_num}: {e}"
+            log_msg = f"Error drawing sector C:{c} H:{h} logical:{logical_index} LBA:{lba}: {e}"
             if app_logger:
                 app_logger.error(log_msg, exc_info=True)
             else:
@@ -294,26 +316,25 @@ class DiskMapView:
         lba: int,
         cylinder: int,
         head: int,
-        sector: int,
-        layout_info: Optional[Dict[str, Any]],
-        use_lba: bool
+        physical_sector_id: int,
+        layout_info: Optional[Dict[str, Any]]
     ) -> str:
         """
         Creates a tooltip string for a sector showing its location and purpose.
 
         Args:
             lba: The logical block address of the sector.
-            cylinder, head, sector: The CHS address of the sector.
+            cylinder, head: The CH address of the sector.
+            physical_sector_id: The physical sector ID on the track.
             layout_info: Dictionary containing filesystem layout details.
-            use_lba: Flag indicating if LBA addressing is used.
 
         Returns:
             A formatted tooltip string.
         """
-        tooltip_parts = [f"C:{cylinder} H:{head} S:{sector}"]
-
-        if lba >= 0:
-            tooltip_parts.append(f"LBA: {lba}")
+        tooltip_parts = [
+            f"LBA: {lba}",
+            f"C:{cylinder} H:{head} PhysSec:{physical_sector_id}"
+        ]
 
         # Determine sector type and allocation unit
         allocation_unit = None
@@ -323,32 +344,19 @@ class DiskMapView:
             allocation_unit_size = layout_info.get('allocation_unit_size_sectors', 1)
             first_data_sector = layout_info.get('first_data_sector', 0)
 
-            # Get sector type
-            if use_lba:
-                get_type_func = layout_info.get('get_sector_type')
-                if get_type_func:
-                    try:
-                        sector_type = get_type_func(lba)
-                        type_color_map = layout_info.get('type_color_map', {})
-                        # Reverse lookup the type description from color map
-                        for desc, color in layout_info.get('legend', []):
-                            if type_color_map.get(sector_type) == color:
-                                sector_type_desc = desc
-                                break
-                    except Exception:
-                        pass
-            else:
-                get_type_chs_func = layout_info.get('get_sector_type_chs')
-                if get_type_chs_func:
-                    try:
-                        sector_type = get_type_chs_func(cylinder, head, sector)
-                        type_color_map = layout_info.get('type_color_map', {})
-                        for desc, color in layout_info.get('legend', []):
-                            if type_color_map.get(sector_type) == color:
-                                sector_type_desc = desc
-                                break
-                    except Exception:
-                        pass
+            # Get sector type using LBA
+            get_type_func = layout_info.get('get_sector_type')
+            if get_type_func:
+                try:
+                    sector_type = get_type_func(lba)
+                    type_color_map = layout_info.get('type_color_map', {})
+                    # Reverse lookup the type description from legend
+                    for desc, color in layout_info.get('legend', []):
+                        if type_color_map.get(sector_type) == color:
+                            sector_type_desc = desc
+                            break
+                except Exception:
+                    pass
 
             # Calculate allocation unit number if in data area
             if lba >= first_data_sector and allocation_unit_size > 0:
@@ -409,33 +417,26 @@ class DiskMapView:
     def _get_sector_color(
         self,
         lba: int,
-        cylinder: int,
-        head: int,
-        sector: int,
-        layout_info: Optional[Dict[str, Any]],
-        use_lba: bool
+        layout_info: Optional[Dict[str, Any]]
     ) -> str:
         """
-        Determines the color hex string for a sector based on its type.
+        Determines the color hex string for a sector based on its type and LBA.
 
         Args:
             lba: The logical block address of the sector.
-            cylinder, head, sector: The CHS address of the sector.
             layout_info: Dictionary containing filesystem layout details.
-            use_lba: Flag to determine if LBA or CHS should be used for lookup.
 
         Returns:
             The hex color code for the sector.
         """
         default_color = "#BEBEBE"
         error_color = "#8B0000"
-        selected_file_color = "#00FF00"  # Gold for selected file
+        selected_file_color = "#00FF00"  # Green for selected file
 
         if not layout_info:
             return default_color
 
         type_color_map: Dict[str, str] = layout_info.get('type_color_map', {})
-        sector_type = "unknown"
 
         try:
             # First, check if this sector belongs to the selected file
@@ -450,20 +451,16 @@ class DiskMapView:
                         return selected_file_color
 
             # Otherwise, use normal sector type coloring
-            if use_lba:
-                get_type_func: Optional[Callable[[int], str]] = layout_info.get('get_sector_type')
-                if get_type_func:
-                    sector_type = get_type_func(lba)
-            else:
-                get_type_chs_func: Optional[Callable[[int, int, int], str]] = layout_info.get('get_sector_type_chs')
-                if get_type_chs_func:
-                    sector_type = get_type_chs_func(cylinder, head, sector)
+            get_type_func: Optional[Callable[[int], str]] = layout_info.get('get_sector_type')
+            if get_type_func:
+                sector_type = get_type_func(lba)
+                return type_color_map.get(sector_type, default_color)
 
-            return type_color_map.get(sector_type, default_color)
+            return default_color
 
         except Exception as e:
             app_logger = self._get_app_logger()
-            log_msg = f"Error getting sector color for LBA {lba} / CHS {cylinder},{head},{sector}: {e}"
+            log_msg = f"Error getting sector color for LBA {lba}: {e}"
             if app_logger:
                 app_logger.error(log_msg)
             else:

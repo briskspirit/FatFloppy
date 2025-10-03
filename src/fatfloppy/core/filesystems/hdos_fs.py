@@ -774,6 +774,7 @@ class HDOSFilesystem(Filesystem):
             'legend': legend,
             'get_sector_type': get_sector_type,
             'allocation_unit_size_sectors': sectors_per_group,
+            'first_data_sector': data_area_start_lba,
             'type_color_map': type_map
         }
 

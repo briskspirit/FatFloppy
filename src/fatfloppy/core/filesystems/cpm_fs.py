@@ -471,64 +471,85 @@ class CPMFilesystem(Filesystem):
     def get_disk_map_layout(self) -> Dict[str, Any]:
         """
         Provides data for visualizing the disk layout.
-
-        Returns:
-            A dictionary containing legend information and callback functions
-            to determine the type of each sector on the disk.
         """
         if not self.dpb or not self.disk or not self.disk.physical_format or not self._init_completed:
             return {}
 
         allocated_data_blocks = self.get_allocated_units()
 
-        def get_cpm_sector_type_chs(cylinder: int, head: int, sector: int) -> str:
-            """Determines sector type based on CHS coordinates."""
-            if self.disk.physical_format.heads > 1:
-                cpm_track = cylinder * self.disk.physical_format.heads + head
-            else:
-                cpm_track = cylinder
+        # Calculate first data sector (in LBA)
+        reserved_logical_sectors = 0
+        for t in range(self.dpb.off):
+            reserved_logical_sectors += self._get_logical_spt(t)
 
-            if cpm_track < self.dpb.off:
-                return "system"
-
-            track_format = self.disk.physical_format.get_track_format(cylinder, head)
-            if not track_format.sector_translation_table:
-                return "unknown"
-
-            try:
-                logical_sector_order_on_track = track_format.sector_translation_table.index(sector)
-            except ValueError:
-                return "unknown"
-
-            global_logical_sector_count = 0
-            for t in range(cpm_track):
-                global_logical_sector_count += self._get_logical_spt(t)
-            global_logical_sector_count += logical_sector_order_on_track
-
-            dir_logical_sectors = ((self.dpb.drm + 1) * 32) // CPM_SECTOR_SIZE
-            reserved_logical_sectors = 0
-            for t in range(self.dpb.off):
-                reserved_logical_sectors += self._get_logical_spt(t)
-
-            if global_logical_sector_count < reserved_logical_sectors + dir_logical_sectors:
-                return "directory"
-
-            data_logical_sector_offset = global_logical_sector_count - (reserved_logical_sectors + dir_logical_sectors)
-            if self.dpb.block_size == 0:
-                return "data_free"
-
-            logical_sectors_per_block = self.dpb.block_size // CPM_SECTOR_SIZE
-            cpm_alloc_block_num = data_logical_sector_offset // logical_sectors_per_block if logical_sectors_per_block > 0 else 0
-
-            return "data_used" if cpm_alloc_block_num in allocated_data_blocks else "data_free"
+        dir_logical_sectors = ((self.dpb.drm + 1) * 32) // CPM_SECTOR_SIZE
+        first_data_sector = reserved_logical_sectors + dir_logical_sectors
 
         def get_cpm_sector_type_lba(phys_lba: int) -> str:
-            """Determines sector type based on LBA address."""
+            """
+            Determines sector type based on LBA address.
+
+            For variable sector size disks, we can't use lba_to_chs(), so we
+            manually walk through tracks to find which logical sector this LBA represents.
+            """
             try:
-                cylinder, head, sector = self.disk.physical_format.lba_to_chs(phys_lba)
-                return get_cpm_sector_type_chs(cylinder, head, sector)
+                # Walk through all tracks to find which logical 128-byte sector this LBA corresponds to
+                logical_sector_count = 0
+
+                for cpm_track in range(self.disk.physical_format.cylinders * self.disk.physical_format.heads):
+                    # Convert CPM track to physical cylinder/head
+                    if self.disk.physical_format.heads > 1:
+                        phys_cyl = cpm_track // self.disk.physical_format.heads
+                        phys_head = cpm_track % self.disk.physical_format.heads
+                    else:
+                        phys_cyl = cpm_track
+                        phys_head = 0
+
+                    # Get track format and calculate logical sectors on this track
+                    try:
+                        track_format = self.disk.physical_format.get_track_format(phys_cyl, phys_head)
+                    except ValueError:
+                        continue
+
+                    # Calculate how many logical 128-byte sectors are on this physical track
+                    logical_spt = self._get_logical_spt(cpm_track)
+
+                    # Check if our LBA falls within this track's range
+                    track_start_lba = logical_sector_count
+                    track_end_lba = logical_sector_count + logical_spt
+
+                    if track_start_lba <= phys_lba < track_end_lba:
+                        # Found the track! Now determine sector type
+
+                        # System tracks?
+                        if cpm_track < self.dpb.off:
+                            return "system"
+
+                        # Directory?
+                        if phys_lba < reserved_logical_sectors + dir_logical_sectors:
+                            return "directory"
+
+                        # Data area - calculate block number
+                        data_logical_sector_offset = phys_lba - (reserved_logical_sectors + dir_logical_sectors)
+
+                        if self.dpb.block_size == 0:
+                            return "data_free"
+
+                        logical_sectors_per_block = self.dpb.block_size // CPM_SECTOR_SIZE
+                        if logical_sectors_per_block == 0:
+                            return "data_free"
+
+                        cpm_alloc_block_num = data_logical_sector_offset // logical_sectors_per_block
+
+                        return "data_used" if cpm_alloc_block_num in allocated_data_blocks else "data_free"
+
+                    logical_sector_count += logical_spt
+
+                # LBA is beyond the end of the disk
+                return "unknown"
+
             except Exception as e:
-                self.logger.error(f"Error converting LBA {phys_lba} to CHS for disk map: {e}")
+                self.logger.error(f"Error determining sector type for LBA {phys_lba}: {e}")
                 return "unknown"
 
         legend_colors = {
@@ -556,9 +577,9 @@ class CPMFilesystem(Filesystem):
 
         return {
             'legend': legend,
-            'get_sector_type_chs': get_cpm_sector_type_chs,
             'get_sector_type': get_cpm_sector_type_lba,
             'allocation_unit_size_sectors': alloc_unit_phys_sectors,
+            'first_data_sector': first_data_sector,
             'type_color_map': type_map
         }
 
