@@ -1,1 +1,1 @@
-pytest -v software/
+pytest -s -v software/

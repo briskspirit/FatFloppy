@@ -98,11 +98,21 @@ class GreaseweazleFormatDetector(FormatDetector):
 
                     self.disk.set_geometry(self.driver.physical_format)
 
-            # Restore original settings
-            self.driver.fmt_cls = original_fmt_cls
-            self.driver.using_custom_diskdef = original_custom
-            if self.driver.fmt_cls and self.driver.using_custom_diskdef:
-                self.driver._create_and_set_custom_diskdef()
+                    # IMPORTANT: Create a NEW diskdef based on refined geometry
+                    # Don't restore the old one!
+                    self.driver._create_and_set_custom_diskdef()
+                else:
+                    # No geometry change - restore original settings
+                    self.driver.fmt_cls = original_fmt_cls
+                    self.driver.using_custom_diskdef = original_custom
+                    if self.driver.fmt_cls and self.driver.using_custom_diskdef:
+                        self.driver._create_and_set_custom_diskdef()
+            else:
+                # Scan failed - restore original settings
+                self.driver.fmt_cls = original_fmt_cls
+                self.driver.using_custom_diskdef = original_custom
+                if self.driver.fmt_cls and self.driver.using_custom_diskdef:
+                    self.driver._create_and_set_custom_diskdef()
 
         except Exception as e:
             self.logger.error(f"Track scan failed: {e}")
@@ -152,8 +162,19 @@ class GreaseweazleFormatDetector(FormatDetector):
         """Finds the first matching profile from the filtered list."""
         original_format = copy.deepcopy(self.disk.physical_format) if self.disk.physical_format else None
 
+        # Get detected sectors per track to prioritize matching profiles
+        detected_spt = original_format.track_formats[0].sectors_per_track if original_format else None
+
+        # Sort profiles: exact SPT matches first, then others
+        if detected_spt:
+            profiles = sorted(profiles, key=lambda p: (
+                p.physical_format.track_formats[0].sectors_per_track != detected_spt,
+                p.name
+            ))
+            self.logger.debug(f"Prioritizing profiles matching detected SPT={detected_spt}")
+
         for profile in profiles:
-            self.logger.debug(f"Trying profile: {profile.name}")
+            self.logger.debug(f"Trying profile: {profile.name} (SPT={profile.physical_format.track_formats[0].sectors_per_track})")
             self.disk.set_geometry(profile.physical_format)
 
             try:
@@ -196,7 +217,7 @@ class GreaseweazleFormatDetector(FormatDetector):
             except Exception as e:
                 self.logger.debug(f"Profile {profile.name} failed: {e}")
 
-            # Restore state
+            # Restore state after failed match
             if original_format:
                 self.disk.set_geometry(original_format)
 
