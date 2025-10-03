@@ -935,21 +935,6 @@ class CPMFilesystem(Filesystem):
             sectors_remaining -= spt_for_current_track
             current_track += 1
 
-    def _build_physical_sector_order_for_tf(self, tf: Any) -> List[int]:
-        """Builds a sector translation table based on interleave."""
-        spt = tf.sectors_per_track
-        inter = tf.interleave if getattr(tf, "interleave", 1) and tf.interleave > 0 else 1
-        start = getattr(tf, "id_start", 1)
-        order, used, idx = [], [False] * spt, 0
-        for i in range(spt):
-            order.append(start + idx)
-            used[idx] = True
-            if i < spt - 1:
-                idx = (idx + inter) % spt
-                while used[idx]:
-                    idx = (idx + 1) % spt
-        return order
-
     def _cpm_track_to_chs_coords(self, cpm_track: int) -> Tuple[int, int]:
         """Converts a linear CP/M track number to physical CHS coordinates."""
         if not self.disk.physical_format:
@@ -958,17 +943,6 @@ class CPMFilesystem(Filesystem):
         cylinder = cpm_track // heads
         head = cpm_track % heads
         return cylinder, head
-
-    def _ensure_sector_translation_tables(self) -> None:
-        """Ensures all track formats have a sector translation table."""
-        if not self.disk or not self.disk.physical_format:
-            return
-        pf = self.disk.physical_format
-        for c in range(pf.cylinders):
-            for h in range(pf.heads):
-                tf = pf.get_track_format(c, h)
-                if not getattr(tf, "sector_translation_table", None):
-                    tf.sector_translation_table = self._build_physical_sector_order_for_tf(tf)
 
     def _format_entry_to_bytes(self, entry: CPMDirectoryEntry) -> bytes:
         """Serializes a CPMDirectoryEntry object into a 32-byte array."""
@@ -1046,7 +1020,6 @@ class CPMFilesystem(Filesystem):
         """Initializes filesystem parameters and prerequisite data."""
         if not self.dpb:
             raise ValueError("DPB not set for initialization.")
-        self._ensure_sector_translation_tables()
 
     def _load_allocation_map(self) -> None:
         """Builds a set of all used block numbers by scanning the directory."""

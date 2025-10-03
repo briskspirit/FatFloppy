@@ -32,7 +32,8 @@ class TrackFormat:
         bytes_per_sector: The size of each sector in bytes. Inherits from
                           PhysicalFormat if not specified.
         sector_translation_table: An optional explicit mapping of logical to
-                                  physical sector IDs.
+                                  physical sector IDs. If None, will be auto-generated
+                                  from interleave during __post_init__.
         id_start: The starting sector ID number (usually 0 or 1).
         iam_present: Whether an Index Address Mark is present.
         gap1_bytes, gap2_bytes, gap3_bytes: Optional gap sizes in bytes.
@@ -55,6 +56,82 @@ class TrackFormat:
     gap3_bytes: Optional[int] = None
     cskew: Optional[int] = None
     hskew: Optional[int] = None
+
+    def __post_init__(self):
+        """
+        Ensures sector_translation_table is always populated.
+
+        If not explicitly provided, builds it automatically from interleave.
+        """
+        if self.sector_translation_table is None:
+            self.sector_translation_table = self._build_translation_table()
+
+    def _build_translation_table(self) -> List[int]:
+        """
+        Builds a sector translation table based on interleave.
+
+        Maps logical sector indices (0-based) to physical sector IDs.
+
+        Returns:
+            A list where index is logical sector index and value is physical sector ID.
+        """
+        spt = self.sectors_per_track
+        interleave = self.interleave if self.interleave > 0 else 1
+        start_id = self.id_start
+
+        order: List[int] = []
+        used: List[bool] = [False] * spt
+        idx = 0
+
+        for i in range(spt):
+            order.append(start_id + idx)
+            used[idx] = True
+            if i < spt - 1:
+                idx = (idx + interleave) % spt
+                while used[idx]:
+                    idx = (idx + 1) % spt
+
+        return order
+
+    def logical_to_physical_sector(self, logical_index: int) -> int:
+        """
+        Converts a logical sector index (0-based) to a physical sector ID.
+
+        Args:
+            logical_index: 0-based index into the track
+
+        Returns:
+            The physical sector ID
+
+        Raises:
+            IndexError: If logical_index is out of range
+        """
+        if not (0 <= logical_index < self.sectors_per_track):
+            raise IndexError(
+                f"Logical sector index {logical_index} out of range "
+                f"(0-{self.sectors_per_track-1})"
+            )
+        return self.sector_translation_table[logical_index]
+
+    def physical_to_logical_sector(self, physical_id: int) -> int:
+        """
+        Converts a physical sector ID to a logical sector index (0-based).
+
+        Args:
+            physical_id: The physical sector ID
+
+        Returns:
+            The 0-based logical index
+
+        Raises:
+            ValueError: If physical_id is not found in translation table
+        """
+        try:
+            return self.sector_translation_table.index(physical_id)
+        except ValueError:
+            raise ValueError(
+                f"Physical sector ID {physical_id} not found in translation table"
+            )
 
     def matches(self, cylinder: int, head: int) -> bool:
         """
@@ -184,19 +261,20 @@ class PhysicalFormat:
         """
         Converts CHS coordinates to a byte offset from the start of the disk image.
 
-        This calculation depends on the `image_in_sector_id_order` flag to
-        determine how sectors are laid out in a raw image file.
+        This calculation uses the sector_translation_table to determine physical
+        ordering when image_in_sector_id_order is False.
 
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number.
+            sector: The sector number (physical sector ID).
 
         Returns:
             The calculated byte offset.
         """
         self.validate_chs(cylinder, head, sector)
         byte_offset = 0
+
         # Sum bytes of all full cylinders before the target
         for c_iter in range(cylinder):
             for h_iter in range(self.heads):
@@ -210,11 +288,13 @@ class PhysicalFormat:
 
         # Add the offset for the sectors on the target track
         tf = self.get_track_format(cylinder, head)
+
         if self.image_in_sector_id_order:
+            # Image is ordered by sector ID, calculate directly
             sector_index = sector - tf.id_start
         else:
-            order = self._build_physical_sector_order(tf)
-            sector_index = order.index(sector)
+            # Image is in physical order, use translation table
+            sector_index = tf.physical_to_logical_sector(sector)
 
         byte_offset += sector_index * tf.bytes_per_sector
         return byte_offset
@@ -226,7 +306,7 @@ class PhysicalFormat:
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number.
+            sector: The sector number (physical sector ID).
 
         Returns:
             The calculated LBA.
@@ -347,13 +427,12 @@ class PhysicalFormat:
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number.
+            sector: The sector number (physical sector ID).
 
         Raises:
             ValueError: If any CHS value is out of range.
         """
         if not (0 <= cylinder < self.cylinders and 0 <= head < self.heads):
-            # Reverted to original error message format to match test expectations
             raise ValueError(f"Invalid CHS: {cylinder}, {head}, {sector}")
 
         track_format = self.get_track_format(cylinder, head)
@@ -365,33 +444,3 @@ class PhysicalFormat:
                 f"Sector {sector} out of range ({id_start}-{id_start + max_sectors - 1}) "
                 f"for C:{cylinder} H:{head}"
             )
-
-    # --- Private Methods ---
-
-    def _build_physical_sector_order(self, tf: TrackFormat) -> List[int]:
-        """
-        Builds a sector translation table based on interleave.
-
-        This simulates the physical order in which sectors would be read from
-        a spinning disk with a given interleave factor.
-
-        Args:
-            tf: The TrackFormat to use for the calculation.
-
-        Returns:
-            A list of sector IDs in their physical read order.
-        """
-        spt = tf.sectors_per_track
-        interleave = tf.interleave if tf.interleave > 0 else 1
-        start_id = tf.id_start
-        order: List[int] = []
-        used: List[bool] = [False] * spt
-        idx = 0
-        for i in range(spt):
-            order.append(start_id + idx)
-            used[idx] = True
-            if i < spt - 1:
-                idx = (idx + interleave) % spt
-                while used[idx]:
-                    idx = (idx + 1) % spt
-        return order
