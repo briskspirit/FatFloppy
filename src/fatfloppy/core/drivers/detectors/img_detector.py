@@ -1,4 +1,4 @@
-# src/fatfloppy/core/drivers/detectors/img.py
+# src/fatfloppy/core/drivers/detectors/img_detector.py
 import copy
 import os
 from typing import Optional, Tuple, Any, Dict
@@ -104,14 +104,9 @@ class IMGFormatDetector(FormatDetector):
 
         image_size = len(self.driver.image_data)
 
-        # Prioritize mixed-density formats for 8" disks
-        candidate_formats = [
-            "cpm_8_ssdd_imsai_mixed_idorder",
-            "cpm_8_ssdd_imsai_mixed",
-            "cpm_8_sssd_250k",
-        ] + [name for name in self.known_formats if name not in [
-            "cpm_8_ssdd_imsai_mixed_idorder", "cpm_8_ssdd_imsai_mixed", "cpm_8_sssd_250k"
-        ]]
+        # Priority list of candidate formats
+        # candidate_formats = [,] + [name for name in self.known_formats if name not in [,]]
+        candidate_formats = [name for name in self.known_formats ]
 
         for name in candidate_formats:
             profile = self.known_formats.get(name)

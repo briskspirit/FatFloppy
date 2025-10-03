@@ -1,4 +1,4 @@
-# src/fatfloppy/core/drivers/detectors/imd.py
+# src/fatfloppy/core/drivers/detectors/imd_detector.py
 from ...format_detection import MetadataBasedDetector
 
 

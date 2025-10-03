@@ -153,6 +153,7 @@ class IMDImageDriver(DiskIODriver):
     driver_file_extensions: ClassVar[List[str]] = [".imd"]
     driver_category: ClassVar[str] = "metadata_based"
     driver_description: ClassVar[str] = "ImageDisk format driver"
+    driver_priority: ClassVar[int] = 50
 
     def __init__(self, file_path: str):
         """

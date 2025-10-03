@@ -26,6 +26,7 @@ class DiskIODriver(ABC):
     driver_type: ClassVar[str] = ""  # e.g., "IMG", "IMD", "physical"
     driver_file_extensions: ClassVar[List[str]] = []  # e.g., [".img", ".ima"]
     driver_category: ClassVar[str] = ""  # "metadata_based", "raw", or "physical"
+    driver_priority: ClassVar[int] = 50
 
     # Optional metadata
     driver_description: ClassVar[str] = ""

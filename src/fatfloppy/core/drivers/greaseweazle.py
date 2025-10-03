@@ -127,6 +127,7 @@ class GreaseweazleDriver(DiskIODriver):
     driver_file_extensions: ClassVar[List[str]] = []
     driver_category: ClassVar[str] = "physical"
     driver_description: ClassVar[str] = "Greaseweazle physical drive interface"
+    driver_priority: ClassVar[int] = 50
 
     def __init__(self, device_name: Optional[str] = None, drive: str = "A", drive_size: str = "3.5"):
         """

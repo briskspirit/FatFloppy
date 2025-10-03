@@ -1,4 +1,4 @@
-# src/fatfloppy/core/drivers/detectors/greaseweazle.py
+# src/fatfloppy/core/drivers/detectors/greaseweazle_detector.py
 import copy
 from typing import Optional, Tuple, Any, Dict, List
 

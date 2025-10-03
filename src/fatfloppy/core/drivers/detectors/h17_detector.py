@@ -1,4 +1,4 @@
-# src/fatfloppy/core/drivers/detectors/h17.py
+# src/fatfloppy/core/drivers/detectors/h17_detector.py
 from ...format_detection import MetadataBasedDetector
 
 

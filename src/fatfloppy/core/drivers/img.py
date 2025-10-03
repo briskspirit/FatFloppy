@@ -32,6 +32,7 @@ class IMGImageDriver(DiskIODriver):
     driver_file_extensions: ClassVar[List[str]] = [".img", ".ima", ".dsk", ".h8d"]
     driver_category: ClassVar[str] = "raw"
     driver_description: ClassVar[str] = "Raw sector image driver"
+    driver_priority: ClassVar[int] = 10 
 
     def __init__(self, file_path: str, image_data: Optional[bytes] = None):
         """
