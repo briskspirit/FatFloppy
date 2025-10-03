@@ -198,6 +198,11 @@ class GreaseweazleDriver(DiskIODriver):
         """Greaseweazle needs initialization to measure RPM."""
         return True
 
+    @property
+    def dirty(self) -> bool:
+        """Indicates whether there are pending writes to flush."""
+        return bool(self.dirty_tracks)
+
     def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
         """
         Validates Greaseweazle driver state after opening.
@@ -680,12 +685,12 @@ class GreaseweazleDriver(DiskIODriver):
         for s in track.sectors:
             if hasattr(s, "idam") and hasattr(s.idam, "r"):
                 sector_num = s.idam.r
-                if track_id in self.track_data and sector_num in self.track_data[track_id]:
-                    s.dam.data = bytearray(self.track_data[track_id][sector_num])
-                elif track_id in self.dirty_sectors and sector_num in self.dirty_sectors[track_id]:
+                # Check dirty sectors FIRST (new data), then fall back to track cache (old data)
+                if track_id in self.dirty_sectors and sector_num in self.dirty_sectors[track_id]:
                     data = self.dirty_sectors[track_id][sector_num]
-                    # Pad or truncate data to match expected sector size
                     s.dam.data = bytearray(data[:len(s.dam.data)] if len(data) > len(s.dam.data) else data + bytes(len(s.dam.data) - len(data)))
+                elif track_id in self.track_data and sector_num in self.track_data[track_id]:
+                    s.dam.data = bytearray(self.track_data[track_id][sector_num])
                 s.crc = s.idam.crc = s.dam.crc = 0
 
         master_track = track.master_track()
