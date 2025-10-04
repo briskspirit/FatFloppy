@@ -22,15 +22,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from fatfloppy.core.disk import Disk
 from fatfloppy.core.drivers import IMGImageDriver
-from fatfloppy.core.filesystems.fat12fs import FATFilesystem, FileInfo
-from fatfloppy.core.format_definitions import FLOPPY_FORMATS
+from fatfloppy.core.filesystems.fat12_fs import FATFilesystem, FileInfo
+from fatfloppy.core.filesystem_registry import FilesystemRegistry
 
 # --- Constants and Type Aliases ---
 
 RESOURCE_DIR = Path(__file__).parent.parent / "resources"
 EMPTY_IMG_SRC = RESOURCE_DIR / "empty_formatted_144m.img"
-FMT_144 = FLOPPY_FORMATS["ibm_3.5_1.44m"]
-FMT_720 = FLOPPY_FORMATS["ibm_3.5_720k"]
+
+# Get formats from registry
+_ALL_FORMATS = FilesystemRegistry.get_all_formats()
+FMT_144 = _ALL_FORMATS["ibm_3.5_1.44m"]
+FMT_720 = _ALL_FORMATS["ibm_3.5_720k"]
 
 # Type alias for the fixture's yielded tuple for cleaner type hinting.
 FSTestFixture = Tuple[FATFilesystem, Disk]
@@ -578,7 +581,6 @@ def test_20_read_zero_byte_file(fs_setup: FSTestFixture) -> None:
     filename = "ZEROBYTE.FIL"
     now = datetime.datetime.now()
     # Manually create a directory entry with starting cluster 0.
-    # FIX: The keyword argument is 'starting_cluster', not 'start_cluster'.
     entry_data = fs._create_directory_entry_bytes(filename, False, 0, 0, now)
     # Find first free entry slot in root (should be the first one).
     entry_offset = fs.root_dir_start_offset

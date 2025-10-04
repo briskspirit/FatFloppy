@@ -6,7 +6,7 @@ Core controller for managing floppy disk images and physical drives.
 import os
 import copy
 from logging import Logger
-from typing import List, Optional, Tuple, Dict, Any, Type
+from typing import List, Optional, Tuple, Dict, Any
 
 from .utils.logging_config import get_logger
 from .disk import Disk
@@ -15,7 +15,6 @@ from .drivers import DiskIODriver
 from .physical_format import PhysicalFormat, TrackFormat
 from .format_profile import FormatProfile
 from .filesystems.fs_base import Filesystem
-from .format_definitions import FLOPPY_FORMATS
 from .filesystem_factory import create_filesystem, get_filesystem_class_by_type
 
 logger: Logger = get_logger()
@@ -32,7 +31,13 @@ class DiskController:
         self.logger: Logger = get_logger(self.__class__.__name__)
         self.disk: Optional[Disk] = None
         self.filesystem: Optional[Filesystem] = None
-        self.known_formats: Dict[str, FormatProfile] = FLOPPY_FORMATS
+
+        from .filesystem_registry import FilesystemRegistry
+        self.logger.info("Loading formats from FilesystemRegistry...")
+        self.known_formats: Dict[str, FormatProfile] = FilesystemRegistry.get_all_formats()
+        self.logger.info(f"Loaded {len(self.known_formats)} formats from registry")
+        self.logger.debug(f"Format names: {list(self.known_formats.keys())}")
+
         self.driver: Optional[DiskIODriver] = None
         self.explicit_format_set: bool = False
         self.physical_format: Optional[PhysicalFormat] = None
@@ -102,15 +107,16 @@ class DiskController:
                 else:
                     self.logger.warning(f"No format set for {source}, but driver allows deferred format")
 
-            self.filesystem = create_filesystem(self.disk)
-
-            if self.filesystem and hasattr(self.filesystem, '_check_and_adjust_geometry'):
-                self.logger.debug(f"Pre-adjustment disk geometry: {self.disk.physical_format}")
-                self.filesystem._check_and_adjust_geometry(self.driver, self.explicit_format_set)
-                self.logger.debug(f"Post-adjustment disk geometry: {self.disk.physical_format}")
+            # Create filesystem, using detected config if available
+            self.filesystem = self._create_filesystem_with_config()
 
             self.physical_format = self.disk.physical_format
-            self.active_filesystem_config = self.filesystem.get_specific_config() if self.filesystem else None
+            try:
+                self.active_filesystem_config = self.filesystem.get_specific_config() if self.filesystem else None
+            except (ValueError, IOError) as e:
+                # Disk may not be formatted yet - that's okay
+                self.logger.debug(f"Could not get filesystem config (disk may be unformatted): {e}")
+                self.active_filesystem_config = None
 
             self.logger.info(f"Disk '{source}' opened successfully. Type: {disk_type}. "
                             f"Final Geometry: {self.physical_format}")
@@ -120,6 +126,41 @@ class DiskController:
             self.logger.exception(f"Error opening disk '{source}' (Type: {disk_type}): {e}")
             self.close_disk()
             return False
+
+    def _create_filesystem_with_config(self) -> Optional[Filesystem]:
+        """
+        Creates a filesystem instance, using stored config if available.
+
+        Returns:
+            The created Filesystem instance, or None if creation fails
+        """
+        if not self.disk:
+            return None
+
+        # If we have a stored config from detection, use it
+        if self.active_filesystem_config:
+            # Determine filesystem type from the config
+            from .filesystem_registry import FilesystemRegistry
+
+            config_type = type(self.active_filesystem_config)
+
+            # Find which filesystem handles this config type
+            for fs_class in FilesystemRegistry.get_all():
+                if (hasattr(fs_class, 'config_class') and
+                    fs_class.config_class is not None and
+                    fs_class.config_class == config_type):
+
+                    self.logger.info(f"Creating {fs_class.__name__} with detected config")
+                    try:
+                        return fs_class(self.disk, config=self.active_filesystem_config)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to create filesystem with config: {e}")
+                        # Fall through to auto-detection
+                        break
+
+        # Fall back to auto-detection by scoring
+        self.logger.debug("No stored config, using filesystem auto-detection")
+        return create_filesystem(self.disk)
 
     def close_disk(self) -> None:
         """
@@ -137,6 +178,11 @@ class DiskController:
         self.physical_format = None
         self.active_filesystem_config = None
         self.explicit_format_set = False
+
+        # Invalidate detection cache
+        self._detection_cached = False
+        self._cached_format_name = None
+
         self.logger.debug("Disk closed and controller state reset.")
 
     def flush(self) -> None:
@@ -161,7 +207,7 @@ class DiskController:
             return None
         if self.physical_format:
             return self.physical_format
-        format_name, _ = self.detect_format()
+        format_name, fs_config, physical_format = self.detect_format()
         if format_name:
             profile = self.get_format_by_name(format_name)
             if profile and profile.physical_format:
@@ -183,13 +229,28 @@ class DiskController:
 
         self.logger.debug(f"Geometry set on controller, disk, and driver: {geometry}")
 
-    def detect_format(self) -> Tuple[Optional[str], Optional[Any]]:
+    def detect_format(self) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Attempts to auto-detect the disk's format by analyzing its structure.
+
+        Returns cached results if detection has already been performed on the
+        current disk to avoid invalidating the filesystem.
+
+        Returns:
+            Tuple of (format_name, filesystem_config, physical_format)
         """
         if not self.disk or not self.driver:
             self.logger.error("No disk opened to detect format")
-            return None, None
+            return None, None, None
+
+        # Return cached results if we've already detected this disk
+        if hasattr(self, '_detection_cached') and self._detection_cached:
+            self.logger.debug("Returning cached format detection results")
+            return (
+                getattr(self, '_cached_format_name', None),
+                self.active_filesystem_config,
+                self.physical_format
+            )
 
         from .format_detection import create_format_detector
 
@@ -205,6 +266,14 @@ class DiskController:
                 self.logger.info("Auto-detection yielded new physical format. Applying it.")
                 self.set_geometry(physical_format)
 
+            # Store the detected filesystem config for later use
+            if fs_config:
+                self.active_filesystem_config = fs_config
+
+            # Cache the detection results
+            self._cached_format_name = format_name
+            self._detection_cached = True
+
             if format_name:
                 self.logger.info(f"Detected format: {format_name}")
             elif fs_config:
@@ -212,15 +281,21 @@ class DiskController:
             else:
                 self.logger.warning("No format detected")
 
-            return format_name, fs_config
+            return format_name, fs_config, physical_format
 
         except Exception as e:
             self.logger.exception(f"Format detection failed: {e}")
-            return None, None
+            return None, None, None
 
     def set_format(self, profile: FormatProfile) -> None:
         """
         Applies a specific format profile to the currently open disk.
+
+        Args:
+            profile: The FormatProfile to apply
+
+        Raises:
+            ValueError: If no disk is open or profile is invalid
         """
         if not self.disk or not self.driver:
             raise ValueError("No disk opened")
@@ -230,8 +305,9 @@ class DiskController:
         self.logger.info(f"Setting format using profile: {profile.name}")
         physical_format_to_set = copy.deepcopy(profile.physical_format)
 
+        # Store filesystem config separately
         if profile.filesystem_config:
-            setattr(physical_format_to_set, '_associated_filesystem_config', profile.filesystem_config)
+            self.active_filesystem_config = profile.filesystem_config
 
         self.disk.set_geometry(physical_format_to_set)
 
@@ -520,67 +596,93 @@ class DiskController:
     def _resolve_format_profile(self, format_name: str) -> Optional[FormatProfile]:
         """
         Resolves a format name to a FormatProfile.
+
+        Args:
+            format_name: Name of the format to resolve
+
+        Returns:
+            The resolved FormatProfile or None
         """
         profile = self.known_formats.get(format_name)
 
         if not profile:
+            # Try to match current geometry to a known format
             if self.disk and self.disk.physical_format:
                 for name, prof in self.known_formats.items():
                     if prof.physical_format == self.disk.physical_format:
                         profile = prof
                         self.logger.info(f"Using format profile '{name}' matching current geometry")
                         break
-            if (not profile and self.driver and
-                hasattr(self.driver, 'physical_format') and self.driver.physical_format):
-                fs_cfg = getattr(self.driver.physical_format, '_associated_filesystem_config', None)
-                if fs_cfg and hasattr(fs_cfg, 'filesystem_type'):
-                    profile = FormatProfile(
-                        name="custom_runtime", description="Custom (Runtime)",
-                        physical_format=self.driver.physical_format,
-                        filesystem_type=fs_cfg.filesystem_type,
-                        filesystem_config=fs_cfg
-                    )
+
+            # Last resort: try to build from driver's physical format
+            if not profile and self.driver and hasattr(self.driver, 'physical_format') and self.driver.physical_format:
+                # Build a minimal profile from driver's physical format
+                # Note: No filesystem config since we don't have one
+                profile = FormatProfile(
+                    name="custom_runtime",
+                    description="Custom (Runtime)",
+                    physical_format=self.driver.physical_format,
+                    filesystem_config=None  # Will be determined later
+                )
+
             if not profile:
                 self.logger.error(f"Cannot resolve format profile '{format_name}'")
                 return None
 
-        if not profile.physical_format or not profile.filesystem_config:
-            self.logger.error(f"Format profile '{format_name}' is incomplete")
+        if not profile.physical_format:
+            self.logger.error(f"Format profile '{format_name}' has no physical format")
             return None
+
         return profile
 
     def _execute_format(self, profile: FormatProfile, volume_label: str) -> bool:
         """
         Executes the actual formatting operation.
+
+        Args:
+            profile: The FormatProfile to use for formatting
+            volume_label: Volume label to apply
+
+        Returns:
+            True if formatting succeeded, False otherwise
         """
-        fs_class = get_filesystem_class_by_type(profile.filesystem_type)
-        if not fs_class:
-            self.logger.error(f"No filesystem handler for type '{profile.filesystem_type}'")
+        # Get filesystem class by looking up the profile's config type
+        fs_type = profile.get_filesystem_type()
+        if not fs_type:
+            self.logger.error("Cannot determine filesystem type from profile")
             return False
 
-        self.logger.info(f"Formatting with profile: {profile.name}")
+        from .filesystem_factory import get_filesystem_class_by_type
+        fs_class = get_filesystem_class_by_type(fs_type)
+        if not fs_class:
+            self.logger.error(f"No filesystem handler for type '{fs_type}'")
+            return False
+
+        self.logger.info(f"Formatting with profile: {profile.name} (filesystem: {fs_type})")
+
         try:
+            # Set geometry if needed
             if self.disk.physical_format != profile.physical_format:
                 self.set_format(profile)
             elif (hasattr(self.driver, "physical_format") and
-                  self.driver.physical_format != profile.physical_format):
+                self.driver.physical_format != profile.physical_format):
                 self.set_format(profile)
 
-            if (not hasattr(self.disk.physical_format, '_associated_filesystem_config') and
-                profile.filesystem_config):
-                setattr(self.disk.physical_format, '_associated_filesystem_config', profile.filesystem_config)
-
+            # Create filesystem instance and format
             filesystem_handler = fs_class(self.disk)
             filesystem_handler.format_fs(profile, volume_label=volume_label)
 
+            # Store results
             self.filesystem = filesystem_handler
             self.physical_format = self.disk.physical_format
-            self.active_filesystem_config = self.filesystem.get_specific_config() if self.filesystem else None
+            self.active_filesystem_config = profile.filesystem_config
+
             self.flush()
             final_vol_label = self.filesystem.get_volume_label() or volume_label
 
             self.logger.info(f"Format complete for profile '{profile.name}'. Volume: '{final_vol_label}'")
             return True
+
         except Exception as e:
             self.logger.exception(f"Error during format with profile '{profile.name}': {e}")
             self.filesystem = None
@@ -682,36 +784,56 @@ class DiskController:
     def _apply_user_format(self, format_info: Dict[str, Any]) -> None:
         """
         Resolves format info and applies it to the current disk and driver.
-        This replaces the logic from the deleted FormatApplier classes.
+        Now cleanly separates physical format from filesystem config.
+
+        Args:
+            format_info: Dictionary containing format parameters
+
+        Raises:
+            ValueError: If format cannot be resolved or applied
         """
         self.explicit_format_set = True
 
-        # 1. Resolve PhysicalFormat from format_info
         physical_format = None
+        filesystem_config = None
+
+        # 1. Resolve from format_name if provided
         if "format_name" in format_info:
             profile = self.get_format_by_name(format_info["format_name"])
             if profile:
                 physical_format = profile.physical_format
-                if profile.filesystem_config:
-                    setattr(physical_format, '_associated_filesystem_config', profile.filesystem_config)
+                filesystem_config = profile.filesystem_config
+                self.logger.debug(f"Resolved format from profile: {format_info['format_name']}")
 
-        if not physical_format:
-            # If no name, try to build a custom geometry
-            if any(k in format_info for k in ['cylinders', 'heads', 'sectors_per_track']):
-                physical_format = self._create_physical_format(format_info)
+        # 2. Build custom geometry if params provided
+        if not physical_format and any(k in format_info for k in ['cylinders', 'heads', 'sectors_per_track']):
+            physical_format = self._create_physical_format(format_info)
+            self.logger.debug("Created custom physical format from parameters")
+
+            # Try to create filesystem config if type specified
+            if 'filesystem_type' in format_info:
+                from .filesystem_factory import get_filesystem_class_by_type
+                fs_class = get_filesystem_class_by_type(format_info['filesystem_type'])
+                if fs_class and hasattr(fs_class, 'create_config_from_params'):
+                    filesystem_config = fs_class.create_config_from_params(format_info, physical_format)
+                    self.logger.debug(f"Created {format_info['filesystem_type']} config from parameters")
 
         if not physical_format:
             raise ValueError("Could not resolve a valid physical format from the provided format_info.")
 
-        # 2. Validate driver compatibility (simplified)
+        # 3. Validate driver compatibility (simplified)
         if self.driver.driver_category == "raw" and not physical_format:
             raise ValueError("Raw image drivers require explicit format information.")
 
-        # 3. Apply the format
+        # 4. Apply the format
         try:
-            # The drivers themselves now contain the specific logic (e.g., warnings, diskdef creation)
-            # This makes the controller's job simple and universal.
             self.set_geometry(physical_format)
+
+            # Store filesystem config separately (don't attach to physical_format)
+            if filesystem_config:
+                self.active_filesystem_config = filesystem_config
+                self.logger.debug(f"Stored filesystem config: {type(filesystem_config).__name__}")
+
             self.logger.info("User-defined format applied successfully.")
         except Exception as e:
             self.logger.error(f"Error applying user format: {e}")
@@ -796,7 +918,7 @@ class DiskController:
         """
         self.logger.debug(f"Attempting auto-detection for {self.driver.__class__.__name__}")
         try:
-            format_name, fs_config = self.detect_format()
+            format_name, fs_config, physical_format = self.detect_format()
 
             if format_name:
                 self.logger.info(f"Auto-detection successful: format='{format_name}'")

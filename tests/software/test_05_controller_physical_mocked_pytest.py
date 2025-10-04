@@ -36,16 +36,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 from fatfloppy.core.controller import DiskController
 from fatfloppy.core.disk import Disk
 from fatfloppy.core.drivers import GreaseweazleDriver
-from fatfloppy.core.filesystems.fat12fs import FATFilesystem, FATVolumeInfo
-from fatfloppy.core.format_definitions import FLOPPY_FORMATS
+from fatfloppy.core.filesystems.fat12_fs import FATFilesystem, FATVolumeInfo
+from fatfloppy.core.filesystem_registry import FilesystemRegistry
 from fatfloppy.core.format_profile import FormatProfile
 from greaseweazle.codec import codec
 from greaseweazle.codec.ibm import ibm
 
 # --- Constants for floppy formats ---
-FMT_144 = FLOPPY_FORMATS["ibm_3.5_1.44m"]
-FMT_360 = FLOPPY_FORMATS["ibm_5.25_360k"]
-FMT_720 = FLOPPY_FORMATS["ibm_3.5_720k"]
+_ALL_FORMATS = FilesystemRegistry.get_all_formats()
+FMT_144 = _ALL_FORMATS["ibm_3.5_1.44m"]
+FMT_360 = _ALL_FORMATS["ibm_5.25_360k"]
+FMT_720 = _ALL_FORMATS["ibm_3.5_720k"]
 
 
 # --- Helper Functions ---
@@ -241,30 +242,13 @@ def open_disk_for_rw_tests(
         "interleave": track_fmt.interleave,
     }
 
-    mock_fs = MagicMock(spec=FATFilesystem)
-    mock_fs.get_validity_score.return_value = 100
-    mock_fat_bs = MagicMock(spec=FATVolumeInfo)
-    bsd = test_format.filesystem_config or FATVolumeInfo()
-    for attr, value in bsd.__dict__.items():
-        if attr not in ["logger"]:
-            setattr(mock_fat_bs, attr, value)
-
-    mock_fat_bs.is_valid.return_value = True
-    mock_fat_bs.sectors_per_track = track_fmt.sectors_per_track
-    mock_fat_bs.num_heads = phys_fmt.heads
-    mock_fat_bs.total_sectors = phys_fmt.total_sectors
-    mock_fs.boot_sector = mock_fat_bs
-    mock_fs.get_specific_config.return_value = mock_fat_bs
-    mock_fs.get_allocated_units.return_value = []
-    mock_fs.get_free_space.return_value = (phys_fmt.total_bytes, phys_fmt.total_bytes)
-
     mock_usb.read_track.return_value = create_mock_flux()
+    bsd = test_format.filesystem_config or FATVolumeInfo()
     mock_boot_sector_bytes = bsd.to_bytes()
 
-    # Act
+    # Act - Don't mock create_filesystem, let it create a real one
     with patch("fatfloppy.core.drivers.greaseweazle.create_greaseweazle_diskdef", return_value=mock_custom_diskdef_instance), \
-         patch("fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes), \
-         patch("fatfloppy.core.controller.create_filesystem", return_value=mock_fs):
+         patch("fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes):
         mock_with_drive_selected.side_effect = lambda func, *args, **kwargs: func()
         success = controller.open_disk(None, "physical", "A", "3.5", format_info=format_info_dict)
 
@@ -276,7 +260,9 @@ def open_disk_for_rw_tests(
     assert controller.driver.fmt_cls is mock_custom_diskdef_instance
     assert hasattr(controller.driver.fmt_cls, "name"), "Mock fmt_cls missing name after setup"
     assert controller.driver.fmt_cls.name == "fixture_mock_diskdef"
-    assert controller.filesystem == mock_fs
+    # CHANGED: Verify filesystem exists and is correct type instead of comparing to mock
+    assert controller.filesystem is not None
+    assert isinstance(controller.filesystem, FATFilesystem)
 
 
 # --- Tests ---
@@ -323,24 +309,11 @@ def test_01_open_physical_drive_A_35_auto_detect_mocked(
 
     mock_read_with_retry.side_effect = mock_read_retry_auto_detect
 
-    mock_fs = MagicMock(spec=FATFilesystem)
-    mock_fs.get_validity_score.return_value = 100
     bsd = expected_format.filesystem_config
-    mock_fat_bs = MagicMock(spec=FATVolumeInfo)
-    for attr, value in bsd.__dict__.items():
-        if attr != "logger":
-            setattr(mock_fat_bs, attr, value)
-    mock_fat_bs.is_valid.return_value = True
-    mock_fat_bs.sectors_per_track = expected_format.physical_format.track_formats[0].sectors_per_track
-    mock_fat_bs.num_heads = expected_format.physical_format.heads
-    mock_fat_bs.total_sectors = expected_format.physical_format.total_sectors
-    mock_fs.boot_sector = mock_fat_bs
-    mock_fs.get_specific_config.return_value = mock_fat_bs
     mock_boot_sector_bytes = bsd.to_bytes()
 
-    # Act
-    with patch("fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes), \
-         patch("fatfloppy.core.controller.create_filesystem", return_value=mock_fs):
+    # Act - Don't mock create_filesystem
+    with patch("fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes):
         success = controller.open_disk(source=None, disk_type="physical", drive_letter=drive_letter, drive_size=drive_size)
 
     # Assert
@@ -353,10 +326,11 @@ def test_01_open_physical_drive_A_35_auto_detect_mocked(
     assert controller.disk is not None
     assert controller.disk.physical_format is not None
     geom = controller.disk.physical_format
-    assert geom.get_sectors_per_track(0, 0) == mock_fat_bs.sectors_per_track
-    assert geom.heads == mock_fat_bs.num_heads
+    assert geom.get_sectors_per_track(0, 0) == expected_format.physical_format.track_formats[0].sectors_per_track
+    assert geom.heads == expected_format.physical_format.heads
     assert geom.cylinders == expected_format.physical_format.cylinders
-    assert controller.filesystem == mock_fs
+    assert controller.filesystem is not None
+    assert isinstance(controller.filesystem, FATFilesystem)
     pf = controller.driver.physical_format
     assert pf is not None
     assert pf.get_sectors_per_track(0, 0) == expected_format.physical_format.get_sectors_per_track(0, 0)
@@ -391,34 +365,23 @@ def test_02_open_physical_with_explicit_format_mocked(
         "interleave": track_fmt.interleave,
     }
 
-    mock_fs = MagicMock(spec=FATFilesystem)
-    mock_fs.get_validity_score.return_value = 100
-    mock_fat_bs = MagicMock(spec=FATVolumeInfo)
-    bsd = expected_format.filesystem_config
-    for attr, value in bsd.__dict__.items():
-        if attr != "logger":
-            setattr(mock_fat_bs, attr, value)
-    mock_fat_bs.is_valid.return_value = True
-    mock_fat_bs.sectors_per_track = track_fmt.sectors_per_track
-    mock_fat_bs.num_heads = phys_fmt.heads
-    mock_fat_bs.total_sectors = phys_fmt.total_sectors
-    mock_fs.boot_sector = mock_fat_bs
-
     mock_usb.read_track.return_value = create_mock_flux()
+    bsd = expected_format.filesystem_config
+    mock_boot_sector_bytes = bsd.to_bytes()
 
-    # Act
-    with patch("fatfloppy.core.controller.create_filesystem", return_value=mock_fs):
+    # Act - Don't mock create_filesystem
+    with patch("fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes):
         mock_with_drive_selected.side_effect = lambda func, *args, **kwargs: func()
         success = controller.open_disk(None, "physical", "A", "3.5", format_info)
 
     # Assert
     assert success
-    assert controller.filesystem == mock_fs
+    assert controller.filesystem is not None
+    assert isinstance(controller.filesystem, FATFilesystem)
     assert controller.disk.physical_format is not None
     geom = controller.disk.physical_format
-    assert geom.get_sectors_per_track(0, 0) == mock_fat_bs.sectors_per_track
     assert geom.get_sectors_per_track(0, 0) == expected_format.physical_format.get_sectors_per_track(0, 0)
-    assert geom.heads == mock_fat_bs.num_heads
+    assert geom.heads == expected_format.physical_format.heads
     assert controller.driver.physical_format is not None
     assert controller.driver.physical_format.get_sectors_per_track(0, 0) == expected_format.physical_format.get_sectors_per_track(0, 0)
     assert controller.driver.fmt_cls is mock_custom_diskdef_instance

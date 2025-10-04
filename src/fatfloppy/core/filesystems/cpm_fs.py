@@ -15,7 +15,7 @@ import struct
 import datetime
 from dataclasses import dataclass, field
 from collections import defaultdict
-from typing import List, Optional, Tuple, Dict, Any, Set, ClassVar
+from typing import List, Optional, Tuple, Dict, Any, Set, ClassVar, Type
 
 from .fs_base import Filesystem, FileInfo
 from ..format_profile import FormatProfile
@@ -141,29 +141,25 @@ class CPMFilesystem(Filesystem):
     validity_threshold: ClassVar[int] = 50
     VALIDITY_THRESHOLD = validity_threshold  # For backward compatibility with tests
 
-    def __init__(self, disk: Disk):
+    config_class: ClassVar[Type] = CPMDiskParameterBlock
+
+    def __init__(self, disk: Disk, config: Optional[CPMDiskParameterBlock] = None):
         """
         Initializes the CPMFilesystem instance.
 
         Args:
             disk: The Disk object to operate on.
+            config: Optional CP/M Disk Parameter Block for this filesystem.
         """
         super().__init__(disk)
-        self.dpb: Optional[CPMDiskParameterBlock] = None
+        self.logger = get_logger(self.__class__.__name__)
+        self.dpb: Optional[CPMDiskParameterBlock] = config
         self._init_completed = False
         self._cached_directory: Optional[List[CPMDirectoryEntry]] = None
         self._cached_allocation_map: Optional[Set[int]] = None
         self._cached_validity_score: Optional[int] = None
-        self.logger = get_logger("CPMFilesystem")
 
         if self.disk and self.disk.physical_format:
-            # Attempt to load DPB from associated disk format profile
-            if hasattr(self.disk.physical_format, '_associated_filesystem_config'):
-                fs_config = getattr(self.disk.physical_format, '_associated_filesystem_config')
-                if isinstance(fs_config, CPMDiskParameterBlock):
-                    self.dpb = fs_config
-                    self.logger.info("Initialized DPB from disk's physical_format associated config.")
-
             if self.dpb:
                 try:
                     self._initialize_parameters()
@@ -186,6 +182,17 @@ class CPMFilesystem(Filesystem):
         else:
             self.logger.warning("CP/M Filesystem initialized without disk or physical format.")
 
+    @classmethod
+    def get_format_definitions(cls) -> Dict[str, FormatProfile]:
+        """
+        Returns all CP/M format definitions provided by this plugin.
+
+        Returns:
+            Dictionary mapping format names to FormatProfile objects
+        """
+        from .formats.cpm_formats import CPM_FORMATS
+        return CPM_FORMATS
+
     @property
     def allocation_unit_size(self) -> int:
         """Returns the size of a single allocation block in bytes."""
@@ -202,6 +209,25 @@ class CPMFilesystem(Filesystem):
                 config1.bsh == config2.bsh and
                 config1.dsm == config2.dsm and
                 config1.off == config2.off)
+
+    def _compute_geometry_hash(self) -> int:
+        """Computes a hash of the current disk geometry for change detection."""
+        if not self.disk or not self.disk.physical_format:
+            self.logger.warning("Cannot compute geometry hash: No disk or physical format available.")
+            return 0
+        pf = self.disk.physical_format
+        tf = pf.track_formats[0] if pf.track_formats else None
+        if not tf:
+            self.logger.warning("Cannot compute geometry hash: No track format available.")
+            return 0
+        # Hash based on geometry and sector translation
+        return hash((
+            pf.cylinders,
+            pf.heads,
+            pf.bytes_per_sector,
+            tuple(tf.sector_translation_table) if tf.sector_translation_table else (),
+            pf.track_formats[0].interleave,
+        ))
 
     @staticmethod
     def create_config_from_params(format_info: Dict[str, Any],
@@ -613,12 +639,6 @@ class CPMFilesystem(Filesystem):
     def get_validity_score(self) -> int:
         """
         Scores the likelihood that the disk contains a valid CP/M filesystem.
-
-        A score is calculated based on the plausibility of directory entries and
-        consistency of the DPB. A high score suggests a valid CP/M format.
-
-        Returns:
-            An integer score from 0 to 100.
         """
         if self._cached_validity_score is not None:
             return self._cached_validity_score
@@ -630,66 +650,165 @@ class CPMFilesystem(Filesystem):
 
         try:
             self._initialize_parameters()
-            score += 5  # Small bonus for having a DPB to test against.
+            score += 5
 
-            # Perform a raw check on the first directory sector for plausibility
-            first_dir_sector_data = self._read_logical_sector(self.dpb.off, 0)
+            # Read ALL directory sectors
+            dir_logical_sectors = ((self.dpb.drm + 1) * 32) // CPM_SECTOR_SIZE
+            current_cpm_track = self.dpb.off
+            logical_sector_idx = 0
 
-            # Case 1: Freshly formatted disk (all 0xE5)
-            if all(b == 0xE5 for b in first_dir_sector_data):
-                score += 75  # High confidence
+            all_dir_bytes = bytearray()
+
+            for _ in range(dir_logical_sectors):
+                try:
+                    sector_data = self._read_logical_sector(current_cpm_track, logical_sector_idx)
+                    all_dir_bytes.extend(sector_data)
+
+                    logical_spt = self._get_logical_spt(current_cpm_track)
+                    if logical_spt > 0:
+                        logical_sector_idx += 1
+                        if logical_sector_idx >= logical_spt:
+                            logical_sector_idx = 0
+                            current_cpm_track += 1
+                    else:
+                        break
+                except Exception as e:
+                    self.logger.debug(f"Score: 0 (Cannot read directory sector: {e})")
+                    self._cached_validity_score = 0
+                    return 0
+
+            # Case 1: Freshly formatted disk
+            if all(b == 0xE5 for b in all_dir_bytes):
+                score += 75
                 final_score = min(100, score)
                 self.logger.info(f"CP/M validation score (empty formatted): {final_score}")
                 self._cached_validity_score = final_score
                 return final_score
 
-            # Case 2: Check structure of first few entries
+            # Case 2: Check ALL ACTIVE (non-deleted) directory entries
+            total_entries = len(all_dir_bytes) // 32
             plausible_entries = 0
-            entries_to_check = min(len(first_dir_sector_data) // 32, 4)
-            if entries_to_check == 0:
-                self.logger.debug("Score: 0 (First directory sector is too small or unreadable)")
-                return 0
+            active_entries_count = 0
+            valid_filenames_count = 0
 
-            for i in range(entries_to_check):
-                entry_bytes = first_dir_sector_data[i * 32: (i + 1) * 32]
+            for i in range(total_entries):
+                entry_bytes = all_dir_bytes[i * 32: (i + 1) * 32]
                 user_num = entry_bytes[0]
 
-                if user_num == 0xE5:  # Deleted is plausible
+                # Deleted entries - skip validation of name fields
+                if user_num == 0xE5:
                     plausible_entries += 1
                     continue
 
+                # Active entries - validate thoroughly
                 if 0 <= user_num <= 15:
-                    name_and_ext = entry_bytes[1:12]
-                    if all(b == 0 for b in name_and_ext):
-                        continue  # Not plausible
-                    is_valid_chars = all(0x20 <= (b & 0x7F) <= 0x7E for b in name_and_ext)
-                    if is_valid_chars:
-                        plausible_entries += 1
+                    active_entries_count += 1
+                    raw_name_and_ext = entry_bytes[1:12]
 
-            if plausible_entries < 1:  # Require at least one plausible entry
-                self.logger.debug(f"Score: 0 (Found {plausible_entries}/{entries_to_check} "
-                                  "plausible entries on raw check)")
+                    # DEBUG: Log the raw bytes for this entry
+                    name_hex = ' '.join(f'{b:02X}' for b in entry_bytes[1:9])
+                    ext_hex = ' '.join(f'{b:02X}' for b in entry_bytes[9:12])
+                    self.logger.debug(f"Entry {i} (U{user_num}): name=[{name_hex}] ext=[{ext_hex}]")
+
+                    # Get significant bytes (non-null, non-space)
+                    significant_bytes = [b for b in raw_name_and_ext if b != 0 and b != 0x20]
+
+                    if not significant_bytes:
+                        # CRITICAL: Active user (0-15) with all-null/space filename = invalid!
+                        # This happens when wrong interleave reads empty disk sectors
+                        self.logger.debug(f"Score: 0 (Entry {i}: active user {user_num} with null filename - wrong interleave)")
+                        self._cached_validity_score = 0
+                        return 0
+
+                    # STRICT validation for CP/M filename characters
+                    is_valid = True
+                    for b in significant_bytes:
+                        # Explicitly reject DEL and 0xFF
+                        if b == 0x7F or b == 0xFF:
+                            self.logger.debug(f"Score: 0 (Entry {i}: DEL/0xFF char 0x{b:02X}, user={user_num})")
+                            self._cached_validity_score = 0
+                            return 0
+
+                        # Get masked character
+                        masked = b & 0x7F
+
+                        # If high bit is set (attribute bit), base character MUST be alphanumeric
+                        if b >= 0x80:
+                            # High bit set - validate the base character
+                            if not (
+                                (ord('A') <= masked <= ord('Z')) or
+                                (ord('0') <= masked <= ord('9')) or
+                                masked == ord('-') or
+                                masked == ord('_')
+                            ):
+                                # DEBUG: Show what failed
+                                self.logger.debug(f"Score: 0 (Entry {i}: invalid high-bit char 0x{b:02X} (masked={chr(masked) if 32<=masked<=126 else '?'}), user={user_num})")
+                                self._cached_validity_score = 0
+                                return 0
+                        else:
+                            # No high bit - must be printable ASCII
+                            if not (0x21 <= b <= 0x7E):
+                                self.logger.debug(f"Score: 0 (Entry {i}: invalid char 0x{b:02X}, user={user_num})")
+                                self._cached_validity_score = 0
+                                return 0
+
+                    plausible_entries += 1
+                    valid_filenames_count += 1
+                    self.logger.debug(f"Entry {i}: VALID")
+
+            if plausible_entries < 1:
+                self.logger.debug(f"Score: 0 (Found {plausible_entries} plausible entries)")
                 self._cached_validity_score = 0
                 return 0
 
+            # Base score for having valid entries
             score += 40
-            entries = self._read_directory_entries()
-            active_entries = [e for e in entries if not e.is_deleted() and 0 <= e.user <= 15]
-            if active_entries:
-                score += 20
 
-            # Bonus for DPB self-consistency if other evidence exists
-            if score > 50:
-                dir_blocks = self.dpb.directory_blocks
-                if 0 < dir_blocks <= 16:
-                    al0_bits = bin(self.dpb.al0)[2:].zfill(8)
-                    al1_bits = bin(self.dpb.al1)[2:].zfill(8)
-                    dir_bits_str = (al0_bits + al1_bits)[:dir_blocks]
-                    if dir_bits_str.count('1') == dir_blocks:
-                        score += 25
+            # Bonus for valid filenames
+            if valid_filenames_count > 0:
+                filename_bonus = min(20, valid_filenames_count * 2)
+                score += filename_bonus
+                self.logger.debug(f"Found {valid_filenames_count} valid filenames, bonus={filename_bonus}")
+
+            # Validate block pointers
+            if active_entries_count > 0:
+                valid_blocks = 0
+                total_blocks = 0
+
+                for i in range(total_entries):
+                    entry_bytes = all_dir_bytes[i * 32: (i + 1) * 32]
+                    user_num = entry_bytes[0]
+
+                    if user_num != 0xE5 and 0 <= user_num <= 15:
+                        if self.dpb.dsm > 255:
+                            for j in range(8):
+                                ptr_bytes = entry_bytes[16 + j * 2: 16 + j * 2 + 2]
+                                if len(ptr_bytes) == 2:
+                                    block = struct.unpack("<H", ptr_bytes)[0]
+                                    if block == 0:
+                                        continue
+                                    total_blocks += 1
+                                    if 0 < block <= self.dpb.dsm:
+                                        valid_blocks += 1
+                        else:
+                            for j in range(16):
+                                block = entry_bytes[16 + j]
+                                if block == 0:
+                                    continue
+                                total_blocks += 1
+                                if 0 < block <= self.dpb.dsm:
+                                    valid_blocks += 1
+
+                if total_blocks > 0:
+                    block_ratio = valid_blocks / total_blocks
+                    if block_ratio < 0.8:
+                        self.logger.debug(f"Score: 0 (Too many invalid blocks: {valid_blocks}/{total_blocks})")
+                        self._cached_validity_score = 0
+                        return 0
+                    score += int(30 * block_ratio)
 
             final_score = min(100, int(score))
-            self.logger.info(f"CP/M validation score: {final_score}")
+            self.logger.info(f"CP/M validation score: {final_score} ({valid_filenames_count} valid files)")
             self._cached_validity_score = final_score
             return final_score
 
@@ -1051,16 +1170,20 @@ class CPMFilesystem(Filesystem):
         entries = self._read_directory_entries()
         used_blocks = set()
 
-        # Directory blocks are always considered used
-        for i in range(self.dpb.directory_blocks):
-            used_blocks.add(i)
+        # Mark directory blocks as used based on calculated size, not AL0/AL1
+        for block in range(self.dpb.directory_blocks):
+            used_blocks.add(block)
 
+        self.logger.debug(f"Directory uses {self.dpb.directory_blocks} blocks: {sorted([b for b in used_blocks if b < self.dpb.directory_blocks])}")
+
+        # Add blocks used by files
         for entry in entries:
             if entry.is_deleted():
                 continue
             for block_num in entry.blks:
                 if 0 < block_num <= self.dpb.dsm:
                     used_blocks.add(block_num)
+
         self._cached_allocation_map = used_blocks
         self.logger.debug(f"Built allocation map with {len(used_blocks)} used blocks.")
 

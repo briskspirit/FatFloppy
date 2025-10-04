@@ -12,7 +12,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QMessageBox, QMainWindow
 
 from ...core.controller import DiskController
-from ...core.format_definitions import FLOPPY_FORMATS
+from ...core.filesystem_registry import FilesystemRegistry
 
 
 class DiskManager(QObject):
@@ -466,7 +466,8 @@ class DiskManager(QObject):
         """
         if "profile_name" in format_info:
             profile_name = format_info["profile_name"]
-            original_profile = FLOPPY_FORMATS.get(profile_name)
+            all_formats = FilesystemRegistry.get_all_formats()
+            original_profile = all_formats.get(profile_name)
             if original_profile:
                 self.logger.debug(f"Retrieved predefined format profile: {profile_name}")
                 return copy.deepcopy(original_profile)

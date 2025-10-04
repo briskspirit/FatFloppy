@@ -14,7 +14,7 @@ Classes:
 import datetime
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any, Callable, ClassVar
+from typing import List, Optional, Tuple, Dict, Any, Callable, ClassVar, Type
 
 from ..disk import Disk
 from ..format_profile import FormatProfile
@@ -49,6 +49,8 @@ class Filesystem(ABC):
     filesystem_aliases: ClassVar[List[str]] = []  # e.g., ["FAT", "MSDOS"]
     validity_threshold: ClassVar[int] = 30
 
+    config_class: ClassVar[Optional[Type]] = None
+
     # Optional: Minimum version required
     min_fatfloppy_version: ClassVar[Optional[str]] = None
 
@@ -63,6 +65,18 @@ class Filesystem(ABC):
             raise ValueError(f"{self.__class__.__name__} must define filesystem_type")
         self.logger = get_logger(self.__class__.__name__)
         self.disk = disk
+
+    @classmethod
+    def get_format_definitions(cls) -> Dict[str, 'FormatProfile']:
+        """
+        Returns all format definitions provided by this filesystem plugin.
+
+        Subclasses should override this to provide their format definitions.
+
+        Returns:
+            Dictionary mapping format names to FormatProfile objects
+        """
+        return {}
 
     @staticmethod
     @abstractmethod

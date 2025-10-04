@@ -3,11 +3,11 @@
 Provides the base classes and factory for format detection strategies.
 """
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple, Any, Dict, List, ClassVar
+from typing import Optional, Tuple, Any, Dict, ClassVar
 
 from .physical_format import PhysicalFormat
 from .format_profile import FormatProfile
-from .filesystem_factory import create_filesystem, get_filesystem_class_by_type
+from .filesystem_factory import create_filesystem
 from .utils.logging_config import get_logger
 
 
@@ -75,8 +75,8 @@ class MetadataBasedDetector(FormatDetector, ABC):
                 continue
             if not self._physical_formats_match(profile.physical_format, physical_format):
                 continue
-            # CORRECTED: Pass the profile's 'name' to the matching function.
-            if self._filesystem_configs_match(name, profile.filesystem_config, fs_config):
+            # Pass the profile object directly instead of just the name
+            if self._filesystem_configs_match(profile, profile.filesystem_config, fs_config):
                 return name
         return None
 
@@ -85,17 +85,32 @@ class MetadataBasedDetector(FormatDetector, ABC):
         return (profile_pf.cylinders == detected_pf.cylinders and
                 profile_pf.heads == detected_pf.heads and
                 profile_pf.bytes_per_sector == detected_pf.bytes_per_sector and
-                profile_pf.get_sectors_per_track(0, 0) == detected_pf.get_sectors_per_track(0, 0))
+                profile_pf.get_sectors_per_track(0, 0) == detected_pf.get_sectors_per_track(0, 0) and
+                profile_pf.get_sectors_per_track(35, 0) == detected_pf.get_sectors_per_track(35, 0)
+                )
 
-    def _filesystem_configs_match(self, profile_name: str, profile_config: Any, detected_config: Any) -> bool:
+    def _filesystem_configs_match(self, profile: FormatProfile, profile_config: Any, detected_config: Any) -> bool:
         """
         Delegates config comparison to the relevant filesystem plugin.
+
+        Args:
+            profile: The FormatProfile being matched
+            profile_config: Filesystem config from the profile
+            detected_config: Filesystem config detected from disk
+
+        Returns:
+            True if configs match according to the filesystem plugin
         """
         if type(profile_config) != type(detected_config):
             return False
 
-        # Find the filesystem class associated with the profile using its name.
-        fs_type = self.known_formats[profile_name].filesystem_type
+        # Get filesystem type directly from the profile object (no lookup needed)
+        fs_type = profile.get_filesystem_type()
+
+        if not fs_type:
+            return False
+
+        from .filesystem_factory import get_filesystem_class_by_type
         fs_class = get_filesystem_class_by_type(fs_type)
 
         if fs_class and hasattr(fs_class, 'configs_match'):

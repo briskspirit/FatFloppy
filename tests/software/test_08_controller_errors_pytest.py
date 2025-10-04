@@ -76,7 +76,7 @@ def test_01_ops_before_open(error_controller: DiskController) -> None:
     with pytest.raises(ValueError, match="No disk opened"):
         controller.set_geometry(dummy_geom)
 
-    assert controller.detect_format() == (None, None)
+    assert controller.detect_format() == (None, None, None)
     with pytest.raises(ValueError, match="No disk opened"):
         controller.set_format(mock_profile)
 
@@ -110,8 +110,8 @@ def test_02_ops_after_close(error_controller: DiskController) -> None:
     mock_profile.description = "Mock Format"
     mock_profile.physical_format = dummy_geom
 
-    # CHANGED: Mock the new detect_format method instead
-    with patch.object(controller, "detect_format", return_value=(None, None)):
+    # Setup: mock a disk being open
+    with patch.object(controller, "detect_format", return_value=(None, None, None)):
         controller.driver = MagicMock()
         controller.disk = MagicMock()
         controller.filesystem = MagicMock()
@@ -129,7 +129,7 @@ def test_02_ops_after_close(error_controller: DiskController) -> None:
     with pytest.raises(ValueError, match="No disk opened"):
         controller.set_geometry(dummy_geom)
 
-    assert controller.detect_format() == (None, None)
+    assert controller.detect_format() == (None, None, None)
     with pytest.raises(ValueError, match="No disk opened"):
         controller.set_format(mock_profile)
 

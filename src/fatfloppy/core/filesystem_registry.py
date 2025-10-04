@@ -8,6 +8,7 @@ and registers all filesystem plugins automatically on import.
 from typing import Dict, Type, List, Optional
 
 from .filesystems.fs_base import Filesystem
+from .format_profile import FormatProfile
 from .plugin_scanner import PluginScanner, PluginValidationError
 from .utils.logging_config import get_logger
 
@@ -20,6 +21,7 @@ class FilesystemRegistry:
     _registry: Dict[str, Type[Filesystem]] = {}
     _name_map: Dict[str, str] = {}
     _initialized: bool = False
+    _all_formats: Dict[str, FormatProfile] = {}
 
     @classmethod
     def _validate_filesystem(cls, fs_class: Type[Filesystem]) -> None:
@@ -85,8 +87,42 @@ class FilesystemRegistry:
                 f"(type={fs_type}, aliases={aliases})"
             )
 
+        # NEW: Aggregate format definitions from all plugins
+        cls._aggregate_format_definitions()
+
         cls._initialized = True
         logger.info(f"Filesystem discovery complete. Registered {len(cls._registry)} filesystems.")
+
+    @classmethod
+    def _aggregate_format_definitions(cls) -> None:
+        """
+        Collects format definitions from all registered filesystem plugins.
+        """
+        logger.info("Aggregating format definitions from filesystem plugins...")
+
+        for fs_type, fs_class in cls._registry.items():
+            if hasattr(fs_class, 'get_format_definitions'):
+                try:
+                    formats = fs_class.get_format_definitions()
+                    if formats:
+                        cls._all_formats.update(formats)
+                        logger.info(f"Loaded {len(formats)} formats from {fs_class.__name__}")
+                except Exception as e:
+                    logger.error(f"Failed to load formats from {fs_class.__name__}: {e}")
+
+        logger.info(f"Total formats registered: {len(cls._all_formats)}")
+
+    @classmethod
+    def get_all_formats(cls) -> Dict[str, FormatProfile]:
+        """
+        Returns all format definitions from all filesystem plugins.
+
+        Returns:
+            Dictionary mapping format names to FormatProfile objects
+        """
+        if not cls._initialized:
+            cls._discover_and_register()
+        return cls._all_formats.copy()
 
     @classmethod
     def get_by_name(cls, name: str) -> Optional[Type[Filesystem]]:

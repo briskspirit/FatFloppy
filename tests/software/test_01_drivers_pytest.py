@@ -15,15 +15,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from fatfloppy.core.disk import Disk
 from fatfloppy.core.drivers import IMGImageDriver
-from fatfloppy.core.format_definitions import FLOPPY_FORMATS
+from fatfloppy.core.filesystem_registry import FilesystemRegistry
 from fatfloppy.core.physical_format import PhysicalFormat
 
 # --- Constants and Type Aliases ---
 
 RESOURCE_DIR = Path(__file__).parent.parent / "resources"
 EMPTY_IMG_SRC = RESOURCE_DIR / "empty_formatted_144m.img"
-FMT_144 = FLOPPY_FORMATS["ibm_3.5_1.44m"]
-FMT_720 = FLOPPY_FORMATS["ibm_3.5_720k"]
+
+# Get format profiles from registry
+_ALL_FORMATS = FilesystemRegistry.get_all_formats()
+FMT_144 = _ALL_FORMATS["ibm_3.5_1.44m"]
+FMT_720 = _ALL_FORMATS["ibm_3.5_720k"]
 
 # Type alias for the fixture's yielded tuple for cleaner type hinting.
 DriverSetupFixture = Tuple[IMGImageDriver, Path, int, PhysicalFormat]

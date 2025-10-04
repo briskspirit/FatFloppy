@@ -362,8 +362,9 @@ class DriveSelectionDialog(QDialog):
             _set_default_parameters_for_size(self.size_combo.currentData(), self.format_widgets)
         elif format_key is not None:
             try:
-                from ..core.format_definitions import FLOPPY_FORMATS
-                profile = FLOPPY_FORMATS.get(format_key)
+                from ..core.filesystem_registry import FilesystemRegistry
+                all_formats = FilesystemRegistry.get_all_formats()
+                profile = all_formats.get(format_key)
                 _populate_params_from_profile(profile, self.format_widgets)
             except Exception as e:
                 logger.error(f"Error loading format definition for '{format_key}': {e}")
@@ -391,8 +392,9 @@ class DriveSelectionDialog(QDialog):
         drive_size = self.size_combo.currentData()
 
         try:
-            from ..core.format_definitions import FLOPPY_FORMATS
-            for name, profile in FLOPPY_FORMATS.items():
+            from ..core.filesystem_registry import FilesystemRegistry
+            all_formats = FilesystemRegistry.get_all_formats()
+            for name, profile in all_formats.items():
                 if f'{drive_size}"' in profile.description:
                     self.format_combo.addItem(f"{profile.description} ({name})", name)
         except Exception as e:
@@ -594,8 +596,9 @@ class CreateImageDialog(QDialog):
         format_key = self.format_combo.currentData()
         if format_key:
             try:
-                from ..core.format_definitions import FLOPPY_FORMATS
-                profile = FLOPPY_FORMATS.get(format_key)
+                from ..core.filesystem_registry import FilesystemRegistry
+                all_formats = FilesystemRegistry.get_all_formats()
+                profile = all_formats.get(format_key)
                 _populate_params_from_profile(profile, self.format_widgets)
                 self._update_file_name()
             except Exception as e:
@@ -646,8 +649,9 @@ class CreateImageDialog(QDialog):
         drive_size = self.size_combo.currentData()
 
         try:
-            from ..core.format_definitions import FLOPPY_FORMATS
-            for name, profile in FLOPPY_FORMATS.items():
+            from ..core.filesystem_registry import FilesystemRegistry
+            all_formats = FilesystemRegistry.get_all_formats()
+            for name, profile in all_formats.items():
                 if f'{drive_size}"' in profile.description:
                     self.format_combo.addItem(f"{profile.description} ({name})", name)
 

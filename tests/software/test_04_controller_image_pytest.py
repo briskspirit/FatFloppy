@@ -19,8 +19,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from fatfloppy.core.controller import DiskController
-from fatfloppy.core.filesystems.fat12fs import FATFilesystem
-from fatfloppy.core.format_definitions import FLOPPY_FORMATS
+from fatfloppy.core.filesystems.fat12_fs import FATFilesystem
+from fatfloppy.core.filesystem_registry import FilesystemRegistry
 
 # --- Constants and Type Aliases ---
 
@@ -28,7 +28,10 @@ RESOURCE_DIR = Path(__file__).parent.parent / "resources"
 POPULATED_IMG_SRC = RESOURCE_DIR / "populated_read_test_144m.img"
 EMPTY_IMG_SRC = RESOURCE_DIR / "empty_formatted_144m.img"
 TEST_TXT_CONTENT_SRC = RESOURCE_DIR / "TEST.TXT"
-FMT_144 = FLOPPY_FORMATS["ibm_3.5_1.44m"]
+
+# Get format from registry
+_ALL_FORMATS = FilesystemRegistry.get_all_formats()
+FMT_144 = _ALL_FORMATS["ibm_3.5_1.44m"]
 
 # Type alias for the empty_controller fixture's yielded tuple.
 EmptyControllerFixture = Tuple[DiskController, Path]

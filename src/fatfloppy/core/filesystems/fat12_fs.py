@@ -14,7 +14,7 @@ import re
 import struct
 import datetime
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any, ClassVar
+from typing import List, Optional, Tuple, Dict, Any, ClassVar, Type
 
 from .fs_base import Filesystem, FileInfo
 from ..format_profile import FormatProfile
@@ -165,8 +165,6 @@ class FATVolumeInfo:
 
 
 # --- Constants ---
-logger = get_logger("FATFilesystem")
-
 FAT12_MAX_CLUSTERS = 4084
 FAT12_EOC = 0xFFF
 FAT12_EOC_MIN = 0xFF8
@@ -198,7 +196,9 @@ class FATFilesystem(Filesystem):
     validity_threshold: ClassVar[int] = 40  # Score above which the filesystem is considered usable
     VALIDITY_THRESHOLD = validity_threshold  # For backward compatibility with tests
 
-    def __init__(self, disk: Disk):
+    config_class: ClassVar[Type] = FATVolumeInfo
+
+    def __init__(self, disk: Disk, config: Optional[FATVolumeInfo] = None):
         """
         Initializes the FATFilesystem instance.
 
@@ -207,17 +207,29 @@ class FATFilesystem(Filesystem):
 
         Args:
             disk: The Disk object to operate on.
+            config: Optional FAT Boot Sector / BPB for this filesystem.
         """
         super().__init__(disk)
         self.logger = get_logger(self.__class__.__name__)
         self._init_completed = False
-        self.boot_sector: Optional[FATVolumeInfo] = None
+        self.boot_sector: Optional[FATVolumeInfo] = config
         self._cached_allocated_clusters: Optional[List[int]] = None
         self.fat_cache: Optional[bytearray] = None
         self.fat_dirty = False
         self._cached_validity_score: Optional[int] = None
 
         self._try_initialize()
+
+    @classmethod
+    def get_format_definitions(cls) -> Dict[str, FormatProfile]:
+        """
+        Returns all FAT12 format definitions provided by this plugin.
+
+        Returns:
+            Dictionary mapping format names to FormatProfile objects
+        """
+        from .formats.fat12_formats import FAT12_FORMATS
+        return FAT12_FORMATS
 
     @staticmethod
     def configs_match(config1: Any, config2: Any) -> bool:
@@ -791,16 +803,6 @@ class FATFilesystem(Filesystem):
                 score += 50
                 self.boot_sector = parsed_bpb
                 self._try_initialize()
-            else:
-                # Fallback: Check for a profile-associated BPB
-                if (self.disk and self.disk.physical_format and
-                        hasattr(self.disk.physical_format, '_associated_filesystem_config')):
-                    fs_config = getattr(self.disk.physical_format, '_associated_filesystem_config')
-                    if isinstance(fs_config, FATVolumeInfo):
-                        self.logger.debug("No valid BPB on disk, validating against profile BPB.")
-                        score += 10
-                        self.boot_sector = fs_config
-                        self._try_initialize()
 
             # Further checks if initialization was successful
             if self._init_completed and self.boot_sector:
@@ -1006,27 +1008,6 @@ class FATFilesystem(Filesystem):
             if allocated_clusters:
                 self._free_cluster_chain(allocated_clusters[0])
             return None
-
-    def _check_and_adjust_geometry(self, driver: DiskIODriver, explicit_format_set: bool) -> None:
-        """
-        DEPRECATED/UNUSED: Adjusts disk geometry based on driver or boot sector.
-        Note: This logic is complex and its usage has been removed. Retained
-              for historical purposes but is not actively called.
-        """
-        bs = self.boot_sector
-        # Check against driver's physical format if available
-        if hasattr(driver, 'physical_format') and driver.physical_format:
-            actual_spt = driver.physical_format.track_formats[0].sectors_per_track
-            if actual_spt != self.disk.physical_format.track_formats[0].sectors_per_track:
-                self.logger.debug(f"Adjusting geometry based on driver physical format (SPT: {actual_spt})")
-                # (Complex geometry adjustment logic omitted for clarity)
-        # Fallback to boot sector geometry if no explicit format was set
-        elif (not explicit_format_set and bs and
-              bs.sectors_per_track > 0 and bs.num_heads > 0):
-            if (self.disk.physical_format.track_formats[0].sectors_per_track != bs.sectors_per_track or
-                    self.disk.physical_format.heads != bs.num_heads):
-                self.logger.debug(f"Adjusting geometry based on boot sector (H: {bs.num_heads}, SPT: {bs.sectors_per_track})")
-                # (Complex geometry adjustment logic omitted for clarity)
 
     def _cluster_to_offset(self, cluster: int) -> int:
         """Converts a cluster number to its byte offset from the start of the disk."""
@@ -1553,13 +1534,6 @@ class FATFilesystem(Filesystem):
         try:
             # Attempt to load from the disk itself first
             self._load_boot_sector()
-            # Fallback to a profile-associated BPB if disk BPB is invalid
-            if not self.boot_sector or not self.boot_sector.is_valid():
-                if (self.disk and self.disk.physical_format and
-                        hasattr(self.disk.physical_format, '_associated_filesystem_config')):
-                    fs_config = getattr(self.disk.physical_format, '_associated_filesystem_config')
-                    if isinstance(fs_config, FATVolumeInfo):
-                        self.boot_sector = fs_config
 
             # Initialize if a valid BPB is now available
             if self.boot_sector and self.boot_sector.is_valid():

@@ -1,0 +1,56 @@
+#!/usr/bin/env sh
+set -euo pipefail
+
+COV_TARGET="${1:-../src/fatfloppy}"
+# newline-separated globs; override via env
+OMIT_PATTERNS=${OMIT_PATTERNS:-"*/fatfloppy/gui/*"}
+
+CFG="$(mktemp -t covomit).ini"
+trap 'rm -f "$CFG"' EXIT INT TERM
+
+# Write a valid Coverage config (indent continuation lines)
+{
+  printf "[run]\nbranch = True\nomit =\n"
+  printf '%s\n' "$OMIT_PATTERNS" | sed 's/^/    /'
+  printf "\n[report]\nomit =\n"
+  printf '%s\n' "$OMIT_PATTERNS" | sed 's/^/    /'
+  printf "\n"
+} >"$CFG"
+
+echo ">> Using rcfile: $CFG"
+
+pytest \
+  --cov="$COV_TARGET" \
+  --cov-branch \
+  --cov-report=term-missing \
+  --cov-report=json:coverage_no_gui.json \
+  --cov-config="$CFG"
+
+# Trim JSON -> coverage_top_no_gui.json
+if command -v jq >/dev/null 2>&1; then
+  jq '{
+    totals: .totals,
+    worst: ([ .files
+      | to_entries[]
+      | {path: .key,
+         missing: (.value.missing_lines|length),
+         percent: .value.summary.percent_covered,
+         missing_lines: .value.missing_lines}
+    ] | sort_by(.percent) | .[:40])
+  }' coverage_no_gui.json > coverage_top_no_gui.json
+else
+  python3 - <<'PY'
+import json
+d=json.load(open("coverage_no_gui.json"))
+files=[{"path":p,
+        "missing":len(i.get("missing_lines") or []),
+        "percent":(i.get("summary") or {}).get("percent_covered"),
+        "missing_lines":(i.get("missing_lines") or [])}
+       for p,i in (d.get("files") or {}).items()]
+files.sort(key=lambda x: (x["percent"] if x["percent"] is not None else -1))
+json.dump({"totals":d.get("totals"),"worst":files[:40]}, open("coverage_top_no_gui.json","w"), indent=2)
+PY
+fi
+
+echo ">> Done: coverage_no_gui.json + coverage_top_no_gui.json"
+

@@ -46,7 +46,7 @@ class TrackFormat:
     sectors_per_track: int
     encoding: str
     rate: int
-    interleave: int
+    interleave: Optional[int] = 1
     bytes_per_sector: Optional[int] = None
     sector_translation_table: Optional[List[int]] = field(default=None)
     id_start: int = 1

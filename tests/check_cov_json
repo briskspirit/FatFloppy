@@ -1,0 +1,56 @@
+#!/usr/bin/env sh
+set -euo pipefail
+
+# Usage: ./run_cov.sh [COV_TARGET]
+# Default keeps your previous target path.
+COV_TARGET="${1:-../src/fatfloppy}"
+
+echo ">> Running pytest with branch coverage on: $COV_TARGET"
+pytest \
+  --cov="$COV_TARGET" \
+  --cov-branch \
+  --cov-report=term-missing \
+  --cov-report=json:coverage.json
+
+echo ">> coverage.json generated."
+
+# Prefer jq if available; otherwise fall back to Python.
+if command -v jq >/dev/null 2>&1; then
+  echo ">> Trimming with jq -> coverage_top.json"
+  jq '{
+    totals: .totals,
+    worst: ([ .files
+      | to_entries[]
+      | {path: .key,
+         missing: (.value.missing_lines|length),
+         percent: .value.summary.percent_covered,
+         missing_lines: .value.missing_lines}
+    ] | sort_by(.percent) | .[:40])
+  }' coverage.json > coverage_top.json
+else
+  echo ">> jq not found; using Python to trim -> coverage_top.json"
+  python3 - <<'PY'
+import json, sys
+with open("coverage.json","r") as f:
+    d = json.load(f)
+files = []
+for path, info in d.get("files", {}).items():
+    missing = info.get("missing_lines", []) or []
+    percent = ((info.get("summary") or {}).get("percent_covered"))
+    files.append({
+        "path": path,
+        "missing": len(missing),
+        "percent": percent,
+        "missing_lines": missing
+    })
+files.sort(key=lambda x: (x["percent"] if x["percent"] is not None else -1))
+out = {"totals": d.get("totals"), "worst": files[:40]}
+with open("coverage_top.json","w") as f:
+    json.dump(out, f, indent=2)
+PY
+fi
+
+echo ">> Done."
+echo "   - Full JSON: coverage.json"
+echo "   - Trimmed:   coverage_top.json   (send me this one)"
+

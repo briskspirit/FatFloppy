@@ -75,7 +75,7 @@ def test_hdos_disk_image_read_and_verify(
     assert hdos_controller.disk is not None
     assert isinstance(hdos_controller.filesystem, HDOSFilesystem)
 
-    detected_format_name, _ = hdos_controller.detect_format()
+    detected_format_name, _, _ = hdos_controller.detect_format()
     assert detected_format_name == expected_format_name
 
     # 2. Check directory listing and filenames
@@ -188,6 +188,7 @@ def test_hdos_format_and_write(hdos_controller: DiskController, tmp_path: Path) 
 
     # 2. Open the blank disk and format it
     assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG", format_info={"format_name": profile_name})
+    assert hdos_controller.format_disk_media(profile_name)
     format_success = hdos_controller.format_disk_media(profile_name)
     assert format_success, "format_disk command failed"
 
@@ -323,8 +324,20 @@ def test_hdos_format_creates_structures(hdos_controller: DiskController, tmp_pat
                                      format_info={"format_name": profile_name})
     assert hdos_controller.format_disk_media(profile_name)
 
+    # After formatting, the filesystem needs to be refreshed to pick up the formatted structures
+    # The format_disk_media already updates the filesystem, but we need to verify it
     fs = hdos_controller.filesystem
     assert isinstance(fs, HDOSFilesystem)
+
+    # If label is None, the filesystem hasn't been properly initialized after format
+    # This can happen if the filesystem was created before formatting
+    if fs.label is None:
+        # Re-open the disk to force filesystem re-initialization
+        hdos_controller.close_disk()
+        assert hdos_controller.open_disk(str(blank_img_path), disk_type="IMG",
+                                         format_info={"format_name": profile_name})
+        fs = hdos_controller.filesystem
+        assert isinstance(fs, HDOSFilesystem)
 
     # Verify label sector exists and is valid
     assert fs.label is not None

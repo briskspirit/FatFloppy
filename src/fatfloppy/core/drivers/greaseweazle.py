@@ -300,16 +300,15 @@ class GreaseweazleDriver(DiskIODriver):
             # No format provided is OK - we can auto-detect
             return True, None
 
-        # If we have format info, we need to resolve it to validate
-        # Import here to avoid circular dependency
-        from ..format_definitions import FLOPPY_FORMATS
+        from ..filesystem_registry import FilesystemRegistry
 
         # Try to resolve to a physical format
         if 'physical_format' in format_info:
             pf = format_info['physical_format']
         elif 'format_name' in format_info:
             format_name = format_info['format_name']
-            profile = FLOPPY_FORMATS.get(format_name)
+            all_formats = FilesystemRegistry.get_all_formats()
+            profile = all_formats.get(format_name)
             if not profile or not profile.physical_format:
                 return False, f"Unknown or invalid format name: {format_name}"
             pf = profile.physical_format

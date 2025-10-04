@@ -10,7 +10,7 @@ logical sector requests into driver-level commands.
 Classes:
     Disk: Represents a floppy disk, handling geometry and sector I/O.
 """
-from typing import Optional, Tuple
+from typing import Optional
 
 from .utils.logging_config import get_logger
 from .drivers.base_driver import DiskIODriver

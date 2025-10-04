@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 from fatfloppy.core.drivers import IMDImageDriver
 from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
-from fatfloppy.core.format_definitions import FLOPPY_FORMATS
+from fatfloppy.core.filesystem_registry import FilesystemRegistry
 from fatfloppy.core.format_profile import FormatProfile
 
 # --- Constants ---
@@ -39,8 +39,10 @@ if not TEST_IMD_SRC.exists():
     RESOURCE_DIR = Path(__file__).parent.parent / 'resources'
     TEST_IMD_SRC = RESOURCE_DIR / 'imd_720k.imd'
 
-FMT_720: FormatProfile = FLOPPY_FORMATS['ibm_3.5_720k']
-FMT_144: FormatProfile = FLOPPY_FORMATS['ibm_3.5_1.44m']
+# Get formats from registry
+_ALL_FORMATS = FilesystemRegistry.get_all_formats()
+FMT_720: FormatProfile = _ALL_FORMATS['ibm_3.5_720k']
+FMT_144: FormatProfile = _ALL_FORMATS['ibm_3.5_1.44m']
 SIMPLE_BPS: int = 128  # For build_test_imd_data default
 
 IMD_SECTOR_SIZE_MAP = {
