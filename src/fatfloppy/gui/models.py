@@ -22,7 +22,7 @@ class FileSystemNode:
         is_dir: bool = False,
         modified: str = "N/A",
         attributes: str = "-",
-        parent: FileSystemNode | None = None
+        parent: FileSystemNode | None = None,
     ) -> None:
         """
         Initializes a FileSystemNode.
@@ -43,7 +43,7 @@ class FileSystemNode:
         self.parent: FileSystemNode | None = parent
         self.children: list[FileSystemNode] = []
 
-    def appendChild(self, child: FileSystemNode) -> None:
+    def appendChild(self, child: FileSystemNode) -> None:  # noqa: N802
         """
         Adds a child node to this node's list of children.
 

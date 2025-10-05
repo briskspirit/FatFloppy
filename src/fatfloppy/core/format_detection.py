@@ -2,6 +2,7 @@
 """
 Provides the base classes and factory for format detection strategies.
 """
+
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar, Optional
 
@@ -17,8 +18,9 @@ class FormatDetector(ABC):
     detector_for_driver: ClassVar[str] = ""
 
     def __init__(self, disk, driver, known_formats: dict[str, FormatProfile]):
-        if (not self.detector_for_driver and
-                self.__class__.__name__ not in ["MetadataBasedDetector"]):
+        if not self.detector_for_driver and self.__class__.__name__ not in [
+            "MetadataBasedDetector"
+        ]:
             raise ValueError(
                 f"{self.__class__.__name__} must define detector_for_driver"
             )
@@ -60,8 +62,7 @@ class MetadataBasedDetector(FormatDetector, ABC):
 
         if parsed_fs_config:
             matched_profile = self._match_to_known_profile(
-                physical_format,
-                parsed_fs_config
+                physical_format, parsed_fs_config
             )
             if matched_profile:
                 self.logger.info(f"Matched known profile: {matched_profile}")
@@ -71,10 +72,7 @@ class MetadataBasedDetector(FormatDetector, ABC):
         return None, None, physical_format
 
     def _filesystem_configs_match(
-        self,
-        profile: FormatProfile,
-        profile_config: Any,
-        detected_config: Any
+        self, profile: FormatProfile, profile_config: Any, detected_config: Any
     ) -> bool:
         """
         Delegates config comparison to the relevant filesystem plugin.
@@ -87,7 +85,7 @@ class MetadataBasedDetector(FormatDetector, ABC):
         Returns:
             True if configs match according to the filesystem plugin
         """
-        if type(profile_config) != type(detected_config):
+        if type(profile_config) is not type(detected_config):
             return False
 
         fs_type = profile.get_filesystem_type()
@@ -97,15 +95,13 @@ class MetadataBasedDetector(FormatDetector, ABC):
 
         fs_class = get_filesystem_class_by_type(fs_type)
 
-        if fs_class and hasattr(fs_class, 'configs_match'):
+        if fs_class and hasattr(fs_class, "configs_match"):
             return fs_class.configs_match(profile_config, detected_config)
 
         return False
 
     def _match_to_known_profile(
-        self,
-        physical_format: PhysicalFormat,
-        fs_config: Any
+        self, physical_format: PhysicalFormat, fs_config: Any
     ) -> Optional[str]:
         """
         Attempts to match the detected format to a known profile.
@@ -121,14 +117,11 @@ class MetadataBasedDetector(FormatDetector, ABC):
             if not profile.physical_format:
                 continue
             if not self._physical_formats_match(
-                profile.physical_format,
-                physical_format
+                profile.physical_format, physical_format
             ):
                 continue
             if self._filesystem_configs_match(
-                profile,
-                profile.filesystem_config,
-                fs_config
+                profile, profile.filesystem_config, fs_config
             ):
                 return name
         return None
@@ -144,12 +137,10 @@ class MetadataBasedDetector(FormatDetector, ABC):
             fs = create_filesystem(self.disk)
             if fs and fs.get_validity_score() >= fs.validity_threshold:
                 config = fs.get_specific_config()
-                if hasattr(fs, 'apply_volume_to_driver'):
+                if hasattr(fs, "apply_volume_to_driver"):
                     try:
                         fs.apply_volume_to_driver()
-                        self.logger.info(
-                            "Applied filesystem-specific volume scheme"
-                        )
+                        self.logger.info("Applied filesystem-specific volume scheme")
                     except Exception as e:
                         self.logger.warning(f"Could not apply volumes: {e}")
                 return config
@@ -158,9 +149,7 @@ class MetadataBasedDetector(FormatDetector, ABC):
         return None
 
     def _physical_formats_match(
-        self,
-        profile_pf: PhysicalFormat,
-        detected_pf: PhysicalFormat
+        self, profile_pf: PhysicalFormat, detected_pf: PhysicalFormat
     ) -> bool:
         """
         Checks if two physical formats match.
@@ -173,20 +162,18 @@ class MetadataBasedDetector(FormatDetector, ABC):
             True if the formats match
         """
         return (
-            profile_pf.cylinders == detected_pf.cylinders and
-            profile_pf.heads == detected_pf.heads and
-            profile_pf.bytes_per_sector == detected_pf.bytes_per_sector and
-            profile_pf.get_sectors_per_track(0, 0) ==
-                detected_pf.get_sectors_per_track(0, 0) and
-            profile_pf.get_sectors_per_track(35, 0) ==
-                detected_pf.get_sectors_per_track(35, 0)
+            profile_pf.cylinders == detected_pf.cylinders
+            and profile_pf.heads == detected_pf.heads
+            and profile_pf.bytes_per_sector == detected_pf.bytes_per_sector
+            and profile_pf.get_sectors_per_track(0, 0)
+            == detected_pf.get_sectors_per_track(0, 0)
+            and profile_pf.get_sectors_per_track(35, 0)
+            == detected_pf.get_sectors_per_track(35, 0)
         )
 
 
 def create_format_detector(
-    disk,
-    driver,
-    known_formats: dict[str, FormatProfile]
+    disk, driver, known_formats: dict[str, FormatProfile]
 ) -> FormatDetector:
     """
     Factory function to create the appropriate detector for a driver.
@@ -208,8 +195,7 @@ def create_format_detector(
 
     if not detector_class:
         raise ValueError(
-            f"No format detector registered for driver type: "
-            f"{type(driver).__name__}"
+            f"No format detector registered for driver type: {type(driver).__name__}"
         )
 
     return detector_class(disk, driver, known_formats)

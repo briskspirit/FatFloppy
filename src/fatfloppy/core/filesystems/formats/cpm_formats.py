@@ -65,12 +65,72 @@ MITS_DATA_TRACK_START = 6
 MITS_DATA_TRACK_END = 76
 MITS_SECTORS_PER_TRACK = 32
 MITS_SYSTEM_SECTOR_TRANSLATION = [
-    1, 9, 17, 25, 3, 11, 19, 27, 5, 13, 21, 29, 7, 15, 23, 31,
-    2, 10, 18, 26, 4, 12, 20, 28, 6, 14, 22, 30, 8, 16, 24, 32,
+    1,
+    9,
+    17,
+    25,
+    3,
+    11,
+    19,
+    27,
+    5,
+    13,
+    21,
+    29,
+    7,
+    15,
+    23,
+    31,
+    2,
+    10,
+    18,
+    26,
+    4,
+    12,
+    20,
+    28,
+    6,
+    14,
+    22,
+    30,
+    8,
+    16,
+    24,
+    32,
 ]
 MITS_DATA_SECTOR_TRANSLATION = [
-    1, 9, 17, 25, 3, 11, 19, 27, 5, 13, 21, 29, 7, 15, 23, 31,
-    18, 26, 2, 10, 20, 28, 4, 12, 22, 30, 6, 14, 24, 32, 8, 16,
+    1,
+    9,
+    17,
+    25,
+    3,
+    11,
+    19,
+    27,
+    5,
+    13,
+    21,
+    29,
+    7,
+    15,
+    23,
+    31,
+    18,
+    26,
+    2,
+    10,
+    20,
+    28,
+    4,
+    12,
+    22,
+    30,
+    6,
+    14,
+    24,
+    32,
+    8,
+    16,
 ]
 
 
@@ -246,7 +306,13 @@ CPM_FORMATS["cpm_8_mits_dsk_308k"] = CPM_FORMATS["cpm_8_mits_altair_308k_mits_sp
 
 pf_525 = create_525_sssd_base(sectors_per_track=10, bytes_per_sector=256)
 pf_525.track_formats = [
-    replace(pf_525.track_formats[0], interleave=4, gap1_bytes=45, gap2_bytes=12, gap3_bytes=30)
+    replace(
+        pf_525.track_formats[0],
+        interleave=4,
+        gap1_bytes=45,
+        gap2_bytes=12,
+        gap3_bytes=30,
+    )
 ]
 
 CPM_FORMATS["cpm_5.25_100k"] = FormatProfile(

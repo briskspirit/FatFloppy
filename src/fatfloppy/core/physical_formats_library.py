@@ -11,8 +11,7 @@ from .physical_format import PhysicalFormat, TrackFormat
 
 
 def create_8inch_sssd_base(
-    sectors_per_track: int = 26,
-    bytes_per_sector: int = 128
+    sectors_per_track: int = 26, bytes_per_sector: int = 128
 ) -> PhysicalFormat:
     """
     8" Single-Sided Single-Density base format.
@@ -51,8 +50,7 @@ def create_8inch_sssd_base(
 
 
 def create_8inch_dssd_base(
-    sectors_per_track: int = 26,
-    bytes_per_sector: int = 128
+    sectors_per_track: int = 26, bytes_per_sector: int = 128
 ) -> PhysicalFormat:
     """
     8" Double-Sided Single-Density base format.
@@ -91,8 +89,7 @@ def create_8inch_dssd_base(
 
 
 def create_8inch_ssdd_base(
-    sectors_per_track: int = 26,
-    bytes_per_sector: int = 256
+    sectors_per_track: int = 26, bytes_per_sector: int = 256
 ) -> PhysicalFormat:
     """
     8" Single-Sided Double-Density base format.
@@ -131,8 +128,7 @@ def create_8inch_ssdd_base(
 
 
 def create_8inch_dsdd_base(
-    sectors_per_track: int = 26,
-    bytes_per_sector: int = 256
+    sectors_per_track: int = 26, bytes_per_sector: int = 256
 ) -> PhysicalFormat:
     """
     8" Double-Sided Double-Density base format.
@@ -171,8 +167,7 @@ def create_8inch_dsdd_base(
 
 
 def create_525_sssd_base(
-    sectors_per_track: int = 10,
-    bytes_per_sector: int = 256
+    sectors_per_track: int = 10, bytes_per_sector: int = 256
 ) -> PhysicalFormat:
     """
     5.25" Single-Sided Single-Density base format.
@@ -212,8 +207,7 @@ def create_525_sssd_base(
 
 
 def create_525_dssd_base(
-    sectors_per_track: int = 10,
-    bytes_per_sector: int = 256
+    sectors_per_track: int = 10, bytes_per_sector: int = 256
 ) -> PhysicalFormat:
     """
     5.25" Double-Sided Single-Density base format.
@@ -252,8 +246,7 @@ def create_525_dssd_base(
 
 
 def create_525_ssdd_base(
-    sectors_per_track: int = 9,
-    bytes_per_sector: int = 512
+    sectors_per_track: int = 9, bytes_per_sector: int = 512
 ) -> PhysicalFormat:
     """
     5.25" Single-Sided Double-Density base format.
@@ -292,8 +285,7 @@ def create_525_ssdd_base(
 
 
 def create_525_dsdd_base(
-    sectors_per_track: int = 9,
-    bytes_per_sector: int = 512
+    sectors_per_track: int = 9, bytes_per_sector: int = 512
 ) -> PhysicalFormat:
     """
     5.25" Double-Sided Double-Density base format (360KB standard).
@@ -440,8 +432,7 @@ def create_35_dsdd_base(sectors_per_track: int = 9) -> PhysicalFormat:
 
 
 def create_35_dshd_base(
-    sectors_per_track: int = 18,
-    cylinders: int = 80
+    sectors_per_track: int = 18, cylinders: int = 80
 ) -> PhysicalFormat:
     """
     3.5" Double-Sided High-Density base format (1.44MB standard).

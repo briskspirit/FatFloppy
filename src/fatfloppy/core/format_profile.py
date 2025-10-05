@@ -2,6 +2,7 @@
 """
 Defines the data structure for a complete disk format profile.
 """
+
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -50,9 +51,11 @@ class FormatProfile:
         config_type = type(self.filesystem_config)
 
         for fs_class in FilesystemRegistry.get_all():
-            if (hasattr(fs_class, 'config_class') and
-                    fs_class.config_class is not None):
-                if fs_class.config_class == config_type:
-                    return fs_class.filesystem_type
+            if (
+                hasattr(fs_class, "config_class")
+                and fs_class.config_class is not None
+                and fs_class.config_class == config_type
+            ):
+                return fs_class.filesystem_type
 
         return None

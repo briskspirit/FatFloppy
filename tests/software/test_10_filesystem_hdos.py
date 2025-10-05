@@ -39,9 +39,7 @@ def hdos_controller() -> Iterator[DiskController]:
         controller.close_disk()
 
 
-def test_disk_image_read_and_verify(
-    hdos_controller: DiskController, tmp_path: Path
-) -> None:
+def test_disk_image_read_and_verify(hdos_controller: DiskController) -> None:
     """
     Tests opening an HDOS disk image, verifying format detection,
     directory listing, free space, and file content integrity.
@@ -192,9 +190,7 @@ def test_validity_score(hdos_controller: DiskController, tmp_path: Path) -> None
     fat_disk.set_geometry(hdos_profile.physical_format)
 
     hdos_fs_on_fat_disk = HDOSFilesystem(fat_disk)
-    assert (
-        hdos_fs_on_fat_disk.get_validity_score() < HDOSFilesystem.VALIDITY_THRESHOLD
-    )
+    assert hdos_fs_on_fat_disk.get_validity_score() < HDOSFilesystem.VALIDITY_THRESHOLD
 
     garbage_data = b"random garbage data" * 5000
     garbage_driver = IMGImageDriver("garbage.img", image_data=garbage_data)
@@ -252,7 +248,9 @@ def test_format_creates_structures(
     if fs.label is None:
         hdos_controller.close_disk()
         assert hdos_controller.open_disk(
-            str(blank_img_path), disk_type="IMG", format_info={"format_name": profile_name}
+            str(blank_img_path),
+            disk_type="IMG",
+            format_info={"format_name": profile_name},
         )
         fs = hdos_controller.filesystem
         assert isinstance(fs, HDOSFilesystem)
@@ -538,9 +536,7 @@ def test_filename_edge_cases(hdos_controller: DiskController, tmp_path: Path) ->
     test_content = b"Test content for filename tests"
 
     assert hdos_controller.write_file("/MAXNAME8.EXT", test_content)
-    assert any(
-        f["name"] == "MAXNAME8.EXT" for f in hdos_controller.list_directory("/")
-    )
+    assert any(f["name"] == "MAXNAME8.EXT" for f in hdos_controller.list_directory("/"))
 
     assert hdos_controller.write_file("/A.B", test_content)
     assert any(f["name"] == "A.B" for f in hdos_controller.list_directory("/"))
@@ -549,9 +545,7 @@ def test_filename_edge_cases(hdos_controller: DiskController, tmp_path: Path) ->
     assert any(f["name"] == "NOEXT" for f in hdos_controller.list_directory("/"))
 
     assert hdos_controller.write_file("/lowercasefile.longext", test_content)
-    assert any(
-        f["name"] == "LOWERCAS.LON" for f in hdos_controller.list_directory("/")
-    )
+    assert any(f["name"] == "LOWERCAS.LON" for f in hdos_controller.list_directory("/"))
 
     read_content = hdos_controller.read_file("/LOWERCAS.LON")
     assert read_content == test_content

@@ -81,7 +81,9 @@ def create_greaseweazle_diskdef(
         A Greaseweazle DiskDef object if creation is successful, otherwise None.
     """
     if not GREASEWEAZLE_AVAILABLE:
-        logger_instance.error("Cannot create diskdef: Greaseweazle library not available.")
+        logger_instance.error(
+            "Cannot create diskdef: Greaseweazle library not available."
+        )
         return None
 
     if not physical_format:
@@ -281,23 +283,24 @@ class GreaseweazleDriver(DiskIODriver):
             try:
                 self._read_track(cylinder, head)
             except Exception as e:
-                self.logger.error(f"Pre-flush read failed for track C:{cylinder} H:{head}: {e}")
+                self.logger.error(
+                    f"Pre-flush read failed for track C:{cylinder} H:{head}: {e}"
+                )
 
         for cylinder, head in sorted(self.dirty_tracks):
             result = [False]
 
-            def write_track_wrapper():
-                nonlocal result
+            def write_track_wrapper(cyl=cylinder, hd=head, res=result):
                 try:
-                    flux_list = self._convert_to_flux(cylinder, head)
-                    self.usb.seek(cylinder, head)
+                    flux_list = self._convert_to_flux(cyl, hd)
+                    self.usb.seek(cyl, hd)
                     self.usb.write_track(
                         flux_list=flux_list, cue_at_index=True, terminate_at_index=True
                     )
-                    result[0] = True
+                    res[0] = True
                 except Exception as e:
                     self.logger.error(
-                        f"Write failed for track C:{cylinder} H:{head}: {e}", exc_info=True
+                        f"Write failed for track C:{cyl} H:{hd}: {e}", exc_info=True
                     )
 
             try:
@@ -367,7 +370,9 @@ class GreaseweazleDriver(DiskIODriver):
         self.initialized = True
         self.logger.info(f"Driver initialized for drive {self.drive}")
 
-    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
+    def prepare_for_format_application(
+        self, format_info: dict
+    ) -> tuple[bool, Optional[str]]:
         """
         Validates format compatibility for Greaseweazle driver.
 
@@ -377,7 +382,9 @@ class GreaseweazleDriver(DiskIODriver):
         Returns:
             Tuple of (is_ready, error_message).
         """
-        has_format = any(k in format_info for k in ["format_name", "physical_format", "cylinders"])
+        has_format = any(
+            k in format_info for k in ["format_name", "physical_format", "cylinders"]
+        )
 
         if not has_format:
             return True, None
@@ -426,24 +433,21 @@ class GreaseweazleDriver(DiskIODriver):
         else:
             return False, "No recognizable format information provided"
 
-        if self.drive_size == DRIVE_SIZE_3_5:
-            if pf.cylinders > MAX_CYLINDERS_3_5:
-                return (
-                    False,
-                    f"Format has {pf.cylinders} cylinders, 3.5\" drives support max {MAX_CYLINDERS_3_5}",
-                )
-        elif self.drive_size == DRIVE_SIZE_5_25:
-            if pf.cylinders > MAX_CYLINDERS_5_25:
-                return (
-                    False,
-                    f"Format has {pf.cylinders} cylinders, 5.25\" drives support max {MAX_CYLINDERS_5_25}",
-                )
-        elif self.drive_size == DRIVE_SIZE_8:
-            if pf.cylinders > MAX_CYLINDERS_8:
-                return (
-                    False,
-                    f"Format has {pf.cylinders} cylinders, 8\" drives support max {MAX_CYLINDERS_8}",
-                )
+        if self.drive_size == DRIVE_SIZE_3_5 and pf.cylinders > MAX_CYLINDERS_3_5:
+            return (
+                False,
+                f'Format has {pf.cylinders} cylinders, 3.5" drives support max {MAX_CYLINDERS_3_5}',
+            )
+        elif self.drive_size == DRIVE_SIZE_5_25 and pf.cylinders > MAX_CYLINDERS_5_25:
+            return (
+                False,
+                f'Format has {pf.cylinders} cylinders, 5.25" drives support max {MAX_CYLINDERS_5_25}',
+            )
+        elif self.drive_size == DRIVE_SIZE_8 and pf.cylinders > MAX_CYLINDERS_8:
+            return (
+                False,
+                f'Format has {pf.cylinders} cylinders, 8" drives support max {MAX_CYLINDERS_8}',
+            )
 
         return True, None
 
@@ -481,7 +485,9 @@ class GreaseweazleDriver(DiskIODriver):
             return data
 
         bytes_per_sector = (
-            self.physical_format.bytes_per_sector if self.physical_format else DEFAULT_BPS
+            self.physical_format.bytes_per_sector
+            if self.physical_format
+            else DEFAULT_BPS
         )
         self.logger.warning(
             f"Returning default zero-filled data for unreadable sector {sector_key}"
@@ -515,12 +521,14 @@ class GreaseweazleDriver(DiskIODriver):
             f"Cyls={physical_format.cylinders}, Heads={physical_format.heads}"
         )
 
-    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
+    def validate_for_opening(
+        self, _source: str, **kwargs
+    ) -> tuple[bool, Optional[str]]:
         """
         Validates whether the Greaseweazle can be opened.
 
         Args:
-            source: Device name (can be None for auto-detection).
+            _source: Device name (can be None for auto-detection), unused.
             **kwargs: Must contain 'drive_letter' and 'drive_size'.
 
         Returns:
@@ -573,7 +581,9 @@ class GreaseweazleDriver(DiskIODriver):
             sector: The sector number.
             data: The sector data as a bytes object.
         """
-        self.logger.debug(f"Writing sector C:{cylinder} H:{head} S:{sector}, {len(data)} bytes")
+        self.logger.debug(
+            f"Writing sector C:{cylinder} H:{head} S:{sector}, {len(data)} bytes"
+        )
         self.initialize()
         track_id = (cylinder, head)
         self.dirty_sectors.setdefault(track_id, {})[sector] = data
@@ -618,14 +628,20 @@ class GreaseweazleDriver(DiskIODriver):
         for s in track.sectors:
             if hasattr(s, "idam") and hasattr(s.idam, "r"):
                 sector_num = s.idam.r
-                if track_id in self.dirty_sectors and sector_num in self.dirty_sectors[track_id]:
+                if (
+                    track_id in self.dirty_sectors
+                    and sector_num in self.dirty_sectors[track_id]
+                ):
                     data = self.dirty_sectors[track_id][sector_num]
                     s.dam.data = bytearray(
                         data[: len(s.dam.data)]
                         if len(data) > len(s.dam.data)
                         else data + bytes(len(s.dam.data) - len(data))
                     )
-                elif track_id in self.track_data and sector_num in self.track_data[track_id]:
+                elif (
+                    track_id in self.track_data
+                    and sector_num in self.track_data[track_id]
+                ):
                     s.dam.data = bytearray(self.track_data[track_id][sector_num])
                 s.crc = s.idam.crc = s.dam.crc = 0
 
@@ -722,14 +738,18 @@ class GreaseweazleDriver(DiskIODriver):
         Returns:
             A dictionary of {sector_number: sector_data} on success, otherwise None.
         """
-        self.logger.debug(f"Reading track C:{cylinder} H:{head} with format {format_tuple}")
+        self.logger.debug(
+            f"Reading track C:{cylinder} H:{head} with format {format_tuple}"
+        )
         format_name, _ = format_tuple
         fmt_cls = self.fmt_cls if format_name == FORMAT_CUSTOM else None
         if not fmt_cls:
             try:
                 fmt_cls = codec.get_diskdef(format_name)
             except Exception as e:
-                self.logger.error(f"Failed to get disk definition for {format_name}: {e}")
+                self.logger.error(
+                    f"Failed to get disk definition for {format_name}: {e}"
+                )
                 return None
 
         args = types.SimpleNamespace(
@@ -796,7 +816,9 @@ class GreaseweazleDriver(DiskIODriver):
         """
         track_id = (cylinder, head)
         if track_id in self.dirty_sectors:
-            sectors_per_track = self.physical_format.get_sectors_per_track(cylinder, head)
+            sectors_per_track = self.physical_format.get_sectors_per_track(
+                cylinder, head
+            )
             if len(self.dirty_sectors[track_id]) == sectors_per_track:
                 self.track_data[track_id] = self.dirty_sectors[track_id].copy()
             elif track_id in self.track_data:

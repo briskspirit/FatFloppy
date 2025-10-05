@@ -4,6 +4,7 @@ Provides factory functions for creating and identifying filesystem handlers.
 
 This module uses the FilesystemRegistry for all filesystem operations.
 """
+
 from typing import Optional
 
 from .disk import Disk
@@ -43,8 +44,9 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
         try:
             logger.debug(f"Scoring filesystem type: {fs_class.__name__}")
 
-            if (hasattr(fs_class, 'get_canonical_format') and
-                    callable(fs_class.get_canonical_format)):
+            if hasattr(fs_class, "get_canonical_format") and callable(
+                fs_class.get_canonical_format
+            ):
                 canonical_format = fs_class.get_canonical_format()
                 if canonical_format.physical_format != original_pf:
                     logger.debug(
@@ -62,8 +64,7 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
 
         except Exception as e:
             logger.error(
-                f"Error while scoring {fs_class.__name__}: {e}",
-                exc_info=False
+                f"Error while scoring {fs_class.__name__}: {e}", exc_info=False
             )
             all_scores[fs_class.__name__] = f"Error: {e}"
         finally:

@@ -110,17 +110,14 @@ def create_mock_track_data(
 
 
 @pytest.fixture(scope="function")
-def mocked_controller(
-    request: pytest.FixtureRequest,
-) -> Generator[tuple[DiskController, dict[str, MagicMock]], None, None]:
+def mocked_controller() -> Generator[
+    tuple[DiskController, dict[str, MagicMock]], None, None
+]:
     """
     Pytest fixture to provide a DiskController with a mocked Greaseweazle backend.
 
     This fixture patches all necessary Greaseweazle and USB functions to simulate
     a physical drive.
-
-    Args:
-        request: The pytest request object.
 
     Yields:
         Tuple containing DiskController instance and dictionary of mocks.
@@ -160,18 +157,18 @@ def mocked_controller(
         "read_retry": "fatfloppy.core.drivers.greaseweazle.read.read_with_retry",
     }
 
-    with patch(
-        patch_paths["create_diskdef"], return_value=mock_custom_diskdef_instance
-    ) as mock_create_gw_diskdef, patch(patch_paths["usb_open"]) as mock_usb_open, patch(
-        patch_paths["drive"]
-    ) as mock_drive, patch(
-        patch_paths["with_drive"]
-    ) as mock_with_drive_selected, patch(
-        patch_paths["get_diskdef"], return_value=mock_get_diskdef_instance
-    ) as mock_get_diskdef, patch(
-        patch_paths["read_retry"]
-    ) as mock_read_with_retry:
-
+    with (
+        patch(
+            patch_paths["create_diskdef"], return_value=mock_custom_diskdef_instance
+        ) as mock_create_gw_diskdef,
+        patch(patch_paths["usb_open"]) as mock_usb_open,
+        patch(patch_paths["drive"]) as mock_drive,
+        patch(patch_paths["with_drive"]) as mock_with_drive_selected,
+        patch(
+            patch_paths["get_diskdef"], return_value=mock_get_diskdef_instance
+        ) as mock_get_diskdef,
+        patch(patch_paths["read_retry"]) as mock_read_with_retry,
+    ):
         mock_usb = MagicMock()
         mock_usb.sample_freq = 96000000.0
         mock_usb.read_track.return_value = create_mock_flux()
@@ -182,7 +179,7 @@ def mocked_controller(
 
         mock_drive_instance = MagicMock()
         mock_drive.return_value = mock_drive_instance
-        mock_with_drive_selected.side_effect = lambda func, *args, **kwargs: func()
+        mock_with_drive_selected.side_effect = lambda func, *_args, **_kwargs: func()
         mock_read_with_retry.return_value = (
             create_mock_flux(),
             create_mock_track_data(0, 0, FMT_144),
@@ -240,11 +237,16 @@ def open_disk_for_rw_tests(
     bsd = test_format.filesystem_config or FATVolumeInfo()
     mock_boot_sector_bytes = bsd.to_bytes()
 
-    with patch(
-        "fatfloppy.core.drivers.greaseweazle.create_greaseweazle_diskdef",
-        return_value=mock_custom_diskdef_instance,
-    ), patch("fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes):
-        mock_with_drive_selected.side_effect = lambda func, *args, **kwargs: func()
+    with (
+        patch(
+            "fatfloppy.core.drivers.greaseweazle.create_greaseweazle_diskdef",
+            return_value=mock_custom_diskdef_instance,
+        ),
+        patch(
+            "fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes
+        ),
+    ):
+        mock_with_drive_selected.side_effect = lambda func, *_args, **_kwargs: func()
         success = controller.open_disk(
             None, "physical", "A", "3.5", format_info=format_info_dict
         )
@@ -261,7 +263,7 @@ def open_disk_for_rw_tests(
 
 
 def test_open_physical_drive_auto_detect(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests opening a 3.5" physical drive A with format auto-detection."""
     controller, mocks_bundle = mocked_controller
@@ -278,14 +280,14 @@ def test_open_physical_drive_auto_detect(
     mock_usb.read_track.return_value = create_mock_flux()
     measure_rpm_called = MagicMock()
 
-    def with_drive_side_effect(func, *args, **kwargs):
+    def with_drive_side_effect(func, *_args, **_kwargs):
         if func.__name__ == "measure_rpm":
             measure_rpm_called()
         func()
 
     mock_with_drive_selected.side_effect = with_drive_side_effect
 
-    def mock_read_retry_auto_detect(usb, args, track_iter):
+    def mock_read_retry_auto_detect(_usb, args, _track_iter):
         cyl, head = 0, 0
         try:
             track_info = str(args.tracks)
@@ -302,9 +304,14 @@ def test_open_physical_drive_auto_detect(
     bsd = expected_format.filesystem_config
     mock_boot_sector_bytes = bsd.to_bytes()
 
-    with patch("fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes):
+    with patch(
+        "fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes
+    ):
         success = controller.open_disk(
-            source=None, disk_type="physical", drive_letter=drive_letter, drive_size=drive_size
+            source=None,
+            disk_type="physical",
+            drive_letter=drive_letter,
+            drive_size=drive_size,
         )
 
     assert success is True
@@ -326,15 +333,14 @@ def test_open_physical_drive_auto_detect(
     assert isinstance(controller.filesystem, FATFilesystem)
     pf = controller.driver.physical_format
     assert pf is not None
-    assert (
-        pf.get_sectors_per_track(0, 0)
-        == expected_format.physical_format.get_sectors_per_track(0, 0)
-    )
+    assert pf.get_sectors_per_track(
+        0, 0
+    ) == expected_format.physical_format.get_sectors_per_track(0, 0)
     assert pf.heads == expected_format.physical_format.heads
 
 
 def test_open_physical_with_explicit_format(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests opening a physical drive with an explicitly provided format."""
     controller, mocks_bundle = mocked_controller
@@ -362,8 +368,10 @@ def test_open_physical_with_explicit_format(
     bsd = expected_format.filesystem_config
     mock_boot_sector_bytes = bsd.to_bytes()
 
-    with patch("fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes):
-        mock_with_drive_selected.side_effect = lambda func, *args, **kwargs: func()
+    with patch(
+        "fatfloppy.core.disk.Disk.read_sector", return_value=mock_boot_sector_bytes
+    ):
+        mock_with_drive_selected.side_effect = lambda func, *_args, **_kwargs: func()
         success = controller.open_disk(None, "physical", "A", "3.5", format_info)
 
     assert success
@@ -371,21 +379,19 @@ def test_open_physical_with_explicit_format(
     assert isinstance(controller.filesystem, FATFilesystem)
     assert controller.disk.physical_format is not None
     geom = controller.disk.physical_format
-    assert (
-        geom.get_sectors_per_track(0, 0)
-        == expected_format.physical_format.get_sectors_per_track(0, 0)
-    )
+    assert geom.get_sectors_per_track(
+        0, 0
+    ) == expected_format.physical_format.get_sectors_per_track(0, 0)
     assert geom.heads == expected_format.physical_format.heads
     assert controller.driver.physical_format is not None
-    assert (
-        controller.driver.physical_format.get_sectors_per_track(0, 0)
-        == expected_format.physical_format.get_sectors_per_track(0, 0)
-    )
+    assert controller.driver.physical_format.get_sectors_per_track(
+        0, 0
+    ) == expected_format.physical_format.get_sectors_per_track(0, 0)
     assert controller.driver.fmt_cls is mock_custom_diskdef_instance
 
 
 def test_physical_read_sector_success(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests successful reading of a single sector from the physical drive."""
     controller, mocks_bundle = mocked_controller
@@ -402,7 +408,7 @@ def test_physical_read_sector_success(
 
 
 def test_physical_read_sector_not_found(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests reading a sector that is not found on the track, expecting zeroed data."""
     controller, mocks_bundle = mocked_controller
@@ -424,7 +430,7 @@ def test_physical_read_sector_not_found(
 
 
 def test_physical_write_sector_and_flush_success(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests that writing a sector and flushing caches results in a track write call."""
     controller, mocks_bundle = mocked_controller
@@ -446,7 +452,7 @@ def test_physical_write_sector_and_flush_success(
 
 
 def test_physical_flush_write_error(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests that a USBError during a flush is caught and handled gracefully."""
     controller, mocks_bundle = mocked_controller
@@ -468,7 +474,7 @@ def test_physical_flush_write_error(
 
 
 def test_physical_flush_partial_track_reads_first(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests that flushing a partial track write triggers a read of existing track data."""
     controller, mocks_bundle = mocked_controller
@@ -501,7 +507,7 @@ def test_physical_flush_partial_track_reads_first(
 
 
 def test_cache_invalidation(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """
     Tests that after a write and flush, clearing the driver's cache forces a
@@ -531,7 +537,9 @@ def test_cache_invalidation(
     mock_read_with_retry.reset_mock()
     flush_reads_list = []
 
-    def flush_read_side_effect(*args: Any, **kwargs: Any) -> tuple[MagicMock, MagicMock]:
+    def flush_read_side_effect(
+        *_args: Any, **_kwargs: Any
+    ) -> tuple[MagicMock, MagicMock]:
         nonlocal flush_reads_list
         call_num = len(flush_reads_list) + 1
         if call_num == 1 and spt > 1:
@@ -561,7 +569,7 @@ def test_cache_invalidation(
     final_read_call_count = 0
 
     def final_read_mock_wrapper(
-        cyl: int, head: int, fmt_tuple: tuple[str, Any]
+        _cyl: int, _head: int, fmt_tuple: tuple[str, Any]
     ) -> Optional[dict[int, bytes]]:
         nonlocal final_read_call_count
         final_read_call_count += 1
@@ -572,7 +580,9 @@ def test_cache_invalidation(
         return None
 
     with patch.object(
-        controller.driver, "_read_track_with_format", side_effect=final_read_mock_wrapper
+        controller.driver,
+        "_read_track_with_format",
+        side_effect=final_read_mock_wrapper,
     ) as mock_final_read:
         controller.disk.read_sector(0, 0, 1)
 
@@ -581,7 +591,7 @@ def test_cache_invalidation(
 
 
 def test_write_verify_success(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests that write verification, when enabled, correctly reads back the track."""
     controller, mocks_bundle = mocked_controller
@@ -602,7 +612,9 @@ def test_write_verify_success(
     mock_read_with_retry.reset_mock()
     flush_reads_list = []
 
-    def flush_read_side_effect(*args: Any, **kwargs: Any) -> tuple[MagicMock, MagicMock]:
+    def flush_read_side_effect(
+        *_args: Any, **_kwargs: Any
+    ) -> tuple[MagicMock, MagicMock]:
         nonlocal flush_reads_list
         call_num = len(flush_reads_list) + 1
         if call_num == 1 and spt > 1:
@@ -629,7 +641,7 @@ def test_write_verify_success(
 
 
 def test_initialize_rpm_fail(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests that if RPM measurement fails, the driver falls back to a default value."""
     controller, mocks_bundle = mocked_controller
@@ -637,7 +649,7 @@ def test_initialize_rpm_fail(
     mock_with_drive_selected = mocks_bundle["mock_with_drive_selected"]
     rpm_error = USBError("RPM measurement failed")
 
-    def rpm_fail_side_effect(func, *args, **kwargs):
+    def rpm_fail_side_effect(func, *_args, **_kwargs):
         if func.__name__ == "measure_rpm":
             raise rpm_error
         func()
@@ -654,7 +666,7 @@ def test_initialize_rpm_fail(
 
 
 def test_convert_to_flux_no_format(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests that converting to flux without a format defined raises a ValueError."""
     _, mocks_bundle = mocked_controller
@@ -670,7 +682,7 @@ def test_convert_to_flux_no_format(
 
 
 def test_convert_to_flux_no_trackdef(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests that converting to flux fails if format has no track definition."""
     controller, mocks_bundle = mocked_controller
@@ -689,7 +701,7 @@ def test_convert_to_flux_no_trackdef(
 
 
 def test_read_track_format_codec_error(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests that a KeyError from the codec during format lookup is handled gracefully."""
     controller, mocks_bundle = mocked_controller
@@ -710,7 +722,7 @@ def test_read_track_format_codec_error(
 
 
 def test_update_physical_format_incomplete_data(
-    mocked_controller: tuple[DiskController, dict[str, MagicMock]]
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
     """Tests that physical format is not updated if track data is missing attributes."""
     controller, mocks_bundle = mocked_controller

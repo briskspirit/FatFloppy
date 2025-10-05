@@ -1,6 +1,6 @@
 import copy
-import os
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Optional
 
 from ...filesystem_factory import get_filesystem_class_by_type
@@ -76,7 +76,9 @@ class IMGFormatDetector(FormatDetector):
         logger.info("Starting IMG format detection")
 
         initial_format = (
-            copy.deepcopy(self.disk.physical_format) if self.disk.physical_format else None
+            copy.deepcopy(self.disk.physical_format)
+            if self.disk.physical_format
+            else None
         )
 
         logger.debug("Phase 1: Direct BPB parse")
@@ -100,27 +102,30 @@ class IMGFormatDetector(FormatDetector):
         return result
 
     def _apply_generic_fallback(
-        self, initial_format: Optional[PhysicalFormat]
+        self, _initial_format: Optional[PhysicalFormat]
     ) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Applies a generic fallback geometry based on standard sizes.
 
         Args:
-            initial_format: The initial format before detection, unused.
+            _initial_format: The initial format before detection, unused.
 
         Returns:
             Tuple of (format_name, None, physical_format).
         """
-        if hasattr(self.driver, "file_path"):
-            if os.path.exists(self.driver.file_path):
-                file_size = os.path.getsize(self.driver.file_path)
+        if hasattr(self.driver, "file_path") and Path(self.driver.file_path).exists():
+            file_size = Path(self.driver.file_path).stat().st_size
 
-                for name in [FALLBACK_FORMAT_1_44M, FALLBACK_FORMAT_720K, FALLBACK_FORMAT_360K]:
-                    profile = self.known_formats.get(name)
-                    if profile and profile.physical_format.total_bytes == file_size:
-                        self.disk.set_geometry(profile.physical_format)
-                        logger.info(f"Generic fallback matched: {name}")
-                        return name, None, profile.physical_format
+            for name in [
+                FALLBACK_FORMAT_1_44M,
+                FALLBACK_FORMAT_720K,
+                FALLBACK_FORMAT_360K,
+            ]:
+                profile = self.known_formats.get(name)
+                if profile and profile.physical_format.total_bytes == file_size:
+                    self.disk.set_geometry(profile.physical_format)
+                    logger.info(f"Generic fallback matched: {name}")
+                    return name, None, profile.physical_format
 
         tf = TrackFormat(
             GENERIC_CYLINDERS_RANGE_START,
@@ -199,7 +204,12 @@ class IMGFormatDetector(FormatDetector):
                 gap3_bytes=GENERIC_GAP3_BYTES,
             )
             generic_pf = PhysicalFormat(
-                GENERIC_CYLINDERS, GENERIC_HEADS, GENERIC_RPM, False, GENERIC_BPS, [generic_tf]
+                GENERIC_CYLINDERS,
+                GENERIC_HEADS,
+                GENERIC_RPM,
+                False,
+                GENERIC_BPS,
+                [generic_tf],
             )
             self.disk.set_geometry(generic_pf)
 
@@ -224,9 +234,9 @@ class IMGFormatDetector(FormatDetector):
                         and profile.physical_format
                         and profile.filesystem_config.total_sectors
                         == parsed_config.total_sectors
-                        and profile.filesystem_config.num_heads == parsed_config.num_heads
+                        and profile.filesystem_config.num_heads
+                        == parsed_config.num_heads
                     ):
-
                         logger.info(f"Matched profile from BPB: {name}")
                         self.disk.set_geometry(profile.physical_format)
                         return name, parsed_config, self.disk.physical_format
@@ -343,7 +353,11 @@ class IMGFormatDetector(FormatDetector):
 
                     if score > best_score:
                         best_score = score
-                        best_match = (profile.name, fs.get_specific_config(), temp_format)
+                        best_match = (
+                            profile.name,
+                            fs.get_specific_config(),
+                            temp_format,
+                        )
                         logger.debug(f"New best match: {profile.name} (score={score})")
 
                 except Exception as e:

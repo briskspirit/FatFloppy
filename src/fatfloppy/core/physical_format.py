@@ -10,6 +10,7 @@ Classes:
     TrackFormat: Describes the format of a single track or a range of tracks.
     PhysicalFormat: Encapsulates the complete physical geometry of a disk.
 """
+
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
@@ -83,7 +84,7 @@ class TrackFormat:
         if not (0 <= logical_index < self.sectors_per_track):
             raise IndexError(
                 f"Logical sector index {logical_index} out of range "
-                f"(0-{self.sectors_per_track-1})"
+                f"(0-{self.sectors_per_track - 1})"
             )
         return self.sector_translation_table[logical_index]
 
@@ -98,8 +99,10 @@ class TrackFormat:
         Returns:
             True if the CH coordinates fall within this format's range.
         """
-        return (self.track_start <= cylinder <= self.track_end and
-                self.head_start <= head <= self.head_end)
+        return (
+            self.track_start <= cylinder <= self.track_end
+            and self.head_start <= head <= self.head_end
+        )
 
     def physical_to_logical_sector(self, physical_id: int) -> int:
         """
@@ -119,7 +122,7 @@ class TrackFormat:
         except ValueError:
             raise ValueError(
                 f"Physical sector ID {physical_id} not found in translation table"
-            )
+            ) from None
 
     def _build_translation_table(self) -> list[int]:
         """
@@ -194,9 +197,7 @@ class PhysicalFormat:
                     covered.add((c, h))
         total_tracks = self.cylinders * self.heads
         if len(covered) != total_tracks:
-            logging.warning(
-                f"Track formats cover {len(covered)}/{total_tracks} tracks"
-            )
+            logging.warning(f"Track formats cover {len(covered)}/{total_tracks} tracks")
 
     @property
     def has_variable_bps(self) -> bool:
@@ -226,8 +227,9 @@ class PhysicalFormat:
             for c in range(self.cylinders):
                 for h in range(self.heads):
                     track_format = self.get_track_format(c, h)
-                    total += (track_format.sectors_per_track *
-                              track_format.bytes_per_sector)
+                    total += (
+                        track_format.sectors_per_track * track_format.bytes_per_sector
+                    )
             return total
         return self.total_sectors * self.bytes_per_sector
 
@@ -246,7 +248,7 @@ class PhysicalFormat:
         return total
 
     @classmethod
-    def create_default(cls) -> 'PhysicalFormat':
+    def create_default(cls) -> "PhysicalFormat":
         """
         Creates a default PhysicalFormat instance (e.g., 1.44MB).
 
@@ -264,7 +266,7 @@ class PhysicalFormat:
             interleave=1,
             id_start=1,
             iam_present=True,
-            gap3_bytes=84
+            gap3_bytes=84,
         )
         return cls(
             cylinders=80,
@@ -272,7 +274,7 @@ class PhysicalFormat:
             rpm=300,
             heads_inverted=False,
             bytes_per_sector=512,
-            track_formats=[default_track_format]
+            track_formats=[default_track_format],
         )
 
     def chs_to_byte_offset(self, cylinder: int, head: int, sector: int) -> int:
@@ -342,7 +344,7 @@ class PhysicalFormat:
             lba += self.get_sectors_per_track(cylinder, h_iter)
 
         tf = self.get_track_format(cylinder, head)
-        lba += (sector - tf.id_start)
+        lba += sector - tf.id_start
         return lba
 
     def get_bytes_per_sector(self, cylinder: int, head: int) -> int:
@@ -421,9 +423,7 @@ class PhysicalFormat:
                 "LBA to CHS is not supported for variable sector sizes."
             )
         if not (0 <= lba < self.total_sectors):
-            raise ValueError(
-                f"LBA {lba} exceeds total sectors {self.total_sectors}"
-            )
+            raise ValueError(f"LBA {lba} exceeds total sectors {self.total_sectors}")
 
         sector_count = 0
         for c in range(self.cylinders):

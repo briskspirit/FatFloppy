@@ -45,16 +45,15 @@ class DiskOperationWorker(QThread):
     def run(self) -> None:
         """Execute the operation in the thread."""
         try:
+
             def progress_callback(current: int, total: int, message: str = ""):
                 if not self._is_cancelled:
                     self.progress.emit(current, total, message)
 
             sig = inspect.signature(self.operation)
-            if 'progress_callback' in sig.parameters:
+            if "progress_callback" in sig.parameters:
                 result = self.operation(
-                    *self.args,
-                    progress_callback=progress_callback,
-                    **self.kwargs
+                    *self.args, progress_callback=progress_callback, **self.kwargs
                 )
             else:
                 result = self.operation(*self.args, **self.kwargs)

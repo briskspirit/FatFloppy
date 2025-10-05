@@ -145,7 +145,9 @@ class GreaseweazleFormatDetector(FormatDetector):
 
         try:
             if hasattr(self.driver, "_read_track"):
-                result = bool(self.driver._read_track(SCAN_CYLINDER, SCAN_HEAD_SECONDARY))
+                result = bool(
+                    self.driver._read_track(SCAN_CYLINDER, SCAN_HEAD_SECONDARY)
+                )
             else:
                 self.disk.read_sector(SCAN_CYLINDER, SCAN_HEAD_SECONDARY, SCAN_SECTOR)
                 result = True
@@ -187,7 +189,6 @@ class GreaseweazleFormatDetector(FormatDetector):
                 and callable(fs_config.is_valid)
                 and fs_config.is_valid()
             ):
-
                 heads = (
                     fs_config.num_heads
                     if fs_config.num_heads > 0
@@ -218,7 +219,12 @@ class GreaseweazleFormatDetector(FormatDetector):
                         bytes_per_sector=bps,
                     )
                     fallback_pf = PhysicalFormat(
-                        cyls, heads, base_format.rpm, base_format.heads_inverted, bps, [tf]
+                        cyls,
+                        heads,
+                        base_format.rpm,
+                        base_format.heads_inverted,
+                        bps,
+                        [tf],
                     )
                     self.disk.set_geometry(fallback_pf)
 
@@ -268,11 +274,15 @@ class GreaseweazleFormatDetector(FormatDetector):
             Best matching profile or None if no match above threshold.
         """
         original_format = (
-            copy.deepcopy(self.disk.physical_format) if self.disk.physical_format else None
+            copy.deepcopy(self.disk.physical_format)
+            if self.disk.physical_format
+            else None
         )
 
         detected_spt = (
-            original_format.track_formats[0].sectors_per_track if original_format else None
+            original_format.track_formats[0].sectors_per_track
+            if original_format
+            else None
         )
 
         geometry_groups = self._group_profiles_by_geometry(profiles)
@@ -396,7 +406,15 @@ class GreaseweazleFormatDetector(FormatDetector):
         )
 
         tf = TrackFormat(
-            0, cyls - 1, 0, heads - 1, spt, enc, rate, bytes_per_sector=bps, gap3_bytes=DEFAULT_GAP3_BYTES
+            0,
+            cyls - 1,
+            0,
+            heads - 1,
+            spt,
+            enc,
+            rate,
+            bytes_per_sector=bps,
+            gap3_bytes=DEFAULT_GAP3_BYTES,
         )
         return PhysicalFormat(cyls, heads, rpm, False, bps, [tf])
 
@@ -461,7 +479,9 @@ class GreaseweazleFormatDetector(FormatDetector):
                     self.driver.physical_format
                     and self.driver.physical_format != self.disk.physical_format
                 ):
-                    logger.info(f"Track scan refined geometry: {self.driver.physical_format}")
+                    logger.info(
+                        f"Track scan refined geometry: {self.driver.physical_format}"
+                    )
                     self.disk.set_geometry(self.driver.physical_format)
 
                     self.driver._create_and_set_custom_diskdef()

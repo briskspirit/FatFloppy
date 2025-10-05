@@ -114,11 +114,17 @@ class MITSDSKDetector(FormatDetector):
 
                     if score > best_score:
                         best_score = score
-                        best_match = (profile.name, fs.get_specific_config(), temp_format)
+                        best_match = (
+                            profile.name,
+                            fs.get_specific_config(),
+                            temp_format,
+                        )
                         logger.debug(f"New best match: {profile.name} (score={score})")
 
                     if score >= EXCELLENT_MATCH_SCORE:
-                        logger.info(f"Excellent match found: {profile.name} (score={score})")
+                        logger.info(
+                            f"Excellent match found: {profile.name} (score={score})"
+                        )
                         return best_match
 
                 except Exception as e:

@@ -103,9 +103,7 @@ def prepared_controller(
 
     yield controller
 
-    print(
-        f"\n--- Tearing down Hardware Test Class for Drive {TARGET_DRIVE} (Read) ---"
-    )
+    print(f"\n--- Tearing down Hardware Test Class for Drive {TARGET_DRIVE} (Read) ---")
     controller.close_disk()
     print(f"Drive {TARGET_DRIVE} connection closed.")
 
@@ -119,7 +117,7 @@ class TestHardwareDriveARead:
     fixture with a standard, populated filesystem.
     """
 
-    def test_01_hw_A_list_root(self, prepared_controller: DiskController) -> None:
+    def test_01_hw_a_list_root(self, prepared_controller: DiskController) -> None:
         """Verify the contents of the root directory are correct."""
         print("\nRunning: Verifying root directory listing...")
         controller = prepared_controller
@@ -134,13 +132,11 @@ class TestHardwareDriveARead:
         assert "TEST.TXT" in root_names, "TEST.TXT not found in root directory."
         assert "DIR1" in root_names, "DIR1 not found in root directory."
 
-        assert not next(e for e in entries if e["name"].upper() == "TEST.TXT")[
-            "is_dir"
-        ]
+        assert not next(e for e in entries if e["name"].upper() == "TEST.TXT")["is_dir"]
         assert next(e for e in entries if e["name"].upper() == "DIR1")["is_dir"]
         print(f"Found {len(entries)} items in root.")
 
-    def test_02_hw_A_list_dir1(self, prepared_controller: DiskController) -> None:
+    def test_02_hw_a_list_dir1(self, prepared_controller: DiskController) -> None:
         """Verify the contents of the subdirectory /DIR1 are correct."""
         print("\nRunning: Verifying '/DIR1' directory listing...")
         controller = prepared_controller
@@ -159,13 +155,11 @@ class TestHardwareDriveARead:
         assert not next(e for e in entries if e["name"].upper() == "PATTERN.BIN")[
             "is_dir"
         ]
-        assert not next(e for e in entries if e["name"].upper() == "TEST.TXT")[
-            "is_dir"
-        ]
+        assert not next(e for e in entries if e["name"].upper() == "TEST.TXT")["is_dir"]
         assert next(e for e in entries if e["name"].upper() == "SUBDIR")["is_dir"]
         print(f"Found {len(entries)} items in /DIR1.")
 
-    def test_03_hw_A_list_subdir(self, prepared_controller: DiskController) -> None:
+    def test_03_hw_a_list_subdir(self, prepared_controller: DiskController) -> None:
         """Verify the contents of the nested subdirectory /DIR1/SUBDIR are correct."""
         print("\nRunning: Verifying '/DIR1/SUBDIR' directory listing...")
         controller = prepared_controller
@@ -179,12 +173,10 @@ class TestHardwareDriveARead:
         subdir_names = {e["name"].upper() for e in entries}
         assert "TEST.TXT" in subdir_names
 
-        assert not next(e for e in entries if e["name"].upper() == "TEST.TXT")[
-            "is_dir"
-        ]
+        assert not next(e for e in entries if e["name"].upper() == "TEST.TXT")["is_dir"]
         print(f"Found {len(entries)} items in /DIR1/SUBDIR.")
 
-    def test_04_hw_A_read_root_file(self, prepared_controller: DiskController) -> None:
+    def test_04_hw_a_read_root_file(self, prepared_controller: DiskController) -> None:
         """Verify reading a file from the root directory."""
         print("\nRunning: Reading file from root directory...")
         controller = prepared_controller
@@ -195,14 +187,12 @@ class TestHardwareDriveARead:
         assert len(content) > 0, f"{filepath} is empty"
 
         if "test_txt" in controller.expected_content:
-            assert (
-                content == controller.expected_content["test_txt"]
-            ), f"Content mismatch for {filepath}"
+            assert content == controller.expected_content["test_txt"], (
+                f"Content mismatch for {filepath}"
+            )
         print(f"Read {len(content)} bytes from {filepath}")
 
-    def test_05_hw_A_read_dir1_files(
-        self, prepared_controller: DiskController
-    ) -> None:
+    def test_05_hw_a_read_dir1_files(self, prepared_controller: DiskController) -> None:
         """Verify reading multiple files from the /DIR1 subdirectory."""
         print("\nRunning: Reading files from '/DIR1' subdirectory...")
         controller = prepared_controller
@@ -211,21 +201,21 @@ class TestHardwareDriveARead:
         content_bin = controller.read_file(filepath_bin)
         assert content_bin is not None, f"Failed to read {filepath_bin}"
         if "pattern_bin" in controller.expected_content:
-            assert (
-                content_bin == controller.expected_content["pattern_bin"]
-            ), f"Content mismatch for {filepath_bin}"
+            assert content_bin == controller.expected_content["pattern_bin"], (
+                f"Content mismatch for {filepath_bin}"
+            )
         print(f"Read {len(content_bin)} bytes from {filepath_bin}")
 
         filepath_txt = "/DIR1/TEST.TXT"
         content_txt = controller.read_file(filepath_txt)
         assert content_txt is not None, f"Failed to read {filepath_txt}"
         if "test_txt" in controller.expected_content:
-            assert (
-                content_txt == controller.expected_content["test_txt"]
-            ), f"Content mismatch for {filepath_txt}"
+            assert content_txt == controller.expected_content["test_txt"], (
+                f"Content mismatch for {filepath_txt}"
+            )
         print(f"Read {len(content_txt)} bytes from {filepath_txt}")
 
-    def test_06_hw_A_read_subdir_file(
+    def test_06_hw_a_read_subdir_file(
         self, prepared_controller: DiskController
     ) -> None:
         """Verify reading a file from the nested /DIR1/SUBDIR subdirectory."""
@@ -236,12 +226,12 @@ class TestHardwareDriveARead:
 
         assert content is not None, f"Failed to read {filepath}"
         if "test_txt" in controller.expected_content:
-            assert (
-                content == controller.expected_content["test_txt"]
-            ), f"Content mismatch for {filepath}"
+            assert content == controller.expected_content["test_txt"], (
+                f"Content mismatch for {filepath}"
+            )
         print(f"Read {len(content)} bytes from {filepath}")
 
-    def test_07_hw_A_get_disk_info(self, prepared_controller: DiskController) -> None:
+    def test_07_hw_a_get_disk_info(self, prepared_controller: DiskController) -> None:
         """Verify retrieval of disk space and allocation information."""
         print("\nRunning: Verifying disk information...")
         controller = prepared_controller
@@ -256,6 +246,6 @@ class TestHardwareDriveARead:
             f"found {len(clusters)}"
         )
         print(
-            f"Disk Info: Free={free/1024:.1f}KB, Total={total/1024:.1f}KB, "
+            f"Disk Info: Free={free / 1024:.1f}KB, Total={total / 1024:.1f}KB, "
             f"Clusters={len(clusters)}"
         )

@@ -5,6 +5,7 @@ Self-contained detector registry with automatic plugin discovery.
 This module is completely self-sufficient - it discovers, validates,
 and registers all format detector plugins automatically on import.
 """
+
 from typing import Optional
 
 from .format_detection import FormatDetector
@@ -56,9 +57,7 @@ class DetectorRegistry:
 
     @classmethod
     def register_external(
-        cls,
-        driver_class_name: str,
-        detector_class: type[FormatDetector]
+        cls, driver_class_name: str, detector_class: type[FormatDetector]
     ) -> None:
         """
         Public API for external plugins to register themselves.
@@ -82,9 +81,9 @@ class DetectorRegistry:
         logger.info("Starting detector plugin discovery...")
 
         detector_classes = PluginScanner.discover_plugins(
-            package_name='fatfloppy.core.drivers.detectors',
+            package_name="fatfloppy.core.drivers.detectors",
             base_class=FormatDetector,
-            validator=cls._validate_detector
+            validator=cls._validate_detector,
         )
 
         for detector_class in detector_classes:
@@ -108,7 +107,7 @@ class DetectorRegistry:
         Args:
             detector_class: The detector class to validate.
         """
-        PluginScanner.validate_has_attributes(detector_class, ['detector_for_driver'])
+        PluginScanner.validate_has_attributes(detector_class, ["detector_for_driver"])
         PluginScanner.validate_implements_methods(detector_class, FormatDetector)
 
 

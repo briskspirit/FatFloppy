@@ -14,18 +14,19 @@ Functions:
     setup_logger: Configures the root logger for the application.
     get_logger: Retrieves a logger instance with an appropriate name.
 """
+
 import inspect
 import logging
-import os
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 # Constants for log formatting
 LOG_FORMAT: str = (
-    '%(asctime)s - %(levelname)s - %(name)s.%(funcName)s:%(lineno)d - %(message)s'
+    "%(asctime)s - %(levelname)s - %(name)s.%(funcName)s:%(lineno)d - %(message)s"
 )
-DATE_FORMAT: str = '%Y-%m-%d %H:%M:%S'
+DATE_FORMAT: str = "%Y-%m-%d %H:%M:%S"
 
 
 def setup_logger() -> None:
@@ -43,14 +44,14 @@ def setup_logger() -> None:
         datefmt=DATE_FORMAT,
         stream=sys.stdout,
     )
-    logging.getLogger('PyQt6').setLevel(logging.WARNING)
+    logging.getLogger("PyQt6").setLevel(logging.WARNING)
 
-    log_dir = 'logs'
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+    log_dir = Path("logs")
+    if not log_dir.exists():
+        log_dir.mkdir(parents=True)
 
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    file_handler = logging.FileHandler(f'{log_dir}/fatfloppy_{timestamp}.log')
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_handler = logging.FileHandler(f"{log_dir}/fatfloppy_{timestamp}.log")
     file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 
     logging.getLogger().addHandler(file_handler)
@@ -73,10 +74,10 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
     if name is None:
         frame = inspect.currentframe().f_back
         try:
-            if 'self' in frame.f_locals:
-                name = frame.f_locals['self'].__class__.__name__
+            if "self" in frame.f_locals:
+                name = frame.f_locals["self"].__class__.__name__
             else:
-                name = os.path.splitext(os.path.basename(frame.f_code.co_filename))[0]
+                name = Path(frame.f_code.co_filename).stem
         finally:
             del frame
     return logging.getLogger(name)

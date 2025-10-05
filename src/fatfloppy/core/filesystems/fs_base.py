@@ -26,6 +26,7 @@ class FileInfo:
         starting_cluster: The starting allocation unit (cluster, block, etc.).
         extra_data: Filesystem-specific additional data.
     """
+
     name: str
     size: int
     is_dir: bool
@@ -43,6 +44,7 @@ class Filesystem(ABC):
     filesystems. Subclasses must implement all abstract methods to provide
     concrete functionality for a specific filesystem type.
     """
+
     filesystem_type: ClassVar[str] = ""
     filesystem_aliases: ClassVar[list[str]] = []
     validity_threshold: ClassVar[int] = 30
@@ -65,7 +67,7 @@ class Filesystem(ABC):
         self.disk = disk
 
     @classmethod
-    def get_format_definitions(cls) -> dict[str, 'FormatProfile']:
+    def get_format_definitions(cls) -> dict[str, "FormatProfile"]:
         """
         Returns all format definitions provided by this filesystem plugin.
 
@@ -94,16 +96,17 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @staticmethod
-    def create_config_from_params(format_info: dict[str, Any],
-                                   physical_format: PhysicalFormat) -> Optional[Any]:
+    def create_config_from_params(
+        _format_info: dict[str, Any], _physical_format: PhysicalFormat
+    ) -> Optional[Any]:
         """
         Creates a filesystem-specific configuration object from parameters.
 
         Subclasses should override this to provide their config creation logic.
 
         Args:
-            format_info: Dictionary containing filesystem parameters.
-            physical_format: The physical format of the disk.
+            _format_info: Dictionary containing filesystem parameters.
+            _physical_format: The physical format of the disk.
 
         Returns:
             A filesystem-specific config object, or None if not supported.
@@ -144,7 +147,9 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def format_fs(self, profile: FormatProfile, volume_label: Optional[str] = None) -> None:
+    def format_fs(
+        self, profile: FormatProfile, volume_label: Optional[str] = None
+    ) -> None:
         """
         Formats the disk with this filesystem type according to a given profile.
 

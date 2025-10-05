@@ -43,6 +43,7 @@ class CPMDiskParameterBlock:
         cks: ChecKSUM vector size (0 means directory is not checksummed).
         off: OFFset, number of reserved tracks.
     """
+
     spt: int = 0
     bsh: int = 0
     blm: int = 0
@@ -62,7 +63,7 @@ class CPMDiskParameterBlock:
         Returns:
             The block size in bytes.
         """
-        return CPM_SECTOR_SIZE * (2 ** self.bsh)
+        return CPM_SECTOR_SIZE * (2**self.bsh)
 
     @property
     def directory_blocks(self) -> int:
@@ -107,6 +108,7 @@ class CPMDirectoryEntry:
         blks: Allocation block pointers.
         attributes_raw: Raw attribute bits from the directory entry.
     """
+
     user: int = 0
     name: str = ""
     ext: str = ""
@@ -125,11 +127,11 @@ class CPMDirectoryEntry:
             A string representing the file attributes (e.g., "U0-R-S").
         """
         attr_str_parts = [f"U{self.user}"]
-        if self.attributes_raw.get('t1', 0) & 0x80:
+        if self.attributes_raw.get("t1", 0) & 0x80:
             attr_str_parts.append("R")
-        if self.attributes_raw.get('t2', 0) & 0x80:
+        if self.attributes_raw.get("t2", 0) & 0x80:
             attr_str_parts.append("S")
-        if self.attributes_raw.get('t3', 0) & 0x80:
+        if self.attributes_raw.get("t3", 0) & 0x80:
             attr_str_parts.append("A")
         return "-".join(attr_str_parts)
 
@@ -140,8 +142,8 @@ class CPMDirectoryEntry:
         Returns:
             The formatted filename string (e.g., "FILENAME.EXT").
         """
-        name_clean = ''.join(chr(ord(c) & 0x7F) for c in self.name).strip()
-        ext_clean = ''.join(chr(ord(c) & 0x7F) for c in self.ext).strip()
+        name_clean = "".join(chr(ord(c) & 0x7F) for c in self.name).strip()
+        ext_clean = "".join(chr(ord(c) & 0x7F) for c in self.ext).strip()
         return f"{name_clean}.{ext_clean}"
 
     def is_deleted(self) -> bool:
@@ -161,6 +163,7 @@ class CPMFilesystem(Filesystem):
     This class handles filesystem detection, metadata parsing (DPB), and
     file operations like reading, writing, deleting, and listing files.
     """
+
     filesystem_type: ClassVar[str] = "CPM"
     filesystem_aliases: ClassVar[list[str]] = ["CP/M"]
     validity_threshold: ClassVar[int] = 50
@@ -188,9 +191,13 @@ class CPMFilesystem(Filesystem):
                 try:
                     self._initialize_parameters()
                     self._init_completed = True
-                    self.logger.info("CP/M Filesystem initialized successfully with provided DPB.")
+                    self.logger.info(
+                        "CP/M Filesystem initialized successfully with provided DPB."
+                    )
                 except ValueError as e:
-                    self.logger.error(f"CP/M Initialization failed with provided DPB: {e}")
+                    self.logger.error(
+                        f"CP/M Initialization failed with provided DPB: {e}"
+                    )
             else:
                 if self._try_derive_dpb():
                     try:
@@ -200,14 +207,18 @@ class CPMFilesystem(Filesystem):
                             "CP/M Filesystem initialized with derived DPB based on physical format."
                         )
                     except ValueError as e:
-                        self.logger.error(f"CP/M Initialization failed with derived DPB: {e}")
+                        self.logger.error(
+                            f"CP/M Initialization failed with derived DPB: {e}"
+                        )
                 else:
                     self.logger.warning(
                         "CP/M Filesystem initialized without a DPB. "
                         "get_validity_score() will be required to confirm format."
                     )
         else:
-            self.logger.warning("CP/M Filesystem initialized without disk or physical format.")
+            self.logger.warning(
+                "CP/M Filesystem initialized without disk or physical format."
+            )
 
     @property
     def allocation_unit_size(self) -> int:
@@ -230,6 +241,7 @@ class CPMFilesystem(Filesystem):
             Dictionary mapping format names to FormatProfile objects.
         """
         from .formats.cpm_formats import CPM_FORMATS
+
         return CPM_FORMATS
 
     @staticmethod
@@ -285,7 +297,8 @@ class CPMFilesystem(Filesystem):
                 dsm=format_info.get(
                     "dsm",
                     (
-                        physical_format.total_sectors * (physical_format.bytes_per_sector // 128)
+                        physical_format.total_sectors
+                        * (physical_format.bytes_per_sector // 128)
                     )
                     // (2**bsh)
                     - 10,
@@ -310,12 +323,12 @@ class CPMFilesystem(Filesystem):
         self.logger.warning("Filesystem check not implemented for this type.")
         return True
 
-    def create_directory(self, path: str) -> None:
+    def create_directory(self, _path: str) -> None:
         """
         CP/M does not support hierarchical directories.
 
         Args:
-            path: The directory path (not used).
+            path: The directory path, unused.
 
         Raises:
             NotImplementedError: Always raised as CP/M does not support directories.
@@ -323,7 +336,9 @@ class CPMFilesystem(Filesystem):
         self.logger.warning(
             "CP/M 2.2 does not support traditional directory creation via this method."
         )
-        raise NotImplementedError("CP/M create_directory not applicable in the standard sense.")
+        raise NotImplementedError(
+            "CP/M create_directory not applicable in the standard sense."
+        )
 
     def delete(self, path: str) -> None:
         """
@@ -362,7 +377,9 @@ class CPMFilesystem(Filesystem):
             key = (cpm_track, log_sec)
 
             if key not in sectors_to_modify:
-                sectors_to_modify[key] = bytearray(self._read_logical_sector(cpm_track, log_sec))
+                sectors_to_modify[key] = bytearray(
+                    self._read_logical_sector(cpm_track, log_sec)
+                )
 
             sectors_to_modify[key][offset] = CPM_DELETED_ENTRY_MARKER
 
@@ -392,7 +409,11 @@ class CPMFilesystem(Filesystem):
         except Exception:
             return False
 
-    def format_fs(self, profile: FormatProfile, volume_label: Optional[str] = None) -> None:
+    def format_fs(
+        self,
+        profile: FormatProfile,
+        volume_label: Optional[str] = None,  # noqa: ARG002
+    ) -> None:
         """
         Formats the disk with a CP/M filesystem layout.
 
@@ -401,14 +422,16 @@ class CPMFilesystem(Filesystem):
 
         Args:
             profile: The FormatProfile containing the target DPB.
-            volume_label: Not used for CP/M.
+            volume_label: Not used for CP/M (parameter kept for interface compatibility).
 
         Raises:
             ValueError: If the profile does not contain a valid CPMDiskParameterBlock.
             IOError: If writing to the disk fails.
         """
         if not isinstance(profile.filesystem_config, CPMDiskParameterBlock):
-            raise ValueError("FormatProfile for CP/M must contain a CPMDiskParameterBlock.")
+            raise ValueError(
+                "FormatProfile for CP/M must contain a CPMDiskParameterBlock."
+            )
 
         original_dpb = self.dpb
         self.dpb = profile.filesystem_config
@@ -465,7 +488,8 @@ class CPMFilesystem(Filesystem):
             current_logical_128b_sec_on_cpm_track_idx += 1
             if (
                 logical_spt_for_dir_track > 0
-                and current_logical_128b_sec_on_cpm_track_idx >= logical_spt_for_dir_track
+                and current_logical_128b_sec_on_cpm_track_idx
+                >= logical_spt_for_dir_track
             ):
                 current_logical_128b_sec_on_cpm_track_idx = 0
                 current_cpm_track_idx += 1
@@ -474,7 +498,9 @@ class CPMFilesystem(Filesystem):
         self._cached_directory = []
         self._cached_allocation_map = set(range(self.dpb.directory_blocks))
         self.disk.flush()
-        self.logger.info("CP/M formatting complete (system tracks and directory cleared).")
+        self.logger.info(
+            "CP/M formatting complete (system tracks and directory cleared)."
+        )
 
     def get_allocated_units(self) -> list[int]:
         """
@@ -488,7 +514,9 @@ class CPMFilesystem(Filesystem):
         if self._cached_allocation_map is None:
             self._load_allocation_map()
 
-        return sorted(self._cached_allocation_map) if self._cached_allocation_map else []
+        return (
+            sorted(self._cached_allocation_map) if self._cached_allocation_map else []
+        )
 
     def get_disk_map_layout(self) -> dict[str, Any]:
         """
@@ -525,7 +553,8 @@ class CPMFilesystem(Filesystem):
                 logical_sector_count = 0
 
                 for cpm_track in range(
-                    self.disk.physical_format.cylinders * self.disk.physical_format.heads
+                    self.disk.physical_format.cylinders
+                    * self.disk.physical_format.heads
                 ):
                     if self.disk.physical_format.heads > 1:
                         phys_cyl = cpm_track // self.disk.physical_format.heads
@@ -535,9 +564,7 @@ class CPMFilesystem(Filesystem):
                         phys_head = 0
 
                     try:
-                        self.disk.physical_format.get_track_format(
-                            phys_cyl, phys_head
-                        )
+                        self.disk.physical_format.get_track_format(phys_cyl, phys_head)
                     except ValueError:
                         continue
 
@@ -559,7 +586,9 @@ class CPMFilesystem(Filesystem):
                         if self.dpb.block_size == 0:
                             return "data_free"
 
-                        logical_sectors_per_block = self.dpb.block_size // CPM_SECTOR_SIZE
+                        logical_sectors_per_block = (
+                            self.dpb.block_size // CPM_SECTOR_SIZE
+                        )
                         if logical_sectors_per_block == 0:
                             return "data_free"
 
@@ -578,7 +607,9 @@ class CPMFilesystem(Filesystem):
                 return "unknown"
 
             except Exception as e:
-                self.logger.error(f"Error determining sector type for LBA {phys_lba}: {e}")
+                self.logger.error(
+                    f"Error determining sector type for LBA {phys_lba}: {e}"
+                )
                 return "unknown"
 
         legend_colors = {
@@ -725,7 +756,9 @@ class CPMFilesystem(Filesystem):
 
         score = 0
         if not self.disk or not self.disk.physical_format or not self.dpb:
-            self.logger.debug("Score: 0 (No disk, physical format, or DPB for validation.)")
+            self.logger.debug(
+                "Score: 0 (No disk, physical format, or DPB for validation.)"
+            )
             return 0
 
         try:
@@ -740,7 +773,9 @@ class CPMFilesystem(Filesystem):
 
             for _ in range(dir_logical_sectors):
                 try:
-                    sector_data = self._read_logical_sector(current_cpm_track, logical_sector_idx)
+                    sector_data = self._read_logical_sector(
+                        current_cpm_track, logical_sector_idx
+                    )
                     all_dir_bytes.extend(sector_data)
 
                     logical_spt = self._get_logical_spt(current_cpm_track)
@@ -759,7 +794,9 @@ class CPMFilesystem(Filesystem):
             if all(b == CPM_DELETED_ENTRY_MARKER for b in all_dir_bytes):
                 score += 75
                 final_score = min(100, score)
-                self.logger.info(f"CP/M validation score (empty formatted): {final_score}")
+                self.logger.info(
+                    f"CP/M validation score (empty formatted): {final_score}"
+                )
                 self._cached_validity_score = final_score
                 return final_score
 
@@ -782,9 +819,13 @@ class CPMFilesystem(Filesystem):
 
                     name_hex = " ".join(f"{b:02X}" for b in entry_bytes[1:9])
                     ext_hex = " ".join(f"{b:02X}" for b in entry_bytes[9:12])
-                    self.logger.debug(f"Entry {i} (U{user_num}): name=[{name_hex}] ext=[{ext_hex}]")
+                    self.logger.debug(
+                        f"Entry {i} (U{user_num}): name=[{name_hex}] ext=[{ext_hex}]"
+                    )
 
-                    significant_bytes = [b for b in raw_name_and_ext if b != 0 and b != 0x20]
+                    significant_bytes = [
+                        b for b in raw_name_and_ext if b != 0 and b != 0x20
+                    ]
 
                     if not significant_bytes:
                         self.logger.debug(
@@ -813,7 +854,7 @@ class CPMFilesystem(Filesystem):
                             ):
                                 self.logger.debug(
                                     f"Score: 0 (Entry {i}: invalid high-bit char 0x{b:02X} "
-                                    f"(masked={chr(masked) if 32<=masked<=126 else '?'}), "
+                                    f"(masked={chr(masked) if 32 <= masked <= 126 else '?'}), "
                                     f"user={user_num})"
                                 )
                                 self._cached_validity_score = 0
@@ -832,7 +873,9 @@ class CPMFilesystem(Filesystem):
                     self.logger.debug(f"Entry {i}: VALID")
 
             if plausible_entries < 1:
-                self.logger.debug(f"Score: 0 (Found {plausible_entries} plausible entries)")
+                self.logger.debug(
+                    f"Score: 0 (Found {plausible_entries} plausible entries)"
+                )
                 self._cached_validity_score = 0
                 return 0
 
@@ -1071,7 +1114,9 @@ class CPMFilesystem(Filesystem):
             (len(data) + CPM_SECTOR_SIZE - 1) // CPM_SECTOR_SIZE if data else 0
         )
         num_dir_entries_needed = (
-            (num_records_total + CPM_RECORDS_PER_EXTENT - 1) // CPM_RECORDS_PER_EXTENT if data else 0
+            (num_records_total + CPM_RECORDS_PER_EXTENT - 1) // CPM_RECORDS_PER_EXTENT
+            if data
+            else 0
         )
         num_blocks_needed = (len(data) + block_size - 1) // block_size if data else 0
 
@@ -1091,7 +1136,9 @@ class CPMFilesystem(Filesystem):
             )
         blocks_to_use = free_blocks[:num_blocks_needed]
 
-        free_dir_slots = [i for i, e in enumerate(self._cached_directory) if e.is_deleted()]
+        free_dir_slots = [
+            i for i, e in enumerate(self._cached_directory) if e.is_deleted()
+        ]
         if len(free_dir_slots) < num_dir_entries_needed:
             raise OSError(
                 f"Directory is full. Required: {num_dir_entries_needed}, "
@@ -1108,8 +1155,12 @@ class CPMFilesystem(Filesystem):
             records_rem -= rc
 
             bytes_in_this_extent = rc * CPM_SECTOR_SIZE
-            blocks_for_this_extent = (bytes_in_this_extent + block_size - 1) // block_size
-            extent_blocks = blocks_to_use[blocks_consumed : blocks_consumed + blocks_for_this_extent]
+            blocks_for_this_extent = (
+                bytes_in_this_extent + block_size - 1
+            ) // block_size
+            extent_blocks = blocks_to_use[
+                blocks_consumed : blocks_consumed + blocks_for_this_extent
+            ]
             blocks_consumed += blocks_for_this_extent
 
             new_entry = CPMDirectoryEntry(
@@ -1125,11 +1176,15 @@ class CPMFilesystem(Filesystem):
             )
             entry_bytes = self._format_entry_to_bytes(new_entry)
 
-            cpm_track, log_sec, offset = self._map_dir_entry_index_to_location(dir_slots_to_use[i])
+            cpm_track, log_sec, offset = self._map_dir_entry_index_to_location(
+                dir_slots_to_use[i]
+            )
             key = (cpm_track, log_sec)
 
             if key not in sectors_to_modify:
-                sectors_to_modify[key] = bytearray(self._read_logical_sector(cpm_track, log_sec))
+                sectors_to_modify[key] = bytearray(
+                    self._read_logical_sector(cpm_track, log_sec)
+                )
             sectors_to_modify[key][offset : offset + 32] = entry_bytes
 
         for (cpm_track, log_sec), mod_data in sectors_to_modify.items():
@@ -1193,19 +1248,25 @@ class CPMFilesystem(Filesystem):
             An integer hash value.
         """
         if not self.disk or not self.disk.physical_format:
-            self.logger.warning("Cannot compute geometry hash: No disk or physical format available.")
+            self.logger.warning(
+                "Cannot compute geometry hash: No disk or physical format available."
+            )
             return 0
         pf = self.disk.physical_format
         tf = pf.track_formats[0] if pf.track_formats else None
         if not tf:
-            self.logger.warning("Cannot compute geometry hash: No track format available.")
+            self.logger.warning(
+                "Cannot compute geometry hash: No track format available."
+            )
             return 0
         return hash(
             (
                 pf.cylinders,
                 pf.heads,
                 pf.bytes_per_sector,
-                tuple(tf.sector_translation_table) if tf.sector_translation_table else (),
+                tuple(tf.sector_translation_table)
+                if tf.sector_translation_table
+                else (),
                 pf.track_formats[0].interleave,
             )
         )
@@ -1292,7 +1353,9 @@ class CPMFilesystem(Filesystem):
             ValueError: If disk, physical_format, or DPB is not available.
         """
         if not self.disk or not self.disk.physical_format or not self.dpb:
-            raise ValueError("Disk, physical_format, or DPB not available for SPT calculation.")
+            raise ValueError(
+                "Disk, physical_format, or DPB not available for SPT calculation."
+            )
 
         phys_cyl, phys_head = self._cpm_track_to_chs_coords(cpm_track_num)
 
@@ -1354,7 +1417,9 @@ class CPMFilesystem(Filesystem):
         if self.get_validity_score() < self.validity_threshold or not self.dpb:
             return
 
-        self.logger.debug("Building CP/M allocation map by scanning directory entries...")
+        self.logger.debug(
+            "Building CP/M allocation map by scanning directory entries..."
+        )
         entries = self._read_directory_entries()
         used_blocks = set()
 
@@ -1435,7 +1500,9 @@ class CPMFilesystem(Filesystem):
 
         order = tf.sector_translation_table
         if phys_index >= len(order):
-            raise ValueError(f"Physical index {phys_index} exceeds order length {len(order)}.")
+            raise ValueError(
+                f"Physical index {phys_index} exceeds order length {len(order)}."
+            )
         phys_sector_id = order[phys_index]
 
         return phys_cyl, phys_head, phys_sector_id, offset_in_phys
@@ -1505,7 +1572,12 @@ class CPMFilesystem(Filesystem):
         raw_attrs = {"t1": entry_bytes[9], "t2": entry_bytes[10], "t3": entry_bytes[11]}
         name = name_bytes.decode("ascii", errors="replace").strip()
         ext = ext_bytes.decode("ascii", errors="replace").strip()
-        ex, s1, xh_s2, rc = entry_bytes[12], entry_bytes[13], entry_bytes[14], entry_bytes[15]
+        ex, s1, xh_s2, rc = (
+            entry_bytes[12],
+            entry_bytes[13],
+            entry_bytes[14],
+            entry_bytes[15],
+        )
 
         block_pointers = []
         if self.dpb.dsm > 255:
@@ -1516,7 +1588,9 @@ class CPMFilesystem(Filesystem):
         else:
             block_pointers.extend(entry_bytes[16:32])
 
-        return CPMDirectoryEntry(user, name, ext, ex, s1, xh_s2, rc, block_pointers, raw_attrs)
+        return CPMDirectoryEntry(
+            user, name, ext, ex, s1, xh_s2, rc, block_pointers, raw_attrs
+        )
 
     def _read_block(self, block_num: int) -> bytes:
         """
@@ -1538,11 +1612,17 @@ class CPMFilesystem(Filesystem):
 
         logical_sectors_per_block = self.dpb.block_size // CPM_SECTOR_SIZE
         data = bytearray()
-        current_cpm_track, logical_sector_on_track = self._block_to_track_sector(block_num)
+        current_cpm_track, logical_sector_on_track = self._block_to_track_sector(
+            block_num
+        )
 
         for _ in range(logical_sectors_per_block):
             try:
-                data.extend(self._read_logical_sector(current_cpm_track, logical_sector_on_track))
+                data.extend(
+                    self._read_logical_sector(
+                        current_cpm_track, logical_sector_on_track
+                    )
+                )
             except ValueError:
                 self.logger.warning(
                     f"Read for block {block_num} went past valid disk sectors. "
@@ -1579,7 +1659,9 @@ class CPMFilesystem(Filesystem):
             if len(entries) > self.dpb.drm:
                 break
             try:
-                sector_data = self._read_logical_sector(current_cpm_track, logical_sector_idx)
+                sector_data = self._read_logical_sector(
+                    current_cpm_track, logical_sector_idx
+                )
                 for i in range(CPM_DIRECTORY_ENTRIES_PER_SECTOR):
                     if len(entries) > self.dpb.drm:
                         break
@@ -1607,7 +1689,9 @@ class CPMFilesystem(Filesystem):
                 break
         return entries
 
-    def _read_logical_sector(self, cpm_track: int, logical_sector_on_track: int) -> bytes:
+    def _read_logical_sector(
+        self, cpm_track: int, logical_sector_on_track: int
+    ) -> bytes:
         """
         Reads a single 128-byte logical sector from the disk.
 
@@ -1629,8 +1713,8 @@ class CPMFilesystem(Filesystem):
                 f"Logical sector {logical_sector_on_track} exceeds SPT for CP/M track {cpm_track}."
             )
 
-        phys_cyl, phys_head, phys_sector_id, offset_in_phys = self._map_logical_to_physical_sector(
-            cpm_track, logical_sector_on_track
+        phys_cyl, phys_head, phys_sector_id, offset_in_phys = (
+            self._map_logical_to_physical_sector(cpm_track, logical_sector_on_track)
         )
 
         phys_sector_data = self.disk.read_sector(phys_cyl, phys_head, phys_sector_id)
@@ -1655,7 +1739,16 @@ class CPMFilesystem(Filesystem):
                 and tf.bytes_per_sector == 128
             ):
                 self.dpb = CPMDiskParameterBlock(
-                    spt=26, bsh=3, blm=7, exm=0, dsm=242, drm=63, al0=0xC0, al1=0x00, cks=0, off=2
+                    spt=26,
+                    bsh=3,
+                    blm=7,
+                    exm=0,
+                    dsm=242,
+                    drm=63,
+                    al0=0xC0,
+                    al1=0x00,
+                    cks=0,
+                    off=2,
                 )
                 return True
         elif len(pf.track_formats) == 2:
@@ -1673,7 +1766,16 @@ class CPMFilesystem(Filesystem):
                 and tf1.bytes_per_sector == 256
             ):
                 self.dpb = CPMDiskParameterBlock(
-                    spt=52, bsh=4, blm=15, exm=1, dsm=242, drm=63, al0=0xC0, al1=0x00, cks=0, off=2
+                    spt=52,
+                    bsh=4,
+                    blm=15,
+                    exm=1,
+                    dsm=242,
+                    drm=63,
+                    al0=0xC0,
+                    al1=0x00,
+                    cks=0,
+                    off=2,
                 )
                 return True
         return False
@@ -1701,13 +1803,17 @@ class CPMFilesystem(Filesystem):
             data = data.ljust(expected_size, b"\x00")
 
         logical_sectors_per_block = expected_size // CPM_SECTOR_SIZE
-        start_cpm_track, start_logical_sector_on_track = self._block_to_track_sector(block_num)
+        start_cpm_track, start_logical_sector_on_track = self._block_to_track_sector(
+            block_num
+        )
         current_cpm_track = start_cpm_track
         current_logical_sector = start_logical_sector_on_track
 
         for i in range(logical_sectors_per_block):
             sector_data = data[i * CPM_SECTOR_SIZE : (i + 1) * CPM_SECTOR_SIZE]
-            self._write_logical_sector(current_cpm_track, current_logical_sector, sector_data)
+            self._write_logical_sector(
+                current_cpm_track, current_logical_sector, sector_data
+            )
             current_logical_sector += 1
             spt = self._get_logical_spt(current_cpm_track)
             if spt > 0 and current_logical_sector >= spt:
@@ -1734,14 +1840,16 @@ class CPMFilesystem(Filesystem):
         if not self.dpb or not self.disk or not self.disk.physical_format:
             raise ValueError("DPB, disk, or physical format not available.")
         if len(data) != CPM_SECTOR_SIZE:
-            raise ValueError(f"Data size {len(data)} != CPM_SECTOR_SIZE {CPM_SECTOR_SIZE}.")
+            raise ValueError(
+                f"Data size {len(data)} != CPM_SECTOR_SIZE {CPM_SECTOR_SIZE}."
+            )
         if logical_sector_on_track >= self._get_logical_spt(cpm_track):
             raise ValueError(
                 f"Logical sector {logical_sector_on_track} exceeds SPT for CP/M track {cpm_track}."
             )
 
-        phys_cyl, phys_head, phys_sector_id, offset_in_phys = self._map_logical_to_physical_sector(
-            cpm_track, logical_sector_on_track
+        phys_cyl, phys_head, phys_sector_id, offset_in_phys = (
+            self._map_logical_to_physical_sector(cpm_track, logical_sector_on_track)
         )
 
         phys_sector_data = self.disk.read_sector(phys_cyl, phys_head, phys_sector_id)
@@ -1752,4 +1860,6 @@ class CPMFilesystem(Filesystem):
 
         phys_sector_data = bytearray(phys_sector_data)
         phys_sector_data[offset_in_phys : offset_in_phys + CPM_SECTOR_SIZE] = data
-        self.disk.write_sector(phys_cyl, phys_head, phys_sector_id, bytes(phys_sector_data))
+        self.disk.write_sector(
+            phys_cyl, phys_head, phys_sector_id, bytes(phys_sector_data)
+        )

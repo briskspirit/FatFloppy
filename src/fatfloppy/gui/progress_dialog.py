@@ -28,7 +28,7 @@ class ProgressDialog(QDialog):
         title: str = "Operation in Progress",
         message: str = "Please wait...",
         cancelable: bool = False,
-        parent: Optional[QWidget] = None
+        parent: Optional[QWidget] = None,
     ):
         """
         Initialize progress dialog.
@@ -49,15 +49,14 @@ class ProgressDialog(QDialog):
 
         if not cancelable:
             self.setWindowFlags(
-                Qt.WindowType.Dialog |
-                Qt.WindowType.CustomizeWindowHint |
-                Qt.WindowType.WindowTitleHint |
-                Qt.WindowType.WindowStaysOnTopHint
+                Qt.WindowType.Dialog
+                | Qt.WindowType.CustomizeWindowHint
+                | Qt.WindowType.WindowTitleHint
+                | Qt.WindowType.WindowStaysOnTopHint
             )
         else:
             self.setWindowFlags(
-                Qt.WindowType.Dialog |
-                Qt.WindowType.WindowStaysOnTopHint
+                Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint
             )
 
         self._cancelled = False
@@ -100,12 +99,7 @@ class ProgressDialog(QDialog):
         """
         self.message_label.setText(message)
 
-    def update_progress(
-        self,
-        current: int,
-        total: int,
-        message: str = ""
-    ) -> None:
+    def update_progress(self, current: int, total: int, message: str = "") -> None:
         """
         Update progress bar and message.
 

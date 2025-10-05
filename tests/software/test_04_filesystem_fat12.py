@@ -447,7 +447,9 @@ def test_read_file_corrupted_fat_chain_loop(fs_setup: FSTestFixture) -> None:
 
     try:
         read_data = fs_reloaded.read_file(filename)
-        assert len(read_data) < fs_reloaded.num_clusters * fs_reloaded.allocation_unit_size
+        assert (
+            len(read_data) < fs_reloaded.num_clusters * fs_reloaded.allocation_unit_size
+        )
     except (OSError, ValueError, IndexError):
         pass
 
@@ -550,10 +552,9 @@ def test_init_with_different_geometry_720k(fs_setup: FSTestFixture) -> None:
     assert fs_reinit.boot_sector.num_heads == 2
 
     assert disk.physical_format.total_sectors == FMT_720.physical_format.total_sectors
-    assert (
-        disk.physical_format.get_sectors_per_track(0, 0)
-        == FMT_720.physical_format.get_sectors_per_track(0, 0)
-    )
+    assert disk.physical_format.get_sectors_per_track(
+        0, 0
+    ) == FMT_720.physical_format.get_sectors_per_track(0, 0)
 
 
 def test_invalid_83_filenames(fs_setup: FSTestFixture) -> None:
@@ -622,9 +623,7 @@ def test_fat_offsets(fs_setup: FSTestFixture) -> None:
     assert fs.root_dir_start_offset == 512 + (2 * 4608)
     assert fs.root_dir_start_offset == 9728
 
-    expected_data_start = fs.root_dir_start_offset + (
-        fs.boot_sector.root_entries * 32
-    )
+    expected_data_start = fs.root_dir_start_offset + (fs.boot_sector.root_entries * 32)
     assert fs.data_area_start_offset == expected_data_start
     assert fs.data_area_start_offset == 9728 + (224 * 32)
     assert fs.data_area_start_offset == 16896

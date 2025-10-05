@@ -5,6 +5,7 @@ Self-contained filesystem registry with automatic plugin discovery.
 This module is completely self-sufficient - it discovers, validates,
 and registers all filesystem plugins automatically on import.
 """
+
 from typing import Optional
 
 from .filesystems.fs_base import Filesystem
@@ -85,7 +86,7 @@ class FilesystemRegistry:
         cls,
         fs_type: str,
         fs_class: type[Filesystem],
-        aliases: Optional[list[str]] = None
+        aliases: Optional[list[str]] = None,
     ) -> None:
         """
         Public API for external plugins to register themselves.
@@ -115,7 +116,7 @@ class FilesystemRegistry:
         logger.info("Aggregating format definitions from filesystem plugins...")
 
         for _fs_type, fs_class in cls._registry.items():
-            if hasattr(fs_class, 'get_format_definitions'):
+            if hasattr(fs_class, "get_format_definitions"):
                 try:
                     formats = fs_class.get_format_definitions()
                     if formats:
@@ -139,14 +140,14 @@ class FilesystemRegistry:
         logger.info("Starting filesystem plugin discovery...")
 
         filesystems = PluginScanner.discover_plugins(
-            package_name='fatfloppy.core.filesystems',
+            package_name="fatfloppy.core.filesystems",
             base_class=Filesystem,
-            validator=cls._validate_filesystem
+            validator=cls._validate_filesystem,
         )
 
         for fs_class in filesystems:
             fs_type = fs_class.filesystem_type
-            aliases = getattr(fs_class, 'filesystem_aliases', [])
+            aliases = getattr(fs_class, "filesystem_aliases", [])
 
             cls._registry[fs_type] = fs_class
             cls._name_map[fs_type] = fs_type
@@ -179,8 +180,7 @@ class FilesystemRegistry:
             PluginValidationError: If validation fails
         """
         PluginScanner.validate_has_attributes(
-            fs_class,
-            ['filesystem_type', 'validity_threshold']
+            fs_class, ["filesystem_type", "validity_threshold"]
         )
 
         PluginScanner.validate_implements_methods(fs_class, Filesystem)

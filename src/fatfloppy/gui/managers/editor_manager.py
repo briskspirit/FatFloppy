@@ -4,7 +4,7 @@ Manages text and hex editor operations for viewing and editing files.
 """
 
 import logging
-import os
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -20,7 +20,7 @@ class EditorManager(QObject):
     refresh_needed = pyqtSignal(str)
     error_occurred = pyqtSignal(str, str)
 
-    def __init__(self, parent: 'QMainWindow') -> None:
+    def __init__(self, parent: "QMainWindow") -> None:
         """
         Initialize the editor manager.
 
@@ -67,7 +67,7 @@ class EditorManager(QObject):
                 "Discard Changes",
                 "Are you sure you want to discard all changes?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
+                QMessageBox.StandardButton.No,
             )
 
             if reply == QMessageBox.StandardButton.Yes:
@@ -80,8 +80,7 @@ class EditorManager(QObject):
                 self.parent.discard_button.setEnabled(False)
                 self.modified_changed.emit(False)
                 self.parent.statusBar().showMessage(
-                    f"Changes to {os.path.basename(self.current_file_path)} "
-                    f"discarded."
+                    f"Changes to {Path(self.current_file_path).name} discarded."
                 )
                 self.logger.info(
                     f"Changes to {self.current_file_path} successfully discarded."
@@ -109,7 +108,7 @@ class EditorManager(QObject):
         """Handles changes in the text editor's content."""
         if self.original_text_content is not None:
             current_text = self.parent.text_viewer.toPlainText()
-            is_modified = (current_text != self.original_text_content)
+            is_modified = current_text != self.original_text_content
             self.text_editor_modified = is_modified
             self.parent.save_button.setEnabled(is_modified)
             self.parent.discard_button.setEnabled(is_modified)
@@ -139,35 +138,30 @@ class EditorManager(QObject):
                 return True
             else:
                 QMessageBox.warning(
-                    self.parent,
-                    "Warning",
-                    "No file context for saving."
+                    self.parent, "Warning", "No file context for saving."
                 )
-                self.logger.warning(
-                    "Save requested without a current file context."
-                )
+                self.logger.warning("Save requested without a current file context.")
                 return False
 
         self.logger.info(f"Saving changes to {self.current_file_path}")
 
         try:
             current_text = self.parent.text_viewer.toPlainText()
-            normalized_text = current_text.replace('\n', '\r\n')
+            normalized_text = current_text.replace("\n", "\r\n")
 
             fs_type = self.parent.controller.filesystem.get_display_info().get(
-                "Filesystem Type",
-                "Unknown"
+                "Filesystem Type", "Unknown"
             )
 
             if fs_type == "CP/M":
-                content_bytes = bytes([
-                    b & 0x7F for b in normalized_text.encode(
-                        'ascii',
-                        errors='replace'
-                    )
-                ])
+                content_bytes = bytes(
+                    [
+                        b & 0x7F
+                        for b in normalized_text.encode("ascii", errors="replace")
+                    ]
+                )
             else:
-                content_bytes = normalized_text.encode('cp437', errors='replace')
+                content_bytes = normalized_text.encode("cp437", errors="replace")
 
             file_path = self.current_file_path
             current_path = self.parent.current_path
@@ -183,17 +177,14 @@ class EditorManager(QObject):
                 self.logger.info(f"Successfully saved {file_path}")
 
             self.parent.file_manager.save_file(
-                file_path,
-                content_bytes,
-                current_text,
-                on_save_success
+                file_path, content_bytes, current_text, on_save_success
             )
             return True
 
         except UnicodeEncodeError as e:
             self.error_occurred.emit(
                 "Encoding Error",
-                f"Text contains characters not supported by the target encoding: {e}"
+                f"Text contains characters not supported by the target encoding: {e}",
             )
             self.logger.error(
                 f"Encoding error when saving {self.current_file_path}: {e}"
@@ -201,9 +192,7 @@ class EditorManager(QObject):
             return False
         except Exception as e:
             self.error_occurred.emit("Error", f"Failed to save file: {str(e)}")
-            self.logger.exception(
-                f"Unexpected error saving {self.current_file_path}."
-            )
+            self.logger.exception(f"Unexpected error saving {self.current_file_path}.")
             return False
 
     def view_file_content(self) -> None:
@@ -211,34 +200,31 @@ class EditorManager(QObject):
         selected_items = self.parent.file_list.selectedItems()
         if len(selected_items) != 1:
             QMessageBox.information(
-                self.parent,
-                "Info",
-                "Please select a single file to view."
+                self.parent, "Info", "Please select a single file to view."
             )
             return
 
         item = selected_items[0]
-        if not hasattr(item, 'node'):
+        if not hasattr(item, "node"):
             QMessageBox.warning(self.parent, "Warning", "Invalid item selected.")
             return
 
         node = item.node
         if node.is_dir:
             QMessageBox.information(
-                self.parent,
-                "Info",
-                "Cannot view directory contents."
+                self.parent, "Info", "Cannot view directory contents."
             )
             return
 
         file_path = self.parent._build_full_path(node.name)
 
         is_physical = (
-            self.parent.controller.driver and
-            self.parent.controller.driver.driver_category == "physical"
+            self.parent.controller.driver
+            and self.parent.controller.driver.driver_category == "physical"
         )
 
         if is_physical:
+
             def on_read_success(content_bytes):
                 if self._is_text_file(content_bytes):
                     self.clear_hex_viewer_state()
@@ -247,18 +233,13 @@ class EditorManager(QObject):
                     self.clear_text_viewer_state()
                     self._load_hex_viewer(file_path, node.name, content_bytes)
 
-            self.parent.file_manager.read_file_threaded(
-                file_path,
-                on_read_success
-            )
+            self.parent.file_manager.read_file_threaded(file_path, on_read_success)
         else:
             try:
                 content_bytes = self.parent.controller.read_file(file_path)
                 if content_bytes is None:
                     QMessageBox.warning(
-                        self.parent,
-                        "Warning",
-                        f"Could not read file: {node.name}"
+                        self.parent, "Warning", f"Could not read file: {node.name}"
                     )
                     return
 
@@ -287,9 +268,9 @@ class EditorManager(QObject):
             return True
 
         try:
-            text = sample.decode('cp437')
+            text = sample.decode("cp437")
             non_printable = sum(
-                1 for c in text if not (c.isprintable() or c in '\r\n\t')
+                1 for c in text if not (c.isprintable() or c in "\r\n\t")
             )
             if len(text) > 0 and (non_printable / len(text)) > 0.1:
                 percentage = (non_printable / len(text)) * 100
@@ -306,10 +287,7 @@ class EditorManager(QObject):
             return False
 
     def _load_hex_viewer(
-        self,
-        file_path: str,
-        filename: str,
-        content_bytes: bytes
+        self, file_path: str, filename: str, content_bytes: bytes
     ) -> None:
         """
         Loads file content into the hex viewer.
@@ -324,7 +302,7 @@ class EditorManager(QObject):
             bytes_per_line = 16
 
             for offset in range(0, len(content_bytes), bytes_per_line):
-                chunk = content_bytes[offset:offset + bytes_per_line]
+                chunk = content_bytes[offset : offset + bytes_per_line]
 
                 offset_str = f"{offset:08X}"
 
@@ -335,22 +313,20 @@ class EditorManager(QObject):
                     else:
                         hex_parts.append("  ")
 
-                hex_str = (
-                    ' '.join(hex_parts[:8]) + '  ' + ' '.join(hex_parts[8:])
-                )
+                hex_str = " ".join(hex_parts[:8]) + "  " + " ".join(hex_parts[8:])
 
                 ascii_chars = []
                 for i in range(bytes_per_line):
                     if i < len(chunk):
                         b = chunk[i]
-                        ascii_chars.append(chr(b) if 32 <= b < 127 else '.')
+                        ascii_chars.append(chr(b) if 32 <= b < 127 else ".")
                     else:
-                        ascii_chars.append(' ')
-                ascii_str = ''.join(ascii_chars)
+                        ascii_chars.append(" ")
+                ascii_str = "".join(ascii_chars)
 
                 hex_lines.append(f"{offset_str}  {hex_str}  {ascii_str}")
 
-            hex_content = '\n'.join(hex_lines)
+            hex_content = "\n".join(hex_lines)
 
             self.parent.hex_viewer.setPlainText(hex_content)
             self.current_hex_file_path = file_path
@@ -362,16 +338,11 @@ class EditorManager(QObject):
         except Exception as e:
             self.logger.error(f"Error loading hex viewer: {e}", exc_info=True)
             QMessageBox.warning(
-                self.parent,
-                "Warning",
-                f"Could not display hex view: {str(e)}"
+                self.parent, "Warning", f"Could not display hex view: {str(e)}"
             )
 
     def _load_text_editor(
-        self,
-        file_path: str,
-        filename: str,
-        content_bytes: bytes
+        self, file_path: str, filename: str, content_bytes: bytes
     ) -> None:
         """
         Loads file content into the text editor.
@@ -383,16 +354,15 @@ class EditorManager(QObject):
         """
         try:
             fs_type = self.parent.controller.filesystem.get_display_info().get(
-                "Filesystem Type",
-                "Unknown"
+                "Filesystem Type", "Unknown"
             )
             if fs_type == "CP/M":
                 cleaned_bytes = bytes([b & 0x7F for b in content_bytes])
-                content_text = cleaned_bytes.decode('ascii', errors='replace')
+                content_text = cleaned_bytes.decode("ascii", errors="replace")
             else:
-                content_text = content_bytes.decode('cp437', errors='replace')
+                content_text = content_bytes.decode("cp437", errors="replace")
 
-            content_text = content_text.replace('\r\n', '\n').replace('\r', '\n')
+            content_text = content_text.replace("\r\n", "\n").replace("\r", "\n")
 
             self.parent.text_viewer.blockSignals(True)
             self.parent.text_viewer.setPlainText(content_text)
@@ -402,15 +372,11 @@ class EditorManager(QObject):
             self.text_editor_modified = False
             self.parent.save_button.setEnabled(False)
             self.parent.discard_button.setEnabled(False)
-            self.parent.text_viewer_dock.setWindowTitle(
-                f"Text Editor - {filename}"
-            )
+            self.parent.text_viewer_dock.setWindowTitle(f"Text Editor - {filename}")
             self.parent.text_viewer_dock.raise_()
             self.logger.info(f"Loaded '{filename}' into text editor.")
         except Exception as e:
             self.logger.error(f"Error loading text editor: {e}", exc_info=True)
             QMessageBox.warning(
-                self.parent,
-                "Warning",
-                f"Could not display as text: {str(e)}"
+                self.parent, "Warning", f"Could not display as text: {str(e)}"
             )

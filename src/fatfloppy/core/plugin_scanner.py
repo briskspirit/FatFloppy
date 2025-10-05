@@ -4,6 +4,7 @@ Automatic plugin discovery system.
 
 Scans specified directories for valid plugin classes and validates them.
 """
+
 import importlib
 import inspect
 import pkgutil
@@ -26,9 +27,7 @@ class PluginScanner:
 
     @staticmethod
     def discover_plugins(
-        package_name: str,
-        base_class: type,
-        validator: Callable[[type], None] = None
+        package_name: str, base_class: type, validator: Callable[[type], None] = None
     ) -> list[type]:
         """
         Discovers all subclasses of base_class in the given package.
@@ -51,7 +50,7 @@ class PluginScanner:
             package_path = Path(package.__file__).parent
 
             for _finder, name, _ispkg in pkgutil.iter_modules([str(package_path)]):
-                if name.startswith('_'):
+                if name.startswith("_"):
                     continue
 
                 module_name = f"{package_name}.{name}"
@@ -59,15 +58,13 @@ class PluginScanner:
                 try:
                     module = importlib.import_module(module_name)
 
-                    for _item_name, item in inspect.getmembers(
-                        module,
-                        inspect.isclass
-                    ):
-                        if (issubclass(item, base_class) and
-                                item is not base_class and
-                                not inspect.isabstract(item) and
-                                item.__module__ == module_name):
-
+                    for _item_name, item in inspect.getmembers(module, inspect.isclass):
+                        if (
+                            issubclass(item, base_class)
+                            and item is not base_class
+                            and not inspect.isabstract(item)
+                            and item.__module__ == module_name
+                        ):
                             if validator:
                                 try:
                                     validator(item)
@@ -82,8 +79,7 @@ class PluginScanner:
 
                             discovered_plugins.append(item)
                             logger.debug(
-                                f"Discovered plugin: {item.__name__} "
-                                f"from {module_name}"
+                                f"Discovered plugin: {item.__name__} from {module_name}"
                             )
 
                 except ImportError as e:
@@ -111,7 +107,11 @@ class PluginScanner:
         """
         missing = []
         for attr in required_attrs:
-            if not hasattr(cls, attr) or getattr(cls, attr) == "" or getattr(cls, attr) == []:
+            if (
+                not hasattr(cls, attr)
+                or getattr(cls, attr) == ""
+                or getattr(cls, attr) == []
+            ):
                 missing.append(attr)
 
         if missing:
@@ -134,7 +134,7 @@ class PluginScanner:
         abstract_methods = set()
 
         for base in inspect.getmro(base_class):
-            if hasattr(base, '__abstractmethods__'):
+            if hasattr(base, "__abstractmethods__"):
                 abstract_methods.update(base.__abstractmethods__)
 
         unimplemented = []

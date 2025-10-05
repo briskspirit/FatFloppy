@@ -4,13 +4,13 @@ Manages application settings, window state, and recent files.
 """
 
 import logging
-import os
 import subprocess
 import sys
+from pathlib import Path
 
 from PyQt6.QtCore import QObject, QSettings, pyqtSignal
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import QApplication, QMainWindow, QMessageBox
+from PyQt6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox
 
 
 class SettingsManager(QObject):
@@ -19,7 +19,7 @@ class SettingsManager(QObject):
     recent_files_changed = pyqtSignal()
     open_file_requested = pyqtSignal(str)
 
-    def __init__(self, parent: 'QMainWindow', max_recent_files: int = 10) -> None:
+    def __init__(self, parent: "QMainWindow", max_recent_files: int = 10) -> None:
         """
         Initialize the settings manager.
 
@@ -39,7 +39,7 @@ class SettingsManager(QObject):
         Args:
             file_path: The absolute path to the file to add.
         """
-        if not file_path or not os.path.exists(file_path):
+        if not file_path or not Path(file_path).exists():
             return
 
         recent_files = self.load_recent_files()
@@ -48,7 +48,7 @@ class SettingsManager(QObject):
             recent_files.remove(file_path)
 
         recent_files.insert(0, file_path)
-        recent_files = recent_files[:self.max_recent_files]
+        recent_files = recent_files[: self.max_recent_files]
 
         self.save_recent_files(recent_files)
         self.recent_files_changed.emit()
@@ -91,9 +91,7 @@ class SettingsManager(QObject):
             self.logger.debug("Using default window size")
 
         restore_dock_layout = settings.value(
-            "window/restore_dock_layout",
-            False,
-            type=bool
+            "window/restore_dock_layout", False, type=bool
         )
 
         if restore_dock_layout:
@@ -102,18 +100,14 @@ class SettingsManager(QObject):
                 success = self.parent.restoreState(state)
                 if success:
                     self.logger.info(
-                        f"Restored custom dock layout (state size: "
-                        f"{len(state)} bytes)"
+                        f"Restored custom dock layout (state size: {len(state)} bytes)"
                     )
 
-                    floating_geometries = settings.value(
-                        "window/floating_geometries"
-                    )
+                    floating_geometries = settings.value("window/floating_geometries")
                     if floating_geometries:
                         for dock_name, dock_geometry in floating_geometries.items():
                             dock = self.parent.findChild(
-                                type(self.parent.tree_dock),
-                                dock_name
+                                type(self.parent.tree_dock), dock_name
                             )
                             if dock and dock.isFloating():
                                 dock.restoreGeometry(dock_geometry)
@@ -122,8 +116,7 @@ class SettingsManager(QObject):
                                 )
                 else:
                     self.logger.warning(
-                        "Failed to restore custom dock layout - state may be "
-                        "corrupted"
+                        "Failed to restore custom dock layout - state may be corrupted"
                     )
             else:
                 self.logger.warning(
@@ -148,7 +141,7 @@ class SettingsManager(QObject):
             "Reset all dock positions to default layout?\n\n"
             "The application will restart to apply changes.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.No,
         )
 
         if reply != QMessageBox.StandardButton.Yes:
@@ -158,7 +151,7 @@ class SettingsManager(QObject):
         settings.setValue("window/restore_dock_layout", False)
         settings.remove("window/state")
 
-        if hasattr(self.parent, 'restore_layout_action'):
+        if hasattr(self.parent, "restore_layout_action"):
             self.parent.restore_layout_action.setChecked(False)
 
         self.logger.info("Layout reset to defaults, restart required")
@@ -166,29 +159,30 @@ class SettingsManager(QObject):
         restart_reply = QMessageBox.question(
             self.parent,
             "Restart Required",
-            "Layout has been reset to defaults.\n\n"
-            "Restart now to apply changes?",
+            "Layout has been reset to defaults.\n\nRestart now to apply changes?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
+            QMessageBox.StandardButton.Yes,
         )
 
         if restart_reply == QMessageBox.StandardButton.Yes:
-            if hasattr(self.parent, 'editor_manager'):
-                if self.parent.editor_manager.has_unsaved_changes():
-                    save_reply = QMessageBox.question(
-                        self.parent,
-                        "Unsaved Changes",
-                        "Save changes in text editor before restarting?",
-                        QMessageBox.StandardButton.Yes |
-                        QMessageBox.StandardButton.No |
-                        QMessageBox.StandardButton.Cancel,
-                        QMessageBox.StandardButton.Yes
-                    )
-                    if save_reply == QMessageBox.StandardButton.Yes:
-                        if not self.parent.editor_manager.save_file():
-                            return False
-                    elif save_reply == QMessageBox.StandardButton.Cancel:
+            if (
+                hasattr(self.parent, "editor_manager")
+                and self.parent.editor_manager.has_unsaved_changes()
+            ):
+                save_reply = QMessageBox.question(
+                    self.parent,
+                    "Unsaved Changes",
+                    "Save changes in text editor before restarting?",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if save_reply == QMessageBox.StandardButton.Yes:
+                    if not self.parent.editor_manager.save_file():
                         return False
+                elif save_reply == QMessageBox.StandardButton.Cancel:
+                    return False
 
             QApplication.quit()
             subprocess.Popen([sys.executable] + sys.argv)
@@ -203,7 +197,7 @@ class SettingsManager(QObject):
         settings.setValue("window/state", current_state)
         settings.setValue("window/restore_dock_layout", True)
 
-        if hasattr(self.parent, 'restore_layout_action'):
+        if hasattr(self.parent, "restore_layout_action"):
             self.parent.restore_layout_action.setChecked(True)
 
         floating_geometries = {}
@@ -213,7 +207,7 @@ class SettingsManager(QObject):
             "FileListDock",
             "DiskMapDock",
             "TextEditorDock",
-            "HexViewerDock"
+            "HexViewerDock",
         ]
         for dock_name in dock_names:
             dock = self.parent.findChild(type(self.parent.tree_dock), dock_name)
@@ -229,14 +223,13 @@ class SettingsManager(QObject):
         else:
             settings.remove("window/floating_geometries")
             self.logger.info(
-                f"Saved custom dock layout (state size: {len(current_state)} "
-                f"bytes)"
+                f"Saved custom dock layout (state size: {len(current_state)} bytes)"
             )
 
         QMessageBox.information(
             self.parent,
             "Layout Saved",
-            "Current layout saved and will be restored on next startup."
+            "Current layout saved and will be restored on next startup.",
         )
 
     def save_recent_files(self, recent_files: list[str]) -> None:
@@ -262,7 +255,7 @@ class SettingsManager(QObject):
             "FileListDock",
             "DiskMapDock",
             "TextEditorDock",
-            "HexViewerDock"
+            "HexViewerDock",
         ]
         for dock_name in dock_names:
             dock = self.parent.findChild(type(self.parent.tree_dock), dock_name)
@@ -293,16 +286,15 @@ class SettingsManager(QObject):
                 "Custom layout restoration is now enabled.\n\n"
                 "Use 'View > Save Current Layout' to save your current "
                 "arrangement.\n"
-                "The saved layout will be restored on next startup."
+                "The saved layout will be restored on next startup.",
             )
             self.logger.info("Custom layout restoration enabled")
         else:
             self.logger.info(
-                "Custom layout restoration disabled - will use defaults on "
-                "next startup"
+                "Custom layout restoration disabled - will use defaults on next startup"
             )
 
-    def update_recent_files_menu(self, menu: 'QMenu') -> None:
+    def update_recent_files_menu(self, menu: QMenu) -> None:
         """
         Updates the Recent Files submenu with current recent files.
 
@@ -319,11 +311,11 @@ class SettingsManager(QObject):
             return
 
         for file_path in recent_files:
-            if os.path.exists(file_path):
-                action = QAction(os.path.basename(file_path), self.parent)
+            if Path(file_path).exists():
+                action = QAction(Path(file_path).name, self.parent)
                 action.setToolTip(file_path)
                 action.triggered.connect(
-                    lambda checked, path=file_path: self._open_recent_file(path)
+                    lambda _checked, path=file_path: self._open_recent_file(path)
                 )
                 menu.addAction(action)
 
@@ -339,12 +331,12 @@ class SettingsManager(QObject):
         Args:
             file_path: The path to the file to open.
         """
-        if not os.path.exists(file_path):
+        if not Path(file_path).exists():
             QMessageBox.warning(
                 self.parent,
                 "File Not Found",
                 f"The file '{file_path}' no longer exists and will be removed "
-                f"from recent files."
+                f"from recent files.",
             )
             recent_files = self.load_recent_files()
             if file_path in recent_files:

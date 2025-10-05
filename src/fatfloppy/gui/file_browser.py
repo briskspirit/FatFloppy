@@ -5,6 +5,7 @@ Custom QTreeWidget with drag-and-drop functionality for importing files.
 
 import os
 import tempfile
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QMimeData, QPoint, Qt, QUrl
@@ -58,32 +59,32 @@ class DragDropTreeWidget(QTreeWidget):
         Args:
             file_paths: List of local file paths to import.
         """
-        if (not hasattr(self.parent_widget, 'controller') or
-                not self.parent_widget.current_node):
+        if (
+            not hasattr(self.parent_widget, "controller")
+            or not self.parent_widget.current_node
+        ):
             QMessageBox.warning(
                 self.parent_widget,
                 "Warning",
-                "No disk image loaded or no destination selected."
+                "No disk image loaded or no destination selected.",
             )
             return
 
         current_path = self.parent_widget.current_path
 
-        auto_name = not (len(file_paths) == 1 and os.path.isfile(file_paths[0]))
+        auto_name = not (len(file_paths) == 1 and Path(file_paths[0]).is_file())
         self.parent_widget.import_multiple_paths(
-            file_paths,
-            current_path,
-            auto_name=auto_name
+            file_paths, current_path, auto_name=auto_name
         )
 
-    def startDrag(self, supportedActions) -> None:
+    def startDrag(self, _supportedActions) -> None:  # noqa: N802, N803
         """
         Handles the start of a drag operation to extract files.
 
         Extracts selected files to a temp directory and provides them for dragging.
 
         Args:
-            supportedActions: Supported drag actions.
+            _supportedActions: Supported drag actions (unused, required by Qt).
         """
         selected_items = self.selectedItems()
         if not selected_items:
@@ -91,16 +92,14 @@ class DragDropTreeWidget(QTreeWidget):
 
         valid_items = []
         for item in selected_items:
-            if hasattr(item, 'node'):
+            if hasattr(item, "node"):
                 valid_items.append(item)
 
         if not valid_items:
             return
 
         if self._temp_extraction_dir is None:
-            self._temp_extraction_dir = tempfile.mkdtemp(
-                prefix=DRAG_TEMP_DIR_PREFIX
-            )
+            self._temp_extraction_dir = tempfile.mkdtemp(prefix=DRAG_TEMP_DIR_PREFIX)
 
         temp_file_paths = []
         for item in valid_items:
@@ -108,17 +107,11 @@ class DragDropTreeWidget(QTreeWidget):
             source_path = self._build_full_path_for_node(node)
 
             if node.is_dir:
-                local_dir_path = os.path.join(
-                    self._temp_extraction_dir,
-                    node.name
-                )
+                local_dir_path = str(Path(self._temp_extraction_dir) / node.name)
                 if self._extract_directory_for_drag(source_path, local_dir_path):
                     temp_file_paths.append(local_dir_path)
             else:
-                local_file_path = os.path.join(
-                    self._temp_extraction_dir,
-                    node.name
-                )
+                local_file_path = str(Path(self._temp_extraction_dir) / node.name)
                 if self._extract_file_for_drag(source_path, local_file_path):
                     temp_file_paths.append(local_file_path)
 
@@ -133,7 +126,7 @@ class DragDropTreeWidget(QTreeWidget):
         drag.setMimeData(mime_data)
         drag.exec(Qt.DropAction.CopyAction)
 
-    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
         """
         Accepts drag events only if they contain file URLs from external sources.
 
@@ -150,7 +143,7 @@ class DragDropTreeWidget(QTreeWidget):
         else:
             event.ignore()
 
-    def dragLeaveEvent(self, event) -> None:
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
         """
         Resets the visual feedback when drag leaves the widget.
 
@@ -160,7 +153,7 @@ class DragDropTreeWidget(QTreeWidget):
         self.setStyleSheet("")
         super().dragLeaveEvent(event)
 
-    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
         """
         Handles the movement of a drag event over the widget.
 
@@ -177,7 +170,7 @@ class DragDropTreeWidget(QTreeWidget):
         else:
             event.ignore()
 
-    def dropEvent(self, event: QDropEvent) -> None:
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
         """
         Handles the drop event.
 
@@ -208,32 +201,30 @@ class DragDropTreeWidget(QTreeWidget):
         Returns:
             The full path on the disk image.
         """
-        if hasattr(self.parent_widget, '_build_full_path'):
+        if hasattr(self.parent_widget, "_build_full_path"):
             return self.parent_widget._build_full_path(node.name)
-        current_path = getattr(self.parent_widget, 'current_path', '/')
+        current_path = getattr(self.parent_widget, "current_path", "/")
         if current_path != "/":
             return f"{current_path}/{node.name}"
         return f"/{node.name}"
 
     def _context_delete(self) -> None:
         """Context menu handler for Delete action."""
-        if hasattr(self.parent_widget, 'delete_selected_items'):
+        if hasattr(self.parent_widget, "delete_selected_items"):
             self.parent_widget.delete_selected_items()
 
     def _context_extract(self) -> None:
         """Context menu handler for Extract action."""
-        if hasattr(self.parent_widget, 'extract_selected_items'):
+        if hasattr(self.parent_widget, "extract_selected_items"):
             self.parent_widget.extract_selected_items()
 
     def _context_view_file(self) -> None:
         """Context menu handler for View action."""
-        if hasattr(self.parent_widget, 'view_file_content'):
+        if hasattr(self.parent_widget, "view_file_content"):
             self.parent_widget.view_file_content()
 
     def _extract_directory_for_drag(
-        self,
-        source_dir_path: str,
-        local_dir_path: str
+        self, source_dir_path: str, local_dir_path: str
     ) -> bool:
         """
         Recursively extracts a directory from disk image to local filesystem.
@@ -246,11 +237,13 @@ class DragDropTreeWidget(QTreeWidget):
             True if extraction was successful, False otherwise.
         """
         try:
-            if (not hasattr(self.parent_widget, 'controller') or
-                    not self.parent_widget.controller):
+            if (
+                not hasattr(self.parent_widget, "controller")
+                or not self.parent_widget.controller
+            ):
                 return False
 
-            os.makedirs(local_dir_path, exist_ok=True)
+            Path(local_dir_path).mkdir(parents=True, exist_ok=True)
             items = self.parent_widget.controller.list_directory(source_dir_path)
 
             for item in items:
@@ -259,21 +252,18 @@ class DragDropTreeWidget(QTreeWidget):
                     continue
 
                 item_source_path = os.path.normpath(
-                    os.path.join(source_dir_path, item_name)
+                    str(Path(source_dir_path) / item_name)
                 )
-                item_local_path = os.path.join(local_dir_path, item_name)
+                item_local_path = str(Path(local_dir_path) / item_name)
 
                 if item["is_dir"]:
-                    self._extract_directory_for_drag(
-                        item_source_path,
-                        item_local_path
-                    )
+                    self._extract_directory_for_drag(item_source_path, item_local_path)
                 else:
                     self._extract_file_for_drag(item_source_path, item_local_path)
 
             return True
         except Exception as e:
-            if hasattr(self.parent_widget, 'logger'):
+            if hasattr(self.parent_widget, "logger"):
                 self.parent_widget.logger.error(
                     f"Error extracting directory {source_dir_path}: {e}"
                 )
@@ -291,17 +281,18 @@ class DragDropTreeWidget(QTreeWidget):
             True if extraction was successful, False otherwise.
         """
         try:
-            if (not hasattr(self.parent_widget, 'controller') or
-                    not self.parent_widget.controller):
+            if (
+                not hasattr(self.parent_widget, "controller")
+                or not self.parent_widget.controller
+            ):
                 return False
 
             file_data = self.parent_widget.controller.read_file(source_path)
             if file_data is not None:
-                with open(local_path, 'wb') as f:
-                    f.write(file_data)
+                Path(local_path).write_bytes(file_data)
                 return True
         except Exception as e:
-            if hasattr(self.parent_widget, 'logger'):
+            if hasattr(self.parent_widget, "logger"):
                 self.parent_widget.logger.error(
                     f"Error extracting file {source_path}: {e}"
                 )
@@ -315,7 +306,7 @@ class DragDropTreeWidget(QTreeWidget):
             position: The position where the context menu was requested.
         """
         item = self.itemAt(position)
-        if not item or not hasattr(item, 'node'):
+        if not item or not hasattr(item, "node"):
             return
 
         node = item.node

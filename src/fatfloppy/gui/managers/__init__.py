@@ -9,8 +9,8 @@ from .file_manager import FileManager
 from .settings_manager import SettingsManager
 
 __all__ = [
-    'DiskManager',
-    'EditorManager',
-    'FileManager',
-    'SettingsManager',
+    "DiskManager",
+    "EditorManager",
+    "FileManager",
+    "SettingsManager",
 ]

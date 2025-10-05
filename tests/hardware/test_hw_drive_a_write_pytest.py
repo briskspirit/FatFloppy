@@ -176,7 +176,7 @@ class TestHardwareDriveAWrite:
         except Exception as e:
             print(f"WARN: Exception during cleanup for {path}: {e}")
 
-    def test_01_hw_A_create_write_read_delete_file(
+    def test_01_hw_a_create_write_read_delete_file(
         self, prepared_controller: DiskController
     ) -> None:
         """Verify the full lifecycle of a file: create, write, read, and delete."""
@@ -197,12 +197,12 @@ class TestHardwareDriveAWrite:
         finally:
             self._cleanup_item(controller, filepath)
             read_after_delete = controller.read_file(filepath)
-            assert (
-                read_after_delete is None
-            ), f"File '{filepath}' still readable after deletion attempt."
+            assert read_after_delete is None, (
+                f"File '{filepath}' still readable after deletion attempt."
+            )
             print(f"Verified deletion of {filepath} (read returned None)")
 
-    def test_02_hw_A_create_delete_dir(
+    def test_02_hw_a_create_delete_dir(
         self, prepared_controller: DiskController
     ) -> None:
         """Verify the lifecycle of a directory: create and delete."""
@@ -219,9 +219,9 @@ class TestHardwareDriveAWrite:
             assert root_list is not None, (
                 "Failed to list root directory after creation."
             )
-            assert any(
-                e["name"] == "A_DIR" and e["is_dir"] for e in root_list
-            ), f"{dirpath} not found after creation"
+            assert any(e["name"] == "A_DIR" and e["is_dir"] for e in root_list), (
+                f"{dirpath} not found after creation"
+            )
             print(f"Verified creation of {dirpath}")
         finally:
             self._cleanup_item(controller, dirpath)
@@ -229,12 +229,12 @@ class TestHardwareDriveAWrite:
             assert root_list_after is not None, (
                 "Failed to list root directory after deletion."
             )
-            assert not any(
-                e["name"] == "A_DIR" for e in root_list_after
-            ), f"{dirpath} still found after deletion attempt"
+            assert not any(e["name"] == "A_DIR" for e in root_list_after), (
+                f"{dirpath} still found after deletion attempt"
+            )
             print(f"Verified deletion of {dirpath}")
 
-    def test_03_hw_A_write_multicluster_file(
+    def test_03_hw_a_write_multicluster_file(
         self, prepared_controller: DiskController
     ) -> None:
         """Verify writing a file large enough to span multiple clusters."""
@@ -267,9 +267,9 @@ class TestHardwareDriveAWrite:
                 None,
             )
 
-            assert (
-                found_entry is not None
-            ), f"'{filepath}' not found in listing after write"
+            assert found_entry is not None, (
+                f"'{filepath}' not found in listing after write"
+            )
             file_size = found_entry.get("size", -1)
             assert file_size == len(content), (
                 f"Reported file size ({file_size}) does not match written "
@@ -308,7 +308,7 @@ class TestHardwareDriveAWrite:
         finally:
             self._cleanup_item(controller, filepath)
             read_after_delete = controller.read_file(filepath)
-            assert (
-                read_after_delete is None
-            ), f"File '{filepath}' still readable after deletion attempt."
+            assert read_after_delete is None, (
+                f"File '{filepath}' still readable after deletion attempt."
+            )
             print(f"Verified deletion of {filepath} (read returned None)")

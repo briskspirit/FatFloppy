@@ -150,7 +150,7 @@ def test_write_sectors_single_track(disk_setup: tuple[Disk, PhysicalFormat]) -> 
 
 
 def test_write_sectors_span_track_cylinder(
-    disk_setup: tuple[Disk, PhysicalFormat]
+    disk_setup: tuple[Disk, PhysicalFormat],
 ) -> None:
     """Tests writing multiple sectors spanning track and cylinder boundaries."""
     disk, phys_fmt = disk_setup

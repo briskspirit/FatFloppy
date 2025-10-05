@@ -86,7 +86,7 @@ def test_detect_format_no_match(disk_controller: DiskController) -> None:
     correctly into a FATVolumeInfo object.
     """
     dummy_boot = bytearray(512)
-    dummy_boot[0:3] = b"\xEB\xFE\x90"
+    dummy_boot[0:3] = b"\xeb\xfe\x90"
     dummy_boot[3:11] = b"NONAME  "
     struct.pack_into("<H", dummy_boot, 0x0B, 512)
     struct.pack_into("<B", dummy_boot, 0x0D, 1)
@@ -171,7 +171,7 @@ def test_fat_volume_info_to_bytes_from_bytes_roundtrip() -> None:
     )
     bs_bytes = bsd.to_bytes()
     assert len(bs_bytes) == 512
-    assert bs_bytes[510:512] == b"\x55\xAA"
+    assert bs_bytes[510:512] == b"\x55\xaa"
 
     bsd_reloaded = FATVolumeInfo.from_bytes(bs_bytes)
     assert bsd_reloaded.oem_id == "MYDOS6.2"

@@ -2,11 +2,12 @@
 """
 Main entry point for the FatFloppy application.
 """
+
 import os
 import sys
 
-if sys.platform == 'darwin':
-    os.environ['RESOURCE_NAME'] = 'FatFloppy'
+if sys.platform == "darwin":
+    os.environ["RESOURCE_NAME"] = "FatFloppy"
 
 from logging import Logger
 
@@ -28,7 +29,7 @@ def main() -> None:
     except Exception as e:
         logger.critical(
             f"An unexpected error occurred during application startup: {e}",
-            exc_info=True
+            exc_info=True,
         )
 
 

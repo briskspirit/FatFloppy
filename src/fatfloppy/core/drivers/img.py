@@ -1,5 +1,5 @@
 import copy
-import os
+from pathlib import Path
 from typing import ClassVar, Optional
 
 from ..physical_format import PhysicalFormat
@@ -65,13 +65,15 @@ class IMGImageDriver(DiskIODriver):
             )
         else:
             if not self.file_path:
-                self.logger.error("IMG driver initialized without file_path and no image_data.")
+                self.logger.error(
+                    "IMG driver initialized without file_path and no image_data."
+                )
                 raise ValueError(
                     "File path must be provided for IMG driver if image_data is not given."
                 )
 
             try:
-                with open(self.file_path, "rb") as f:
+                with Path(self.file_path).open("rb") as f:
                     header_peek = f.read(HEADER_PEEK_SIZE)
                     f.seek(0)
                     if header_peek.startswith(EDSK_MAGIC):
@@ -98,7 +100,9 @@ class IMGImageDriver(DiskIODriver):
                 self.logger.error(f"Image file not found: {self.file_path}")
                 raise
             except ValueError as ve:
-                self.logger.debug(f"ValueError during IMG driver init for {self.file_path}: {ve}")
+                self.logger.debug(
+                    f"ValueError during IMG driver init for {self.file_path}: {ve}"
+                )
                 raise
             except Exception as e:
                 self.logger.error(f"Failed to read image file {self.file_path}: {e}")
@@ -158,9 +162,11 @@ class IMGImageDriver(DiskIODriver):
             return
 
         try:
-            with open(self.file_path, "wb") as f:
+            with Path(self.file_path).open("wb") as f:
                 f.write(self.image_data)
-            self.logger.info(f"Flushed {len(self.image_data)} bytes to {self.file_path}")
+            self.logger.info(
+                f"Flushed {len(self.image_data)} bytes to {self.file_path}"
+            )
             self.dirty = False
         except Exception as e:
             self.logger.error(f"Failed to flush image data to {self.file_path}: {e}")
@@ -180,7 +186,9 @@ class IMGImageDriver(DiskIODriver):
             "preferred_detection_method": "auto",
         }
 
-    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
+    def prepare_for_format_application(
+        self, format_info: dict
+    ) -> tuple[bool, Optional[str]]:
         """
         Validates format compatibility for IMG driver.
 
@@ -257,24 +265,28 @@ class IMGImageDriver(DiskIODriver):
                 f"Format size {self.physical_format.total_bytes} != "
                 f"image size {len(self.image_data)}"
             )
-        self.logger.info(f"Physical format set with total bytes: {self.physical_format.total_bytes}")
+        self.logger.info(
+            f"Physical format set with total bytes: {self.physical_format.total_bytes}"
+        )
 
-    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
+    def validate_for_opening(
+        self, source: str, **_kwargs
+    ) -> tuple[bool, Optional[str]]:
         """
         Validates whether an IMG file can be opened.
 
         Args:
             source: Path to the IMG file.
-            **kwargs: Unused for IMG driver.
+            **_kwargs: Unused for IMG driver.
 
         Returns:
             Tuple of (is_valid, error_message).
         """
-        if not os.path.exists(source):
+        if not Path(source).exists():
             return False, f"IMG file not found: {source}"
 
         try:
-            with open(source, "rb") as f:
+            with Path(source).open("rb") as f:
                 header_peek = f.read(HEADER_PEEK_SIZE)
 
             if header_peek.startswith(EDSK_MAGIC):

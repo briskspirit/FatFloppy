@@ -1,5 +1,5 @@
 import copy
-import os
+from pathlib import Path
 from typing import Any, ClassVar, Optional
 
 from ..physical_format import PhysicalFormat, TrackFormat
@@ -91,17 +91,21 @@ class MITSDSKDriver(DiskIODriver):
             )
         else:
             if not self.file_path:
-                self.logger.error("MITS DSK driver initialized without file_path and no image_data.")
+                self.logger.error(
+                    "MITS DSK driver initialized without file_path and no image_data."
+                )
                 raise ValueError(
                     "File path must be provided for MITS DSK driver if image_data is not given."
                 )
 
             try:
-                with open(self.file_path, "rb") as f:
+                with Path(self.file_path).open("rb") as f:
                     self.image_data = bytearray(f.read())
 
                 self._validate_format()
-                self.logger.info(f"Loaded MITS DSK file {self.file_path}, size {len(self.image_data)}")
+                self.logger.info(
+                    f"Loaded MITS DSK file {self.file_path}, size {len(self.image_data)}"
+                )
             except FileNotFoundError:
                 self.logger.error(f"MITS DSK file not found: {self.file_path}")
                 raise
@@ -171,26 +175,34 @@ class MITSDSKDriver(DiskIODriver):
 
                 physical_index = sector - 1
                 offset = (
-                    (cylinder * MITS_SECTORS_PER_TRACK + physical_index) * MITS_PHYSICAL_SECTOR_SIZE
-                )
+                    cylinder * MITS_SECTORS_PER_TRACK + physical_index
+                ) * MITS_PHYSICAL_SECTOR_SIZE
 
-                old_sector = self.image_data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE]
+                old_sector = self.image_data[
+                    offset : offset + MITS_PHYSICAL_SECTOR_SIZE
+                ]
 
                 new_sector = self._reconstruct_physical_sector(
                     old_sector, data, cylinder, physical_index
                 )
 
-                self.image_data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE] = new_sector
+                self.image_data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE] = (
+                    new_sector
+                )
 
-            with open(self.file_path, "wb") as f:
+            with Path(self.file_path).open("wb") as f:
                 f.write(self.image_data)
 
-            self.logger.info(f"Flushed {len(self.modified_sectors)} sectors to {self.file_path}")
+            self.logger.info(
+                f"Flushed {len(self.modified_sectors)} sectors to {self.file_path}"
+            )
             self.modified_sectors.clear()
             self.dirty = False
 
         except Exception as e:
-            self.logger.error(f"Failed to flush MITS DSK image to {self.file_path}: {e}")
+            self.logger.error(
+                f"Failed to flush MITS DSK image to {self.file_path}: {e}"
+            )
             raise OSError(f"Flush failed: {e}") from e
 
     def get_format_requirements(self) -> dict:
@@ -208,14 +220,14 @@ class MITSDSKDriver(DiskIODriver):
         }
 
     def initialize_new_image(
-        self, physical_format: PhysicalFormat, profile: Optional[Any] = None
+        self, _physical_format: PhysicalFormat, _profile: Optional[Any] = None
     ) -> None:
         """
         Creates a new blank MITS DSK image.
 
         Args:
-            physical_format: Ignored (MITS format is fixed).
-            profile: Ignored.
+            _physical_format: Ignored (MITS format is fixed).
+            _profile: Ignored.
         """
         self.logger.info("Creating new blank MITS DSK image")
 
@@ -225,8 +237,8 @@ class MITSDSKDriver(DiskIODriver):
         for track in range(MITS_TRACKS):
             for phys_sector in range(MITS_SECTORS_PER_TRACK):
                 offset = (
-                    (track * MITS_SECTORS_PER_TRACK + phys_sector) * MITS_PHYSICAL_SECTOR_SIZE
-                )
+                    track * MITS_SECTORS_PER_TRACK + phys_sector
+                ) * MITS_PHYSICAL_SECTOR_SIZE
 
                 sector_data = bytearray(MITS_PHYSICAL_SECTOR_SIZE)
 
@@ -234,16 +246,16 @@ class MITSDSKDriver(DiskIODriver):
                     sector_data[0] = 0x00
                     sector_data[1] = track
                     sector_data[2] = phys_sector
-                    sector_data[MITS_SYSTEM_TRACK_CHECKSUM_START:MITS_SYSTEM_TRACK_CHECKSUM_END] = (
-                        self._calculate_sector_checksums(
-                            bytes(
-                                sector_data[
-                                    MITS_SYSTEM_TRACK_DATA_START : MITS_SYSTEM_TRACK_DATA_END
-                                ]
-                            ),
-                            track,
-                            phys_sector,
-                        )
+                    sector_data[
+                        MITS_SYSTEM_TRACK_CHECKSUM_START:MITS_SYSTEM_TRACK_CHECKSUM_END
+                    ] = self._calculate_sector_checksums(
+                        bytes(
+                            sector_data[
+                                MITS_SYSTEM_TRACK_DATA_START:MITS_SYSTEM_TRACK_DATA_END
+                            ]
+                        ),
+                        track,
+                        phys_sector,
                     )
                 else:
                     sector_data[0:3] = b"\x00\x00\x00"
@@ -251,26 +263,34 @@ class MITSDSKDriver(DiskIODriver):
                     sector_data[4] = track
                     sector_data[5] = phys_sector
                     sector_data[6] = 0x00
-                    sector_data[MITS_DATA_TRACK_CHECKSUM_START:MITS_DATA_TRACK_CHECKSUM_END] = (
-                        self._calculate_sector_checksums(
-                            bytes(sector_data[MITS_DATA_TRACK_DATA_START:MITS_DATA_TRACK_DATA_END]),
-                            track,
-                            phys_sector,
-                        )
+                    sector_data[
+                        MITS_DATA_TRACK_CHECKSUM_START:MITS_DATA_TRACK_CHECKSUM_END
+                    ] = self._calculate_sector_checksums(
+                        bytes(
+                            sector_data[
+                                MITS_DATA_TRACK_DATA_START:MITS_DATA_TRACK_DATA_END
+                            ]
+                        ),
+                        track,
+                        phys_sector,
                     )
 
-                self.image_data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE] = sector_data
+                self.image_data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE] = (
+                    sector_data
+                )
 
         self.dirty = True
         self._create_physical_format()
         self.logger.info("Created blank MITS DSK image")
 
-    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
+    def prepare_for_format_application(
+        self, _format_info: dict
+    ) -> tuple[bool, Optional[str]]:
         """
         MITS DSK allows temporary format override for filesystem validation.
 
         Args:
-            format_info: Dictionary containing format parameters.
+            _format_info: Dictionary containing format parameters, unused.
 
         Returns:
             Tuple of (is_ready, error_message).
@@ -310,7 +330,9 @@ class MITSDSKDriver(DiskIODriver):
         sector_key = (cylinder, head, sector)
 
         if sector_key in self.modified_sectors:
-            self.logger.debug(f"Reading modified sector C:{cylinder} H:{head} S:{sector}")
+            self.logger.debug(
+                f"Reading modified sector C:{cylinder} H:{head} S:{sector}"
+            )
             return self.modified_sectors[sector_key]
 
         if sector_key in self.sector_cache:
@@ -318,8 +340,8 @@ class MITSDSKDriver(DiskIODriver):
 
         physical_index = sector - 1
         offset = (
-            (cylinder * MITS_SECTORS_PER_TRACK + physical_index) * MITS_PHYSICAL_SECTOR_SIZE
-        )
+            cylinder * MITS_SECTORS_PER_TRACK + physical_index
+        ) * MITS_PHYSICAL_SECTOR_SIZE
 
         if offset + MITS_PHYSICAL_SECTOR_SIZE > len(self.image_data):
             raise OSError(f"Sector C:{cylinder} H:{head} S:{sector} out of bounds")
@@ -349,7 +371,9 @@ class MITSDSKDriver(DiskIODriver):
         if not isinstance(physical_format, PhysicalFormat):
             raise TypeError("Expected PhysicalFormat object")
 
-        if self.physical_format and not self._formats_match(physical_format, self.physical_format):
+        if self.physical_format and not self._formats_match(
+            physical_format, self.physical_format
+        ):
             self.logger.warning(
                 f"Overriding MITS DSK native format "
                 f"({self.physical_format.cylinders}C x {self.physical_format.heads}H x "
@@ -364,7 +388,9 @@ class MITSDSKDriver(DiskIODriver):
             f"Physical format set: {physical_format.cylinders}C x {physical_format.heads}H"
         )
 
-    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
+    def validate_for_opening(
+        self, source: str, **_kwargs
+    ) -> tuple[bool, Optional[str]]:
         """
         Validates whether a file is a valid MITS Altair .DSK format.
 
@@ -372,19 +398,21 @@ class MITSDSKDriver(DiskIODriver):
 
         Args:
             source: Path to the .DSK file.
-            **kwargs: Unused for MITS DSK driver.
+            **_kwargs: Unused for MITS DSK driver.
 
         Returns:
             Tuple of (is_valid, error_message).
         """
-        if not os.path.exists(source):
+        if not Path(source).exists():
             return False, f"File not found: {source}"
 
         try:
-            with open(source, "rb") as f:
+            with Path(source).open("rb") as f:
                 data = f.read()
 
-            expected_size = MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
+            expected_size = (
+                MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
+            )
             if len(data) < expected_size:
                 return (
                     False,
@@ -395,8 +423,8 @@ class MITSDSKDriver(DiskIODriver):
             for track in MITS_VALIDATION_TRACKS:
                 for phys_sector in MITS_VALIDATION_SECTORS:
                     offset = (
-                        (track * MITS_SECTORS_PER_TRACK + phys_sector) * MITS_PHYSICAL_SECTOR_SIZE
-                    )
+                        track * MITS_SECTORS_PER_TRACK + phys_sector
+                    ) * MITS_PHYSICAL_SECTOR_SIZE
                     if offset + MITS_PHYSICAL_SECTOR_SIZE <= len(data):
                         sector_bytes = data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE]
                         if self._validate_sector_checksum(sector_bytes, track):
@@ -408,7 +436,9 @@ class MITSDSKDriver(DiskIODriver):
                     f"MITS DSK checksum validation failed: only {validation_count} valid sectors found",
                 )
 
-            self.logger.info(f"MITS DSK format validated with {validation_count} valid checksums")
+            self.logger.info(
+                f"MITS DSK format validated with {validation_count} valid checksums"
+            )
             return True, None
 
         except Exception as e:
@@ -426,7 +456,10 @@ class MITSDSKDriver(DiskIODriver):
 
         expected_size = MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
         if len(self.image_data) < expected_size:
-            return False, f"MITS DSK file too small: {len(self.image_data)} < {expected_size}"
+            return (
+                False,
+                f"MITS DSK file too small: {len(self.image_data)} < {expected_size}",
+            )
 
         return True, None
 
@@ -468,7 +501,9 @@ class MITSDSKDriver(DiskIODriver):
 
         self.logger.debug(f"Cached write for sector C:{cylinder} H:{head} S:{sector}")
 
-    def _calculate_sector_checksums(self, data: bytes, track: int, sector: int) -> bytes:
+    def _calculate_sector_checksums(
+        self, data: bytes, track: int, sector: int
+    ) -> bytes:
         """
         Calculates MITS-style checksums for sector data.
 
@@ -539,9 +574,13 @@ class MITSDSKDriver(DiskIODriver):
             sector_bytes = sector_bytes.ljust(MITS_PHYSICAL_SECTOR_SIZE, b"\x00")
 
         if track < MITS_SYSTEM_TRACK_COUNT:
-            return bytes(sector_bytes[MITS_SYSTEM_TRACK_DATA_START:MITS_SYSTEM_TRACK_DATA_END])
+            return bytes(
+                sector_bytes[MITS_SYSTEM_TRACK_DATA_START:MITS_SYSTEM_TRACK_DATA_END]
+            )
         else:
-            return bytes(sector_bytes[MITS_DATA_TRACK_DATA_START:MITS_DATA_TRACK_DATA_END])
+            return bytes(
+                sector_bytes[MITS_DATA_TRACK_DATA_START:MITS_DATA_TRACK_DATA_END]
+            )
 
     def _formats_match(self, fmt1: PhysicalFormat, fmt2: PhysicalFormat) -> bool:
         """
@@ -602,10 +641,14 @@ class MITSDSKDriver(DiskIODriver):
         actual_size = len(self.image_data)
 
         if actual_size < expected_size:
-            raise ValueError(f"File too small for MITS DSK: {actual_size} < {expected_size}")
+            raise ValueError(
+                f"File too small for MITS DSK: {actual_size} < {expected_size}"
+            )
 
         if actual_size > expected_size:
-            self.logger.warning(f"Trimming {actual_size - expected_size} bytes of padding")
+            self.logger.warning(
+                f"Trimming {actual_size - expected_size} bytes of padding"
+            )
             self.image_data = self.image_data[:expected_size]
 
     def _validate_sector_checksum(self, sector_bytes: bytes, track: int) -> bool:

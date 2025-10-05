@@ -302,7 +302,9 @@ FAT12_FORMATS["ibm_8_250k"] = FormatProfile(
     ),
 )
 
-pf_8_298 = create_8inch_sssd_base(sectors_per_track=15, bytes_per_sector=BYTES_PER_SECTOR_256)
+pf_8_298 = create_8inch_sssd_base(
+    sectors_per_track=15, bytes_per_sector=BYTES_PER_SECTOR_256
+)
 FAT12_FORMATS["ibm_8_298k"] = FormatProfile(
     name="ibm_8_298k",
     description='8" SD 298KB (77 tracks, 1 head, 15 sectors)',
@@ -319,7 +321,9 @@ FAT12_FORMATS["ibm_8_298k"] = FormatProfile(
     ),
 )
 
-pf_8_315 = create_8inch_sssd_base(sectors_per_track=8, bytes_per_sector=BYTES_PER_SECTOR_512)
+pf_8_315 = create_8inch_sssd_base(
+    sectors_per_track=8, bytes_per_sector=BYTES_PER_SECTOR_512
+)
 FAT12_FORMATS["ibm_8_315k"] = FormatProfile(
     name="ibm_8_315k",
     description='8" SD 315KB (77 tracks, 1 head, 8 sectors)',
@@ -354,7 +358,9 @@ FAT12_FORMATS["ibm_8_500k"] = FormatProfile(
     ),
 )
 
-pf_8_590 = create_8inch_dssd_base(sectors_per_track=15, bytes_per_sector=BYTES_PER_SECTOR_256)
+pf_8_590 = create_8inch_dssd_base(
+    sectors_per_track=15, bytes_per_sector=BYTES_PER_SECTOR_256
+)
 FAT12_FORMATS["ibm_8_590k"] = FormatProfile(
     name="ibm_8_590k",
     description='8" SD 590KB (77 tracks, 2 heads, 15 sectors)',
@@ -372,7 +378,9 @@ FAT12_FORMATS["ibm_8_590k"] = FormatProfile(
     ),
 )
 
-pf_8_630 = create_8inch_ssdd_base(sectors_per_track=8, bytes_per_sector=BYTES_PER_SECTOR_1024)
+pf_8_630 = create_8inch_ssdd_base(
+    sectors_per_track=8, bytes_per_sector=BYTES_PER_SECTOR_1024
+)
 FAT12_FORMATS["ibm_8_630k"] = FormatProfile(
     name="ibm_8_630k",
     description='8" DD 630KB (77 tracks, 1 head, 8 sectors)',
@@ -406,7 +414,9 @@ FAT12_FORMATS["ibm_8_1025k"] = FormatProfile(
     ),
 )
 
-pf_8_1180 = create_8inch_dsdd_base(sectors_per_track=15, bytes_per_sector=BYTES_PER_SECTOR_512)
+pf_8_1180 = create_8inch_dsdd_base(
+    sectors_per_track=15, bytes_per_sector=BYTES_PER_SECTOR_512
+)
 FAT12_FORMATS["ibm_8_1180k"] = FormatProfile(
     name="ibm_8_1180k",
     description='8" DD 1.2MB (77 tracks, 2 heads, 15 sectors)',
@@ -424,7 +434,9 @@ FAT12_FORMATS["ibm_8_1180k"] = FormatProfile(
     ),
 )
 
-pf_8_1260 = create_8inch_dsdd_base(sectors_per_track=8, bytes_per_sector=BYTES_PER_SECTOR_1024)
+pf_8_1260 = create_8inch_dsdd_base(
+    sectors_per_track=8, bytes_per_sector=BYTES_PER_SECTOR_1024
+)
 FAT12_FORMATS["ibm_8_1260k"] = FormatProfile(
     name="ibm_8_1260k",
     description='8" DD 1.25MB (77 tracks, 2 heads, 8 sectors)',

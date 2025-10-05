@@ -59,7 +59,7 @@ def _check_prerequisites() -> None:
         POPULATED_360K_IMG,
     ]
     for img_path in image_paths:
-        if not os.path.isfile(img_path):
+        if not Path(img_path).is_file():
             missing_files.append(img_path)
 
     if missing_files:
@@ -71,7 +71,7 @@ def _check_prerequisites() -> None:
     missing_resources: list[str] = []
     resource_paths: list[str] = [TEST_FILE_TXT_PATH, PATTERN_FILE_BIN_PATH]
     for res_path in resource_paths:
-        if not os.path.isfile(res_path):
+        if not Path(res_path).is_file():
             missing_resources.append(res_path)
 
     if missing_resources:
@@ -188,18 +188,16 @@ def pytest_configure(config: Config) -> None:
     config.addinivalue_line("markers", "hardware: mark test as requiring hardware")
 
 
-def pytest_collection_modifyitems(config: Config, items: list[Item]) -> None:
+def pytest_collection_modifyitems(_config: Config, items: list[Item]) -> None:
     """
     Skips tests marked with 'hardware' if TEST_HW is not set to 'true'.
 
     Args:
-        config: The pytest configuration object.
+        _config: The pytest configuration object (unused).
         items: List of collected test items.
     """
     if os.getenv("TEST_HW", "false").lower() != "true":
-        skip_hw = pytest.mark.skip(
-            reason="Hardware tests skipped (TEST_HW not 'true')"
-        )
+        skip_hw = pytest.mark.skip(reason="Hardware tests skipped (TEST_HW not 'true')")
         for item in items:
             if "hardware" in item.keywords:
                 item.add_marker(skip_hw)
@@ -220,10 +218,8 @@ def expected_file_content() -> dict[str, bytes]:
     """
     content: dict[str, bytes] = {}
     try:
-        with open(TEST_FILE_TXT_PATH, "rb") as f:
-            content["test_txt"] = f.read()
-        with open(PATTERN_FILE_BIN_PATH, "rb") as f:
-            content["pattern_bin"] = f.read()
+        content["test_txt"] = Path(TEST_FILE_TXT_PATH).read_bytes()
+        content["pattern_bin"] = Path(PATTERN_FILE_BIN_PATH).read_bytes()
     except FileNotFoundError as e:
         print(f"\nWARN: Could not load resource file for verification: {e}")
     return content

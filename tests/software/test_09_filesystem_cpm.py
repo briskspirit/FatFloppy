@@ -103,11 +103,11 @@ def test_disk_images_read_and_verify(
         ground_truth_path = CPM_RESOURCE_DIR / filename
         content_from_file = ground_truth_path.read_bytes()
 
-        content_from_disk_norm = (
-            content_from_disk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        content_from_disk_norm = content_from_disk.replace(b"\r\n", b"\n").replace(
+            b"\r", b"\n"
         )
-        content_from_file_norm = (
-            content_from_file.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        content_from_file_norm = content_from_file.replace(b"\r\n", b"\n").replace(
+            b"\r", b"\n"
         )
 
         assert content_from_disk_norm == content_from_file_norm
@@ -275,7 +275,7 @@ def test_disk_full_error(cpm_controller: DiskController, tmp_path: Path) -> None
     assert cpm_controller.format_disk_media(profile_name)
 
     free_bytes, _ = cpm_controller.get_free_space()
-    data_to_fill_disk = b"\xAA" * (
+    data_to_fill_disk = b"\xaa" * (
         free_bytes - (profile.filesystem_config.block_size - 1)
     )
 
@@ -311,16 +311,16 @@ def test_validity_score(cpm_controller: DiskController) -> None:
     fat_disk.set_geometry(cpm_profile.physical_format)
 
     cpm_fs_on_fat_disk = CPMFilesystem(fat_disk, config=cpm_profile.filesystem_config)
-    assert (
-        cpm_fs_on_fat_disk.get_validity_score() < CPMFilesystem.VALIDITY_THRESHOLD
-    )
+    assert cpm_fs_on_fat_disk.get_validity_score() < CPMFilesystem.VALIDITY_THRESHOLD
 
     garbage_data = b"random garbage data" * 20000
     garbage_driver = IMGImageDriver("garbage.img", image_data=garbage_data)
     garbage_disk = Disk(garbage_driver)
     garbage_disk.set_geometry(cpm_profile.physical_format)
 
-    cpm_fs_on_garbage = CPMFilesystem(garbage_disk, config=cpm_profile.filesystem_config)
+    cpm_fs_on_garbage = CPMFilesystem(
+        garbage_disk, config=cpm_profile.filesystem_config
+    )
     assert cpm_fs_on_garbage.get_validity_score() == 0
 
 
@@ -534,7 +534,9 @@ def test_delete_specific_user_file(
     cpm_controller.close_disk()
 
 
-def test_overwrite_existing_file(cpm_controller: DiskController, tmp_path: Path) -> None:
+def test_overwrite_existing_file(
+    cpm_controller: DiskController, tmp_path: Path
+) -> None:
     """Tests overwriting an existing file with new content of different size."""
     profile_name = "cpm_8_sssd_250k"
     profile = cpm_controller.get_format_by_name(profile_name)

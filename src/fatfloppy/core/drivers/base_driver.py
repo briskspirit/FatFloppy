@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, ClassVar, Optional
 
 from ..physical_format import PhysicalFormat
@@ -91,7 +92,7 @@ class DiskIODriver(ABC):
         This method can be overridden by subclasses if the driver uses
         in-memory caching or buffering. The default implementation does nothing.
         """
-        pass
+        return
 
     def get_format_requirements(self) -> dict:
         """
@@ -112,7 +113,7 @@ class DiskIODriver(ABC):
         }
 
     def initialize_new_image(
-        self, physical_format: PhysicalFormat, profile: Optional[Any] = None
+        self, _physical_format: PhysicalFormat, _profile: Optional[Any] = None
     ) -> None:
         """
         Initializes a new blank image with the driver's specific structure.
@@ -122,8 +123,8 @@ class DiskIODriver(ABC):
         their file structure. Raw drivers (IMG) may do nothing.
 
         Args:
-            physical_format: The physical format for the new image.
-            profile: Optional FormatProfile with additional metadata.
+            _physical_format: The physical format for the new image.
+            _profile: Optional FormatProfile with additional metadata.
 
         Raises:
             NotImplementedError: If the driver doesn't support new image creation.
@@ -133,7 +134,9 @@ class DiskIODriver(ABC):
                 f"{self.__class__.__name__} does not support creating new images"
             )
 
-    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
+    def prepare_for_format_application(
+        self, _format_info: dict
+    ) -> tuple[bool, Optional[str]]:
         """
         Prepares the driver for applying a user-specified format.
 
@@ -141,7 +144,7 @@ class DiskIODriver(ABC):
         and performs any necessary pre-application setup.
 
         Args:
-            format_info: Dictionary containing format parameters.
+            _format_info: Dictionary containing format parameters.
 
         Returns:
             A tuple of (is_ready, error_message). If is_ready is False,
@@ -183,7 +186,9 @@ class DiskIODriver(ABC):
         """
         raise NotImplementedError
 
-    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
+    def validate_for_opening(
+        self, source: str, **_kwargs
+    ) -> tuple[bool, Optional[str]]:
         """
         Validates whether this driver can open the specified source.
 
@@ -192,15 +197,13 @@ class DiskIODriver(ABC):
 
         Args:
             source: The path to the file or device to open.
-            **kwargs: Additional driver-specific parameters.
+            **_kwargs: Additional driver-specific parameters.
 
         Returns:
             A tuple of (is_valid, error_message). If is_valid is False,
             error_message contains a description of why validation failed.
         """
-        import os
-
-        if not os.path.exists(source):
+        if not Path(source).exists():
             return False, f"File not found: {source}"
 
         return True, None

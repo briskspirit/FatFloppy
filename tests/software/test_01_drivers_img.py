@@ -66,7 +66,7 @@ def test_initialization_from_file(driver_setup: DriverSetupFixture) -> None:
 
 def test_initialization_from_bytes() -> None:
     """Test that the driver initializes correctly from a bytes object."""
-    initial_data = b"\xAA" * 512 * 10
+    initial_data = b"\xaa" * 512 * 10
     driver_bytes = IMGImageDriver("dummy_path_not_used.img", image_data=initial_data)
     driver_bytes.set_physical_format(FMT_144.physical_format)
     assert driver_bytes.image_data == bytearray(initial_data)
@@ -80,10 +80,9 @@ def test_set_physical_format(driver_setup: DriverSetupFixture) -> None:
     driver.set_physical_format(fmt_720_phys)
 
     assert driver.physical_format is not None
-    assert (
-        driver.physical_format.get_sectors_per_track(0, 0)
-        == fmt_720_phys.get_sectors_per_track(0, 0)
-    )
+    assert driver.physical_format.get_sectors_per_track(
+        0, 0
+    ) == fmt_720_phys.get_sectors_per_track(0, 0)
     assert driver.physical_format.heads == fmt_720_phys.heads
     assert driver.physical_format.bytes_per_sector == fmt_720_phys.bytes_per_sector
 
@@ -93,13 +92,13 @@ def test_read_sector(driver_setup: DriverSetupFixture) -> None:
     driver, _, bytes_per_sector, _ = driver_setup
     boot_sector = driver.read_sector(0, 0, 1)
     assert len(boot_sector) == bytes_per_sector
-    assert boot_sector[510:512] == b"\x55\xAA"
+    assert boot_sector[510:512] == b"\x55\xaa"
 
 
 def test_write_sector_and_flush(driver_setup: DriverSetupFixture) -> None:
     """Test writing data to a sector and flushing changes to the file."""
     driver, test_img_path, bytes_per_sector, physical_format = driver_setup
-    test_data = b"TEST" + b"\xEE" * (bytes_per_sector - 4)
+    test_data = b"TEST" + b"\xee" * (bytes_per_sector - 4)
     cyl, head, sect = 5, 1, 3
 
     driver.write_sector(cyl, head, sect, test_data)
@@ -202,12 +201,12 @@ def test_flush_io_error(driver_setup: DriverSetupFixture) -> None:
     """Test that an IOError during flush is handled correctly."""
     driver, _, bytes_per_sector, _ = driver_setup
 
-    driver.write_sector(0, 0, 1, b"\xAA" * bytes_per_sector)
+    driver.write_sector(0, 0, 1, b"\xaa" * bytes_per_sector)
     assert driver.dirty
 
-    with patch("builtins.open", mock_open()) as mocked_file:
+    with patch("pathlib.Path.open", mock_open()) as mocked_file:
         mocked_file.side_effect = OSError("Permission denied")
-        with pytest.raises(IOError, match="Flush failed: Permission denied"):
+        with pytest.raises(OSError, match="Flush failed: Permission denied"):
             driver.flush()
 
     assert driver.dirty
@@ -218,7 +217,7 @@ def test_init_read_error(tmp_path: Path) -> None:
     test_img_path = tmp_path / "unreadable.img"
     test_img_path.touch()
 
-    with patch("builtins.open", mock_open()) as mocked_file:
+    with patch("pathlib.Path.open", mock_open()) as mocked_file:
         mocked_file.side_effect = OSError("Cannot read file")
-        with pytest.raises(IOError, match="Cannot read file"):
+        with pytest.raises(OSError, match="Cannot read file"):
             IMGImageDriver(str(test_img_path))

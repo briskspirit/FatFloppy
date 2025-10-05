@@ -5,7 +5,7 @@ Manages disk-related operations including opening, creating, and visualizing dis
 
 import copy
 import logging
-import os
+from pathlib import Path
 from typing import Any, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -26,7 +26,7 @@ class DiskManager(QObject):
     filesystem_updated = pyqtSignal()
     map_update_needed = pyqtSignal()
 
-    def __init__(self, parent: 'QMainWindow') -> None:
+    def __init__(self, parent: "QMainWindow") -> None:
         """
         Initialize the disk manager.
 
@@ -61,26 +61,21 @@ class DiskManager(QObject):
             return
 
         try:
-            file_path, format_info, volume_label, output_format = (
-                dialog.get_selection()
-            )
+            file_path, format_info, volume_label, output_format = dialog.get_selection()
             self.logger.info(
                 f"Creating image: {file_path}, format_info: {format_info}, "
                 f"volume_label: {volume_label}, output_format: {output_format}"
             )
         except ValueError as e:
             QMessageBox.warning(self.parent, "Warning", str(e))
-            self.logger.warning(
-                f"Invalid selection for disk image creation: {e}"
-            )
+            self.logger.warning(f"Invalid selection for disk image creation: {e}")
             return
 
         try:
             profile = self._get_format_profile(format_info)
             if not profile:
                 self.error_occurred.emit(
-                    "Error",
-                    "Failed to determine format profile for creation."
+                    "Error", "Failed to determine format profile for creation."
                 )
                 self.logger.error(
                     "Failed to get format profile for disk image creation."
@@ -88,8 +83,7 @@ class DiskManager(QObject):
                 return
             if not profile.physical_format or not profile.filesystem_config:
                 self.error_occurred.emit(
-                    "Error",
-                    "Selected format profile is incomplete for creation."
+                    "Error", "Selected format profile is incomplete for creation."
                 )
                 self.logger.error(
                     f"Incomplete format profile for creation: {profile.name}"
@@ -98,15 +92,11 @@ class DiskManager(QObject):
 
             controller = DiskController()
             self.status_message.emit(
-                f"Creating and formatting disk image: "
-                f"{os.path.basename(file_path)}..."
+                f"Creating and formatting disk image: {Path(file_path).name}..."
             )
 
             if controller.create_and_format_image(
-                file_path,
-                profile,
-                volume_label,
-                output_format
+                file_path, profile, volume_label, output_format
             ):
                 self.logger.info(
                     f"Successfully created and formatted disk image: {file_path}"
@@ -115,16 +105,12 @@ class DiskManager(QObject):
                 self._finalize_disk_open(file_path, is_image=True)
             else:
                 self.error_occurred.emit(
-                    "Error",
-                    "Failed to create and format disk image."
+                    "Error", "Failed to create and format disk image."
                 )
-                self.logger.error(
-                    f"Failed to create/format disk image: {file_path}"
-                )
+                self.logger.error(f"Failed to create/format disk image: {file_path}")
         except Exception as e:
             self.error_occurred.emit(
-                "Error",
-                f"An unexpected error occurred during image creation: {str(e)}"
+                "Error", f"An unexpected error occurred during image creation: {str(e)}"
             )
             self.logger.exception("Unexpected error during disk image creation.")
 
@@ -136,13 +122,13 @@ class DiskManager(QObject):
             Dictionary containing disk map rendering data.
         """
         return {
-            'controller': self.parent.controller,
-            'current_head': self.current_head,
-            'busy_units': self.busy_units,
-            'free_space': self.free_space,
-            'total_space': self.total_space,
-            'selected_file_units': self.selected_file_units,
-            'selected_file_path': self.selected_file_path
+            "controller": self.parent.controller,
+            "current_head": self.current_head,
+            "busy_units": self.busy_units,
+            "free_space": self.free_space,
+            "total_space": self.total_space,
+            "selected_file_units": self.selected_file_units,
+            "selected_file_path": self.selected_file_path,
         }
 
     def open_disk_image_by_path(self, file_path: str) -> None:
@@ -152,11 +138,11 @@ class DiskManager(QObject):
         Args:
             file_path: The path to the disk image file to open.
         """
-        if not file_path or not os.path.exists(file_path):
+        if not file_path or not Path(file_path).exists():
             self.logger.warning(f"File path does not exist: {file_path}")
             return
 
-        _, ext = os.path.splitext(file_path)
+        ext = Path(file_path).suffix
         ext_lower = ext.lower()
 
         disk_type = self.parent.extension_to_driver_map.get(ext_lower, "IMG")
@@ -168,13 +154,12 @@ class DiskManager(QObject):
             self.disk_closed.emit()
             controller = DiskController()
             self.status_message.emit(
-                f"Opening {disk_type} disk: {os.path.basename(file_path)}..."
+                f"Opening {disk_type} disk: {Path(file_path).name}..."
             )
 
             if controller.open_disk(file_path, disk_type):
                 self.logger.info(
-                    f"Successfully opened disk image: {file_path} "
-                    f"(Type: {disk_type})"
+                    f"Successfully opened disk image: {file_path} (Type: {disk_type})"
                 )
                 self.parent.controller = controller
                 self._finalize_disk_open(file_path, is_image=True)
@@ -182,28 +167,19 @@ class DiskManager(QObject):
                 self.disk_closed.emit()
                 self.error_occurred.emit(
                     "Error",
-                    f"Failed to open {disk_type} disk image. "
-                    f"Check logs for details."
+                    f"Failed to open {disk_type} disk image. Check logs for details.",
                 )
                 self.logger.error(f"Failed to open disk image: {file_path}")
         except ValueError as e:
             self.disk_closed.emit()
             self.error_occurred.emit(
-                "Error",
-                f"Failed to parse or load image file: {str(e)}"
+                "Error", f"Failed to parse or load image file: {str(e)}"
             )
-            self.logger.error(
-                f"ValueError opening disk image {file_path}: {e}"
-            )
+            self.logger.error(f"ValueError opening disk image {file_path}: {e}")
         except Exception as e:
             self.disk_closed.emit()
-            self.error_occurred.emit(
-                "Error",
-                f"Failed to open disk image: {str(e)}"
-            )
-            self.logger.exception(
-                f"Unexpected error opening disk image {file_path}."
-            )
+            self.error_occurred.emit("Error", f"Failed to open disk image: {str(e)}")
+            self.logger.exception(f"Unexpected error opening disk image {file_path}.")
 
     def open_disk_image_file(self) -> None:
         """Opens a disk image file selected by the user."""
@@ -211,10 +187,7 @@ class DiskManager(QObject):
 
         self.logger.debug("Attempting to open a disk image file.")
         file_path, _ = QFileDialog.getOpenFileName(
-            self.parent,
-            "Open Disk Image",
-            "",
-            self.parent.file_dialog_filter
+            self.parent, "Open Disk Image", "", self.parent.file_dialog_filter
         )
         if not file_path:
             self.logger.debug("Open Disk Image file dialog cancelled.")
@@ -254,7 +227,7 @@ class DiskManager(QObject):
                     "physical",
                     drive_letter=drive_letter,
                     drive_size=drive_size,
-                    format_info=format_info
+                    format_info=format_info,
                 )
 
                 if not success:
@@ -268,18 +241,17 @@ class DiskManager(QObject):
             def on_success(controller):
                 self.parent.controller = controller
                 self._finalize_disk_open(
-                    f"Drive {drive_letter} ({drive_size}\")",
+                    f'Drive {drive_letter} ({drive_size}")',
                     is_image=False,
                     drive_letter=drive_letter,
                     drive_size=drive_size,
-                    format_info=format_info
+                    format_info=format_info,
                 )
 
             def on_error(exception):
                 self.disk_closed.emit()
                 self.error_occurred.emit(
-                    "Error",
-                    f"Failed to open physical floppy: {str(exception)}"
+                    "Error", f"Failed to open physical floppy: {str(exception)}"
                 )
                 self.logger.exception("Error opening physical floppy.")
 
@@ -288,14 +260,13 @@ class DiskManager(QObject):
                 "Opening Physical Floppy",
                 on_success=on_success,
                 on_error=on_error,
-                cancelable=False
+                cancelable=False,
             )
 
         except Exception as e:
             self.disk_closed.emit()
             self.error_occurred.emit(
-                "Error",
-                f"Failed to open physical floppy: {str(e)}"
+                "Error", f"Failed to open physical floppy: {str(e)}"
             )
             self.logger.exception("Unexpected error opening physical floppy.")
 
@@ -303,8 +274,7 @@ class DiskManager(QObject):
         """
         Switches between disk heads for visualization if disk has multiple heads.
         """
-        if (self.parent.controller and
-                self.parent.controller.physical_format.heads > 1):
+        if self.parent.controller and self.parent.controller.physical_format.heads > 1:
             self.current_head = 1 - self.current_head
             self.logger.info(f"Switched to head: {self.current_head}")
             self.map_update_needed.emit()
@@ -312,11 +282,9 @@ class DiskManager(QObject):
             QMessageBox.information(
                 self.parent,
                 "Info",
-                "Head switching is not available for this disk (single-sided)."
+                "Head switching is not available for this disk (single-sided).",
             )
-            self.logger.info(
-                "Attempted to switch head on a single-sided disk."
-            )
+            self.logger.info("Attempted to switch head on a single-sided disk.")
 
     def update_file_selection(self, file_path: Optional[str]) -> None:
         """
@@ -332,28 +300,22 @@ class DiskManager(QObject):
             units = self.parent.controller.get_file_allocation_units(file_path)
             if units:
                 self.selected_file_units = units
-                units_preview = (
-                    f"{units[:10]}{'...' if len(units) > 10 else ''}"
-                )
+                units_preview = f"{units[:10]}{'...' if len(units) > 10 else ''}"
                 self.logger.debug(
-                    f"File '{os.path.basename(file_path)}' uses "
+                    f"File '{Path(file_path).name}' uses "
                     f"{len(units)} units: {units_preview}"
                 )
             else:
                 self.logger.debug(
-                    f"File '{os.path.basename(file_path)}' has no "
-                    f"allocation units"
+                    f"File '{Path(file_path).name}' has no allocation units"
                 )
 
         self.map_update_needed.emit()
 
     def update_geometry_info(self) -> None:
         """Updates the physical geometry information display."""
-        if (not self.parent.controller or
-                not self.parent.controller.physical_format):
-            self.parent.physical_format_info.setText(
-                "Disk geometry not available"
-            )
+        if not self.parent.controller or not self.parent.controller.physical_format:
+            self.parent.physical_format_info.setText("Disk geometry not available")
             return
 
         geometry = self.parent.controller.physical_format
@@ -361,12 +323,12 @@ class DiskManager(QObject):
         total_bytes = total_sectors * geometry.bytes_per_sector
 
         imd_comment = ""
-        if (hasattr(self.parent.controller.driver, 'comment') and
-                self.parent.controller.driver.comment):
+        if (
+            hasattr(self.parent.controller.driver, "comment")
+            and self.parent.controller.driver.comment
+        ):
             comment = self.parent.controller.driver.comment
-            display_comment = (
-                (comment[:60] + '...') if len(comment) > 63 else comment
-            )
+            display_comment = (comment[:60] + "...") if len(comment) > 63 else comment
             imd_comment = f"IMD Comment: {display_comment}\n"
 
         encoding_text, rate_text, spt_text = "N/A", "N/A", "N/A"
@@ -375,12 +337,8 @@ class DiskManager(QObject):
             rates = {tf.rate for tf in geometry.track_formats}
             spts = {tf.sectors_per_track for tf in geometry.track_formats}
 
-            encoding_text = (
-                list(encodings)[0] if len(encodings) == 1 else "variable"
-            )
-            rate_text = (
-                f"{list(rates)[0]} kbps" if len(rates) == 1 else "variable"
-            )
+            encoding_text = list(encodings)[0] if len(encodings) == 1 else "variable"
+            rate_text = f"{list(rates)[0]} kbps" if len(rates) == 1 else "variable"
             spt_text = str(list(spts)[0]) if len(spts) == 1 else "variable"
 
         info = (
@@ -445,9 +403,7 @@ class DiskManager(QObject):
             self.logger.debug("Filesystem info updated.")
         else:
             self.parent.filesystem_info.setText("No filesystem detected")
-            self.logger.debug(
-                "No filesystem detected, display updated accordingly."
-            )
+            self.logger.debug("No filesystem detected, display updated accordingly.")
 
     def update_space_info(self) -> None:
         """Retrieves allocated units and updates free/total space information."""
@@ -491,8 +447,10 @@ class DiskManager(QObject):
                         "Could not retrieve free space information from filesystem."
                     )
                     self.free_space = 0
-                    if (allocation_unit_size_bytes > 0 and
-                            self.parent.controller.physical_format):
+                    if (
+                        allocation_unit_size_bytes > 0
+                        and self.parent.controller.physical_format
+                    ):
                         total_data_bytes_geom = (
                             self.parent.controller.physical_format.total_bytes
                         )
@@ -500,8 +458,7 @@ class DiskManager(QObject):
                             total_data_bytes_geom // allocation_unit_size_bytes
                         )
                         self.free_space = max(
-                            0,
-                            self.total_space - len(self.busy_units)
+                            0, self.total_space - len(self.busy_units)
                         )
                     else:
                         self.total_space = len(self.busy_units)
@@ -522,8 +479,7 @@ class DiskManager(QObject):
 
         except Exception as e:
             self.logger.error(
-                f"Error getting busy units/space info: {e}",
-                exc_info=True
+                f"Error getting busy units/space info: {e}", exc_info=True
             )
             self.busy_units = []
             self.free_space = 0
@@ -535,7 +491,7 @@ class DiskManager(QObject):
         is_image: bool,
         drive_letter: Optional[str] = None,
         drive_size: Optional[str] = None,
-        format_info: Optional[dict[str, Any]] = None
+        format_info: Optional[dict[str, Any]] = None,
     ) -> None:
         """
         Completes the disk opening process and updates UI.
@@ -550,9 +506,7 @@ class DiskManager(QObject):
         self.disk_opened.emit(source_identifier)
 
         if is_image:
-            self.status_message.emit(
-                f"Loaded: {os.path.basename(source_identifier)}"
-            )
+            self.status_message.emit(f"Loaded: {Path(source_identifier).name}")
         else:
             format_name, _ = self.parent.controller.detect_format()
             format_text = f" using {format_name}" if format_name else ""
@@ -564,16 +518,13 @@ class DiskManager(QObject):
                 )
             self.status_message.emit(
                 f"Loaded physical floppy{format_text} "
-                f"(Drive: {drive_letter}, Size: {drive_size}\")"
+                f'(Drive: {drive_letter}, Size: {drive_size}")'
             )
             self.logger.info(
                 f"Successfully opened physical floppy on drive {drive_letter}."
             )
 
-    def _get_format_profile(
-        self,
-        format_info: dict[str, Any]
-    ) -> Optional[Any]:
+    def _get_format_profile(self, format_info: dict[str, Any]) -> Optional[Any]:
         """
         Retrieves a format profile from the provided format_info.
 
@@ -596,11 +547,9 @@ class DiskManager(QObject):
                 QMessageBox.critical(
                     self.parent,
                     "Error",
-                    f"Predefined format '{profile_name}' not found."
+                    f"Predefined format '{profile_name}' not found.",
                 )
-                self.logger.error(
-                    f"Predefined format '{profile_name}' not found."
-                )
+                self.logger.error(f"Predefined format '{profile_name}' not found.")
                 return None
         else:
             controller = self.parent.controller or DiskController()

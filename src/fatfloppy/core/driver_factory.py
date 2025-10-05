@@ -100,8 +100,8 @@ class DriverFactory:
             cls._discover_and_register()
 
         ext = extension.lower()
-        if not ext.startswith('.'):
-            ext = '.' + ext
+        if not ext.startswith("."):
+            ext = "." + ext
 
         drivers = cls._extension_map.get(ext, [])
         return [d.driver_type for d in drivers]
@@ -144,16 +144,16 @@ class DriverFactory:
         drivers_info = []
         for driver_type, driver_class in cls._registry.items():
             info = {
-                'type': driver_type,
-                'class': driver_class.__name__,
-                'category': driver_class.driver_category,
-                'extensions': driver_class.driver_file_extensions,
-                'priority': getattr(driver_class, 'driver_priority', 50),
-                'description': driver_class.driver_description,
+                "type": driver_type,
+                "class": driver_class.__name__,
+                "category": driver_class.driver_category,
+                "extensions": driver_class.driver_file_extensions,
+                "priority": getattr(driver_class, "driver_priority", 50),
+                "description": driver_class.driver_description,
             }
             drivers_info.append(info)
 
-        return sorted(drivers_info, key=lambda d: d['type'])
+        return sorted(drivers_info, key=lambda d: d["type"])
 
     @classmethod
     def _create_auto_driver(cls, source: str, **kwargs) -> DiskIODriver:
@@ -179,8 +179,8 @@ class DriverFactory:
         candidates = cls._extension_map.get(ext, [])
 
         if not candidates:
-            if 'PHYSICAL' in cls._registry:
-                candidates = [cls._registry['PHYSICAL']]
+            if "PHYSICAL" in cls._registry:
+                candidates = [cls._registry["PHYSICAL"]]
             else:
                 raise ValueError(
                     f"No drivers registered for extension '{ext}' "
@@ -199,10 +199,9 @@ class DriverFactory:
 
             try:
                 temp_instance = driver_class.__new__(driver_class)
-                temp_instance.__dict__.update({
-                    'logger': logger,
-                    'physical_format': None
-                })
+                temp_instance.__dict__.update(
+                    {"logger": logger, "physical_format": None}
+                )
 
                 is_valid, error = temp_instance.validate_for_opening(source, **kwargs)
 
@@ -219,7 +218,7 @@ class DriverFactory:
                 continue
 
         if candidates:
-            tried = ', '.join(d.driver_type for d in candidates)
+            tried = ", ".join(d.driver_type for d in candidates)
             raise ValueError(
                 f"No suitable driver found for {source}. "
                 f"Tried: {tried}. Last error: {last_error}"
@@ -229,10 +228,7 @@ class DriverFactory:
 
     @classmethod
     def _create_explicit_driver(
-        cls,
-        driver_type: str,
-        source: str,
-        **kwargs
+        cls, driver_type: str, source: str, **kwargs
     ) -> DiskIODriver:
         """
         Creates a driver of explicitly specified type.
@@ -252,10 +248,9 @@ class DriverFactory:
         driver_class = cls._registry.get(driver_type_upper)
 
         if not driver_class:
-            available = ', '.join(cls._registry.keys())
+            available = ", ".join(cls._registry.keys())
             raise ValueError(
-                f"Unknown driver type: {driver_type}. "
-                f"Available drivers: {available}"
+                f"Unknown driver type: {driver_type}. Available drivers: {available}"
             )
 
         logger.info(f"Creating explicit driver: {driver_type}")
@@ -277,9 +272,9 @@ class DriverFactory:
 
         try:
             drivers = PluginScanner.discover_plugins(
-                package_name='fatfloppy.core.drivers',
+                package_name="fatfloppy.core.drivers",
                 base_class=DiskIODriver,
-                validator=cls._validate_driver
+                validator=cls._validate_driver,
             )
         except Exception as e:
             logger.error(f"Plugin discovery failed: {e}", exc_info=True)
@@ -309,8 +304,7 @@ class DriverFactory:
 
         for ext in cls._extension_map:
             cls._extension_map[ext].sort(
-                key=lambda d: getattr(d, 'driver_priority', 50),
-                reverse=True
+                key=lambda d: getattr(d, "driver_priority", 50), reverse=True
             )
             logger.debug(
                 f"Extension {ext} driver priority order: "
@@ -330,10 +324,7 @@ class DriverFactory:
 
     @classmethod
     def _instantiate_driver(
-        cls,
-        driver_class: type[DiskIODriver],
-        source: str,
-        **kwargs
+        cls, driver_class: type[DiskIODriver], source: str, **kwargs
     ) -> DiskIODriver:
         """
         Instantiates a driver with appropriate parameters.
@@ -352,13 +343,11 @@ class DriverFactory:
         try:
             driver_category = driver_class.driver_category
 
-            if driver_category == 'physical':
-                drive_letter = kwargs.get('drive_letter', 'A')
-                drive_size = kwargs.get('drive_size', '3.5')
+            if driver_category == "physical":
+                drive_letter = kwargs.get("drive_letter", "A")
+                drive_size = kwargs.get("drive_size", "3.5")
                 return driver_class(
-                    device_name=source,
-                    drive=drive_letter,
-                    drive_size=drive_size
+                    device_name=source, drive=drive_letter, drive_size=drive_size
                 )
             else:
                 return driver_class(file_path=source)
@@ -384,7 +373,7 @@ class DriverFactory:
         """
         from .plugin_scanner import PluginValidationError
 
-        required_attrs = ['driver_type', 'driver_category', 'driver_file_extensions']
+        required_attrs = ["driver_type", "driver_category", "driver_file_extensions"]
         missing = []
         for attr in required_attrs:
             if not hasattr(driver_class, attr):
@@ -402,7 +391,7 @@ class DriverFactory:
 
         PluginScanner.validate_implements_methods(driver_class, DiskIODriver)
 
-        valid_categories = ['metadata_based', 'raw', 'physical']
+        valid_categories = ["metadata_based", "raw", "physical"]
         if driver_class.driver_category not in valid_categories:
             raise PluginValidationError(
                 f"{driver_class.__name__}.driver_category must be one of "

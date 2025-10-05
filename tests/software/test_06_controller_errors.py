@@ -20,12 +20,9 @@ from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
 
 
 @pytest.fixture(scope="function")
-def error_controller(request: pytest.FixtureRequest) -> Generator[DiskController, None, None]:
+def error_controller() -> Generator[DiskController, None, None]:
     """
     Provides a DiskController instance for error handling tests.
-
-    Args:
-        request: The pytest request object.
 
     Yields:
         An instance of DiskController.

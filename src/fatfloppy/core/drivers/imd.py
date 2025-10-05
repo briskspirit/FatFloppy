@@ -1,8 +1,8 @@
 import copy
 import datetime
-import os
 import re
 import struct
+from pathlib import Path
 from typing import Any, ClassVar, Optional
 
 from ..._version import __version__ as fatfloppy_version
@@ -42,7 +42,7 @@ IMD_SECTOR_SIZE_MAP = {
     6: 8192,
 }
 
-IMD_HEADER_TERMINATOR = b"\x1A"
+IMD_HEADER_TERMINATOR = b"\x1a"
 IMD_VARIABLE_SIZE_CODE = 0xFF
 IMD_DEFAULT_FILL_BYTE = 0xE5
 IMD_DEFAULT_BPS = 512
@@ -76,7 +76,12 @@ class IMDTrackInfo:
     """
 
     def __init__(
-        self, mode: int, cylinder: int, head_flags: int, num_sectors: int, sector_size_code: int
+        self,
+        mode: int,
+        cylinder: int,
+        head_flags: int,
+        num_sectors: int,
+        sector_size_code: int,
     ):
         """
         Initializes an IMDTrackInfo object.
@@ -191,7 +196,7 @@ class IMDImageDriver(DiskIODriver):
         self.uses_physical_heads: bool = False
         self._sector_size_cache: dict[tuple[int, int, int], int] = {}
 
-        if os.path.exists(self.file_path):
+        if Path(self.file_path).exists():
             try:
                 self._load_and_parse_imd_file()
                 self.file_loaded = True
@@ -207,10 +212,14 @@ class IMDImageDriver(DiskIODriver):
                 self.logger.error(f"Parse error in IMD file {self.file_path}: {e}")
                 raise
             except Exception as e:
-                self.logger.exception(f"Unexpected error loading IMD file {self.file_path}: {e}")
+                self.logger.exception(
+                    f"Unexpected error loading IMD file {self.file_path}: {e}"
+                )
                 raise
         else:
-            self.logger.info(f"IMD file '{self.file_path}' not found. Initializing empty driver.")
+            self.logger.info(
+                f"IMD file '{self.file_path}' not found. Initializing empty driver."
+            )
             self.creation_date = datetime.datetime.now()
             self.imd_version = "IMD 1.18"
             self.comment = (
@@ -318,8 +327,16 @@ class IMDImageDriver(DiskIODriver):
                 )
                 head_flags = (
                     (head & IMD_HEAD_FLAG_HEAD_MASK)
-                    | (IMD_HEAD_FLAG_CYLINDER_MAP if track_info and track_info.has_cyl_map else 0)
-                    | (IMD_HEAD_FLAG_HEAD_MAP if track_info and track_info.has_head_map else 0)
+                    | (
+                        IMD_HEAD_FLAG_CYLINDER_MAP
+                        if track_info and track_info.has_cyl_map
+                        else 0
+                    )
+                    | (
+                        IMD_HEAD_FLAG_HEAD_MAP
+                        if track_info and track_info.has_head_map
+                        else 0
+                    )
                 )
 
                 rebuilt_info = IMDTrackInfo(mode, cyl, head_flags, spt, size_code)
@@ -327,7 +344,9 @@ class IMDImageDriver(DiskIODriver):
                 if track_info and size_code == IMD_VARIABLE_SIZE_CODE:
                     rebuilt_info.sector_size_map = track_info.sector_size_map
 
-                new_data.extend(struct.pack("<BBBBB", mode, cyl, head_flags, spt, size_code))
+                new_data.extend(
+                    struct.pack("<BBBBB", mode, cyl, head_flags, spt, size_code)
+                )
                 new_data.extend(struct.pack(f"<{spt}B", *sector_map))
 
                 for sector in sector_map:
@@ -357,14 +376,18 @@ class IMDImageDriver(DiskIODriver):
                         content = sector_data
 
                     offset = len(new_data) + 1
-                    rebuilt_info.sector_data_info[sector] = (offset, data_type, len(content))
+                    rebuilt_info.sector_data_info[sector] = (
+                        offset,
+                        data_type,
+                        len(content),
+                    )
                     new_data.append(data_type)
                     new_data.extend(content)
 
                 new_tracks[track_key] = rebuilt_info
 
         try:
-            with open(self.file_path, "wb") as f:
+            with Path(self.file_path).open("wb") as f:
                 f.write(new_data)
             self.image_data = new_data
             self.tracks = new_tracks
@@ -376,7 +399,9 @@ class IMDImageDriver(DiskIODriver):
             self.logger.error(f"Flush failed: {e}")
             raise OSError(f"Failed to flush IMD: {e}") from e
 
-    def format_imd(self, profile: FormatProfile, fill_byte: int = IMD_DEFAULT_FILL_BYTE) -> None:
+    def format_imd(
+        self, profile: FormatProfile, fill_byte: int = IMD_DEFAULT_FILL_BYTE
+    ) -> None:
         """
         Formats the in-memory image according to a format profile.
 
@@ -418,18 +443,29 @@ class IMDImageDriver(DiskIODriver):
                     IMD_MODE_INVALID,
                 )
                 size_code = next(
-                    (c for c, s in IMD_SECTOR_SIZE_MAP.items() if s == track_format.bytes_per_sector),
+                    (
+                        c
+                        for c, s in IMD_SECTOR_SIZE_MAP.items()
+                        if s == track_format.bytes_per_sector
+                    ),
                     IMD_SIZE_CODE_INVALID,
                 )
 
                 if mode == IMD_MODE_INVALID or size_code == IMD_SIZE_CODE_INVALID:
-                    self.logger.error(f"Unsupported format for C:{cyl} H:{head}, skipping track.")
+                    self.logger.error(
+                        f"Unsupported format for C:{cyl} H:{head}, skipping track."
+                    )
                     continue
 
                 spt = track_format.sectors_per_track
                 self.image_data.extend(
                     struct.pack(
-                        "<BBBBB", mode, cyl, head & IMD_HEAD_FLAG_HEAD_MASK, spt, size_code
+                        "<BBBBB",
+                        mode,
+                        cyl,
+                        head & IMD_HEAD_FLAG_HEAD_MASK,
+                        spt,
+                        size_code,
                     )
                 )
                 self.image_data.extend(struct.pack(f"<{spt}B", *range(1, spt + 1)))
@@ -469,7 +505,9 @@ class IMDImageDriver(DiskIODriver):
             fill_byte=IMD_DEFAULT_FILL_BYTE,
         )
 
-    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
+    def prepare_for_format_application(
+        self, format_info: dict
+    ) -> tuple[bool, Optional[str]]:
         """
         Validates format compatibility for IMD driver.
 
@@ -539,7 +577,9 @@ class IMDImageDriver(DiskIODriver):
 
         sector_key = (cylinder, head, sector)
         if sector_key in self.modified_sector_data:
-            self.logger.debug(f"Reading modified sector C:{cylinder} H:{head} S:{sector}")
+            self.logger.debug(
+                f"Reading modified sector C:{cylinder} H:{head} S:{sector}"
+            )
             return self.modified_sector_data[sector_key]
 
         return self._read_original_sector(cylinder, head, sector)
@@ -561,26 +601,30 @@ class IMDImageDriver(DiskIODriver):
             raise TypeError("Expected PhysicalFormat object")
 
         if self.file_loaded:
-            self.logger.warning("External physical format set, may conflict with IMD data")
+            self.logger.warning(
+                "External physical format set, may conflict with IMD data"
+            )
 
         self.physical_format = copy.deepcopy(physical_format)
 
-    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
+    def validate_for_opening(
+        self, source: str, **_kwargs
+    ) -> tuple[bool, Optional[str]]:
         """
         Validates whether an IMD file can be opened.
 
         Args:
             source: Path to the IMD file.
-            **kwargs: Unused for IMD driver.
+            **_kwargs: Unused for IMD driver.
 
         Returns:
             Tuple of (is_valid, error_message).
         """
-        if not os.path.exists(source):
+        if not Path(source).exists():
             return False, f"IMD file not found: {source}"
 
         try:
-            with open(source, "rb") as f:
+            with Path(source).open("rb") as f:
                 header = f.read(128)
 
             if IMD_HEADER_TERMINATOR not in header:
@@ -638,7 +682,9 @@ class IMDImageDriver(DiskIODriver):
         if len(data) != target_size:
             raise ValueError(f"Data size mismatch: {len(data)} vs {target_size}")
 
-        if self.file_loaded and (not track_info or sector not in track_info.sector_data_info):
+        if self.file_loaded and (
+            not track_info or sector not in track_info.sector_data_info
+        ):
             raise OSError(f"Invalid sector C:{cylinder} H:{head} S:{sector}")
 
         self.modified_sector_data[(cylinder, head, sector)] = bytes(data)
@@ -712,7 +758,11 @@ class IMDImageDriver(DiskIODriver):
             if not track_info:
                 if prev_props is not None:
                     self._add_track_format(
-                        track_formats, current_start_cyl, cyl - 1, prev_props, max_head_idx
+                        track_formats,
+                        current_start_cyl,
+                        cyl - 1,
+                        prev_props,
+                        max_head_idx,
                     )
                 current_start_cyl = cyl + 1
                 prev_props = None
@@ -743,7 +793,11 @@ class IMDImageDriver(DiskIODriver):
 
         ref_ti = self.tracks.get((0, 0)) or self.tracks[min(self.tracks.keys())]
         ref_rate, ref_encoding, _ = IMD_MODE_MAP.get(ref_ti.mode, (500, "MFM", ""))
-        rpm = IMD_RPM_FM_DEFAULT if ref_rate == 300 or ref_encoding == "FM" else IMD_RPM_MFM_DEFAULT
+        rpm = (
+            IMD_RPM_FM_DEFAULT
+            if ref_rate == 300 or ref_encoding == "FM"
+            else IMD_RPM_MFM_DEFAULT
+        )
         if ref_rate == 500 and ref_encoding == "MFM" and ref_ti.num_sectors == 15:
             rpm = IMD_RPM_HD_5_25
 
@@ -817,7 +871,7 @@ class IMDImageDriver(DiskIODriver):
         """
         self.logger.info(f"Loading IMD file: {self.file_path}")
         try:
-            with open(self.file_path, "rb") as f:
+            with Path(self.file_path).open("rb") as f:
                 self.image_data = bytearray(f.read())
         except Exception as e:
             raise ValueError(f"Cannot read file: {e}") from e
@@ -838,8 +892,12 @@ class IMDImageDriver(DiskIODriver):
             comment_bytes = header_bytes[first_colon_pos + 1 :]
             try:
                 comment_text = comment_bytes.decode("cp437", errors="replace")
-                timestamp_pattern = r"^\s*\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*[:]?\s*"
-                self.comment = re.sub(timestamp_pattern, "", comment_text, count=1).strip()
+                timestamp_pattern = (
+                    r"^\s*\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*[:]?\s*"
+                )
+                self.comment = re.sub(
+                    timestamp_pattern, "", comment_text, count=1
+                ).strip()
             except Exception as e:
                 self.logger.warning(f"Failed to decode comment: {e}")
                 self.comment = "[Comment Decode Error]"
@@ -870,7 +928,9 @@ class IMDImageDriver(DiskIODriver):
                 )
                 continue
 
-            track_info = IMDTrackInfo(mode, cyl, head_flags, num_sectors, sector_size_code)
+            track_info = IMDTrackInfo(
+                mode, cyl, head_flags, num_sectors, sector_size_code
+            )
             max_cyl = max(max_cyl, cyl)
             max_head = max(max_head, track_info.head)
 
@@ -883,15 +943,23 @@ class IMDImageDriver(DiskIODriver):
 
             if track_info.has_cyl_map:
                 if offset + num_sectors > len(self.image_data):
-                    raise ValueError(f"EOF in Cylinder map for C:{cyl} H:{track_info.head}")
-                map_data = struct.unpack_from(f"<{num_sectors}B", self.image_data, offset)
-                track_info.sector_cyl_map = dict(zip(track_info.sector_num_map, map_data))
+                    raise ValueError(
+                        f"EOF in Cylinder map for C:{cyl} H:{track_info.head}"
+                    )
+                map_data = struct.unpack_from(
+                    f"<{num_sectors}B", self.image_data, offset
+                )
+                track_info.sector_cyl_map = dict(
+                    zip(track_info.sector_num_map, map_data)
+                )
                 offset += num_sectors
 
             if track_info.has_head_map:
                 if offset + num_sectors > len(self.image_data):
                     raise ValueError(f"EOF in Head map for C:{cyl} H:{track_info.head}")
-                map_data = struct.unpack_from(f"<{num_sectors}B", self.image_data, offset)
+                map_data = struct.unpack_from(
+                    f"<{num_sectors}B", self.image_data, offset
+                )
                 track_info.sector_head_map = {
                     num: val & IMD_HEAD_FLAG_HEAD_MASK
                     for num, val in zip(track_info.sector_num_map, map_data)
@@ -942,7 +1010,11 @@ class IMDImageDriver(DiskIODriver):
                         f"EOF in sector data for C:{cyl} H:{track_info.head} S:{sector_num}"
                     )
 
-                track_info.sector_data_info[sector_num] = (data_offset, data_type, data_size)
+                track_info.sector_data_info[sector_num] = (
+                    data_offset,
+                    data_type,
+                    data_size,
+                )
                 offset += 1 + data_size
 
             self.tracks[(cyl, track_info.head)] = track_info
@@ -972,7 +1044,9 @@ class IMDImageDriver(DiskIODriver):
         expected_size = self._get_sector_size(track_info, cylinder, head, sector)
 
         if not track_info or sector not in track_info.sector_data_info:
-            self.logger.warning(f"Missing track or sector C:{cylinder} H:{head} S:{sector}")
+            self.logger.warning(
+                f"Missing track or sector C:{cylinder} H:{head} S:{sector}"
+            )
             return bytes(expected_size)
 
         offset, data_type, size = track_info.sector_data_info[sector]

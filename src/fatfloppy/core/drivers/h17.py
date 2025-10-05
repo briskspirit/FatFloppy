@@ -1,6 +1,7 @@
 import datetime
 import struct
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar, Optional
 
 from ..physical_format import PhysicalFormat, TrackFormat
@@ -213,7 +214,9 @@ class H17ImageDriver(DiskIODriver):
                 self.logger.error(f"Failed to load H17 image {file_path}: {e}")
                 raise
         else:
-            self.logger.info(f"H17 file '{file_path}' not found. Driver initialized for creation.")
+            self.logger.info(
+                f"H17 file '{file_path}' not found. Driver initialized for creation."
+            )
 
     @property
     def allows_geometry_override(self) -> bool:
@@ -255,7 +258,9 @@ class H17ImageDriver(DiskIODriver):
         """
         return True
 
-    def apply_volume_scheme(self, scheme: str, hdos_volume: Optional[int] = None) -> None:
+    def apply_volume_scheme(
+        self, scheme: str, hdos_volume: Optional[int] = None
+    ) -> None:
         """
         Applies a volume numbering scheme to all sectors.
 
@@ -320,12 +325,14 @@ class H17ImageDriver(DiskIODriver):
                         f"(physical {physical_sector})"
                     )
 
-            with open(self.file_path, "wb") as f:
+            with Path(self.file_path).open("wb") as f:
                 f.write(self.file_data)
 
             self.modified_sectors.clear()
             self.dirty = False
-            self.logger.info(f"Successfully flushed {len(self.modified_sectors)} sectors")
+            self.logger.info(
+                f"Successfully flushed {len(self.modified_sectors)} sectors"
+            )
 
         except Exception as e:
             self.logger.error(f"Failed to flush H17 image: {e}")
@@ -359,7 +366,9 @@ class H17ImageDriver(DiskIODriver):
         if tracks not in [H17_TRACKS_40, H17_TRACKS_80]:
             raise ValueError(f"Tracks must be 40 or 80, got {tracks}")
 
-        self.logger.info(f"Formatting H17 image: {sides} sides, {tracks} tracks, {scheme} scheme")
+        self.logger.info(
+            f"Formatting H17 image: {sides} sides, {tracks} tracks, {scheme} scheme"
+        )
 
         self.disk_format = H17DiskFormat(sides=sides, tracks=tracks, read_only=False)
 
@@ -485,7 +494,9 @@ class H17ImageDriver(DiskIODriver):
             ):
                 hdos_volume = profile.filesystem_config.volume_number
 
-            if profile.filesystem_config and hasattr(profile.filesystem_config, "title"):
+            if profile.filesystem_config and hasattr(
+                profile.filesystem_config, "title"
+            ):
                 label = profile.filesystem_config.title
 
         self.format_h17(
@@ -497,7 +508,9 @@ class H17ImageDriver(DiskIODriver):
             comment="Created by FatFloppy",
         )
 
-    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
+    def prepare_for_format_application(
+        self, format_info: dict
+    ) -> tuple[bool, Optional[str]]:
         """
         Validates format compatibility for H17 driver.
 
@@ -544,7 +557,9 @@ class H17ImageDriver(DiskIODriver):
         physical_key = (cylinder, head, physical_sector)
 
         if sector_key in self.modified_sectors:
-            self.logger.debug(f"Reading modified sector C:{cylinder} H:{head} S:{sector}")
+            self.logger.debug(
+                f"Reading modified sector C:{cylinder} H:{head} S:{sector}"
+            )
             return self.modified_sectors[sector_key]
 
         if sector_key in self.sector_cache:
@@ -578,8 +593,12 @@ class H17ImageDriver(DiskIODriver):
             return data
 
         except Exception as e:
-            self.logger.error(f"Error reading sector C:{cylinder} H:{head} S:{sector}: {e}")
-            raise OSError(f"Failed to read sector C:{cylinder} H:{head} S:{sector}") from e
+            self.logger.error(
+                f"Error reading sector C:{cylinder} H:{head} S:{sector}: {e}"
+            )
+            raise OSError(
+                f"Failed to read sector C:{cylinder} H:{head} S:{sector}"
+            ) from e
 
     def set_disk_comment(self, comment: str) -> None:
         """
@@ -615,9 +634,13 @@ class H17ImageDriver(DiskIODriver):
             raise TypeError("Expected PhysicalFormat object")
 
         self.physical_format = physical_format
-        self.logger.info(f"Physical format set: {physical_format.cylinders}x{physical_format.heads}")
+        self.logger.info(
+            f"Physical format set: {physical_format.cylinders}x{physical_format.heads}"
+        )
 
-    def set_sector_volume(self, cylinder: int, head: int, sector: int, volume: int) -> None:
+    def set_sector_volume(
+        self, cylinder: int, head: int, sector: int, volume: int
+    ) -> None:
         """
         Sets the volume number for a specific sector.
 
@@ -643,7 +666,9 @@ class H17ImageDriver(DiskIODriver):
 
         meta.volume = volume
         self.dirty = True
-        self.logger.debug(f"Set volume for C:{cylinder} H:{head} S:{sector} to {volume}")
+        self.logger.debug(
+            f"Set volume for C:{cylinder} H:{head} S:{sector} to {volume}"
+        )
 
     def set_track_volumes(self, cylinder: int, head: int, volume: int) -> None:
         """
@@ -669,24 +694,24 @@ class H17ImageDriver(DiskIODriver):
         self.dirty = True
         self.logger.debug(f"Set volume for track C:{cylinder} H:{head} to {volume}")
 
-    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
+    def validate_for_opening(
+        self, source: str, **_kwargs
+    ) -> tuple[bool, Optional[str]]:
         """
         Validates whether an H17 file can be opened.
 
         Args:
             source: Path to the H17 file.
-            **kwargs: Unused for H17 driver.
+            **_kwargs: Unused for H17 driver.
 
         Returns:
             Tuple of (is_valid, error_message).
         """
-        import os
-
-        if not os.path.exists(source):
+        if not Path(source).exists():
             return False, f"H17 file not found: {source}"
 
         try:
-            with open(source, "rb") as f:
+            with Path(source).open("rb") as f:
                 magic = f.read(4)
 
             if magic != b"H17D":
@@ -747,7 +772,9 @@ class H17ImageDriver(DiskIODriver):
             f"(physical {physical_sector})"
         )
 
-    def _build_new_file(self, sides: int, tracks: int, scheme: str, hdos_volume: int) -> None:
+    def _build_new_file(
+        self, sides: int, tracks: int, scheme: str, hdos_volume: int
+    ) -> None:
         """
         Builds a complete new H17 file structure in memory.
 
@@ -767,7 +794,9 @@ class H17ImageDriver(DiskIODriver):
 
         self._write_block(
             BLOCK_PARAMETERS,
-            bytes([self.parameters.distribution_disk, self.parameters.source_of_headers]),
+            bytes(
+                [self.parameters.distribution_disk, self.parameters.source_of_headers]
+            ),
         )
 
         if self.metadata.date:
@@ -892,9 +921,7 @@ class H17ImageDriver(DiskIODriver):
         Returns:
             True if the file exists, False otherwise.
         """
-        import os
-
-        return os.path.exists(self.file_path)
+        return Path(self.file_path).exists()
 
     def _load_and_parse(self) -> None:
         """
@@ -903,7 +930,7 @@ class H17ImageDriver(DiskIODriver):
         Raises:
             ValueError: If the file is invalid or corrupted.
         """
-        with open(self.file_path, "rb") as f:
+        with Path(self.file_path).open("rb") as f:
             self.file_data = bytearray(f.read())
 
         if len(self.file_data) < 8:
@@ -931,11 +958,15 @@ class H17ImageDriver(DiskIODriver):
 
         while offset + 8 <= len(self.file_data):
             block_id = self.file_data[offset : offset + 4]
-            block_length = struct.unpack(">I", self.file_data[offset + 4 : offset + 8])[0]
+            block_length = struct.unpack(">I", self.file_data[offset + 4 : offset + 8])[
+                0
+            ]
 
             block_data = self.file_data[offset + 8 : offset + 8 + block_length]
 
-            self.logger.debug(f"Parsing block {block_id} at offset {offset}, length {block_length}")
+            self.logger.debug(
+                f"Parsing block {block_id} at offset {offset}, length {block_length}"
+            )
 
             if block_id == BLOCK_DISK_FORMAT:
                 self._parse_disk_format_block(block_data)
@@ -991,7 +1022,9 @@ class H17ImageDriver(DiskIODriver):
             sides=sides, tracks=tracks, read_only=bool(read_only)
         )
 
-        self.logger.info(f"Disk format: {sides} sides, {tracks} tracks, R/O={read_only}")
+        self.logger.info(
+            f"Disk format: {sides} sides, {tracks} tracks, R/O={read_only}"
+        )
 
     def _parse_parameters_block(self, data: bytes) -> None:
         """
@@ -1032,7 +1065,9 @@ class H17ImageDriver(DiskIODriver):
         expected_size = num_sectors * SECTOR_METADATA_SIZE
 
         if len(data) < expected_size:
-            self.logger.warning(f"SecM block size mismatch: expected {expected_size}, got {len(data)}")
+            self.logger.warning(
+                f"SecM block size mismatch: expected {expected_size}, got {len(data)}"
+            )
 
         offset = 0
         sector_index = 0
@@ -1041,7 +1076,9 @@ class H17ImageDriver(DiskIODriver):
             for head in range(self.disk_format.sides):
                 for sector in range(H17_SECTORS_PER_TRACK):
                     if offset + SECTOR_METADATA_SIZE > len(data):
-                        self.logger.error(f"Unexpected end of SecM block at sector {sector_index}")
+                        self.logger.error(
+                            f"Unexpected end of SecM block at sector {sector_index}"
+                        )
                         return
 
                     meta_bytes = data[offset : offset + SECTOR_METADATA_SIZE]
