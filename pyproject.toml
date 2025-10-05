@@ -11,7 +11,7 @@ description = "Graphical utility for working with vintage floppy images via Grea
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-  "greaseweazle",
+  "greaseweazle @ git+https://github.com/keirf/greaseweazle@latest",
   "PyQt6",
 ]
 
