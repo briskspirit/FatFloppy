@@ -121,7 +121,6 @@ class DiskController:
                 name=profile_name,
                 description=profile_description,
                 physical_format=physical_format,
-                filesystem_type=target_fs_type,
                 filesystem_config=filesystem_config_obj,
             )
             self.logger.debug(f"Created custom format profile: {profile.description}")
