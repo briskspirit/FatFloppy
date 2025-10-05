@@ -5,7 +5,7 @@ Self-contained filesystem registry with automatic plugin discovery.
 This module is completely self-sufficient - it discovers, validates,
 and registers all filesystem plugins automatically on import.
 """
-from typing import Dict, List, Optional, Type
+from typing import Optional
 
 from .filesystems.fs_base import Filesystem
 from .format_profile import FormatProfile
@@ -18,13 +18,13 @@ logger = get_logger(__name__)
 class FilesystemRegistry:
     """Registry for filesystem implementations with auto-discovery."""
 
-    _registry: Dict[str, Type[Filesystem]] = {}
-    _name_map: Dict[str, str] = {}
+    _registry: dict[str, type[Filesystem]] = {}
+    _name_map: dict[str, str] = {}
     _initialized: bool = False
-    _all_formats: Dict[str, FormatProfile] = {}
+    _all_formats: dict[str, FormatProfile] = {}
 
     @classmethod
-    def get_all(cls) -> List[Type[Filesystem]]:
+    def get_all(cls) -> list[type[Filesystem]]:
         """
         Returns a list of all registered filesystem classes.
 
@@ -36,7 +36,7 @@ class FilesystemRegistry:
         return list(cls._registry.values())
 
     @classmethod
-    def get_all_formats(cls) -> Dict[str, FormatProfile]:
+    def get_all_formats(cls) -> dict[str, FormatProfile]:
         """
         Returns all format definitions from all filesystem plugins.
 
@@ -48,7 +48,7 @@ class FilesystemRegistry:
         return cls._all_formats.copy()
 
     @classmethod
-    def get_by_name(cls, name: str) -> Optional[Type[Filesystem]]:
+    def get_by_name(cls, name: str) -> Optional[type[Filesystem]]:
         """
         Retrieves a filesystem class by name or alias.
 
@@ -69,7 +69,7 @@ class FilesystemRegistry:
         return None
 
     @classmethod
-    def list_registered_types(cls) -> List[str]:
+    def list_registered_types(cls) -> list[str]:
         """
         Returns a list of all registered filesystem type names.
 
@@ -84,8 +84,8 @@ class FilesystemRegistry:
     def register_external(
         cls,
         fs_type: str,
-        fs_class: Type[Filesystem],
-        aliases: Optional[List[str]] = None
+        fs_class: type[Filesystem],
+        aliases: Optional[list[str]] = None
     ) -> None:
         """
         Public API for external plugins to register themselves.
@@ -114,7 +114,7 @@ class FilesystemRegistry:
         """Collects format definitions from all registered filesystem plugins."""
         logger.info("Aggregating format definitions from filesystem plugins...")
 
-        for fs_type, fs_class in cls._registry.items():
+        for _fs_type, fs_class in cls._registry.items():
             if hasattr(fs_class, 'get_format_definitions'):
                 try:
                     formats = fs_class.get_format_definitions()
@@ -168,7 +168,7 @@ class FilesystemRegistry:
         )
 
     @classmethod
-    def _validate_filesystem(cls, fs_class: Type[Filesystem]) -> None:
+    def _validate_filesystem(cls, fs_class: type[Filesystem]) -> None:
         """
         Validates a filesystem plugin meets all requirements.
 

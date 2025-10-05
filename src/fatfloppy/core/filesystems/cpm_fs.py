@@ -1,15 +1,15 @@
+import contextlib
 import datetime
 import struct
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple, Type
+from typing import Any, ClassVar, Optional
 
 from ..disk import Disk
 from ..format_profile import FormatProfile
 from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
 from .fs_base import FileInfo, Filesystem
-
 
 CPM_SECTOR_SIZE = 128
 CPM_DIRECTORY_ENTRIES_PER_SECTOR = CPM_SECTOR_SIZE // 32
@@ -114,8 +114,8 @@ class CPMDirectoryEntry:
     s1: int = 0
     xh: int = 0
     rc: int = 0
-    blks: List[int] = field(default_factory=list)
-    attributes_raw: Dict[str, int] = field(default_factory=dict)
+    blks: list[int] = field(default_factory=list)
+    attributes_raw: dict[str, int] = field(default_factory=dict)
 
     def get_attributes(self) -> str:
         """
@@ -162,9 +162,9 @@ class CPMFilesystem(Filesystem):
     file operations like reading, writing, deleting, and listing files.
     """
     filesystem_type: ClassVar[str] = "CPM"
-    filesystem_aliases: ClassVar[List[str]] = ["CP/M"]
+    filesystem_aliases: ClassVar[list[str]] = ["CP/M"]
     validity_threshold: ClassVar[int] = 50
-    config_class: ClassVar[Type] = CPMDiskParameterBlock
+    config_class: ClassVar[type] = CPMDiskParameterBlock
     VALIDITY_THRESHOLD = validity_threshold
 
     def __init__(self, disk: Disk, config: Optional[CPMDiskParameterBlock] = None):
@@ -179,8 +179,8 @@ class CPMFilesystem(Filesystem):
         self.logger = get_logger(self.__class__.__name__)
         self.dpb: Optional[CPMDiskParameterBlock] = config
         self._init_completed = False
-        self._cached_directory: Optional[List[CPMDirectoryEntry]] = None
-        self._cached_allocation_map: Optional[Set[int]] = None
+        self._cached_directory: Optional[list[CPMDirectoryEntry]] = None
+        self._cached_allocation_map: Optional[set[int]] = None
         self._cached_validity_score: Optional[int] = None
 
         if self.disk and self.disk.physical_format:
@@ -222,7 +222,7 @@ class CPMFilesystem(Filesystem):
         return 0
 
     @classmethod
-    def get_format_definitions(cls) -> Dict[str, FormatProfile]:
+    def get_format_definitions(cls) -> dict[str, FormatProfile]:
         """
         Returns all CP/M format definitions provided by this plugin.
 
@@ -257,7 +257,7 @@ class CPMFilesystem(Filesystem):
 
     @staticmethod
     def create_config_from_params(
-        format_info: Dict[str, Any], physical_format: PhysicalFormat
+        format_info: dict[str, Any], physical_format: PhysicalFormat
     ) -> Optional[CPMDiskParameterBlock]:
         """
         Creates a CPMDiskParameterBlock config from parameters.
@@ -337,7 +337,7 @@ class CPMFilesystem(Filesystem):
             FileNotFoundError: If the specified file does not exist.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem not valid")
+            raise OSError("Filesystem not valid")
 
         user, parsed_filename = self._parse_cpm_path(path)
 
@@ -437,7 +437,7 @@ class CPMFilesystem(Filesystem):
                         f"Error writing to reserved track {i} "
                         f"(C:{phys_cyl} H:{phys_head} S:{s}): {e}"
                     )
-                    raise IOError("Failed to clear system tracks during format") from e
+                    raise OSError("Failed to clear system tracks during format") from e
 
         dir_logical_128b_sectors_count = ((self.dpb.drm + 1) * 32) // CPM_SECTOR_SIZE
         self.logger.info(
@@ -459,7 +459,7 @@ class CPMFilesystem(Filesystem):
                     f"Error writing to directory area CP/M_T:{current_cpm_track_idx} "
                     f"Log.S:{current_logical_128b_sec_on_cpm_track_idx}: {e}"
                 )
-                raise IOError("Failed to clear directory area during format") from e
+                raise OSError("Failed to clear directory area during format") from e
 
             logical_spt_for_dir_track = self._get_logical_spt(current_cpm_track_idx)
             current_logical_128b_sec_on_cpm_track_idx += 1
@@ -476,7 +476,7 @@ class CPMFilesystem(Filesystem):
         self.disk.flush()
         self.logger.info("CP/M formatting complete (system tracks and directory cleared).")
 
-    def get_allocated_units(self) -> List[int]:
+    def get_allocated_units(self) -> list[int]:
         """
         Returns a sorted list of all allocated block numbers.
 
@@ -488,9 +488,9 @@ class CPMFilesystem(Filesystem):
         if self._cached_allocation_map is None:
             self._load_allocation_map()
 
-        return sorted(list(self._cached_allocation_map)) if self._cached_allocation_map else []
+        return sorted(self._cached_allocation_map) if self._cached_allocation_map else []
 
-    def get_disk_map_layout(self) -> Dict[str, Any]:
+    def get_disk_map_layout(self) -> dict[str, Any]:
         """
         Provides data for visualizing the disk layout.
 
@@ -535,7 +535,7 @@ class CPMFilesystem(Filesystem):
                         phys_head = 0
 
                     try:
-                        track_format = self.disk.physical_format.get_track_format(
+                        self.disk.physical_format.get_track_format(
                             phys_cyl, phys_head
                         )
                     except ValueError:
@@ -616,7 +616,7 @@ class CPMFilesystem(Filesystem):
             "type_color_map": type_map,
         }
 
-    def get_display_info(self) -> Dict[str, str]:
+    def get_display_info(self) -> dict[str, str]:
         """
         Returns a dictionary of key CP/M filesystem parameters for display.
 
@@ -640,7 +640,7 @@ class CPMFilesystem(Filesystem):
             "Calculated Directory Blocks": str(self.dpb.directory_blocks),
         }
 
-    def get_file_allocation_units(self, path: str) -> List[int]:
+    def get_file_allocation_units(self, path: str) -> list[int]:
         """
         Gets the list of allocation block numbers used by a specific file.
 
@@ -655,7 +655,7 @@ class CPMFilesystem(Filesystem):
             IOError: If the filesystem is not valid.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as CP/M.")
+            raise OSError("Filesystem is not valid or not recognized as CP/M.")
 
         user, parsed_filename = self._parse_cpm_path(path)
 
@@ -686,7 +686,7 @@ class CPMFilesystem(Filesystem):
         self.logger.debug(f"File '{path}' uses {len(all_blocks)} blocks: {all_blocks}")
         return all_blocks
 
-    def get_free_space(self) -> Tuple[int, int]:
+    def get_free_space(self) -> tuple[int, int]:
         """
         Calculates the free and total data space on the disk.
 
@@ -794,7 +794,6 @@ class CPMFilesystem(Filesystem):
                         self._cached_validity_score = 0
                         return 0
 
-                    is_valid = True
                     for b in significant_bytes:
                         if b == 0x7F or b == 0xFF:
                             self.logger.debug(
@@ -905,7 +904,7 @@ class CPMFilesystem(Filesystem):
         """
         return None
 
-    def list_directory(self, path: str) -> List[FileInfo]:
+    def list_directory(self, path: str) -> list[FileInfo]:
         """
         Lists all files in the root directory.
 
@@ -920,7 +919,7 @@ class CPMFilesystem(Filesystem):
             NotImplementedError: If a path other than "/" is provided.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as CP/M.")
+            raise OSError("Filesystem is not valid or not recognized as CP/M.")
         if path != "/":
             raise NotImplementedError("Subdirectories not supported in CP/M")
 
@@ -976,7 +975,7 @@ class CPMFilesystem(Filesystem):
             ValueError: If the filename format is invalid.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as CP/M.")
+            raise OSError("Filesystem is not valid or not recognized as CP/M.")
 
         path = path.lstrip("/")
         specified_user: Optional[int] = None
@@ -1054,21 +1053,19 @@ class CPMFilesystem(Filesystem):
             ValueError: If the DPB is not set.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem not valid")
+            raise OSError("Filesystem not valid")
 
         user, parsed_filename = self._parse_cpm_path(path)
         base_name, ext_name = (parsed_filename.split(".", 1) + [""])[:2]
 
-        try:
+        with contextlib.suppress(FileNotFoundError):
             self.delete(path)
-        except FileNotFoundError:
-            pass
 
         if not self.dpb:
             raise ValueError("DPB not set.")
         block_size = self.dpb.block_size
         if block_size == 0:
-            raise IOError("Block size is zero, cannot write file.")
+            raise OSError("Block size is zero, cannot write file.")
 
         num_records_total = (
             (len(data) + CPM_SECTOR_SIZE - 1) // CPM_SECTOR_SIZE if data else 0
@@ -1086,9 +1083,9 @@ class CPMFilesystem(Filesystem):
         self._cached_directory = self._read_directory_entries()
         self._load_allocation_map()
 
-        free_blocks = sorted(list(set(range(self.dpb.dsm + 1)) - self._cached_allocation_map))
+        free_blocks = sorted(set(range(self.dpb.dsm + 1)) - self._cached_allocation_map)
         if len(free_blocks) < num_blocks_needed:
-            raise IOError(
+            raise OSError(
                 f"Not enough free space. Required: {num_blocks_needed}, "
                 f"Available: {len(free_blocks)}."
             )
@@ -1096,7 +1093,7 @@ class CPMFilesystem(Filesystem):
 
         free_dir_slots = [i for i, e in enumerate(self._cached_directory) if e.is_deleted()]
         if len(free_dir_slots) < num_dir_entries_needed:
-            raise IOError(
+            raise OSError(
                 f"Directory is full. Required: {num_dir_entries_needed}, "
                 f"Available: {len(free_dir_slots)}."
             )
@@ -1152,7 +1149,7 @@ class CPMFilesystem(Filesystem):
         self._cached_allocation_map = None
         self.disk.flush()
 
-    def _block_to_track_sector(self, block_num: int) -> Tuple[int, int]:
+    def _block_to_track_sector(self, block_num: int) -> tuple[int, int]:
         """
         Converts a data block number to its starting logical track and sector.
 
@@ -1213,7 +1210,7 @@ class CPMFilesystem(Filesystem):
             )
         )
 
-    def _cpm_track_to_chs_coords(self, cpm_track: int) -> Tuple[int, int]:
+    def _cpm_track_to_chs_coords(self, cpm_track: int) -> tuple[int, int]:
         """
         Converts a linear CP/M track number to physical CHS coordinates.
 
@@ -1319,8 +1316,8 @@ class CPMFilesystem(Filesystem):
         return phys_spt * (phys_bps // CPM_SECTOR_SIZE)
 
     def _group_extents(
-        self, raw_entries: List[CPMDirectoryEntry]
-    ) -> Dict[Tuple[int, str], List[CPMDirectoryEntry]]:
+        self, raw_entries: list[CPMDirectoryEntry]
+    ) -> dict[tuple[int, str], list[CPMDirectoryEntry]]:
         """
         Groups raw directory entries by file, creating a per-file extent list.
 
@@ -1379,7 +1376,7 @@ class CPMFilesystem(Filesystem):
         self._cached_allocation_map = used_blocks
         self.logger.debug(f"Built allocation map with {len(used_blocks)} used blocks.")
 
-    def _map_dir_entry_index_to_location(self, index: int) -> Tuple[int, int, int]:
+    def _map_dir_entry_index_to_location(self, index: int) -> tuple[int, int, int]:
         """
         Maps a flat directory entry index to its on-disk location.
 
@@ -1404,7 +1401,7 @@ class CPMFilesystem(Filesystem):
         while True:
             spt = self._get_logical_spt(current_cpm_track)
             if spt == 0:
-                raise IOError(
+                raise OSError(
                     f"Cannot map directory entry: SPT for CP/M track {current_cpm_track} is zero."
                 )
             if logical_sectors_left < spt:
@@ -1414,7 +1411,7 @@ class CPMFilesystem(Filesystem):
 
     def _map_logical_to_physical_sector(
         self, cpm_track: int, logical_sector_on_track: int
-    ) -> Tuple[int, int, int, int]:
+    ) -> tuple[int, int, int, int]:
         """
         Maps a logical sector address to its physical disk location.
 
@@ -1443,7 +1440,7 @@ class CPMFilesystem(Filesystem):
 
         return phys_cyl, phys_head, phys_sector_id, offset_in_phys
 
-    def _parse_cpm_path(self, path: str) -> Tuple[int, str]:
+    def _parse_cpm_path(self, path: str) -> tuple[int, str]:
         """
         Parses a CP/M path into a user number and an 8.3 filename.
 
@@ -1560,7 +1557,7 @@ class CPMFilesystem(Filesystem):
                 current_cpm_track += 1
         return bytes(data)
 
-    def _read_directory_entries(self) -> List[CPMDirectoryEntry]:
+    def _read_directory_entries(self) -> list[CPMDirectoryEntry]:
         """
         Reads all CP/M directory entries from the disk.
 
@@ -1749,7 +1746,7 @@ class CPMFilesystem(Filesystem):
 
         phys_sector_data = self.disk.read_sector(phys_cyl, phys_head, phys_sector_id)
         if len(phys_sector_data) == 0:
-            raise IOError(
+            raise OSError(
                 f"Read 0 bytes from physical sector C:{phys_cyl} H:{phys_head} S:{phys_sector_id}"
             )
 

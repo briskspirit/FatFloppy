@@ -8,7 +8,7 @@ import importlib
 import inspect
 import pkgutil
 from pathlib import Path
-from typing import Callable, List, Type
+from typing import Callable
 
 from .utils.logging_config import get_logger
 
@@ -27,9 +27,9 @@ class PluginScanner:
     @staticmethod
     def discover_plugins(
         package_name: str,
-        base_class: Type,
-        validator: Callable[[Type], None] = None
-    ) -> List[Type]:
+        base_class: type,
+        validator: Callable[[type], None] = None
+    ) -> list[type]:
         """
         Discovers all subclasses of base_class in the given package.
 
@@ -50,7 +50,7 @@ class PluginScanner:
             package = importlib.import_module(package_name)
             package_path = Path(package.__file__).parent
 
-            for finder, name, ispkg in pkgutil.iter_modules([str(package_path)]):
+            for _finder, name, _ispkg in pkgutil.iter_modules([str(package_path)]):
                 if name.startswith('_'):
                     continue
 
@@ -59,7 +59,7 @@ class PluginScanner:
                 try:
                     module = importlib.import_module(module_name)
 
-                    for item_name, item in inspect.getmembers(
+                    for _item_name, item in inspect.getmembers(
                         module,
                         inspect.isclass
                     ):
@@ -98,7 +98,7 @@ class PluginScanner:
         return discovered_plugins
 
     @staticmethod
-    def validate_has_attributes(cls: Type, required_attrs: List[str]) -> None:
+    def validate_has_attributes(cls: type, required_attrs: list[str]) -> None:
         """
         Validates that a class has all required class attributes.
 
@@ -111,9 +111,7 @@ class PluginScanner:
         """
         missing = []
         for attr in required_attrs:
-            if not hasattr(cls, attr):
-                missing.append(attr)
-            elif getattr(cls, attr) == "" or getattr(cls, attr) == []:
+            if not hasattr(cls, attr) or getattr(cls, attr) == "" or getattr(cls, attr) == []:
                 missing.append(attr)
 
         if missing:
@@ -122,7 +120,7 @@ class PluginScanner:
             )
 
     @staticmethod
-    def validate_implements_methods(cls: Type, base_class: Type) -> None:
+    def validate_implements_methods(cls: type, base_class: type) -> None:
         """
         Validates that a class implements all abstract methods from base.
 

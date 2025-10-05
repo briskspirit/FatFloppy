@@ -1,11 +1,10 @@
 import copy
 import os
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import ClassVar, Optional
 
 from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
 from .base_driver import DiskIODriver
-
 
 EDSK_MAGIC = b"EXTENDED CPC DSK"
 AMSTRAD_DSK_MAGIC = b"MV - CPC"
@@ -25,7 +24,7 @@ class IMGImageDriver(DiskIODriver):
     """
 
     driver_type: ClassVar[str] = "IMG"
-    driver_file_extensions: ClassVar[List[str]] = [".img", ".ima", ".dsk", ".h8d"]
+    driver_file_extensions: ClassVar[list[str]] = [".img", ".ima", ".dsk", ".h8d"]
     driver_category: ClassVar[str] = "raw"
     driver_description: ClassVar[str] = "Raw sector image driver"
     driver_priority: ClassVar[int] = 10
@@ -105,7 +104,7 @@ class IMGImageDriver(DiskIODriver):
                 self.logger.error(f"Failed to read image file {self.file_path}: {e}")
                 if isinstance(e, OSError):
                     raise
-                raise IOError(f"Failed to read image file {self.file_path}") from e
+                raise OSError(f"Failed to read image file {self.file_path}") from e
 
     @property
     def allows_geometry_override(self) -> bool:
@@ -165,7 +164,7 @@ class IMGImageDriver(DiskIODriver):
             self.dirty = False
         except Exception as e:
             self.logger.error(f"Failed to flush image data to {self.file_path}: {e}")
-            raise IOError(f"Flush failed: {e}") from e
+            raise OSError(f"Flush failed: {e}") from e
 
     def get_format_requirements(self) -> dict:
         """
@@ -181,7 +180,7 @@ class IMGImageDriver(DiskIODriver):
             "preferred_detection_method": "auto",
         }
 
-    def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
+    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
         """
         Validates format compatibility for IMG driver.
 
@@ -229,7 +228,7 @@ class IMGImageDriver(DiskIODriver):
         offset = self._calculate_sector_offset(cylinder, head, sector)
 
         if offset + bytes_per_sector > len(self.image_data):
-            raise IOError(f"Sector C:{cylinder} H:{head} S:{sector} out of bounds")
+            raise OSError(f"Sector C:{cylinder} H:{head} S:{sector} out of bounds")
 
         self.logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector}")
         return bytes(self.image_data[offset : offset + bytes_per_sector])
@@ -260,7 +259,7 @@ class IMGImageDriver(DiskIODriver):
             )
         self.logger.info(f"Physical format set with total bytes: {self.physical_format.total_bytes}")
 
-    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
         """
         Validates whether an IMG file can be opened.
 
@@ -289,7 +288,7 @@ class IMGImageDriver(DiskIODriver):
 
         return True, None
 
-    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+    def validate_state_for_opening(self) -> tuple[bool, Optional[str]]:
         """
         Validates IMG driver state after opening.
 
@@ -329,7 +328,7 @@ class IMGImageDriver(DiskIODriver):
 
         offset = self._calculate_sector_offset(cylinder, head, sector)
         if offset + bytes_per_sector > len(self.image_data):
-            raise IOError(f"Write out of bounds for C:{cylinder} H:{head} S:{sector}")
+            raise OSError(f"Write out of bounds for C:{cylinder} H:{head} S:{sector}")
 
         self.image_data[offset : offset + bytes_per_sector] = data
         self.dirty = True

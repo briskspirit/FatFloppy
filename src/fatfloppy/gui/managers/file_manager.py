@@ -6,7 +6,7 @@ Manages file operations including import, export, deletion, and editing.
 import logging
 import os
 import re
-from typing import Callable, List
+from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMainWindow, QMessageBox
@@ -156,7 +156,7 @@ class FileManager(QObject):
             )
             return
 
-        paths_to_delete: List[str] = [
+        paths_to_delete: list[str] = [
             self.parent._build_full_path(item.node.name)
             for item in selected_items
         ]
@@ -188,7 +188,7 @@ class FileManager(QObject):
 
         if is_physical:
             def delete_op(progress_callback=None):
-                failed_paths: List[str] = []
+                failed_paths: list[str] = []
                 total = len(paths_to_delete)
 
                 for idx, path in enumerate(paths_to_delete):
@@ -251,7 +251,7 @@ class FileManager(QObject):
                 cancelable=False
             )
         else:
-            failed_paths: List[str] = []
+            failed_paths: list[str] = []
             for path in paths_to_delete:
                 try:
                     success = self.parent.controller.delete_item_recursive(path)
@@ -426,7 +426,7 @@ class FileManager(QObject):
 
     def import_multiple_paths(
         self,
-        file_paths: List[str],
+        file_paths: list[str],
         target_path: str,
         auto_name: bool = True
     ) -> None:

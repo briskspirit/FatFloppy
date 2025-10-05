@@ -1,15 +1,12 @@
 from dataclasses import replace
-from typing import Dict, List, Tuple
 
-from ..cpm_fs import CPMDiskParameterBlock
 from ...format_profile import FormatProfile
 from ...physical_format import PhysicalFormat, TrackFormat
 from ...physical_formats_library import (
-    create_525_sssd_base,
     create_8inch_sssd_base,
-    create_8inch_ssdd_base,
+    create_525_sssd_base,
 )
-
+from ..cpm_fs import CPMDiskParameterBlock
 
 DPB_8INCH_SSSD = CPMDiskParameterBlock(
     spt=26,
@@ -77,7 +74,7 @@ MITS_DATA_SECTOR_TRANSLATION = [
 ]
 
 
-def _create_8inch_sssd_variants() -> List[Tuple[str, PhysicalFormat]]:
+def _create_8inch_sssd_variants() -> list[tuple[str, PhysicalFormat]]:
     """
     Creates 8" SSSD physical format variants with different sector orderings.
 
@@ -157,7 +154,7 @@ def _create_8inch_ssdd_imsai_mixed() -> PhysicalFormat:
     )
 
 
-def _create_mits_altair_variants() -> List[Tuple[str, PhysicalFormat]]:
+def _create_mits_altair_variants() -> list[tuple[str, PhysicalFormat]]:
     """
     Creates MITS Altair 8" SSSD variants with hard-sectored split interleave.
 
@@ -214,7 +211,7 @@ def _create_mits_altair_variants() -> List[Tuple[str, PhysicalFormat]]:
     return variants
 
 
-CPM_FORMATS: Dict[str, FormatProfile] = {}
+CPM_FORMATS: dict[str, FormatProfile] = {}
 
 for variant_name, physical_format in _create_8inch_sssd_variants():
     format_name = f"cpm_8_sssd_250k_{variant_name}"

@@ -5,7 +5,7 @@ Self-contained detector registry with automatic plugin discovery.
 This module is completely self-sufficient - it discovers, validates,
 and registers all format detector plugins automatically on import.
 """
-from typing import Dict, Optional, Type
+from typing import Optional
 
 from .format_detection import FormatDetector
 from .plugin_scanner import PluginScanner
@@ -17,11 +17,11 @@ logger = get_logger(__name__)
 class DetectorRegistry:
     """Registry for format detector classes with auto-discovery."""
 
-    _registry: Dict[str, Type[FormatDetector]] = {}
+    _registry: dict[str, type[FormatDetector]] = {}
     _initialized: bool = False
 
     @classmethod
-    def get_detector(cls, driver) -> Optional[Type[FormatDetector]]:
+    def get_detector(cls, driver) -> Optional[type[FormatDetector]]:
         """
         Retrieves the detector class for a given driver instance.
 
@@ -58,7 +58,7 @@ class DetectorRegistry:
     def register_external(
         cls,
         driver_class_name: str,
-        detector_class: Type[FormatDetector]
+        detector_class: type[FormatDetector]
     ) -> None:
         """
         Public API for external plugins to register themselves.
@@ -101,7 +101,7 @@ class DetectorRegistry:
         )
 
     @classmethod
-    def _validate_detector(cls, detector_class: Type[FormatDetector]) -> None:
+    def _validate_detector(cls, detector_class: type[FormatDetector]) -> None:
         """
         Validates a detector plugin.
 

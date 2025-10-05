@@ -3,14 +3,13 @@ import datetime
 import os
 import re
 import struct
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Optional
 
 from ..._version import __version__ as fatfloppy_version
 from ..format_profile import FormatProfile
 from ..physical_format import PhysicalFormat, TrackFormat
 from ..utils.logging_config import get_logger
 from .base_driver import DiskIODriver
-
 
 logger = get_logger("IMDImageDriver")
 
@@ -97,12 +96,12 @@ class IMDTrackInfo:
         self.num_sectors: int = num_sectors
         self.sector_size_code: int = sector_size_code
 
-        self.sector_size_map: Optional[Dict[int, int]] = None
+        self.sector_size_map: Optional[dict[int, int]] = None
         self.sector_size: int = self._get_base_sector_size()
-        self.sector_num_map: List[int] = []
-        self.sector_cyl_map: Optional[Dict[int, int]] = None
-        self.sector_head_map: Optional[Dict[int, int]] = None
-        self.sector_data_info: Dict[int, Tuple[int, int, int]] = {}
+        self.sector_num_map: list[int] = []
+        self.sector_cyl_map: Optional[dict[int, int]] = None
+        self.sector_head_map: Optional[dict[int, int]] = None
+        self.sector_data_info: dict[int, tuple[int, int, int]] = {}
 
     def get_sector_size(self, sector_num: int) -> int:
         """
@@ -161,7 +160,7 @@ class IMDImageDriver(DiskIODriver):
     """
 
     driver_type: ClassVar[str] = "IMD"
-    driver_file_extensions: ClassVar[List[str]] = [".imd"]
+    driver_file_extensions: ClassVar[list[str]] = [".imd"]
     driver_category: ClassVar[str] = "metadata_based"
     driver_description: ClassVar[str] = "ImageDisk format driver"
     driver_priority: ClassVar[int] = 50
@@ -183,14 +182,14 @@ class IMDImageDriver(DiskIODriver):
         self.comment: str = ""
         self.imd_version: str = ""
         self.creation_date: Optional[datetime.datetime] = None
-        self.tracks: Dict[Tuple[int, int], IMDTrackInfo] = {}
+        self.tracks: dict[tuple[int, int], IMDTrackInfo] = {}
         self.image_data: bytearray = bytearray()
         self.dirty: bool = False
         self.file_loaded: bool = False
-        self.modified_sector_data: Dict[Tuple[int, int, int], bytes] = {}
+        self.modified_sector_data: dict[tuple[int, int, int], bytes] = {}
         self.last_format_fill_byte: Optional[int] = None
         self.uses_physical_heads: bool = False
-        self._sector_size_cache: Dict[Tuple[int, int, int], int] = {}
+        self._sector_size_cache: dict[tuple[int, int, int], int] = {}
 
         if os.path.exists(self.file_path):
             try:
@@ -278,7 +277,7 @@ class IMDImageDriver(DiskIODriver):
             f"{self.imd_version}: {self.comment}".encode("ascii", errors="ignore")
             + IMD_HEADER_TERMINATOR
         )
-        new_tracks: Dict[Tuple[int, int], IMDTrackInfo] = {}
+        new_tracks: dict[tuple[int, int], IMDTrackInfo] = {}
 
         for cyl in range(self.physical_format.cylinders):
             for head in range(self.physical_format.heads):
@@ -375,7 +374,7 @@ class IMDImageDriver(DiskIODriver):
             self.logger.info("Flush successful")
         except Exception as e:
             self.logger.error(f"Flush failed: {e}")
-            raise IOError(f"Failed to flush IMD: {e}") from e
+            raise OSError(f"Failed to flush IMD: {e}") from e
 
     def format_imd(self, profile: FormatProfile, fill_byte: int = IMD_DEFAULT_FILL_BYTE) -> None:
         """
@@ -470,7 +469,7 @@ class IMDImageDriver(DiskIODriver):
             fill_byte=IMD_DEFAULT_FILL_BYTE,
         )
 
-    def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
+    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
         """
         Validates format compatibility for IMD driver.
 
@@ -566,7 +565,7 @@ class IMDImageDriver(DiskIODriver):
 
         self.physical_format = copy.deepcopy(physical_format)
 
-    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
         """
         Validates whether an IMD file can be opened.
 
@@ -598,7 +597,7 @@ class IMDImageDriver(DiskIODriver):
 
         return True, None
 
-    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+    def validate_state_for_opening(self) -> tuple[bool, Optional[str]]:
         """
         Validates IMD driver state after opening.
 
@@ -640,7 +639,7 @@ class IMDImageDriver(DiskIODriver):
             raise ValueError(f"Data size mismatch: {len(data)} vs {target_size}")
 
         if self.file_loaded and (not track_info or sector not in track_info.sector_data_info):
-            raise IOError(f"Invalid sector C:{cylinder} H:{head} S:{sector}")
+            raise OSError(f"Invalid sector C:{cylinder} H:{head} S:{sector}")
 
         self.modified_sector_data[(cylinder, head, sector)] = bytes(data)
         self.dirty = True
@@ -648,10 +647,10 @@ class IMDImageDriver(DiskIODriver):
 
     def _add_track_format(
         self,
-        track_formats: List[TrackFormat],
+        track_formats: list[TrackFormat],
         start: int,
         end: int,
-        props: Tuple[str, int, int, int, int],
+        props: tuple[str, int, int, int, int],
         max_head_idx: int,
     ) -> None:
         """
@@ -702,7 +701,7 @@ class IMDImageDriver(DiskIODriver):
             self.logger.warning("No tracks to derive format from")
             return
 
-        track_formats: List[TrackFormat] = []
+        track_formats: list[TrackFormat] = []
         current_start_cyl = 0
         prev_props = None
 

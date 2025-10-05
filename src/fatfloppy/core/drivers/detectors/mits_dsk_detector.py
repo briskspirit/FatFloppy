@@ -1,13 +1,12 @@
 import copy
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from ...filesystem_factory import get_filesystem_class_by_type
 from ...format_detection import FormatDetector
 from ...format_profile import FormatProfile
 from ...physical_format import PhysicalFormat
 from ...utils.logging_config import get_logger
-
 
 MINIMUM_VALIDITY_SCORE = 30
 EXCELLENT_MATCH_SCORE = 95
@@ -41,7 +40,7 @@ class MITSDSKDetector(FormatDetector):
 
     detector_for_driver = "MITSDSKDriver"
 
-    def detect(self) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
+    def detect(self) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Detects format by iterating through known profiles with variant testing.
 
@@ -133,7 +132,7 @@ class MITSDSKDetector(FormatDetector):
         logger.warning(f"No match found after checking (best score: {best_score})")
         return None, None, None
 
-    def _group_formats_by_base_geometry(self) -> Dict[Tuple, List[FormatProfile]]:
+    def _group_formats_by_base_geometry(self) -> dict[tuple, list[FormatProfile]]:
         """
         Groups formats by base geometry, ignoring sector translation details.
 
@@ -145,7 +144,7 @@ class MITSDSKDetector(FormatDetector):
         """
         groups = defaultdict(list)
 
-        for name, profile in self.known_formats.items():
+        for _name, profile in self.known_formats.items():
             if not profile.physical_format:
                 continue
 

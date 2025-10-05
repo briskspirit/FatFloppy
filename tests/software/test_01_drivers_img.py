@@ -3,8 +3,8 @@
 import copy
 import shutil
 import sys
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator, Tuple
 from unittest.mock import mock_open, patch
 
 import pytest
@@ -23,7 +23,7 @@ _ALL_FORMATS = FilesystemRegistry.get_all_formats()
 FMT_144 = _ALL_FORMATS["ibm_3.5_1.44m"]
 FMT_720 = _ALL_FORMATS["ibm_3.5_720k"]
 
-DriverSetupFixture = Tuple[IMGImageDriver, Path, int, PhysicalFormat]
+DriverSetupFixture = tuple[IMGImageDriver, Path, int, PhysicalFormat]
 
 
 @pytest.fixture(scope="function")
@@ -206,7 +206,7 @@ def test_flush_io_error(driver_setup: DriverSetupFixture) -> None:
     assert driver.dirty
 
     with patch("builtins.open", mock_open()) as mocked_file:
-        mocked_file.side_effect = IOError("Permission denied")
+        mocked_file.side_effect = OSError("Permission denied")
         with pytest.raises(IOError, match="Flush failed: Permission denied"):
             driver.flush()
 
@@ -219,6 +219,6 @@ def test_init_read_error(tmp_path: Path) -> None:
     test_img_path.touch()
 
     with patch("builtins.open", mock_open()) as mocked_file:
-        mocked_file.side_effect = IOError("Cannot read file")
+        mocked_file.side_effect = OSError("Cannot read file")
         with pytest.raises(IOError, match="Cannot read file"):
             IMGImageDriver(str(test_img_path))

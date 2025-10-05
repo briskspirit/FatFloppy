@@ -12,7 +12,7 @@ Classes:
 """
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Optional
 
 
 @dataclass
@@ -49,7 +49,7 @@ class TrackFormat:
     rate: int
     interleave: Optional[int] = 1
     bytes_per_sector: Optional[int] = None
-    sector_translation_table: Optional[List[int]] = field(default=None)
+    sector_translation_table: Optional[list[int]] = field(default=None)
     id_start: int = 1
     iam_present: bool = True
     gap1_bytes: Optional[int] = None
@@ -121,7 +121,7 @@ class TrackFormat:
                 f"Physical sector ID {physical_id} not found in translation table"
             )
 
-    def _build_translation_table(self) -> List[int]:
+    def _build_translation_table(self) -> list[int]:
         """
         Builds a sector translation table based on interleave.
 
@@ -134,8 +134,8 @@ class TrackFormat:
         interleave = self.interleave if self.interleave > 0 else 1
         start_id = self.id_start
 
-        order: List[int] = []
-        used: List[bool] = [False] * spt
+        order: list[int] = []
+        used: list[bool] = [False] * spt
         idx = 0
 
         for i in range(spt):
@@ -173,7 +173,7 @@ class PhysicalFormat:
     rpm: int
     heads_inverted: bool
     bytes_per_sector: int
-    track_formats: List[TrackFormat]
+    track_formats: list[TrackFormat]
     image_in_sector_id_order: bool = True
 
     def __post_init__(self) -> None:
@@ -402,7 +402,7 @@ class PhysicalFormat:
                 return tf
         raise ValueError(f"No TrackFormat for cylinder {cylinder}, head {head}")
 
-    def lba_to_chs(self, lba: int) -> Tuple[int, int, int]:
+    def lba_to_chs(self, lba: int) -> tuple[int, int, int]:
         """
         Converts a Logical Block Address (LBA) to CHS coordinates.
 

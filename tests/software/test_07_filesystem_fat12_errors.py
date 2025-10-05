@@ -8,8 +8,9 @@ storage, allowing for precise control over the filesystem's state.
 import datetime
 import struct
 import sys
+from collections.abc import Generator
 from pathlib import Path
-from typing import Any, Dict, Generator, Tuple
+from typing import Any
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
@@ -67,7 +68,7 @@ ATTR_LONG_NAME = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID
 @pytest.fixture(scope="function")
 def mock_fs_setup(
     request: pytest.FixtureRequest,
-) -> Generator[Tuple[FATFilesystem, Dict[str, Any]], None, None]:
+) -> Generator[tuple[FATFilesystem, dict[str, Any]], None, None]:
     """
     Sets up a FATFilesystem with a fully mocked Disk backend.
 
@@ -121,9 +122,9 @@ def mock_fs_setup(
     fat_data[0:3] = bytes([0xF9, 0xFF, 0xFF])
 
     root_dir_data = bytearray(ROOT_DIR_SIZE_BYTES)
-    written_lba_data: Dict[int, bytes] = {}
+    written_lba_data: dict[int, bytes] = {}
 
-    def mock_lba_to_chs(lba: int) -> Tuple[int, int, int]:
+    def mock_lba_to_chs(lba: int) -> tuple[int, int, int]:
         """Mocks the LBA to CHS conversion based on the fixture's geometry."""
         geom = mock_disk_geometry
         spt = geom.get_sectors_per_track(0, 0)
@@ -231,7 +232,7 @@ def mock_fs_setup(
 
 
 def test_write_file_invalid_name(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that write_file raises ValueError for various invalid 8.3 filenames."""
     fs, _ = mock_fs_setup
@@ -250,7 +251,7 @@ def test_write_file_invalid_name(
 
 
 def test_create_directory_invalid_name(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that create_directory raises ValueError for invalid 8.3 directory names."""
     fs, _ = mock_fs_setup
@@ -269,7 +270,7 @@ def test_create_directory_invalid_name(
 
 
 def test_delete_non_empty_directory(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that deleting a directory simulated to be non-empty raises an OSError."""
     fs, mock_state = mock_fs_setup
@@ -312,7 +313,7 @@ def test_delete_non_empty_directory(
 
 
 def test_write_no_free_clusters(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that writing a file when no free clusters are available raises an IOError."""
     fs, _ = mock_fs_setup
@@ -323,7 +324,7 @@ def test_write_no_free_clusters(
 
 
 def test_write_no_free_directory_entry_root(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that writing a file to a full root directory raises an IOError."""
     fs, _ = mock_fs_setup
@@ -342,7 +343,7 @@ def test_write_no_free_directory_entry_root(
 
 
 def test_write_no_free_directory_entry_subdir(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that writing a file to a full subdirectory raises an IOError."""
     fs, mock_state = mock_fs_setup
@@ -373,7 +374,7 @@ def test_write_no_free_directory_entry_subdir(
 
 
 def test_create_directory_no_free_clusters(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that creating a directory when no free clusters are available raises IOError."""
     fs, _ = mock_fs_setup
@@ -384,7 +385,7 @@ def test_create_directory_no_free_clusters(
 
 
 def test_create_directory_no_free_entry(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that creating a directory in a full parent directory raises an IOError."""
     fs, _ = mock_fs_setup
@@ -403,7 +404,7 @@ def test_create_directory_no_free_entry(
 
 
 def test_fat12_odd_cluster_read_write(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests the logic for reading/writing an entry for an odd cluster number in the FAT."""
     fs, _ = mock_fs_setup
@@ -426,7 +427,7 @@ def test_fat12_odd_cluster_read_write(
 
 
 def test_fat12_even_cluster_read_write(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests the logic for reading/writing an entry for an even cluster number in the FAT."""
     fs, _ = mock_fs_setup
@@ -449,7 +450,7 @@ def test_fat12_even_cluster_read_write(
 
 
 def test_find_free_cluster(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that _find_free_cluster correctly identifies the next available cluster."""
     fs, _ = mock_fs_setup
@@ -466,7 +467,7 @@ def test_find_free_cluster(
 
 
 def test_find_free_cluster_none_free(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that _find_free_cluster returns None when the disk is full."""
     fs, _ = mock_fs_setup
@@ -480,7 +481,7 @@ def test_find_free_cluster_none_free(
 
 
 def test_multi_sector_read_write_edge(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests reading and writing a block of data that crosses a sector boundary."""
     fs, mock_state = mock_fs_setup
@@ -514,7 +515,7 @@ def test_multi_sector_read_write_edge(
 
 
 def test_parse_corrupt_entry(
-    mock_fs_setup: Tuple[FATFilesystem, Dict[str, Any]]
+    mock_fs_setup: tuple[FATFilesystem, dict[str, Any]]
 ) -> None:
     """Tests that the directory entry parser handles various corrupt or special entries."""
     fs, _ = mock_fs_setup

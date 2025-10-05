@@ -1,9 +1,11 @@
 from dataclasses import replace
-from typing import Dict
 
-from ..fat12_fs import FATVolumeInfo
 from ...format_profile import FormatProfile
 from ...physical_formats_library import (
+    create_8inch_dsdd_base,
+    create_8inch_dssd_base,
+    create_8inch_ssdd_base,
+    create_8inch_sssd_base,
     create_35_dsdd_base,
     create_35_dsed_base,
     create_35_dshd_base,
@@ -11,12 +13,8 @@ from ...physical_formats_library import (
     create_525_dsdd_base,
     create_525_dshd_base,
     create_525_ssdd_base,
-    create_8inch_dsdd_base,
-    create_8inch_dssd_base,
-    create_8inch_ssdd_base,
-    create_8inch_sssd_base,
 )
-
+from ..fat12_fs import FATVolumeInfo
 
 MEDIA_DESCRIPTOR_HD_35 = 0xF0
 MEDIA_DESCRIPTOR_DD_35 = 0xF9
@@ -44,7 +42,7 @@ CYLINDERS_8INCH = 77
 INTERLEAVE_2 = 2
 
 
-FAT12_FORMATS: Dict[str, FormatProfile] = {}
+FAT12_FORMATS: dict[str, FormatProfile] = {}
 
 pf_144 = create_35_dshd_base(sectors_per_track=18)
 FAT12_FORMATS["ibm_3.5_1.44m"] = FormatProfile(

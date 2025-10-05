@@ -9,7 +9,6 @@ of FAT12 boot sector information via the FATVolumeInfo data class.
 import struct
 import sys
 from pathlib import Path
-from typing import List, Tuple
 
 import pytest
 
@@ -18,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 from fatfloppy.core.controller import DiskController
 from fatfloppy.core.disk import Disk
 from fatfloppy.core.drivers import IMGImageDriver
-from fatfloppy.core.filesystems.fat12_fs import FATVolumeInfo
 from fatfloppy.core.filesystem_registry import FilesystemRegistry
+from fatfloppy.core.filesystems.fat12_fs import FATVolumeInfo
 from fatfloppy.core.format_profile import FormatProfile
 from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
 
@@ -38,7 +37,7 @@ def disk_controller() -> DiskController:
 
 def test_list_known_formats(disk_controller: DiskController) -> None:
     """Test that the controller can list all known floppy formats."""
-    formats: List[Tuple[str, str]] = disk_controller.list_formats()
+    formats: list[tuple[str, str]] = disk_controller.list_formats()
     assert isinstance(formats, list)
     assert len(formats) > 0
     assert isinstance(formats[0], tuple)

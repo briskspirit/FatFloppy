@@ -1,14 +1,12 @@
 from dataclasses import replace
-from typing import Dict
 
-from ..hdos_fs import HDOSLabelRecord
 from ...format_profile import FormatProfile
 from ...physical_formats_library import (
+    create_8inch_dsdd_base,
     create_525_dssd_base,
     create_525_sssd_base,
-    create_8inch_dsdd_base,
 )
-
+from ..hdos_fs import HDOSLabelRecord
 
 H17_SECTORS_PER_TRACK = 10
 H17_BYTES_PER_SECTOR = 256
@@ -39,7 +37,7 @@ CYLINDERS_525 = 40
 CYLINDERS_8INCH = 77
 
 
-HDOS_FORMATS: Dict[str, FormatProfile] = {}
+HDOS_FORMATS: dict[str, FormatProfile] = {}
 
 pf_h17 = create_525_sssd_base(
     sectors_per_track=H17_SECTORS_PER_TRACK, bytes_per_sector=H17_BYTES_PER_SECTOR

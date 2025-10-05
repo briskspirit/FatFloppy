@@ -1,12 +1,11 @@
 import datetime
 import struct
-from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, ClassVar, Optional
 
 from ..physical_format import PhysicalFormat, TrackFormat
 from ..utils.logging_config import get_logger
 from .base_driver import DiskIODriver
-
 
 H17_MAGIC = b"H17D"
 H17_VERSION = b"2.0.0"
@@ -178,7 +177,7 @@ class H17ImageDriver(DiskIODriver):
     """
 
     driver_type: ClassVar[str] = "H17"
-    driver_file_extensions: ClassVar[List[str]] = [".h17", ".h17disk"]
+    driver_file_extensions: ClassVar[list[str]] = [".h17", ".h17disk"]
     driver_category: ClassVar[str] = "metadata_based"
     driver_priority: ClassVar[int] = 50
 
@@ -198,13 +197,13 @@ class H17ImageDriver(DiskIODriver):
         self.disk_format: Optional[H17DiskFormat] = None
         self.parameters: Optional[H17Parameters] = None
         self.metadata: H17Metadata = H17Metadata()
-        self.sector_metadata: Dict[Tuple[int, int, int], H17SectorMetadata] = {}
+        self.sector_metadata: dict[tuple[int, int, int], H17SectorMetadata] = {}
 
         self.file_data: bytearray = bytearray()
         self.h8d_block_offset: int = 0
 
-        self.sector_cache: Dict[Tuple[int, int, int], bytes] = {}
-        self.modified_sectors: Dict[Tuple[int, int, int], bytes] = {}
+        self.sector_cache: dict[tuple[int, int, int], bytes] = {}
+        self.modified_sectors: dict[tuple[int, int, int], bytes] = {}
 
         if self._file_exists():
             try:
@@ -284,10 +283,7 @@ class H17ImageDriver(DiskIODriver):
 
         for cylinder in range(self.disk_format.tracks):
             for head in range(self.disk_format.sides):
-                if scheme == "cpm":
-                    volume = 0
-                else:
-                    volume = 0 if cylinder == 0 else hdos_volume
+                volume = 0 if scheme == "cpm" else 0 if cylinder == 0 else hdos_volume
 
                 self.set_track_volumes(cylinder, head, volume)
 
@@ -333,7 +329,7 @@ class H17ImageDriver(DiskIODriver):
 
         except Exception as e:
             self.logger.error(f"Failed to flush H17 image: {e}")
-            raise IOError(f"Flush failed: {e}") from e
+            raise OSError(f"Flush failed: {e}") from e
 
     def format_h17(
         self,
@@ -447,7 +443,7 @@ class H17ImageDriver(DiskIODriver):
         meta = self.sector_metadata.get((cylinder, head, physical_sector))
         return meta.volume if meta else None
 
-    def get_track_volumes(self, cylinder: int, head: int) -> List[int]:
+    def get_track_volumes(self, cylinder: int, head: int) -> list[int]:
         """
         Gets all volume numbers for sectors on a track.
 
@@ -501,7 +497,7 @@ class H17ImageDriver(DiskIODriver):
             comment="Created by FatFloppy",
         )
 
-    def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
+    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
         """
         Validates format compatibility for H17 driver.
 
@@ -583,7 +579,7 @@ class H17ImageDriver(DiskIODriver):
 
         except Exception as e:
             self.logger.error(f"Error reading sector C:{cylinder} H:{head} S:{sector}: {e}")
-            raise IOError(f"Failed to read sector C:{cylinder} H:{head} S:{sector}") from e
+            raise OSError(f"Failed to read sector C:{cylinder} H:{head} S:{sector}") from e
 
     def set_disk_comment(self, comment: str) -> None:
         """
@@ -673,7 +669,7 @@ class H17ImageDriver(DiskIODriver):
         self.dirty = True
         self.logger.debug(f"Set volume for track C:{cylinder} H:{head} to {volume}")
 
-    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
         """
         Validates whether an H17 file can be opened.
 
@@ -701,7 +697,7 @@ class H17ImageDriver(DiskIODriver):
 
         return True, None
 
-    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+    def validate_state_for_opening(self) -> tuple[bool, Optional[str]]:
         """
         Validates H17 driver state after opening.
 
@@ -739,7 +735,6 @@ class H17ImageDriver(DiskIODriver):
 
         physical_sector = sector - 1
         sector_key = (cylinder, head, sector)
-        physical_key = (cylinder, head, physical_sector)
 
         self.modified_sectors[sector_key] = bytes(data)
         self.dirty = True
@@ -817,10 +812,7 @@ class H17ImageDriver(DiskIODriver):
 
         for cylinder in range(tracks):
             for head in range(sides):
-                if scheme == "cpm":
-                    volume = 0
-                else:
-                    volume = 0 if cylinder == 0 else hdos_volume
+                volume = 0 if scheme == "cpm" else 0 if cylinder == 0 else hdos_volume
 
                 for sector in range(H17_SECTORS_PER_TRACK):
                     meta = H17SectorMetadata(

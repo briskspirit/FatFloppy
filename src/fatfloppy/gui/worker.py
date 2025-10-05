@@ -4,7 +4,7 @@ Worker thread for long-running disk operations.
 """
 
 import inspect
-from typing import Any, Callable
+from typing import Callable
 
 from PyQt6.QtCore import QThread, pyqtSignal
 

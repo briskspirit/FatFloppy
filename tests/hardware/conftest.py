@@ -13,7 +13,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List
 
 import pytest
 from _pytest.config import Config
@@ -52,8 +51,8 @@ def _check_prerequisites() -> None:
             returncode=1,
         )
 
-    missing_files: List[str] = []
-    image_paths: List[str] = [
+    missing_files: list[str] = []
+    image_paths: list[str] = [
         EMPTY_144M_IMG,
         POPULATED_144M_IMG,
         EMPTY_360K_IMG,
@@ -69,8 +68,8 @@ def _check_prerequisites() -> None:
             returncode=1,
         )
 
-    missing_resources: List[str] = []
-    resource_paths: List[str] = [TEST_FILE_TXT_PATH, PATTERN_FILE_BIN_PATH]
+    missing_resources: list[str] = []
+    resource_paths: list[str] = [TEST_FILE_TXT_PATH, PATTERN_FILE_BIN_PATH]
     for res_path in resource_paths:
         if not os.path.isfile(res_path):
             missing_resources.append(res_path)
@@ -114,7 +113,7 @@ def _run_gw_write(
             "Enter..."
         )
 
-    cmd: List[str] = [
+    cmd: list[str] = [
         GW_EXECUTABLE,
         "write",
         f"--drive={drive}",
@@ -189,7 +188,7 @@ def pytest_configure(config: Config) -> None:
     config.addinivalue_line("markers", "hardware: mark test as requiring hardware")
 
 
-def pytest_collection_modifyitems(config: Config, items: List[Item]) -> None:
+def pytest_collection_modifyitems(config: Config, items: list[Item]) -> None:
     """
     Skips tests marked with 'hardware' if TEST_HW is not set to 'true'.
 
@@ -207,7 +206,7 @@ def pytest_collection_modifyitems(config: Config, items: List[Item]) -> None:
 
 
 @pytest.fixture(scope="session")
-def expected_file_content() -> Dict[str, bytes]:
+def expected_file_content() -> dict[str, bytes]:
     """
     A session-scoped fixture that loads the expected content of test files.
 
@@ -219,7 +218,7 @@ def expected_file_content() -> Dict[str, bytes]:
         and values are the file content as bytes. Returns an empty dictionary
         if files are not found.
     """
-    content: Dict[str, bytes] = {}
+    content: dict[str, bytes] = {}
     try:
         with open(TEST_FILE_TXT_PATH, "rb") as f:
             content["test_txt"] = f.read()

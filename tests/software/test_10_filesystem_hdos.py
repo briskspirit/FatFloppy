@@ -8,8 +8,8 @@ actions on HDOS formatted disk images.
 import hashlib
 import shutil
 import sys
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import pytest
 

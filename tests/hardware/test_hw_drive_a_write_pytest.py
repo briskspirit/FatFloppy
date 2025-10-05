@@ -9,7 +9,7 @@ WARNING: These tests are DESTRUCTIVE and will modify the contents of the
 """
 
 import os
-from typing import Generator
+from collections.abc import Generator
 
 import pytest
 from _pytest.config import Config

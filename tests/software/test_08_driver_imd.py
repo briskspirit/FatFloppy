@@ -8,9 +8,10 @@ initialization, parsing, reading, writing, formatting, and flushing operations.
 import shutil
 import struct
 import sys
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
-from unittest.mock import MagicMock, patch
+from typing import Optional
+from unittest.mock import patch
 
 import pytest
 
@@ -47,11 +48,11 @@ def build_test_imd_data(
     sectors_per_track: int = 3,
     sector_size_code: int = 0,
     compressed_fill: int = 0xE5,
-    sector_map: Optional[List[int]] = None,
+    sector_map: Optional[list[int]] = None,
     has_cyl_map: bool = False,
     has_head_map: bool = False,
     has_size_map: bool = False,
-    size_map_list: Optional[List[int]] = None,
+    size_map_list: Optional[list[int]] = None,
 ) -> bytearray:
     """
     Creates a simple IMD bytearray for basic testing purposes.
@@ -145,7 +146,7 @@ def build_test_imd_data(
 @pytest.fixture(scope="function")
 def real_imd_driver(
     tmp_path: Path,
-) -> Iterator[Tuple[IMDImageDriver, Path, FormatProfile]]:
+) -> Iterator[tuple[IMDImageDriver, Path, FormatProfile]]:
     """
     Provides a driver instance initialized with a real 720k IMD image.
 
@@ -168,7 +169,7 @@ def real_imd_driver(
 
 
 @pytest.fixture(scope="function")
-def simple_imd_driver(tmp_path: Path) -> Iterator[Tuple[IMDImageDriver, Path]]:
+def simple_imd_driver(tmp_path: Path) -> Iterator[tuple[IMDImageDriver, Path]]:
     """
     Provides a driver instance initialized with a simple, generated IMD file.
 
@@ -192,7 +193,7 @@ def simple_imd_driver(tmp_path: Path) -> Iterator[Tuple[IMDImageDriver, Path]]:
 @pytest.fixture(scope="function")
 def formatted_imd_driver(
     tmp_path: Path,
-) -> Iterator[Tuple[IMDImageDriver, Path, FormatProfile]]:
+) -> Iterator[tuple[IMDImageDriver, Path, FormatProfile]]:
     """
     Provides a driver that was created by in-memory formatting and flushing.
 
@@ -230,7 +231,7 @@ def formatted_imd_driver(
         pytest.fail(f"Failed to reload driver from flushed file in fixture: {e}")
 
 
-def test_init_parse_simple(simple_imd_driver: Tuple[IMDImageDriver, Path]) -> None:
+def test_init_parse_simple(simple_imd_driver: tuple[IMDImageDriver, Path]) -> None:
     """Tests basic parsing of a simple, well-formed IMD image."""
     driver, path = simple_imd_driver
     assert path.exists()
@@ -282,7 +283,7 @@ def test_init_corrupt_track_header_incomplete(tmp_path: Path) -> None:
         IMDImageDriver(str(test_imd_path))
 
 
-def test_read_sector_normal(simple_imd_driver: Tuple[IMDImageDriver, Path]) -> None:
+def test_read_sector_normal(simple_imd_driver: tuple[IMDImageDriver, Path]) -> None:
     """Tests reading a 'Normal' (uncompressed) data sector."""
     driver, _ = simple_imd_driver
     data = driver.read_sector(0, 0, 1)
@@ -290,7 +291,7 @@ def test_read_sector_normal(simple_imd_driver: Tuple[IMDImageDriver, Path]) -> N
     assert data == bytes([1] * SIMPLE_BPS)
 
 
-def test_read_sector_compressed(simple_imd_driver: Tuple[IMDImageDriver, Path]) -> None:
+def test_read_sector_compressed(simple_imd_driver: tuple[IMDImageDriver, Path]) -> None:
     """Tests reading a 'Compressed' data sector."""
     driver, _ = simple_imd_driver
     data = driver.read_sector(0, 0, 2)
@@ -299,7 +300,7 @@ def test_read_sector_compressed(simple_imd_driver: Tuple[IMDImageDriver, Path]) 
 
 
 def test_read_sector_out_of_bounds(
-    simple_imd_driver: Tuple[IMDImageDriver, Path]
+    simple_imd_driver: tuple[IMDImageDriver, Path]
 ) -> None:
     """Tests that reading a non-existent sector returns a zeroed buffer."""
     driver, _ = simple_imd_driver
@@ -311,7 +312,7 @@ def test_read_sector_out_of_bounds(
 
 
 def test_set_physical_format_warning(
-    simple_imd_driver: Tuple[IMDImageDriver, Path]
+    simple_imd_driver: tuple[IMDImageDriver, Path]
 ) -> None:
     """Tests that setting an external physical format logs a warning."""
     driver, _ = simple_imd_driver
@@ -369,7 +370,7 @@ def test_format_imd(tmp_path: Path) -> None:
 
 
 def test_write_normal_flush_rebuild(
-    formatted_imd_driver: Tuple[IMDImageDriver, Path, FormatProfile]
+    formatted_imd_driver: tuple[IMDImageDriver, Path, FormatProfile]
 ) -> None:
     """Tests writing uncompressible data, flushing, and verifying persistence."""
     driver, path, fmt = formatted_imd_driver
@@ -400,7 +401,7 @@ def test_write_normal_flush_rebuild(
 
 
 def test_write_compressed_flush_rebuild(
-    formatted_imd_driver: Tuple[IMDImageDriver, Path, FormatProfile]
+    formatted_imd_driver: tuple[IMDImageDriver, Path, FormatProfile]
 ) -> None:
     """Tests writing compressible data, flushing, and verifying persistence."""
     driver, path, fmt = formatted_imd_driver
@@ -431,7 +432,7 @@ def test_write_compressed_flush_rebuild(
 
 
 def test_write_changes_type_flush_rebuild(
-    formatted_imd_driver: Tuple[IMDImageDriver, Path, FormatProfile]
+    formatted_imd_driver: tuple[IMDImageDriver, Path, FormatProfile]
 ) -> None:
     """Tests that writing can change a sector's data type (e.g., normal to compressed)."""
     driver, path, fmt = formatted_imd_driver
@@ -465,7 +466,7 @@ def test_write_changes_type_flush_rebuild(
 
 
 def test_flush_no_changes(
-    formatted_imd_driver: Tuple[IMDImageDriver, Path, FormatProfile]
+    formatted_imd_driver: tuple[IMDImageDriver, Path, FormatProfile]
 ) -> None:
     """Tests that flushing a non-dirty driver does not modify the file."""
     driver, path, _ = formatted_imd_driver
@@ -477,7 +478,7 @@ def test_flush_no_changes(
 
 
 def test_real_imd_parse_basic(
-    real_imd_driver: Tuple[IMDImageDriver, Path, FormatProfile]
+    real_imd_driver: tuple[IMDImageDriver, Path, FormatProfile]
 ) -> None:
     """Tests basic parsing and physical format derivation of a real 720k IMD file."""
     driver, path, fmt_720 = real_imd_driver
@@ -503,7 +504,7 @@ def test_real_imd_parse_basic(
 
 
 def test_real_imd_read_boot_sector(
-    real_imd_driver: Tuple[IMDImageDriver, Path, FormatProfile]
+    real_imd_driver: tuple[IMDImageDriver, Path, FormatProfile]
 ) -> None:
     """Tests reading the boot sector from a real 720k IMD file."""
     driver, path, fmt_720 = real_imd_driver
@@ -514,7 +515,7 @@ def test_real_imd_read_boot_sector(
 
 
 def test_real_imd_read_known_sector(
-    real_imd_driver: Tuple[IMDImageDriver, Path, FormatProfile]
+    real_imd_driver: tuple[IMDImageDriver, Path, FormatProfile]
 ) -> None:
     """Tests reading an arbitrary, known-to-exist sector from a real IMD file."""
     driver, path, fmt_720 = real_imd_driver
@@ -527,7 +528,7 @@ def test_real_imd_read_known_sector(
 
 
 def test_real_imd_read_last_sector(
-    real_imd_driver: Tuple[IMDImageDriver, Path, FormatProfile]
+    real_imd_driver: tuple[IMDImageDriver, Path, FormatProfile]
 ) -> None:
     """Tests reading the very last logical sector from a real IMD file."""
     driver, path, fmt_720 = real_imd_driver

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Optional
 
 from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
@@ -14,7 +14,7 @@ class DiskIODriver(ABC):
     """
 
     driver_type: ClassVar[str] = ""
-    driver_file_extensions: ClassVar[List[str]] = []
+    driver_file_extensions: ClassVar[list[str]] = []
     driver_category: ClassVar[str] = ""
     driver_priority: ClassVar[int] = 50
     driver_description: ClassVar[str] = ""
@@ -133,7 +133,7 @@ class DiskIODriver(ABC):
                 f"{self.__class__.__name__} does not support creating new images"
             )
 
-    def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
+    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
         """
         Prepares the driver for applying a user-specified format.
 
@@ -183,7 +183,7 @@ class DiskIODriver(ABC):
         """
         raise NotImplementedError
 
-    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
         """
         Validates whether this driver can open the specified source.
 
@@ -205,7 +205,7 @@ class DiskIODriver(ABC):
 
         return True, None
 
-    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+    def validate_state_for_opening(self) -> tuple[bool, Optional[str]]:
         """
         Validates that the driver is in a valid state after opening.
 

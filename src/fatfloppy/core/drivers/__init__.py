@@ -6,8 +6,8 @@ Core Disk I/O Drivers Package
 
 from .base_driver import DiskIODriver
 from .h17 import H17ImageDriver
-from .img import IMGImageDriver
 from .imd import IMDImageDriver
+from .img import IMGImageDriver
 from .mits_dsk import MITSDSKDriver
 
 try:

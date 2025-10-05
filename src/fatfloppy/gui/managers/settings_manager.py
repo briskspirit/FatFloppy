@@ -7,7 +7,6 @@ import logging
 import os
 import subprocess
 import sys
-from typing import List
 
 from PyQt6.QtCore import QObject, QSettings, pyqtSignal
 from PyQt6.QtGui import QAction
@@ -61,7 +60,7 @@ class SettingsManager(QObject):
         self.recent_files_changed.emit()
         self.logger.info("Cleared recent files list")
 
-    def load_recent_files(self) -> List[str]:
+    def load_recent_files(self) -> list[str]:
         """
         Loads the list of recent files from settings.
 
@@ -240,7 +239,7 @@ class SettingsManager(QObject):
             "Current layout saved and will be restored on next startup."
         )
 
-    def save_recent_files(self, recent_files: List[str]) -> None:
+    def save_recent_files(self, recent_files: list[str]) -> None:
         """
         Saves the list of recent files to settings.
 

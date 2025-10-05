@@ -7,16 +7,16 @@ which acts as the main public API for interacting with disk images.
 
 import shutil
 import sys
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator, Tuple
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from fatfloppy.core.controller import DiskController
-from fatfloppy.core.filesystems.fat12_fs import FATFilesystem
 from fatfloppy.core.filesystem_registry import FilesystemRegistry
+from fatfloppy.core.filesystems.fat12_fs import FATFilesystem
 
 RESOURCE_DIR = Path(__file__).parent.parent / "resources"
 POPULATED_IMG_SRC = RESOURCE_DIR / "populated_read_test_144m.img"
@@ -26,7 +26,7 @@ TEST_TXT_CONTENT_SRC = RESOURCE_DIR / "TEST.TXT"
 _ALL_FORMATS = FilesystemRegistry.get_all_formats()
 FMT_144 = _ALL_FORMATS["ibm_3.5_1.44m"]
 
-EmptyControllerFixture = Tuple[DiskController, Path]
+EmptyControllerFixture = tuple[DiskController, Path]
 
 
 @pytest.fixture(scope="function")

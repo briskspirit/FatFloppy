@@ -5,10 +5,16 @@ Custom QTreeWidget with drag-and-drop functionality for importing files.
 
 import os
 import tempfile
-from typing import List, Optional
+from typing import Optional
 
 from PyQt6.QtCore import QMimeData, QPoint, Qt, QUrl
-from PyQt6.QtGui import QAction, QContextMenuEvent, QDrag, QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PyQt6.QtGui import (
+    QAction,
+    QDrag,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+)
 from PyQt6.QtWidgets import QMenu, QMessageBox, QTreeWidget, QWidget
 
 DRAG_TEMP_DIR_PREFIX = "fatfloppy_drag_"
@@ -45,7 +51,7 @@ class DragDropTreeWidget(QTreeWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
-    def process_dropped_files(self, file_paths: List[str]) -> None:
+    def process_dropped_files(self, file_paths: list[str]) -> None:
         """
         Processes a list of dropped file paths by calling parent's import method.
 

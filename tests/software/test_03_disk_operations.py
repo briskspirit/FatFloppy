@@ -8,8 +8,8 @@ pattern.
 """
 
 import sys
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator, Tuple
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -27,7 +27,7 @@ BYTES_PER_SECTOR = 128
 
 
 @pytest.fixture(scope="function")
-def disk_setup(tmp_path: Path) -> Generator[Tuple[Disk, PhysicalFormat], None, None]:
+def disk_setup(tmp_path: Path) -> Generator[tuple[Disk, PhysicalFormat], None, None]:
     """
     Sets up an in-memory disk with a defined geometry and test data.
 
@@ -84,7 +84,7 @@ def disk_setup(tmp_path: Path) -> Generator[Tuple[Disk, PhysicalFormat], None, N
     yield disk, phys_fmt
 
 
-def test_read_sectors_single_track(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
+def test_read_sectors_single_track(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """Tests reading multiple sectors that are all on the same track."""
     disk, phys_fmt = disk_setup
     c, h, start_s, num_s = 0, 1, 1, 2
@@ -99,7 +99,7 @@ def test_read_sectors_single_track(disk_setup: Tuple[Disk, PhysicalFormat]) -> N
     assert read_data == expected_data
 
 
-def test_read_sectors_span_track(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
+def test_read_sectors_span_track(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """Tests reading multiple sectors that span across a head/track boundary."""
     disk, phys_fmt = disk_setup
     c, h, start_s, num_s = 0, 0, 2, 3
@@ -116,7 +116,7 @@ def test_read_sectors_span_track(disk_setup: Tuple[Disk, PhysicalFormat]) -> Non
     assert read_data == expected_data
 
 
-def test_read_sectors_span_cylinder(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
+def test_read_sectors_span_cylinder(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """Tests reading multiple sectors that span across a cylinder boundary."""
     disk, phys_fmt = disk_setup
     c, h, start_s, num_s = 0, 1, 3, 2
@@ -131,7 +131,7 @@ def test_read_sectors_span_cylinder(disk_setup: Tuple[Disk, PhysicalFormat]) -> 
     assert read_data == expected_data
 
 
-def test_write_sectors_single_track(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
+def test_write_sectors_single_track(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """Tests writing multiple sectors that are all on the same track."""
     disk, phys_fmt = disk_setup
     c, h, start_s = 1, 0, 1
@@ -150,7 +150,7 @@ def test_write_sectors_single_track(disk_setup: Tuple[Disk, PhysicalFormat]) -> 
 
 
 def test_write_sectors_span_track_cylinder(
-    disk_setup: Tuple[Disk, PhysicalFormat]
+    disk_setup: tuple[Disk, PhysicalFormat]
 ) -> None:
     """Tests writing multiple sectors spanning track and cylinder boundaries."""
     disk, phys_fmt = disk_setup
@@ -174,7 +174,7 @@ def test_write_sectors_span_track_cylinder(
     assert disk.write_sector.call_count == 3
 
 
-def test_write_sectors_padding(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
+def test_write_sectors_padding(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """
     Tests that writing data smaller than a full number of sectors correctly
     pads the final sector with zeros.
@@ -199,7 +199,7 @@ def test_write_sectors_padding(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
     assert disk.write_sector.call_count == 2
 
 
-def test_error_no_geometry_read(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
+def test_error_no_geometry_read(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """
     Tests that read operations fail with a ValueError if disk geometry is not set.
     """
@@ -213,7 +213,7 @@ def test_error_no_geometry_read(disk_setup: Tuple[Disk, PhysicalFormat]) -> None
         disk_no_geom.read_sectors(0, 0, 1, 1)
 
 
-def test_error_no_geometry_write(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
+def test_error_no_geometry_write(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """
     Tests that write operations fail with a ValueError if disk geometry is not set.
     """
@@ -229,7 +229,7 @@ def test_error_no_geometry_write(disk_setup: Tuple[Disk, PhysicalFormat]) -> Non
         disk_no_geom.write_sectors(0, 0, 1, data)
 
 
-def test_error_invalid_address_read(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
+def test_error_invalid_address_read(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """
     Tests that read operations fail with ValueError for out-of-bounds CHS addresses.
     """
@@ -249,7 +249,7 @@ def test_error_invalid_address_read(disk_setup: Tuple[Disk, PhysicalFormat]) -> 
         disk.read_sector(0, 0, max_spt + 1)
 
 
-def test_error_invalid_address_write(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
+def test_error_invalid_address_write(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """
     Tests that write operations fail with ValueError for out-of-bounds CHS addresses.
     """
@@ -270,7 +270,7 @@ def test_error_invalid_address_write(disk_setup: Tuple[Disk, PhysicalFormat]) ->
         disk.write_sector(0, 0, max_spt + 1, data)
 
 
-def test_error_invalid_write_size(disk_setup: Tuple[Disk, PhysicalFormat]) -> None:
+def test_error_invalid_write_size(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """
     Tests that write_sector fails if the data size does not match the sector size.
     """

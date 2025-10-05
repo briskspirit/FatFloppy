@@ -1,7 +1,8 @@
 # src/fatfloppy/gui/disk_map.py
+import contextlib
 import logging
 import math
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import QPointF, Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QResizeEvent
@@ -104,7 +105,7 @@ class DiskMapView:
         total_space: int,
         app_font: QFont,
         text_color: QColor,
-        selected_file_units: Optional[List[int]] = None,
+        selected_file_units: Optional[list[int]] = None,
         selected_file_path: Optional[str] = None
     ) -> None:
         """
@@ -159,7 +160,7 @@ class DiskMapView:
         theta_start: float,
         theta_end: float,
         num_points: int
-    ) -> List[QPointF]:
+    ) -> list[QPointF]:
         """
         Generates a list of points along an arc.
 
@@ -188,7 +189,7 @@ class DiskMapView:
         cylinder: int,
         head: int,
         physical_sector_id: int,
-        layout_info: Optional[Dict[str, Any]]
+        layout_info: Optional[dict[str, Any]]
     ) -> str:
         """
         Creates a tooltip string for a sector showing its location and purpose.
@@ -250,7 +251,7 @@ class DiskMapView:
 
     def _draw_legend(
         self,
-        layout_info: Dict[str, Any],
+        layout_info: dict[str, Any],
         font: QFont,
         color: QColor
     ) -> None:
@@ -373,7 +374,7 @@ class DiskMapView:
         self,
         geometry: Any,
         current_head: int,
-        layout_info: Dict[str, Any]
+        layout_info: dict[str, Any]
     ) -> None:
         """
         Draws the cylinders and sectors of the disk in logical order.
@@ -392,10 +393,8 @@ class DiskMapView:
         starting_lba = 0
         for c in range(num_cylinders):
             for h in range(current_head):
-                try:
+                with contextlib.suppress(ValueError):
                     starting_lba += geometry.get_sectors_per_track(c, h)
-                except ValueError:
-                    pass
 
         current_lba = starting_lba
 
@@ -476,7 +475,7 @@ class DiskMapView:
         x0: float,
         y0: float,
         geometry: Any,
-        layout_info: Dict[str, Any]
+        layout_info: dict[str, Any]
     ) -> None:
         """
         Draws a single sector polygon with color and tooltip.
@@ -590,7 +589,7 @@ class DiskMapView:
         except AttributeError:
             return None
 
-    def _get_layout_info(self, filesystem: Optional[Any]) -> Dict[str, Any]:
+    def _get_layout_info(self, filesystem: Optional[Any]) -> dict[str, Any]:
         """
         Retrieves disk layout information from the filesystem object.
 
@@ -613,7 +612,7 @@ class DiskMapView:
     def _get_sector_color(
         self,
         lba: int,
-        layout_info: Optional[Dict[str, Any]]
+        layout_info: Optional[dict[str, Any]]
     ) -> str:
         """
         Determines the color hex string for a sector based on its type and LBA.
@@ -628,7 +627,7 @@ class DiskMapView:
         if not layout_info:
             return DEFAULT_COLOR
 
-        type_color_map: Dict[str, str] = layout_info.get('type_color_map', {})
+        type_color_map: dict[str, str] = layout_info.get('type_color_map', {})
 
         try:
             if (hasattr(self, '_selected_units') and self._selected_units and

@@ -1,11 +1,10 @@
 import copy
 import os
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Optional
 
 from ..physical_format import PhysicalFormat, TrackFormat
 from ..utils.logging_config import get_logger
 from .base_driver import DiskIODriver
-
 
 MITS_TRACKS = 77
 MITS_SECTORS_PER_TRACK = 32
@@ -55,7 +54,7 @@ class MITSDSKDriver(DiskIODriver):
     """
 
     driver_type: ClassVar[str] = "MITS_DSK"
-    driver_file_extensions: ClassVar[List[str]] = [".dsk"]
+    driver_file_extensions: ClassVar[list[str]] = [".dsk"]
     driver_category: ClassVar[str] = "raw"
     driver_description: ClassVar[str] = "MITS Altair DSK format driver"
     driver_priority: ClassVar[int] = 100
@@ -80,8 +79,8 @@ class MITSDSKDriver(DiskIODriver):
         self.image_data: bytearray
         self.uses_physical_heads: bool = False
 
-        self.sector_cache: Dict[Tuple[int, int, int], bytes] = {}
-        self.modified_sectors: Dict[Tuple[int, int, int], bytes] = {}
+        self.sector_cache: dict[tuple[int, int, int], bytes] = {}
+        self.modified_sectors: dict[tuple[int, int, int], bytes] = {}
 
         if image_data is not None:
             self.image_data = bytearray(image_data)
@@ -113,7 +112,7 @@ class MITSDSKDriver(DiskIODriver):
                 self.logger.error(f"Failed to read MITS DSK file {self.file_path}: {e}")
                 if isinstance(e, OSError):
                     raise
-                raise IOError(f"Failed to read MITS DSK file {self.file_path}") from e
+                raise OSError(f"Failed to read MITS DSK file {self.file_path}") from e
 
     @property
     def allows_geometry_override(self) -> bool:
@@ -192,7 +191,7 @@ class MITSDSKDriver(DiskIODriver):
 
         except Exception as e:
             self.logger.error(f"Failed to flush MITS DSK image to {self.file_path}: {e}")
-            raise IOError(f"Flush failed: {e}") from e
+            raise OSError(f"Flush failed: {e}") from e
 
     def get_format_requirements(self) -> dict:
         """
@@ -266,7 +265,7 @@ class MITSDSKDriver(DiskIODriver):
         self._create_physical_format()
         self.logger.info("Created blank MITS DSK image")
 
-    def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
+    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
         """
         MITS DSK allows temporary format override for filesystem validation.
 
@@ -301,10 +300,10 @@ class MITSDSKDriver(DiskIODriver):
             raise ValueError("Physical format not set")
 
         if head != 0:
-            raise IOError(f"MITS DSK only supports head 0, got head {head}")
+            raise OSError(f"MITS DSK only supports head 0, got head {head}")
 
         if not (1 <= sector <= MITS_SECTORS_PER_TRACK):
-            raise IOError(
+            raise OSError(
                 f"Invalid sector number: {sector} (must be 1-{MITS_SECTORS_PER_TRACK})"
             )
 
@@ -323,7 +322,7 @@ class MITSDSKDriver(DiskIODriver):
         )
 
         if offset + MITS_PHYSICAL_SECTOR_SIZE > len(self.image_data):
-            raise IOError(f"Sector C:{cylinder} H:{head} S:{sector} out of bounds")
+            raise OSError(f"Sector C:{cylinder} H:{head} S:{sector} out of bounds")
 
         sector_bytes = self.image_data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE]
         data = self._extract_sector_data(sector_bytes, cylinder)
@@ -365,7 +364,7 @@ class MITSDSKDriver(DiskIODriver):
             f"Physical format set: {physical_format.cylinders}C x {physical_format.heads}H"
         )
 
-    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
         """
         Validates whether a file is a valid MITS Altair .DSK format.
 
@@ -415,7 +414,7 @@ class MITSDSKDriver(DiskIODriver):
         except Exception as e:
             return False, f"Error validating MITS DSK format: {e}"
 
-    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+    def validate_state_for_opening(self) -> tuple[bool, Optional[str]]:
         """
         Validates MITS DSK driver state after opening.
 

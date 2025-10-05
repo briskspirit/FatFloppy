@@ -5,8 +5,6 @@ Data models for representing filesystem structures in the GUI.
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 
 class FileSystemNode:
     """
@@ -24,7 +22,7 @@ class FileSystemNode:
         is_dir: bool = False,
         modified: str = "N/A",
         attributes: str = "-",
-        parent: Optional[FileSystemNode] = None
+        parent: FileSystemNode | None = None
     ) -> None:
         """
         Initializes a FileSystemNode.
@@ -42,8 +40,8 @@ class FileSystemNode:
         self.is_dir: bool = is_dir
         self.modified: str = modified
         self.attributes: str = attributes
-        self.parent: Optional[FileSystemNode] = parent
-        self.children: List[FileSystemNode] = []
+        self.parent: FileSystemNode | None = parent
+        self.children: list[FileSystemNode] = []
 
     def appendChild(self, child: FileSystemNode) -> None:
         """

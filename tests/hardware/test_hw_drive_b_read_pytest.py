@@ -7,7 +7,7 @@ directory listings, file contents, and disk information from a physical
 """
 
 import os
-from typing import Dict, Generator
+from collections.abc import Generator
 
 import pytest
 from _pytest.config import Config
@@ -34,7 +34,7 @@ pytestmark = [
 
 @pytest.fixture(scope="class")
 def prepared_controller(
-    pytestconfig: Config, expected_file_content: Dict[str, bytes]
+    pytestconfig: Config, expected_file_content: dict[str, bytes]
 ) -> Generator[DiskController, None, None]:
     """
     Class-scoped fixture to prepare a physical floppy disk for read tests.

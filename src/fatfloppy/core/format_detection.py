@@ -3,7 +3,7 @@
 Provides the base classes and factory for format detection strategies.
 """
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Dict, Optional, Tuple
+from typing import Any, ClassVar, Optional
 
 from .filesystem_factory import create_filesystem, get_filesystem_class_by_type
 from .format_profile import FormatProfile
@@ -16,7 +16,7 @@ class FormatDetector(ABC):
 
     detector_for_driver: ClassVar[str] = ""
 
-    def __init__(self, disk, driver, known_formats: Dict[str, FormatProfile]):
+    def __init__(self, disk, driver, known_formats: dict[str, FormatProfile]):
         if (not self.detector_for_driver and
                 self.__class__.__name__ not in ["MetadataBasedDetector"]):
             raise ValueError(
@@ -28,7 +28,7 @@ class FormatDetector(ABC):
         self.logger = get_logger(self.__class__.__name__)
 
     @abstractmethod
-    def detect(self) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
+    def detect(self) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Detects the disk format.
 
@@ -41,7 +41,7 @@ class FormatDetector(ABC):
 class MetadataBasedDetector(FormatDetector, ABC):
     """Base class for drivers that have self-describing metadata (IMD, H17)."""
 
-    def detect(self) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
+    def detect(self) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Common detection flow for metadata-based formats.
 
@@ -186,7 +186,7 @@ class MetadataBasedDetector(FormatDetector, ABC):
 def create_format_detector(
     disk,
     driver,
-    known_formats: Dict[str, FormatProfile]
+    known_formats: dict[str, FormatProfile]
 ) -> FormatDetector:
     """
     Factory function to create the appropriate detector for a driver.

@@ -1,7 +1,7 @@
 # src/fatfloppy/gui/dialogs.py
 import logging
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
 logger = logging.getLogger(__name__)
 
 
-def _create_format_parameters_group() -> Tuple[QGroupBox, Dict[str, QWidget]]:
+def _create_format_parameters_group() -> tuple[QGroupBox, dict[str, QWidget]]:
     """
     Creates the 'Format Parameters' group box with all its widgets.
 
@@ -121,7 +121,7 @@ def _create_format_parameters_group() -> Tuple[QGroupBox, Dict[str, QWidget]]:
 
 def _set_default_parameters_for_size(
     size: str,
-    widgets: Dict[str, QWidget]
+    widgets: dict[str, QWidget]
 ) -> None:
     """
     Sets default format parameters on the widgets based on the drive size.
@@ -187,7 +187,7 @@ def _set_default_parameters_for_size(
 
 def _populate_params_from_profile(
     profile: Any,
-    widgets: Dict[str, QWidget]
+    widgets: dict[str, QWidget]
 ) -> None:
     """
     Populates the format parameter widgets from a format profile object.
@@ -248,10 +248,10 @@ class DriveSelectionDialog(QDialog):
         self.resize(400, 650)
 
         self.format_params_group: QGroupBox
-        self.format_widgets: Dict[str, QWidget]
+        self.format_widgets: dict[str, QWidget]
         self._init_ui()
 
-    def get_selection(self) -> Tuple[str, str, Optional[Dict[str, Any]]]:
+    def get_selection(self) -> tuple[str, str, Optional[dict[str, Any]]]:
         """
         Gets the user's drive and format selection from the dialog.
 
@@ -263,7 +263,7 @@ class DriveSelectionDialog(QDialog):
         drive = self.drive_combo.currentData()
         size = self.size_combo.currentData()
         format_key = self.format_combo.currentData()
-        format_info: Optional[Dict[str, Any]] = None
+        format_info: Optional[dict[str, Any]] = None
 
         if format_key == "custom" and self.format_params_group.isEnabled():
             format_info = {
@@ -483,10 +483,10 @@ class CreateImageDialog(QDialog):
         self.resize(400, 650)
 
         self.format_params_group: QGroupBox
-        self.format_widgets: Dict[str, QWidget]
+        self.format_widgets: dict[str, QWidget]
         self._init_ui()
 
-    def get_selection(self) -> Tuple[str, Dict[str, Any], str, str]:
+    def get_selection(self) -> tuple[str, dict[str, Any], str, str]:
         """
         Gets the user's selections for creating a new disk image.
 
@@ -514,7 +514,7 @@ class CreateImageDialog(QDialog):
             self.volume_label_input.text().strip().upper() or "NO NAME"
         )
         output_format = self.extension_combo.currentData()
-        format_info: Dict[str, Any] = {}
+        format_info: dict[str, Any] = {}
 
         if self.advanced_checkbox.isChecked():
             format_info = {

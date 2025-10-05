@@ -1,14 +1,13 @@
 import copy
 import os
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from ...filesystem_factory import get_filesystem_class_by_type
 from ...format_detection import FormatDetector
 from ...format_profile import FormatProfile
 from ...physical_format import PhysicalFormat, TrackFormat
 from ...utils.logging_config import get_logger
-
 
 MINIMUM_VALIDITY_SCORE = 30
 EXCELLENT_MATCH_SCORE = 95
@@ -67,7 +66,7 @@ class IMGFormatDetector(FormatDetector):
 
     detector_for_driver = "IMGImageDriver"
 
-    def detect(self) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
+    def detect(self) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Detects the format of a raw IMG file.
 
@@ -102,7 +101,7 @@ class IMGFormatDetector(FormatDetector):
 
     def _apply_generic_fallback(
         self, initial_format: Optional[PhysicalFormat]
-    ) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
+    ) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Applies a generic fallback geometry based on standard sizes.
 
@@ -140,7 +139,7 @@ class IMGFormatDetector(FormatDetector):
         logger.warning("Using generic 1.44M fallback geometry")
         return None, None, pf
 
-    def _group_formats_by_base_geometry(self) -> Dict[Tuple, List[FormatProfile]]:
+    def _group_formats_by_base_geometry(self) -> dict[tuple, list[FormatProfile]]:
         """
         Groups formats by base geometry, ignoring sector translation details.
 
@@ -152,7 +151,7 @@ class IMGFormatDetector(FormatDetector):
         """
         groups = defaultdict(list)
 
-        for name, profile in self.known_formats.items():
+        for _name, profile in self.known_formats.items():
             if not profile.physical_format:
                 continue
 
@@ -178,7 +177,7 @@ class IMGFormatDetector(FormatDetector):
 
     def _try_direct_bpb_parse(
         self,
-    ) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
+    ) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Tries to parse a FAT BPB directly using a generic geometry.
 
@@ -237,42 +236,40 @@ class IMGFormatDetector(FormatDetector):
                     and hasattr(parsed_config, "num_heads")
                     and hasattr(parsed_config, "sectors_per_track")
                     and hasattr(parsed_config, "total_sectors")
+                ) and all(
+                    v > 0
+                    for v in [
+                        parsed_config.bytes_per_sector,
+                        parsed_config.num_heads,
+                        parsed_config.sectors_per_track,
+                    ]
                 ):
+                    cyls = parsed_config.total_sectors // (
+                        parsed_config.num_heads * parsed_config.sectors_per_track
+                    )
+                    current_pf = self.disk.physical_format
 
-                    if all(
-                        v > 0
-                        for v in [
-                            parsed_config.bytes_per_sector,
-                            parsed_config.num_heads,
-                            parsed_config.sectors_per_track,
-                        ]
-                    ):
-                        cyls = parsed_config.total_sectors // (
-                            parsed_config.num_heads * parsed_config.sectors_per_track
-                        )
-                        current_pf = self.disk.physical_format
-
-                        refined_tf = TrackFormat(
-                            0,
-                            cyls - 1,
-                            0,
-                            parsed_config.num_heads - 1,
-                            parsed_config.sectors_per_track,
-                            current_pf.track_formats[0].encoding,
-                            current_pf.track_formats[0].rate,
-                            current_pf.track_formats[0].interleave,
-                        )
-                        refined_pf = PhysicalFormat(
-                            cyls,
-                            parsed_config.num_heads,
-                            current_pf.rpm,
-                            current_pf.heads_inverted,
-                            parsed_config.bytes_per_sector,
-                            [refined_tf],
-                        )
-                        self.disk.set_geometry(refined_pf)
-                        logger.debug("Refined geometry from BPB")
-                        return None, parsed_config, refined_pf
+                    refined_tf = TrackFormat(
+                        0,
+                        cyls - 1,
+                        0,
+                        parsed_config.num_heads - 1,
+                        parsed_config.sectors_per_track,
+                        current_pf.track_formats[0].encoding,
+                        current_pf.track_formats[0].rate,
+                        current_pf.track_formats[0].interleave,
+                    )
+                    refined_pf = PhysicalFormat(
+                        cyls,
+                        parsed_config.num_heads,
+                        current_pf.rpm,
+                        current_pf.heads_inverted,
+                        parsed_config.bytes_per_sector,
+                        [refined_tf],
+                    )
+                    self.disk.set_geometry(refined_pf)
+                    logger.debug("Refined geometry from BPB")
+                    return None, parsed_config, refined_pf
 
             except Exception as e:
                 logger.debug(f"Direct BPB parse failed: {e}")
@@ -281,7 +278,7 @@ class IMGFormatDetector(FormatDetector):
 
     def _try_variant_testing(
         self,
-    ) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
+    ) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Iterates through geometry groups, testing all variants for each.
 

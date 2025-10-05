@@ -41,7 +41,7 @@ class Disk:
                 self.driver.flush()
             except Exception as e:
                 self.logger.error(f"Disk flush failed: {e}", exc_info=True)
-                raise IOError("Disk flush failed") from e
+                raise OSError("Disk flush failed") from e
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         """
@@ -84,7 +84,7 @@ class Disk:
                 f"Failed to read sector C:{cylinder} H:{head} S:{sector}: {e}",
                 exc_info=True
             )
-            raise IOError(
+            raise OSError(
                 f"Failed to read sector C:{cylinder} H:{head} S:{sector}"
             ) from e
 
@@ -212,7 +212,7 @@ class Disk:
                 f"Failed to write sector C:{cylinder} H:{head} S:{sector}: {e}",
                 exc_info=True
             )
-            raise IOError(
+            raise OSError(
                 f"Failed to write sector C:{cylinder} H:{head} S:{sector}"
             ) from e
 

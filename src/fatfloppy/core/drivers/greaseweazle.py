@@ -1,7 +1,7 @@
 import copy
 import logging
 import types
-from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
+from typing import Any, ClassVar, Optional
 
 from ..drivers.base_driver import DiskIODriver
 from ..physical_format import PhysicalFormat, TrackFormat
@@ -149,7 +149,7 @@ class GreaseweazleDriver(DiskIODriver):
     """
 
     driver_type: ClassVar[str] = "physical"
-    driver_file_extensions: ClassVar[List[str]] = []
+    driver_file_extensions: ClassVar[list[str]] = []
     driver_category: ClassVar[str] = "physical"
     driver_description: ClassVar[str] = "Greaseweazle physical drive interface"
     driver_priority: ClassVar[int] = 50
@@ -186,16 +186,16 @@ class GreaseweazleDriver(DiskIODriver):
         self.uses_physical_heads: bool = True
 
         self.initialized: bool = False
-        self.dirty_sectors: Dict[Tuple[int, int], Dict[int, bytes]] = {}
-        self.dirty_tracks: Set[Tuple[int, int]] = set()
-        self.track_data: Dict[Tuple[int, int], Dict[int, bytes]] = {}
-        self.sector_cache: Dict[Tuple[int, int, int], bytes] = {}
+        self.dirty_sectors: dict[tuple[int, int], dict[int, bytes]] = {}
+        self.dirty_tracks: set[tuple[int, int]] = set()
+        self.track_data: dict[tuple[int, int], dict[int, bytes]] = {}
+        self.sector_cache: dict[tuple[int, int, int], bytes] = {}
 
         self.usb: Optional[Any] = None
         self.drive_obj: Optional[Any] = None
-        self.fmt_cls: Optional["codec.DiskDef"] = None
+        self.fmt_cls: Optional[codec.DiskDef] = None
         self.drive_ticks_per_rev: Optional[float] = None
-        self.last_successful_format: Optional[Tuple[str, Optional[int]]] = None
+        self.last_successful_format: Optional[tuple[str, Optional[int]]] = None
         self.using_custom_diskdef: bool = False
         self.scan_track_object: Optional[Any] = None
 
@@ -367,7 +367,7 @@ class GreaseweazleDriver(DiskIODriver):
         self.initialized = True
         self.logger.info(f"Driver initialized for drive {self.drive}")
 
-    def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
+    def prepare_for_format_application(self, format_info: dict) -> tuple[bool, Optional[str]]:
         """
         Validates format compatibility for Greaseweazle driver.
 
@@ -515,7 +515,7 @@ class GreaseweazleDriver(DiskIODriver):
             f"Cyls={physical_format.cylinders}, Heads={physical_format.heads}"
         )
 
-    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+    def validate_for_opening(self, source: str, **kwargs) -> tuple[bool, Optional[str]]:
         """
         Validates whether the Greaseweazle can be opened.
 
@@ -546,7 +546,7 @@ class GreaseweazleDriver(DiskIODriver):
 
         return True, None
 
-    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+    def validate_state_for_opening(self) -> tuple[bool, Optional[str]]:
         """
         Validates Greaseweazle driver state after opening.
 
@@ -583,7 +583,7 @@ class GreaseweazleDriver(DiskIODriver):
             del self.sector_cache[sector_key]
             self.logger.debug(f"Cleared cache for sector {sector_key}")
 
-    def _convert_to_flux(self, cylinder: int, head: int) -> List[int]:
+    def _convert_to_flux(self, cylinder: int, head: int) -> list[int]:
         """
         Converts sector data for a track into a flux stream for writing.
 
@@ -669,7 +669,7 @@ class GreaseweazleDriver(DiskIODriver):
             self.using_custom_diskdef = False
             self.logger.error("Failed to set custom diskdef")
 
-    def _get_formats_to_try(self) -> List[Tuple[str, Optional[int]]]:
+    def _get_formats_to_try(self) -> list[tuple[str, Optional[int]]]:
         """
         Determines the sequence of formats to attempt when reading a track.
 
@@ -709,8 +709,8 @@ class GreaseweazleDriver(DiskIODriver):
         return False
 
     def _read_track_with_format(
-        self, cylinder: int, head: int, format_tuple: Tuple[str, Optional[int]]
-    ) -> Optional[Dict[int, bytes]]:
+        self, cylinder: int, head: int, format_tuple: tuple[str, Optional[int]]
+    ) -> Optional[dict[int, bytes]]:
         """
         Attempts to read a track using a single, specified Greaseweazle format.
 

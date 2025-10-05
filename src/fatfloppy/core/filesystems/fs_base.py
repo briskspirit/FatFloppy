@@ -1,7 +1,7 @@
 import datetime
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, Type
+from typing import Any, ClassVar, Optional
 
 from ..disk import Disk
 from ..format_profile import FormatProfile
@@ -44,9 +44,9 @@ class Filesystem(ABC):
     concrete functionality for a specific filesystem type.
     """
     filesystem_type: ClassVar[str] = ""
-    filesystem_aliases: ClassVar[List[str]] = []
+    filesystem_aliases: ClassVar[list[str]] = []
     validity_threshold: ClassVar[int] = 30
-    config_class: ClassVar[Optional[Type]] = None
+    config_class: ClassVar[Optional[type]] = None
     min_fatfloppy_version: ClassVar[Optional[str]] = None
 
     def __init__(self, disk: Disk):
@@ -65,7 +65,7 @@ class Filesystem(ABC):
         self.disk = disk
 
     @classmethod
-    def get_format_definitions(cls) -> Dict[str, 'FormatProfile']:
+    def get_format_definitions(cls) -> dict[str, 'FormatProfile']:
         """
         Returns all format definitions provided by this filesystem plugin.
 
@@ -94,7 +94,7 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @staticmethod
-    def create_config_from_params(format_info: Dict[str, Any],
+    def create_config_from_params(format_info: dict[str, Any],
                                    physical_format: PhysicalFormat) -> Optional[Any]:
         """
         Creates a filesystem-specific configuration object from parameters.
@@ -155,7 +155,7 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_allocated_units(self) -> List[int]:
+    def get_allocated_units(self) -> list[int]:
         """
         Gets a list of all allocated unit numbers (e.g., clusters, blocks).
 
@@ -165,7 +165,7 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_disk_map_layout(self) -> Dict[str, Any]:
+    def get_disk_map_layout(self) -> dict[str, Any]:
         """
         Returns layout information for visualizing the disk map.
 
@@ -182,7 +182,7 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_display_info(self) -> Dict[str, str]:
+    def get_display_info(self) -> dict[str, str]:
         """
         Returns a dictionary of filesystem-specific parameters for display.
 
@@ -193,7 +193,7 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_file_allocation_units(self, path: str) -> List[int]:
+    def get_file_allocation_units(self, path: str) -> list[int]:
         """
         Gets the allocation units (clusters, blocks, groups) used by a specific file.
 
@@ -207,7 +207,7 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_free_space(self) -> Tuple[int, int]:
+    def get_free_space(self) -> tuple[int, int]:
         """
         Returns the free and total available space in the data area.
 
@@ -242,7 +242,7 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list_directory(self, path: str) -> List[FileInfo]:
+    def list_directory(self, path: str) -> list[FileInfo]:
         """
         Lists the contents of a specified directory.
 

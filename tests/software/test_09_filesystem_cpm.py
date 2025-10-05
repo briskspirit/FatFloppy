@@ -5,11 +5,10 @@ This module focuses on high-level integration tests that simulate user
 actions on CP/M formatted disk images.
 """
 
-import math
 import shutil
 import sys
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, List
 
 import pytest
 
@@ -65,7 +64,7 @@ def test_disk_images_read_and_verify(
     disk_type: str,
     expected_format_name: str,
     expected_free_space_kb: int,
-    expected_files: List[str],
+    expected_files: list[str],
 ) -> None:
     """
     Tests opening CP/M disk images (IMG and IMD), verifying format detection,

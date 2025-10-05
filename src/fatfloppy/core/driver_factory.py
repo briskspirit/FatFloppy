@@ -10,7 +10,7 @@ This module provides the DriverFactory class, which handles:
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Optional
 
 from .drivers.base_driver import DiskIODriver
 from .plugin_scanner import PluginScanner
@@ -27,8 +27,8 @@ class DriverFactory:
     file format detection and driver priorities.
     """
 
-    _registry: Dict[str, Type[DiskIODriver]] = {}
-    _extension_map: Dict[str, List[Type[DiskIODriver]]] = {}
+    _registry: dict[str, type[DiskIODriver]] = {}
+    _extension_map: dict[str, list[type[DiskIODriver]]] = {}
     _initialized: bool = False
 
     @classmethod
@@ -62,7 +62,7 @@ class DriverFactory:
         return cls._create_auto_driver(source, **kwargs)
 
     @classmethod
-    def get_driver_class(cls, disk_type: str) -> Optional[Type[DiskIODriver]]:
+    def get_driver_class(cls, disk_type: str) -> Optional[type[DiskIODriver]]:
         """
         Gets the driver class for a given disk type.
 
@@ -86,7 +86,7 @@ class DriverFactory:
         return None
 
     @classmethod
-    def get_drivers_for_extension(cls, extension: str) -> List[str]:
+    def get_drivers_for_extension(cls, extension: str) -> list[str]:
         """
         Gets all driver types that support a given file extension.
 
@@ -107,7 +107,7 @@ class DriverFactory:
         return [d.driver_type for d in drivers]
 
     @classmethod
-    def get_extension_map(cls) -> Dict[str, str]:
+    def get_extension_map(cls) -> dict[str, str]:
         """
         Returns a mapping of file extensions to their primary driver types.
 
@@ -131,7 +131,7 @@ class DriverFactory:
         return result
 
     @classmethod
-    def list_drivers(cls) -> List[Dict[str, Any]]:
+    def list_drivers(cls) -> list[dict[str, Any]]:
         """
         Returns information about all registered drivers.
 
@@ -331,7 +331,7 @@ class DriverFactory:
     @classmethod
     def _instantiate_driver(
         cls,
-        driver_class: Type[DiskIODriver],
+        driver_class: type[DiskIODriver],
         source: str,
         **kwargs
     ) -> DiskIODriver:
@@ -367,12 +367,12 @@ class DriverFactory:
             logger.error(
                 f"Failed to instantiate {driver_class.driver_type} driver: {e}"
             )
-            raise IOError(
+            raise OSError(
                 f"Driver instantiation failed for {driver_class.driver_type}: {e}"
             ) from e
 
     @classmethod
-    def _validate_driver(cls, driver_class: Type[DiskIODriver]) -> None:
+    def _validate_driver(cls, driver_class: type[DiskIODriver]) -> None:
         """
         Validates that a driver plugin meets all requirements.
 

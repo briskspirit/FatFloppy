@@ -10,8 +10,9 @@ import datetime
 import shutil
 import struct
 import sys
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator, Optional, Tuple
+from typing import Optional
 
 import pytest
 
@@ -19,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from fatfloppy.core.disk import Disk
 from fatfloppy.core.drivers import IMGImageDriver
-from fatfloppy.core.filesystems.fat12_fs import FATFilesystem, FileInfo
 from fatfloppy.core.filesystem_registry import FilesystemRegistry
+from fatfloppy.core.filesystems.fat12_fs import FATFilesystem, FileInfo
 
 RESOURCE_DIR = Path(__file__).parent.parent / "resources"
 EMPTY_IMG_SRC = RESOURCE_DIR / "empty_formatted_144m.img"
@@ -29,7 +30,7 @@ _ALL_FORMATS = FilesystemRegistry.get_all_formats()
 FMT_144 = _ALL_FORMATS["ibm_3.5_1.44m"]
 FMT_720 = _ALL_FORMATS["ibm_3.5_720k"]
 
-FSTestFixture = Tuple[FATFilesystem, Disk]
+FSTestFixture = tuple[FATFilesystem, Disk]
 
 
 @pytest.fixture(scope="function")
@@ -88,7 +89,7 @@ def _read_test_fat_entry(fs: FATFilesystem, cluster: int) -> Optional[int]:
             if len(value_bytes) < 2:
                 return None
             value = struct.unpack("<H", value_bytes)[0]
-    except (IOError, ValueError, struct.error, IndexError):
+    except (OSError, ValueError, struct.error, IndexError):
         return None
 
     return value & 0x0FFF if cluster % 2 == 0 else value >> 4
@@ -447,7 +448,7 @@ def test_read_file_corrupted_fat_chain_loop(fs_setup: FSTestFixture) -> None:
     try:
         read_data = fs_reloaded.read_file(filename)
         assert len(read_data) < fs_reloaded.num_clusters * fs_reloaded.allocation_unit_size
-    except (IOError, ValueError, IndexError):
+    except (OSError, ValueError, IndexError):
         pass
 
 

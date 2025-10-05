@@ -6,7 +6,7 @@ Manages disk-related operations including opening, creating, and visualizing dis
 import copy
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QMainWindow, QMessageBox
@@ -38,11 +38,11 @@ class DiskManager(QObject):
         self.logger: logging.Logger = parent.logger
 
         self.current_head: int = 0
-        self.busy_units: List[Any] = []
+        self.busy_units: list[Any] = []
         self.free_space: int = 0
         self.total_space: int = 0
         self.selected_file_path: Optional[str] = None
-        self.selected_file_units: List[int] = []
+        self.selected_file_units: list[int] = []
 
     def clear_file_selection(self) -> None:
         """Clears the currently selected file highlighting on disk map."""
@@ -128,7 +128,7 @@ class DiskManager(QObject):
             )
             self.logger.exception("Unexpected error during disk image creation.")
 
-    def get_disk_map_data(self) -> Dict[str, Any]:
+    def get_disk_map_data(self) -> dict[str, Any]:
         """
         Gets current data needed for disk map rendering.
 
@@ -406,7 +406,7 @@ class DiskManager(QObject):
 
         if self.parent.controller.filesystem:
             fs_info_dict = self.parent.controller.filesystem.get_display_info()
-            fs_info_lines: List[str] = []
+            fs_info_lines: list[str] = []
 
             if "Filesystem Type" in fs_info_dict:
                 fs_info_lines.append(
@@ -535,7 +535,7 @@ class DiskManager(QObject):
         is_image: bool,
         drive_letter: Optional[str] = None,
         drive_size: Optional[str] = None,
-        format_info: Optional[Dict[str, Any]] = None
+        format_info: Optional[dict[str, Any]] = None
     ) -> None:
         """
         Completes the disk opening process and updates UI.
@@ -572,7 +572,7 @@ class DiskManager(QObject):
 
     def _get_format_profile(
         self,
-        format_info: Dict[str, Any]
+        format_info: dict[str, Any]
     ) -> Optional[Any]:
         """
         Retrieves a format profile from the provided format_info.

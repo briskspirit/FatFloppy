@@ -1,13 +1,12 @@
-from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
 import copy
+from collections import defaultdict
+from typing import Any, Optional
 
 from ...filesystem_factory import create_filesystem, get_filesystem_class_by_type
 from ...format_detection import FormatDetector
 from ...format_profile import FormatProfile
 from ...physical_format import PhysicalFormat, TrackFormat
 from ...utils.logging_config import get_logger
-
 
 MINIMUM_VALIDITY_SCORE = 30
 EXCELLENT_MATCH_SCORE = 95
@@ -70,7 +69,7 @@ class GreaseweazleFormatDetector(FormatDetector):
 
     detector_for_driver = "GreaseweazleDriver"
 
-    def __init__(self, disk, driver, known_formats: Dict[str, FormatProfile]):
+    def __init__(self, disk, driver, known_formats: dict[str, FormatProfile]):
         """
         Initializes the Greaseweazle format detector.
 
@@ -89,7 +88,7 @@ class GreaseweazleFormatDetector(FormatDetector):
             )
         self.drive_size = driver.drive_size
 
-    def detect(self) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
+    def detect(self) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Detects the disk format using multi-stage detection.
 
@@ -160,7 +159,7 @@ class GreaseweazleFormatDetector(FormatDetector):
 
     def _construct_fallback(
         self, has_second_head: bool
-    ) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
+    ) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Constructs a fallback format based on detected parameters.
 
@@ -231,7 +230,7 @@ class GreaseweazleFormatDetector(FormatDetector):
 
     def _filter_profiles_by_size_and_heads(
         self, has_second_head: bool
-    ) -> List[FormatProfile]:
+    ) -> list[FormatProfile]:
         """
         Filters profiles by drive size and head count.
 
@@ -255,7 +254,7 @@ class GreaseweazleFormatDetector(FormatDetector):
         return filtered
 
     def _find_matching_profile(
-        self, profiles: List[FormatProfile]
+        self, profiles: list[FormatProfile]
     ) -> Optional[FormatProfile]:
         """
         Finds the best matching profile using variant testing.
@@ -402,8 +401,8 @@ class GreaseweazleFormatDetector(FormatDetector):
         return PhysicalFormat(cyls, heads, rpm, False, bps, [tf])
 
     def _group_profiles_by_geometry(
-        self, profiles: List[FormatProfile]
-    ) -> Dict[Tuple, List[FormatProfile]]:
+        self, profiles: list[FormatProfile]
+    ) -> dict[tuple, list[FormatProfile]]:
         """
         Groups profiles by base geometry for variant testing.
 

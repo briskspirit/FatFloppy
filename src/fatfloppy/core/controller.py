@@ -1,7 +1,6 @@
 import copy
 import os
-from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from .disk import Disk
 from .driver_factory import DriverFactory
@@ -29,7 +28,7 @@ class DiskController:
 
         from .filesystem_registry import FilesystemRegistry
         self.logger.info("Loading formats from FilesystemRegistry...")
-        self.known_formats: Dict[str, FormatProfile] = (
+        self.known_formats: dict[str, FormatProfile] = (
             FilesystemRegistry.get_all_formats()
         )
         self.logger.info(
@@ -71,7 +70,7 @@ class DiskController:
 
     def create_custom_profile(
         self,
-        format_info: Dict[str, Any]
+        format_info: dict[str, Any]
     ) -> Optional[FormatProfile]:
         """
         Creates a new FormatProfile dynamically from a dictionary of parameters.
@@ -159,7 +158,7 @@ class DiskController:
             self.filesystem.create_directory(path)
             self.logger.debug(f"Created directory {path}")
             return True
-        except (IOError, ValueError, NotImplementedError) as e:
+        except (OSError, ValueError, NotImplementedError) as e:
             self.logger.error(f"Error creating directory {path}: {e}")
             raise
         except Exception as e:
@@ -192,8 +191,7 @@ class DiskController:
             self.filesystem.delete(path)
             self.logger.debug(f"Deleted item {path}")
             return True
-        except (IOError, ValueError, NotImplementedError,
-                FileNotFoundError) as e:
+        except (OSError, ValueError, NotImplementedError, FileNotFoundError) as e:
             self.logger.error(f"Error deleting item {path}: {e}")
             raise
         except Exception as e:
@@ -228,8 +226,7 @@ class DiskController:
             if success:
                 self.logger.debug(f"Deleted item recursively {path}")
             return success
-        except (IOError, ValueError, NotImplementedError,
-                FileNotFoundError) as e:
+        except (OSError, ValueError, NotImplementedError, FileNotFoundError) as e:
             self.logger.error(f"Error deleting item recursively {path}: {e}")
             raise
         except Exception as e:
@@ -241,7 +238,7 @@ class DiskController:
 
     def detect_format(
         self
-    ) -> Tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
+    ) -> tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]:
         """
         Attempts to auto-detect the disk's format by analyzing its structure.
 
@@ -369,7 +366,7 @@ class DiskController:
         else:
             return self._format_existing_disk(format_name, volume_label)
 
-    def get_allocated_units(self) -> List[int]:
+    def get_allocated_units(self) -> list[int]:
         """
         Gets a list of all allocated clusters or blocks on the filesystem.
 
@@ -392,7 +389,7 @@ class DiskController:
     def get_file_allocation_units(
         self,
         file_path: str
-    ) -> Optional[List[int]]:
+    ) -> Optional[list[int]]:
         """
         Get the allocation units used by a specific file.
 
@@ -448,7 +445,7 @@ class DiskController:
             self.logger.warning(f"Format profile not found: {name}")
         return profile
 
-    def get_free_space(self) -> Optional[Tuple[int, int]]:
+    def get_free_space(self) -> Optional[tuple[int, int]]:
         """
         Calculates the free space on the disk.
 
@@ -468,7 +465,7 @@ class DiskController:
             self.logger.error(f"Error getting free space: {e}")
             return None
 
-    def list_directory(self, path: str = "/") -> List[Dict[str, Any]]:
+    def list_directory(self, path: str = "/") -> list[dict[str, Any]]:
         """
         Lists the contents of a directory on the disk.
 
@@ -500,7 +497,7 @@ class DiskController:
             self.logger.error(f"Error listing directory {path}: {e}")
             return []
 
-    def list_formats(self) -> List[Tuple[str, str]]:
+    def list_formats(self) -> list[tuple[str, str]]:
         """
         Returns a list of all known, predefined format profiles.
 
@@ -520,7 +517,7 @@ class DiskController:
         disk_type: str = "IMG",
         drive_letter: str = "A",
         drive_size: str = "3.5",
-        format_info: Optional[Dict[str, Any]] = None
+        format_info: Optional[dict[str, Any]] = None
     ) -> bool:
         """
         Opens a disk source and prepares it for use.
@@ -603,7 +600,7 @@ class DiskController:
                     if self.filesystem
                     else None
                 )
-            except (ValueError, IOError) as e:
+            except (OSError, ValueError) as e:
                 self.logger.debug(
                     f"Could not get filesystem config (disk may be "
                     f"unformatted): {e}"
@@ -731,7 +728,7 @@ class DiskController:
                 f"Wrote file {path} with size {len(data)} bytes"
             )
             return True
-        except (IOError, ValueError, NotImplementedError) as e:
+        except (OSError, ValueError, NotImplementedError) as e:
             self.logger.error(f"Error writing file {path}: {e}")
             raise
         except Exception as e:
@@ -740,7 +737,7 @@ class DiskController:
             )
             raise
 
-    def _apply_user_format(self, format_info: Dict[str, Any]) -> None:
+    def _apply_user_format(self, format_info: dict[str, Any]) -> None:
         """
         Resolves format info and applies it to the current disk and driver.
 
@@ -859,7 +856,7 @@ class DiskController:
 
     def _create_physical_format(
         self,
-        format_info: Dict[str, Any],
+        format_info: dict[str, Any],
         base_profile: Optional[FormatProfile] = None
     ) -> PhysicalFormat:
         """
@@ -995,9 +992,7 @@ class DiskController:
         )
 
         try:
-            if self.disk.physical_format != profile.physical_format:
-                self.set_format(profile)
-            elif (hasattr(self.driver, "physical_format") and
+            if self.disk.physical_format != profile.physical_format or (hasattr(self.driver, "physical_format") and
                     self.driver.physical_format != profile.physical_format):
                 self.set_format(profile)
 
@@ -1127,7 +1122,7 @@ class DiskController:
 
     def _handle_format(
         self,
-        format_info: Optional[Dict[str, Any]],
+        format_info: Optional[dict[str, Any]],
         drive_size: str
     ) -> bool:
         """
@@ -1149,9 +1144,8 @@ class DiskController:
         if format_info:
             return self._handle_user_format(format_info)
 
-        if requirements['can_derive_format']:
-            if self._try_auto_detection():
-                return True
+        if requirements['can_derive_format'] and self._try_auto_detection():
+            return True
 
         if self.driver.driver_category == "raw":
             return self._handle_raw_driver_format()
@@ -1171,7 +1165,7 @@ class DiskController:
 
     def _handle_metadata_based_format(
         self,
-        format_info: Optional[Dict[str, Any]]
+        format_info: Optional[dict[str, Any]]
     ) -> bool:
         """
         Handles format for metadata-based drivers (IMD, H17).
@@ -1235,7 +1229,7 @@ class DiskController:
         )
         return True
 
-    def _handle_user_format(self, format_info: Dict[str, Any]) -> bool:
+    def _handle_user_format(self, format_info: dict[str, Any]) -> bool:
         """
         Handles user-provided format information.
 

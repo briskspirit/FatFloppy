@@ -6,8 +6,8 @@ methods are called in incorrect states.
 """
 
 import sys
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest

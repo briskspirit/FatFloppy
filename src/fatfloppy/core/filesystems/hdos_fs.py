@@ -1,7 +1,8 @@
+import contextlib
 import datetime
 import struct
 from dataclasses import dataclass
-from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type
+from typing import Any, ClassVar, Optional
 
 from ..disk import Disk
 from ..format_profile import FormatProfile
@@ -125,11 +126,11 @@ class HDOSFilesystem(Filesystem):
     """
 
     filesystem_type: ClassVar[str] = "HDOS"
-    filesystem_aliases: ClassVar[List[str]] = []
+    filesystem_aliases: ClassVar[list[str]] = []
     validity_threshold: ClassVar[int] = 95
     VALIDITY_THRESHOLD = validity_threshold
 
-    config_class: ClassVar[Type] = HDOSLabelRecord
+    config_class: ClassVar[type] = HDOSLabelRecord
 
     def __init__(self, disk: Disk, config: Optional[HDOSLabelRecord] = None):
         """
@@ -144,14 +145,14 @@ class HDOSFilesystem(Filesystem):
         self.label: Optional[HDOSLabelRecord] = config
         self._grt: Optional[bytearray] = None
         self._rgt: Optional[bytearray] = None
-        self._dir_entries: Optional[List[HDOSDirectoryEntry]] = None
+        self._dir_entries: Optional[list[HDOSDirectoryEntry]] = None
         self._init_completed: bool = False
         self._cached_validity_score: Optional[int] = None
         self._data_base_lba_cache: Optional[int] = None
         self._num_groups_on_disk: int = 0
 
     @classmethod
-    def get_format_definitions(cls) -> Dict[str, FormatProfile]:
+    def get_format_definitions(cls) -> dict[str, FormatProfile]:
         """
         Returns all HDOS format definitions provided by this plugin.
 
@@ -173,12 +174,7 @@ class HDOSFilesystem(Filesystem):
         Returns:
             True if both are HDOSLabelRecord instances, False otherwise.
         """
-        if not isinstance(config1, HDOSLabelRecord) or not isinstance(
-            config2,
-            HDOSLabelRecord
-        ):
-            return False
-        return True
+        return not (not isinstance(config1, HDOSLabelRecord) or not isinstance(config2, HDOSLabelRecord))
 
     @property
     def allocation_unit_size(self) -> int:
@@ -220,7 +216,7 @@ class HDOSFilesystem(Filesystem):
             FileNotFoundError: If the specified file does not exist.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid.")
+            raise OSError("Filesystem is not valid.")
         self._initialize()
 
         filename_upper = path.strip("/").upper()
@@ -233,7 +229,7 @@ class HDOSFilesystem(Filesystem):
 
         all_protected = HDOS_SYSTEM_FILES | HDOS_DIRECT_SYS
         if search_filename in all_protected or filename_upper in all_protected:
-            raise IOError(f"Cannot delete system file: {filename_upper}")
+            raise OSError(f"Cannot delete system file: {filename_upper}")
 
         found_entry = None
         entry_dir_lba = 0
@@ -248,7 +244,7 @@ class HDOSFilesystem(Filesystem):
                     self._read_lba(current_dir_lba) +
                     self._read_lba(current_dir_lba + 1)
                 )
-            except (IOError, ValueError) as e:
+            except (OSError, ValueError) as e:
                 self.logger.error(
                     f"Could not read directory block at LBA "
                     f"{current_dir_lba}: {e}"
@@ -357,9 +353,9 @@ class HDOSFilesystem(Filesystem):
 
             try:
                 self._write_lba(self.label.grt_start_block, self._grt)
-            except (IOError, ValueError) as e:
+            except (OSError, ValueError) as e:
                 self.logger.error(f"Failed to write updated GRT: {e}")
-                raise IOError(
+                raise OSError(
                     "Failed to update GRT after file deletion"
                 ) from e
 
@@ -377,11 +373,11 @@ class HDOSFilesystem(Filesystem):
                 entry_dir_lba + 1,
                 dir_block_data[HDOS_BYTES_PER_SECTOR:]
             )
-        except (IOError, ValueError) as e:
+        except (OSError, ValueError) as e:
             self.logger.error(
                 f"Failed to update directory after deleting {path}: {e}"
             )
-            raise IOError("Failed to update directory entry") from e
+            raise OSError("Failed to update directory entry") from e
 
         self.disk.flush()
 
@@ -410,7 +406,7 @@ class HDOSFilesystem(Filesystem):
         try:
             self.delete(path)
             return True
-        except (IOError, FileNotFoundError):
+        except (OSError, FileNotFoundError):
             return False
 
     def format_fs(
@@ -530,7 +526,7 @@ class HDOSFilesystem(Filesystem):
             "groups"
         )
 
-    def get_allocated_units(self) -> List[int]:
+    def get_allocated_units(self) -> list[int]:
         """
         Returns a sorted list of allocated group numbers.
 
@@ -610,7 +606,7 @@ class HDOSFilesystem(Filesystem):
                     if nxt == cur or nxt == 0:
                         break
                     cur = nxt
-                except (IOError, ValueError, struct.error):
+                except (OSError, ValueError, struct.error):
                     break
 
             if self.label.grt_start_block >= data_base:
@@ -634,7 +630,7 @@ class HDOSFilesystem(Filesystem):
                 f"{len(system_groups)} system groups, "
                 f"{len(rgt_locked_groups)} RGT-locked groups"
             )
-            return sorted(list(allocated_groups))
+            return sorted(allocated_groups)
 
         while (current_group != 0 and
                0 < current_group <= num_groups_on_disk):
@@ -668,9 +664,9 @@ class HDOSFilesystem(Filesystem):
             f"Normal traversal: {len(free_groups)} free, "
             f"{len(allocated_groups)} allocated"
         )
-        return sorted(list(allocated_groups))
+        return sorted(allocated_groups)
 
-    def get_disk_map_layout(self) -> Dict[str, Any]:
+    def get_disk_map_layout(self) -> dict[str, Any]:
         """
         Provides data for visualizing the disk layout.
 
@@ -690,7 +686,7 @@ class HDOSFilesystem(Filesystem):
         data_area_start_lba = self._data_base_lba()
 
         rgt_lbas = set()
-        if HDOS_RGT_SECTOR_LBA >= data_area_start_lba:
+        if data_area_start_lba <= HDOS_RGT_SECTOR_LBA:
             rgt_group = (
                 (HDOS_RGT_SECTOR_LBA - data_area_start_lba) //
                 sectors_per_group
@@ -734,7 +730,7 @@ class HDOSFilesystem(Filesystem):
                 if next_lba == current_block_lba:
                     break
                 current_block_lba = next_lba
-            except (IOError, ValueError):
+            except (OSError, ValueError):
                 break
 
         allocated_groups = set(self.get_allocated_units())
@@ -795,7 +791,7 @@ class HDOSFilesystem(Filesystem):
             'type_color_map': type_map
         }
 
-    def get_display_info(self) -> Dict[str, str]:
+    def get_display_info(self) -> dict[str, str]:
         """
         Returns a dictionary of key filesystem parameters for display.
 
@@ -816,7 +812,7 @@ class HDOSFilesystem(Filesystem):
             "GRT Start LBA": str(self.label.grt_start_block)
         }
 
-    def get_file_allocation_units(self, path: str) -> List[int]:
+    def get_file_allocation_units(self, path: str) -> list[int]:
         """
         Gets the list of group numbers allocated to a specific file.
 
@@ -832,7 +828,7 @@ class HDOSFilesystem(Filesystem):
             IOError: If the filesystem is not valid or a read error occurs.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as HDOS.")
+            raise OSError("Filesystem is not valid or not recognized as HDOS.")
 
         self._initialize()
 
@@ -895,7 +891,7 @@ class HDOSFilesystem(Filesystem):
         )
         return file_groups
 
-    def get_free_space(self) -> Tuple[int, int]:
+    def get_free_space(self) -> tuple[int, int]:
         """
         Calculates free and total space on the disk.
 
@@ -990,7 +986,7 @@ class HDOSFilesystem(Filesystem):
 
             self._initialize()
             self._cached_validity_score = 100
-        except (ValueError, IOError, struct.error) as e:
+        except (OSError, ValueError, struct.error) as e:
             self.logger.debug(f"HDOS validation failed: {e}")
             self._cached_validity_score = 0
         finally:
@@ -1014,7 +1010,7 @@ class HDOSFilesystem(Filesystem):
             return self.label.title.strip()
         return None
 
-    def list_directory(self, path: str) -> List[FileInfo]:
+    def list_directory(self, path: str) -> list[FileInfo]:
         """
         Lists all files in the root directory.
 
@@ -1029,7 +1025,7 @@ class HDOSFilesystem(Filesystem):
             NotImplementedError: If path is not root directory.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as HDOS.")
+            raise OSError("Filesystem is not valid or not recognized as HDOS.")
         if path != "/":
             raise NotImplementedError(
                 "HDOS does not support subdirectories."
@@ -1061,7 +1057,7 @@ class HDOSFilesystem(Filesystem):
             FileNotFoundError: If the specified file does not exist.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as HDOS.")
+            raise OSError("Filesystem is not valid or not recognized as HDOS.")
 
         self._initialize()
 
@@ -1095,7 +1091,7 @@ class HDOSFilesystem(Filesystem):
             if current_group == 0:
                 break
             if not (0 < current_group < len(self._grt)):
-                raise IOError(
+                raise OSError(
                     f"Corrupt file chain: group {current_group} is out of "
                     "GRT bounds."
                 )
@@ -1113,12 +1109,12 @@ class HDOSFilesystem(Filesystem):
                     file_data.extend(
                         self._read_lba(start_lba_of_group + i)
                     )
-                except (ValueError, IOError) as e:
+                except (OSError, ValueError) as e:
                     self.logger.error(
                         f"Failed to read LBA {start_lba_of_group + i} for "
                         f"file {path}: {e}"
                     )
-                    raise IOError(
+                    raise OSError(
                         f"Failed reading LBA {start_lba_of_group + i}"
                     ) from e
 
@@ -1169,12 +1165,10 @@ class HDOSFilesystem(Filesystem):
             IOError: If the filesystem is invalid or there's not enough space.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem not valid.")
+            raise OSError("Filesystem not valid.")
 
-        try:
+        with contextlib.suppress(FileNotFoundError):
             self.delete(path)
-        except FileNotFoundError:
-            pass
 
         self._initialize()
         spg = (
@@ -1201,7 +1195,7 @@ class HDOSFilesystem(Filesystem):
         current_group = self._grt[0]
         for _ in range(num_groups_needed):
             if current_group == 0:
-                raise IOError("Not enough free space on disk.")
+                raise OSError("Not enough free space on disk.")
             allocated_groups.append(current_group)
             current_group = self._grt[current_group]
 
@@ -1301,7 +1295,7 @@ class HDOSFilesystem(Filesystem):
     def _create_and_write_dir_entry(
         self,
         path: str,
-        allocated_groups: List[int],
+        allocated_groups: list[int],
         num_sectors: int,
         cluster_factor: Optional[int] = None
     ) -> None:
@@ -1374,18 +1368,18 @@ class HDOSFilesystem(Filesystem):
         current_dir_lba = self.label.dir_start_block
         for _ in range(20):
             if current_dir_lba == 0:
-                raise IOError("No free directory space.")
+                raise OSError("No free directory space.")
 
             sector1 = self._read_lba(current_dir_lba)
             sector2 = self._read_lba(current_dir_lba + 1)
 
             if len(sector1) != HDOS_BYTES_PER_SECTOR:
-                raise IOError(
+                raise OSError(
                     f"Directory sector 1 size mismatch: {len(sector1)} != "
                     f"{HDOS_BYTES_PER_SECTOR}"
                 )
             if len(sector2) != HDOS_BYTES_PER_SECTOR:
-                raise IOError(
+                raise OSError(
                     f"Directory sector 2 size mismatch: {len(sector2)} != "
                     f"{HDOS_BYTES_PER_SECTOR}"
                 )
@@ -1424,7 +1418,7 @@ class HDOSFilesystem(Filesystem):
                 DIR_NEXT_BLOCK_PTR_OFFSET
             )[0]
 
-        raise IOError("Could not find a free directory entry slot.")
+        raise OSError("Could not find a free directory entry slot.")
 
     def _create_empty_file_entry(self, path: str) -> None:
         """
@@ -1520,7 +1514,7 @@ class HDOSFilesystem(Filesystem):
         try:
             self._rgt = bytearray(self._read_lba(HDOS_RGT_SECTOR_LBA))
             self.logger.debug(f"RGT loaded from LBA {HDOS_RGT_SECTOR_LBA}")
-        except (IOError, ValueError) as e:
+        except (OSError, ValueError) as e:
             self.logger.warning(
                 f"Could not read RGT: {e}. Proceeding without lock-out map."
             )
@@ -1560,7 +1554,7 @@ class HDOSFilesystem(Filesystem):
         rgt_value = self._rgt[group_num]
         return rgt_value == 0x00 or rgt_value >= 0x80
 
-    def _lba_to_ts(self, lba: int) -> Tuple[int, int]:
+    def _lba_to_ts(self, lba: int) -> tuple[int, int]:
         """
         Converts a Logical Block Address (LBA) to (track, sector).
 
@@ -1687,14 +1681,14 @@ class HDOSFilesystem(Filesystem):
             attributes=attributes
         )
 
-    def _read_directory_chain(self) -> List[HDOSDirectoryEntry]:
+    def _read_directory_chain(self) -> list[HDOSDirectoryEntry]:
         """
         Reads the directory, which is a linked-list of 512-byte blocks.
 
         Returns:
             A list of all valid HDOSDirectoryEntry objects found.
         """
-        entries: List[HDOSDirectoryEntry] = []
+        entries: list[HDOSDirectoryEntry] = []
         current_block_lba = self.label.dir_start_block
 
         for _ in range(20):
@@ -1705,7 +1699,7 @@ class HDOSFilesystem(Filesystem):
                 sector1 = self._read_lba(current_block_lba)
                 sector2 = self._read_lba(current_block_lba + 1)
                 dir_data = sector1 + sector2
-            except (IOError, ValueError) as e:
+            except (OSError, ValueError) as e:
                 self.logger.error(
                     f"Could not read full 512-byte directory block at LBA "
                     f"{current_block_lba}: {e}"

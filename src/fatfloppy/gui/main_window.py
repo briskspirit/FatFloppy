@@ -7,12 +7,11 @@ Coordinates UI and delegates operations to specialized managers.
 import datetime
 import logging
 import os
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
-from PyQt6.QtCore import QPointF, Qt, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import (
     QAction,
-    QColor,
     QFont,
     QFontDatabase,
     QIcon,
@@ -85,7 +84,7 @@ class FileBrowserApp(QMainWindow):
         self.controller: Optional[DiskController] = None
 
         self.greaseweazle_available: bool = GREASEWEAZLE_AVAILABLE
-        self.extension_to_driver_map: Dict[str, str] = {}
+        self.extension_to_driver_map: dict[str, str] = {}
         self.file_dialog_filter: str = ""
         self._build_file_dialog_filter()
 
@@ -200,7 +199,7 @@ class FileBrowserApp(QMainWindow):
 
     def import_multiple_paths(
         self,
-        file_paths: List[str],
+        file_paths: list[str],
         target_path: str,
         auto_name: bool = True
     ) -> None:
@@ -387,7 +386,7 @@ class FileBrowserApp(QMainWindow):
 
         all_extensions = sorted(self.extension_to_driver_map.keys())
 
-        driver_to_exts: Dict[str, List[str]] = {}
+        driver_to_exts: dict[str, list[str]] = {}
         for ext, driver_type in self.extension_to_driver_map.items():
             driver_to_exts.setdefault(driver_type, []).append(f"*{ext}")
 
@@ -422,11 +421,11 @@ class FileBrowserApp(QMainWindow):
 
         self.logger.debug("Building filesystem tree.")
         root_node = FileSystemNode("Root", is_dir=True, attributes="-")
-        node_dict: Dict[str, FileSystemNode] = {"/": root_node}
+        node_dict: dict[str, FileSystemNode] = {"/": root_node}
 
-        all_directories_to_scan: List[str] = ["/"]
-        scanned_directories: List[str] = []
-        directory_contents: Dict[str, List[Dict[str, Any]]] = {}
+        all_directories_to_scan: list[str] = ["/"]
+        scanned_directories: list[str] = []
+        directory_contents: dict[str, list[dict[str, Any]]] = {}
 
         while all_directories_to_scan:
             current_dir_path = all_directories_to_scan.pop(0)
@@ -543,7 +542,7 @@ class FileBrowserApp(QMainWindow):
         Returns:
             The full path string.
         """
-        path_parts: List[str] = []
+        path_parts: list[str] = []
         curr = node
         while curr and curr.parent:
             path_parts.insert(0, curr.name)
@@ -1339,7 +1338,7 @@ class FileBrowserApp(QMainWindow):
             self.logger.warning(f"Custom font file not found at {font_path}")
 
         if not custom_font_loaded:
-            monospace_fonts: List[str] = [
+            monospace_fonts: list[str] = [
                 "JetBrainsMono",
                 "Courier New",
                 "DejaVu Sans Mono",

@@ -1,11 +1,11 @@
+import contextlib
 import datetime
 import re
 import struct
 from dataclasses import dataclass
-from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type
+from typing import Any, ClassVar, Optional
 
 from ..disk import Disk
-from ..drivers.base_driver import DiskIODriver
 from ..format_profile import FormatProfile
 from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
@@ -134,9 +134,7 @@ class FATVolumeInfo:
             (self.num_fats * self.sectors_per_fat) +
             root_dir_sectors
         )
-        if first_data_sector >= self.total_sectors:
-            return False
-        return True
+        return not first_data_sector >= self.total_sectors
 
     def to_bytes(self) -> bytes:
         """
@@ -201,11 +199,11 @@ class FATFilesystem(Filesystem):
     """
 
     filesystem_type: ClassVar[str] = "FAT12"
-    filesystem_aliases: ClassVar[List[str]] = ["FAT", "MSDOS"]
+    filesystem_aliases: ClassVar[list[str]] = ["FAT", "MSDOS"]
     validity_threshold: ClassVar[int] = 40
     VALIDITY_THRESHOLD = validity_threshold
 
-    config_class: ClassVar[Type] = FATVolumeInfo
+    config_class: ClassVar[type] = FATVolumeInfo
 
     _invalid_83_chars_pattern = re.compile(r'[\\/:*?"<>|\s+]')
     _reserved_names = {
@@ -229,7 +227,7 @@ class FATFilesystem(Filesystem):
         self.logger = get_logger(self.__class__.__name__)
         self._init_completed = False
         self.boot_sector: Optional[FATVolumeInfo] = config
-        self._cached_allocated_clusters: Optional[List[int]] = None
+        self._cached_allocated_clusters: Optional[list[int]] = None
         self.fat_cache: Optional[bytearray] = None
         self.fat_dirty = False
         self._cached_validity_score: Optional[int] = None
@@ -237,7 +235,7 @@ class FATFilesystem(Filesystem):
         self._try_initialize()
 
     @classmethod
-    def get_format_definitions(cls) -> Dict[str, FormatProfile]:
+    def get_format_definitions(cls) -> dict[str, FormatProfile]:
         """
         Returns all FAT12 format definitions provided by this plugin.
 
@@ -268,7 +266,7 @@ class FATFilesystem(Filesystem):
 
     @staticmethod
     def create_config_from_params(
-        format_info: Dict[str, Any],
+        format_info: dict[str, Any],
         physical_format: PhysicalFormat
     ) -> Optional[FATVolumeInfo]:
         """
@@ -406,7 +404,7 @@ class FATFilesystem(Filesystem):
             FileExistsError: If a file with the same name already exists.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as FAT.")
+            raise OSError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Creating directory: {path}")
         parent_path, dir_name = self._split_path(path)
@@ -436,7 +434,7 @@ class FATFilesystem(Filesystem):
 
         new_cluster = self._find_free_cluster()
         if new_cluster is None:
-            raise IOError("No free clusters available to create directory")
+            raise OSError("No free clusters available to create directory")
         self._set_fat_entry_cached(new_cluster, FAT12_EOC)
         cluster_offset = self._cluster_to_offset(new_cluster)
 
@@ -469,7 +467,7 @@ class FATFilesystem(Filesystem):
             )
             self._set_fat_entry_cached(new_cluster, 0)
             self._commit_fat()
-            raise IOError(
+            raise OSError(
                 "Failed to initialize new directory cluster"
             ) from write_err
 
@@ -481,7 +479,7 @@ class FATFilesystem(Filesystem):
             )
             self._set_fat_entry_cached(new_cluster, 0)
             self._commit_fat()
-            raise IOError(f"No space in parent directory {parent_path}")
+            raise OSError(f"No space in parent directory {parent_path}")
 
         dir_entry_bytes = self._create_directory_entry_bytes(
             name=dir_name,
@@ -503,7 +501,7 @@ class FATFilesystem(Filesystem):
                 f"cluster: {parent_write_err}"
             )
             self._set_fat_entry_cached(new_cluster, 0)
-            raise IOError(
+            raise OSError(
                 "Failed to write directory entry in parent"
             ) from parent_write_err
 
@@ -524,7 +522,7 @@ class FATFilesystem(Filesystem):
             OSError: If attempting to delete a non-empty directory.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as FAT.")
+            raise OSError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         if path == "/":
             raise ValueError("Cannot delete root directory")
@@ -572,7 +570,7 @@ class FATFilesystem(Filesystem):
             self.logger.error(
                 f"Failed to mark entry deleted for '{path}': {write_err}"
             )
-            raise IOError(
+            raise OSError(
                 f"Failed to update directory entry for deletion: {path}"
             ) from write_err
 
@@ -694,7 +692,7 @@ class FATFilesystem(Filesystem):
         self._cached_allocated_clusters = []
         self._initialize_filesystem_parameters()
 
-    def get_allocated_units(self) -> List[int]:
+    def get_allocated_units(self) -> list[int]:
         """
         Returns a sorted list of all allocated cluster numbers.
 
@@ -724,7 +722,7 @@ class FATFilesystem(Filesystem):
         )
         return allocated_clusters
 
-    def get_display_info(self) -> Dict[str, str]:
+    def get_display_info(self) -> dict[str, str]:
         """
         Returns a dictionary of key FAT filesystem parameters for display.
 
@@ -761,7 +759,7 @@ class FATFilesystem(Filesystem):
             )
         }
 
-    def get_disk_map_layout(self) -> Dict[str, Any]:
+    def get_disk_map_layout(self) -> dict[str, Any]:
         """
         Provides data for visualizing the disk layout.
 
@@ -845,7 +843,7 @@ class FATFilesystem(Filesystem):
             'type_color_map': type_map
         }
 
-    def get_file_allocation_units(self, path: str) -> List[int]:
+    def get_file_allocation_units(self, path: str) -> list[int]:
         """
         Gets the list of cluster numbers allocated to a specific file.
 
@@ -861,7 +859,7 @@ class FATFilesystem(Filesystem):
             IsADirectoryError: If the path points to a directory.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as FAT.")
+            raise OSError("Filesystem is not valid or not recognized as FAT.")
 
         path = self._normalize_path(path)
         self.logger.debug(f"Getting allocation units for file: {path}")
@@ -895,7 +893,7 @@ class FATFilesystem(Filesystem):
         self.logger.debug(f"File '{path}' uses clusters: {cluster_chain}")
         return cluster_chain
 
-    def get_free_space(self) -> Tuple[int, int]:
+    def get_free_space(self) -> tuple[int, int]:
         """
         Calculates the free and total data space on the disk.
 
@@ -949,10 +947,8 @@ class FATFilesystem(Filesystem):
                 score += 5
 
             parsed_bpb = None
-            try:
+            with contextlib.suppress(ValueError):
                 parsed_bpb = FATVolumeInfo.from_bytes(boot_sector_data)
-            except ValueError:
-                pass
 
             if parsed_bpb and parsed_bpb.is_valid():
                 score += 50
@@ -1006,7 +1002,7 @@ class FATFilesystem(Filesystem):
             return self.boot_sector.volume_label.strip()
         return None
 
-    def list_directory(self, path: str = "/") -> List[FileInfo]:
+    def list_directory(self, path: str = "/") -> list[FileInfo]:
         """
         Lists all files and subdirectories in a given directory.
 
@@ -1020,7 +1016,7 @@ class FATFilesystem(Filesystem):
             IOError: If the filesystem is not valid.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as FAT.")
+            raise OSError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Listing directory: {path}")
 
@@ -1058,7 +1054,7 @@ class FATFilesystem(Filesystem):
             IsADirectoryError: If the path points to a directory.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as FAT.")
+            raise OSError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Reading file: {path}")
 
@@ -1100,7 +1096,7 @@ class FATFilesystem(Filesystem):
             IsADirectoryError: If a directory exists at the target path.
         """
         if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as FAT.")
+            raise OSError("Filesystem is not valid or not recognized as FAT.")
         path = self._normalize_path(path)
         self.logger.debug(f"Writing file: {path}, size: {len(data)} bytes")
 
@@ -1135,7 +1131,7 @@ class FATFilesystem(Filesystem):
         if num_clusters_needed > 0:
             clusters = self._allocate_cluster_chain(num_clusters_needed)
             if not clusters:
-                raise IOError("Not enough free space to write file")
+                raise OSError("Not enough free space to write file")
             start_cluster = clusters[0]
             self._write_cluster_chain_data(clusters, data)
 
@@ -1144,7 +1140,7 @@ class FATFilesystem(Filesystem):
             if start_cluster > 0:
                 self._free_cluster_chain(start_cluster)
                 self._commit_fat()
-            raise IOError(f"No space in directory {parent_path}")
+            raise OSError(f"No space in directory {parent_path}")
 
         dir_cluster_num, entry_offset_in_cluster = entry_location
         entry_disk_offset = self._get_offset_for_directory_entry(
@@ -1166,7 +1162,7 @@ class FATFilesystem(Filesystem):
     def _allocate_cluster_chain(
         self,
         num_clusters: int
-    ) -> Optional[List[int]]:
+    ) -> Optional[list[int]]:
         """
         Allocates a chain of free clusters in the FAT.
 
@@ -1196,7 +1192,7 @@ class FATFilesystem(Filesystem):
             for _ in range(num_clusters):
                 free_cluster = self._find_free_cluster()
                 if free_cluster is None:
-                    raise IOError(
+                    raise OSError(
                         f"Could not allocate {num_clusters} clusters, only "
                         f"found {len(allocated_clusters)}."
                     )
@@ -1294,7 +1290,7 @@ class FATFilesystem(Filesystem):
         self,
         dir_cluster: int,
         name_to_find: str
-    ) -> Tuple[FileInfo, Tuple[int, int]]:
+    ) -> tuple[FileInfo, tuple[int, int]]:
         """
         Finds a directory entry by name within a given directory cluster.
 
@@ -1317,7 +1313,7 @@ class FATFilesystem(Filesystem):
         def find_in_data(
             data: bytes,
             cluster_num: int
-        ) -> Optional[Tuple[FileInfo, Tuple[int, int]]]:
+        ) -> Optional[tuple[FileInfo, tuple[int, int]]]:
             for i in range(0, len(data), 32):
                 entry_data = data[i:i + 32]
                 if len(entry_data) < 32 or entry_data[0] == ENTRY_UNUSED:
@@ -1382,7 +1378,7 @@ class FATFilesystem(Filesystem):
     def _find_free_directory_entry(
         self,
         dir_cluster: int
-    ) -> Optional[Tuple[int, int]]:
+    ) -> Optional[tuple[int, int]]:
         """
         Finds a free slot in a directory for a new entry.
 
@@ -1401,7 +1397,7 @@ class FATFilesystem(Filesystem):
         def find_in_data(
             data: bytes,
             cluster_num: int
-        ) -> Optional[Tuple[int, int]]:
+        ) -> Optional[tuple[int, int]]:
             for i in range(0, len(data), 32):
                 if data[i] in (ENTRY_UNUSED, ENTRY_DELETED):
                     return cluster_num, i
@@ -1571,7 +1567,7 @@ class FATFilesystem(Filesystem):
             f"{start_cluster}"
         )
 
-    def _get_cluster_chain(self, start_cluster: int) -> List[int]:
+    def _get_cluster_chain(self, start_cluster: int) -> list[int]:
         """
         Reads the FAT to trace and return a list of clusters in a chain.
 
@@ -1755,11 +1751,9 @@ class FATFilesystem(Filesystem):
             return False
         if base.strip() != base or ext.strip() != ext:
             return False
-        if base.startswith(".") or (ext and ext.startswith(".")):
-            return False
-        return True
+        return not (base.startswith(".") or ext and ext.startswith("."))
 
-    def _list_directory_by_cluster(self, cluster: int) -> List[FileInfo]:
+    def _list_directory_by_cluster(self, cluster: int) -> list[FileInfo]:
         """
         Reads and parses all directory entries for a given cluster chain.
 
@@ -1821,7 +1815,7 @@ class FATFilesystem(Filesystem):
             )
             self.fat_dirty = False
             return True
-        except IOError as e:
+        except OSError as e:
             self.logger.error(f"IOError loading FAT cache: {e}")
             self.fat_cache = None
             return False
@@ -1846,7 +1840,7 @@ class FATFilesystem(Filesystem):
         path = re.sub('/+', '/', path)
         return path if path else "/"
 
-    def _parse_directory_data(self, dir_data: bytes) -> List[FileInfo]:
+    def _parse_directory_data(self, dir_data: bytes) -> list[FileInfo]:
         """
         Parses a block of raw directory data into a list of FileInfo objects.
 
@@ -2003,17 +1997,17 @@ class FATFilesystem(Filesystem):
             start_offset_in_data = offset % bps
             end_offset_in_data = start_offset_in_data + length
             if len(all_data) < end_offset_in_data:
-                raise IOError(
+                raise OSError(
                     f"Short read: expected {end_offset_in_data} bytes in "
                     f"buffer, got {len(all_data)}"
                 )
             return all_data[start_offset_in_data:end_offset_in_data]
-        except (ValueError, IOError) as e:
-            raise IOError(
+        except (OSError, ValueError) as e:
+            raise OSError(
                 f"Failed to read {length} bytes at offset {offset}: {e}"
             ) from e
 
-    def _read_cluster_chain_data(self, cluster_chain: List[int]) -> bytes:
+    def _read_cluster_chain_data(self, cluster_chain: list[int]) -> bytes:
         """
         Reads the full data content of a file from its cluster chain.
 
@@ -2059,7 +2053,7 @@ class FATFilesystem(Filesystem):
             raise ValueError("Filesystem not initialized")
         if self.fat_cache is None:
             if load_if_missing and not self._load_fat_cache():
-                raise IOError("Failed to load FAT cache for reading entry")
+                raise OSError("Failed to load FAT cache for reading entry")
             elif self.fat_cache is None:
                 raise ValueError("FAT cache unavailable")
         if not (0 <= cluster < self.num_clusters + 2):
@@ -2088,7 +2082,7 @@ class FATFilesystem(Filesystem):
         if not self._init_completed:
             raise ValueError("Filesystem not initialized")
         if self.fat_cache is None and not self._load_fat_cache():
-            raise IOError("Failed to load FAT cache for writing entry")
+            raise OSError("Failed to load FAT cache for writing entry")
         if not (2 <= cluster < self.num_clusters + 2):
             raise ValueError(f"Invalid cluster number: {cluster}")
 
@@ -2107,7 +2101,7 @@ class FATFilesystem(Filesystem):
             self.fat_dirty = True
             self._cached_allocated_clusters = None
 
-    def _split_path(self, path: str) -> Tuple[str, str]:
+    def _split_path(self, path: str) -> tuple[str, str]:
         """
         Splits a path into its parent directory path and the final component.
 
@@ -2139,7 +2133,7 @@ class FATFilesystem(Filesystem):
                 self._initialize_filesystem_parameters()
                 self._load_fat_cache()
                 self._init_completed = True
-        except (ValueError, IOError) as e:
+        except (OSError, ValueError) as e:
             self.logger.debug(
                 f"FAT Initialization failed during initial check: {e}"
             )
@@ -2196,7 +2190,7 @@ class FATFilesystem(Filesystem):
 
     def _write_cluster_chain_data(
         self,
-        cluster_chain: List[int],
+        cluster_chain: list[int],
         data: bytes
     ) -> None:
         """
@@ -2250,5 +2244,5 @@ class FATFilesystem(Filesystem):
                 self._write_bytes(offset, self.fat_cache)
             self.fat_dirty = False
             self.logger.info("Successfully wrote FAT sectors.")
-        except IOError as e:
-            raise IOError("Failed to write FAT cache to disk") from e
+        except OSError as e:
+            raise OSError("Failed to write FAT cache to disk") from e
