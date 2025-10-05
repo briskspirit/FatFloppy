@@ -1,46 +1,36 @@
-# src/fatfloppy/core/filesystems/hdos_fs.py
-"""
-This module provides a filesystem implementation for the Heathkit
-Disk Operating System (HDOS). It is designed to parse HDOS disk images,
-list directories, and read files based on the "HDOS Disk File Handling" article.
-"""
 import datetime
 import struct
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, ClassVar, Type
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type
 
-from .fs_base import FileInfo, Filesystem
 from ..disk import Disk
 from ..format_profile import FormatProfile
 from ..physical_format import PhysicalFormat, TrackFormat
 from ..utils.logging_config import get_logger
+from .fs_base import FileInfo, Filesystem
 
-# --- Constants based on the HDOS article and structure ---
 HDOS_BYTES_PER_SECTOR = 256
 HDOS_SECTORS_PER_TRACK = 10
 HDOS_TRACKS = 40
 HDOS_DIR_ENTRY_SIZE = 23
 HDOS_DEFAULT_DATETIME = datetime.datetime(1970, 1, 1)
 
-# A directory "cluster block" is a fixed 512-byte structure.
 DIR_BLOCK_SECTORS = 2
 DIR_BLOCK_BYTES = DIR_BLOCK_SECTORS * HDOS_BYTES_PER_SECTOR
-DIR_ENTRIES_PER_BLOCK = 22  # 22 entries * 23 bytes = 506 bytes, plus trailer.
+DIR_ENTRIES_PER_BLOCK = 22
 
-# Directory block trailer layout (last 6 bytes of 512-byte dir block)
-DIR_ZERO_OFFSET = 506  # 0x00
-DIR_ENTRYLEN_OFFSET = 507  # usually 23
-DIR_THIS_BLOCK_PTR_OFFSET = 508  # <H, little-endian>
-DIR_NEXT_BLOCK_PTR_OFFSET = 510  # <H, little-endian>
+DIR_ZERO_OFFSET = 506
+DIR_ENTRYLEN_OFFSET = 507
+DIR_THIS_BLOCK_PTR_OFFSET = 508
+DIR_NEXT_BLOCK_PTR_OFFSET = 510
 
-# LBA (0-based) for the critical Label Identification Sector
-HDOS_LABEL_SECTOR_LBA = 9  # Track 0, Sector 10
-HDOS_RGT_SECTOR_LBA = 10  # Track 1, Sector 1 (RGT.SYS location)
-HDOS_SYSTEM_FILES = {'RGT.SYS', 'GRT.SYS', 'HDOS.SYS'}  # Flags = 0xF0
-HDOS_DIRECT_SYS = {'DIRECT.SYS'}  # Flags = 0xE0
-# System file flag constants
-FLAGS_SYSTEM_CORE = 0xF0  # System|Locked|WriteProtect|Contiguous
-FLAGS_DIRECT = 0xE0       # System|Locked|WriteProtect
+HDOS_LABEL_SECTOR_LBA = 9
+HDOS_RGT_SECTOR_LBA = 10
+HDOS_SYSTEM_FILES = {'RGT.SYS', 'GRT.SYS', 'HDOS.SYS'}
+HDOS_DIRECT_SYS = {'DIRECT.SYS'}
+
+FLAGS_SYSTEM_CORE = 0xF0
+FLAGS_DIRECT = 0xE0
 
 
 @dataclass
@@ -49,14 +39,13 @@ class HDOSDirectoryEntry:
     raw_name: bytes
     name: str
     ext: str
-    cluster_factor: int  # Raw value from byte 13 (label.cluster_factor + 1)
-                         # NOTE: For I/O operations, always use label.cluster_factor
+    cluster_factor: int
     first_group: int
     last_group: int
     last_sector_index: int
     creation_date: datetime.datetime
     modification_date: datetime.datetime
-    attributes: str = "-"  # S=System, L=Locked, W=WriteProtect, C=Contiguous
+    attributes: str = "-"
 
     def get_filename(self) -> str:
         """Constructs the full 8.3 filename from the entry."""
@@ -70,9 +59,9 @@ class HDOSLabelRecord:
     """
     title: str
     volume_number: int
-    cluster_factor: int  # Defines the directory block size (e.g., 2 sectors)
-    dir_start_block: int  # LBA of the first directory sector
-    grt_start_block: int  # LBA of the Group Reservation Table sector
+    cluster_factor: int
+    dir_start_block: int
+    grt_start_block: int
 
     @classmethod
     def from_bytes(cls, data: bytes) -> 'HDOSLabelRecord':
@@ -89,20 +78,32 @@ class HDOSLabelRecord:
             ValueError: If the data length is incorrect.
         """
         if len(data) < HDOS_BYTES_PER_SECTOR:
-            raise ValueError(f"Label sector data must be {HDOS_BYTES_PER_SECTOR} bytes.")
+            raise ValueError(
+                f"Label sector data must be {HDOS_BYTES_PER_SECTOR} bytes."
+            )
 
         dir_start_block = struct.unpack_from("<H", data, 3)[0]
         grt_start_block = struct.unpack_from("<H", data, 5)[0]
         cluster_factor = data[7]
         volume_number = data[0]
 
-        title = data[17:77].decode('ascii', errors='ignore').strip('\x00').strip()
+        title = data[17:77].decode(
+            'ascii',
+            errors='ignore'
+        ).strip('\x00').strip()
 
-        return cls(title, volume_number, cluster_factor, dir_start_block, grt_start_block)
+        return cls(
+            title,
+            volume_number,
+            cluster_factor,
+            dir_start_block,
+            grt_start_block
+        )
 
     def is_valid(self, max_blocks: int) -> bool:
         """
         Performs a basic sanity check on the parsed label record values.
+
         A cluster_factor of 0 is valid and implies 1 sector per group.
 
         Args:
@@ -111,20 +112,22 @@ class HDOSLabelRecord:
         Returns:
             True if the label values seem plausible, False otherwise.
         """
-        return (0 <= self.cluster_factor <= 16 and
-                HDOS_SECTORS_PER_TRACK <= self.dir_start_block < max_blocks and
-                HDOS_SECTORS_PER_TRACK <= self.grt_start_block < max_blocks)
+        return (
+            0 <= self.cluster_factor <= 16 and
+            HDOS_SECTORS_PER_TRACK <= self.dir_start_block < max_blocks and
+            HDOS_SECTORS_PER_TRACK <= self.grt_start_block < max_blocks
+        )
 
 
 class HDOSFilesystem(Filesystem):
     """
     Provides a read-only interface to an HDOS filesystem on a disk image.
     """
-    # Plugin metadata
+
     filesystem_type: ClassVar[str] = "HDOS"
     filesystem_aliases: ClassVar[List[str]] = []
     validity_threshold: ClassVar[int] = 95
-    VALIDITY_THRESHOLD = validity_threshold  # For backward compatibility with tests
+    VALIDITY_THRESHOLD = validity_threshold
 
     config_class: ClassVar[Type] = HDOSLabelRecord
 
@@ -153,245 +156,57 @@ class HDOSFilesystem(Filesystem):
         Returns all HDOS format definitions provided by this plugin.
 
         Returns:
-            Dictionary mapping format names to FormatProfile objects
+            Dictionary mapping format names to FormatProfile objects.
         """
         from .formats.hdos_formats import HDOS_FORMATS
         return HDOS_FORMATS
 
     @staticmethod
     def configs_match(config1: Any, config2: Any) -> bool:
-        if not isinstance(config1, HDOSLabelRecord) or not isinstance(config2, HDOSLabelRecord):
-            return False
-        # HDOS match is primarily based on physical format; if configs are present, it's a match.
-        return True
-
-    # --- Public API Methods ---
-
-    def get_volume_label(self) -> Optional[str]:
         """
-        Returns the HDOS volume label from the label record.
-
-        Returns:
-            The volume label (title) as a string, or None if not available.
-        """
-        if self.label and self.label.title:
-            return self.label.title.strip()
-        return None
-
-    def get_validity_score(self) -> int:
-        """
-        Scores the likelihood that the disk contains a valid HDOS filesystem.
-
-        Returns:
-            A score from 0 to 100 indicating the likelihood of a valid HDOS FS.
-        """
-        if self._cached_validity_score is not None:
-            return self._cached_validity_score
-
-        if not self.disk:
-            return 0
-        original_pf = self.disk.physical_format
-
-        try:
-            canonical_pf = FormatProfile(
-                name="hdos_canonical",
-                description="",
-                physical_format=PhysicalFormat(
-                    cylinders=HDOS_TRACKS, heads=1, rpm=300, heads_inverted=False,
-                    bytes_per_sector=HDOS_BYTES_PER_SECTOR,
-                    track_formats=[TrackFormat(0, 39, 0, 0, HDOS_SECTORS_PER_TRACK, "FM", 250, 1, id_start=1)]
-                ),
-                filesystem_config=None  # No config needed for validation geometry
-            ).physical_format
-            self.disk.set_geometry(canonical_pf)
-
-            self._initialize()
-            self._cached_validity_score = 100
-        except (ValueError, IOError, struct.error) as e:
-            self.logger.debug(f"HDOS validation failed: {e}")
-            self._cached_validity_score = 0
-        finally:
-            if original_pf:
-                self.disk.set_geometry(original_pf)
-            if self._cached_validity_score == 0:
-                self._init_completed = False
-                self.label = None
-                self._data_base_lba_cache = None
-
-        return self._cached_validity_score
-
-    def list_directory(self, path: str) -> List[FileInfo]:
-        """Lists all files in the root directory."""
-        if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as HDOS.")
-        if path != "/":
-            raise NotImplementedError("HDOS does not support subdirectories.")
-        self._initialize()
-        return [FileInfo(
-            name=e.get_filename(),
-            size=self._calculate_file_size(e),
-            is_dir=False,
-            datetime=e.modification_date,
-            attributes=e.attributes)
-            for e in self._dir_entries]
-
-    def read_file(self, path: str) -> bytes:
-        """
-        Reads the complete content of a specified file.
+        Checks if two filesystem configurations match.
 
         Args:
-            path: The full path to the file to read (e.g., "/MYFILE.TXT").
+            config1: First configuration to compare.
+            config2: Second configuration to compare.
 
         Returns:
-            The raw byte content of the file.
+            True if both are HDOSLabelRecord instances, False otherwise.
+        """
+        if not isinstance(config1, HDOSLabelRecord) or not isinstance(
+            config2,
+            HDOSLabelRecord
+        ):
+            return False
+        return True
+
+    @property
+    def allocation_unit_size(self) -> int:
+        """
+        Returns the size of a single allocation unit (group) in bytes.
+
+        Returns:
+            The group size in bytes, or 0 if the filesystem is not valid.
+        """
+        if self.get_validity_score() < self.validity_threshold:
+            return 0
+        self._initialize()
+        if not self.label:
+            return 0
+
+        sectors_per_group = (
+            self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        )
+        return sectors_per_group * HDOS_BYTES_PER_SECTOR
+
+    def create_directory(self, path: str) -> None:
+        """
+        HDOS does not support creating directories.
 
         Raises:
-            IOError: If the filesystem is not valid or a read error occurs.
-            FileNotFoundError: If the specified file does not exist.
+            NotImplementedError: Always raised.
         """
-        if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem is not valid or not recognized as HDOS.")
-
-        self._initialize()
-
-        # Parse filename the same way write does to handle truncation
-        filename_upper = path.strip("/").upper()
-        parts = filename_upper.split('.')
-        name_part = parts[0][:8] if parts else ""  # Truncate to 8 chars
-        ext_part = parts[1][:3] if len(parts) > 1 else ""  # Truncate to 3 chars
-
-        # Reconstruct the truncated filename
-        search_filename = f"{name_part}.{ext_part}" if ext_part else name_part
-
-        target_entry = None
-        for e in self._dir_entries:
-            entry_filename = e.get_filename().upper()
-            if entry_filename == search_filename:
-                target_entry = e
-                break
-
-        if not target_entry:
-            raise FileNotFoundError(f"File not found: {path}")
-
-        file_data = bytearray()
-        current_group = target_entry.first_group
-
-        sectors_per_group = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
-        data_area_start_lba = self._data_base_lba()
-
-        for _ in range(self.disk.physical_format.total_sectors):
-            if current_group == 0:
-                break
-            if not (0 < current_group < len(self._grt)):
-                raise IOError(f"Corrupt file chain: group {current_group} is out of GRT bounds.")
-
-            start_lba_of_group = data_area_start_lba + ((current_group - 1) * sectors_per_group)
-
-            sectors_to_read = sectors_per_group
-            if current_group == target_entry.last_group:
-                sectors_to_read = target_entry.last_sector_index
-
-            for i in range(sectors_to_read):
-                try:
-                    file_data.extend(self._read_lba(start_lba_of_group + i))
-                except (ValueError, IOError) as e:
-                    self.logger.error(f"Failed to read LBA {start_lba_of_group + i} for file {path}: {e}")
-                    raise IOError(f"Failed reading LBA {start_lba_of_group + i}") from e
-
-            if current_group == target_entry.last_group:
-                break
-            current_group = self._grt[current_group]
-
-        # Calculate the allocated size (sector-aligned)
-        allocated_size = self._calculate_file_size(target_entry)
-        file_data = file_data[:allocated_size]
-
-        # Trim trailing null bytes only if this appears to be a text file
-        # Strategy: Find last non-null byte, check if non-null portion is mostly text
-        if len(file_data) > 0:
-            # Find the last non-null byte
-            last_non_null = len(file_data) - 1
-            while last_non_null >= 0 and file_data[last_non_null] == 0:
-                last_non_null -= 1
-
-            # If there are trailing nulls and we have actual content
-            if last_non_null >= 0 and last_non_null < len(file_data) - 1:
-                # Check if the non-null portion is mostly text
-                non_null_portion = file_data[:last_non_null + 1]
-                text_bytes = sum(1 for b in non_null_portion if b in range(32, 127) or b in (9, 10, 13))
-                text_ratio = text_bytes / len(non_null_portion) if len(non_null_portion) > 0 else 0
-
-                # If >90% of non-null bytes are text-like, trim the nulls
-                if text_ratio > 0.9:
-                    file_data = file_data[:last_non_null + 1]
-                    self.logger.debug(f"Trimmed trailing nulls from text file: {search_filename}")
-
-        return bytes(file_data)
-
-    def write_file(self, path: str, data: bytes) -> None:
-        """
-        Writes data to a new file on the disk. Deletes existing file if present.
-        """
-        if self.get_validity_score() < self.validity_threshold:
-            raise IOError("Filesystem not valid.")
-
-        try:
-            self.delete(path)
-        except FileNotFoundError:
-            pass
-
-        self._initialize()
-        spg = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
-
-        num_sectors_needed = (len(data) + HDOS_BYTES_PER_SECTOR - 1) // HDOS_BYTES_PER_SECTOR
-        num_groups_needed = (num_sectors_needed + spg - 1) // spg if num_sectors_needed > 0 else 0
-
-        if num_groups_needed == 0:
-            self._create_empty_file_entry(path)
-            self.disk.flush()
-            self._dir_entries = None
-            self._init_completed = False
-            return
-
-        # Allocate groups (same as before)
-        allocated_groups = []
-        current_group = self._grt[0]
-        for _ in range(num_groups_needed):
-            if current_group == 0:
-                raise IOError("Not enough free space on disk.")
-            allocated_groups.append(current_group)
-            current_group = self._grt[current_group]
-
-        self._grt[0] = current_group
-        for i in range(len(allocated_groups) - 1):
-            self._grt[allocated_groups[i]] = allocated_groups[i + 1]
-        self._grt[allocated_groups[-1]] = 0
-
-        # Write data (same as before)
-        padded_data = data.ljust(num_sectors_needed * HDOS_BYTES_PER_SECTOR, b'\x00')
-        data_area_start_lba = self._data_base_lba()
-        for i, group_num in enumerate(allocated_groups):
-            start_lba = data_area_start_lba + (group_num - 1) * spg
-            sector_offset = i * spg
-            for j in range(spg):
-                lba = start_lba + j
-                sector_index = sector_offset + j
-                if sector_index < num_sectors_needed:
-                    start = sector_index * HDOS_BYTES_PER_SECTOR
-                    end = start + HDOS_BYTES_PER_SECTOR
-                    self._write_lba(lba, padded_data[start:end])
-
-        # Create directory entry with cluster factor
-        self._create_and_write_dir_entry(path, allocated_groups, num_sectors_needed, spg)
-
-        self._write_lba(self.label.grt_start_block, self._grt)
-        self.disk.flush()
-
-        self._dir_entries = None
-        self._grt = None
-        self._init_completed = False
-        self._data_base_lba_cache = None
-        self.logger.info(f"Successfully wrote file '{path}' ({len(data)} bytes).")
+        raise NotImplementedError("HDOS does not support directories.")
 
     def delete(self, path: str) -> None:
         """
@@ -408,14 +223,14 @@ class HDOSFilesystem(Filesystem):
             raise IOError("Filesystem is not valid.")
         self._initialize()
 
-        # Parse filename the same way as read_file to handle truncation
         filename_upper = path.strip("/").upper()
         parts = filename_upper.split('.')
         name_part = parts[0][:8] if parts else ""
         ext_part = parts[1][:3] if len(parts) > 1 else ""
-        search_filename = f"{name_part}.{ext_part}" if ext_part else name_part
+        search_filename = (
+            f"{name_part}.{ext_part}" if ext_part else name_part
+        )
 
-        # Protect system files from deletion
         all_protected = HDOS_SYSTEM_FILES | HDOS_DIRECT_SYS
         if search_filename in all_protected or filename_upper in all_protected:
             raise IOError(f"Cannot delete system file: {filename_upper}")
@@ -424,20 +239,27 @@ class HDOSFilesystem(Filesystem):
         entry_dir_lba = 0
         entry_offset_in_block = 0
 
-        # Find the file in the directory
         current_dir_lba = self.label.dir_start_block
         for _ in range(20):
             if current_dir_lba == 0:
                 break
             try:
-                dir_data = self._read_lba(current_dir_lba) + self._read_lba(current_dir_lba + 1)
+                dir_data = (
+                    self._read_lba(current_dir_lba) +
+                    self._read_lba(current_dir_lba + 1)
+                )
             except (IOError, ValueError) as e:
-                self.logger.error(f"Could not read directory block at LBA {current_dir_lba}: {e}")
+                self.logger.error(
+                    f"Could not read directory block at LBA "
+                    f"{current_dir_lba}: {e}"
+                )
                 break
 
             for i in range(DIR_ENTRIES_PER_BLOCK):
                 offset = i * HDOS_DIR_ENTRY_SIZE
-                entry = self._parse_single_dir_entry(dir_data[offset: offset + HDOS_DIR_ENTRY_SIZE])
+                entry = self._parse_single_dir_entry(
+                    dir_data[offset: offset + HDOS_DIR_ENTRY_SIZE]
+                )
                 if entry and entry.get_filename().upper() == search_filename:
                     found_entry = entry
                     entry_dir_lba = current_dir_lba
@@ -446,14 +268,17 @@ class HDOSFilesystem(Filesystem):
             if found_entry:
                 break
             try:
-                current_dir_lba = struct.unpack_from("<H", dir_data, DIR_NEXT_BLOCK_PTR_OFFSET)[0]
+                current_dir_lba = struct.unpack_from(
+                    "<H",
+                    dir_data,
+                    DIR_NEXT_BLOCK_PTR_OFFSET
+                )[0]
             except struct.error:
                 break
 
         if not found_entry:
             raise FileNotFoundError(f"File not found: {path}")
 
-        # Collect all groups in the file's chain before freeing
         file_groups_to_free = []
         if found_entry.first_group != 0:
             current = found_entry.first_group
@@ -464,84 +289,102 @@ class HDOSFilesystem(Filesystem):
                 if current == found_entry.last_group:
                     break
                 next_group = self._grt[current]
-                if next_group == current:  # Circular reference
-                    self.logger.warning(f"Circular reference in file chain at group {current}")
+                if next_group == current:
+                    self.logger.warning(
+                        f"Circular reference in file chain at group {current}"
+                    )
                     break
                 current = next_group
 
-        self.logger.info(f"Deleting file '{path}' which uses {len(file_groups_to_free)} groups: {file_groups_to_free}")
+        self.logger.info(
+            f"Deleting file '{path}' which uses {len(file_groups_to_free)} "
+            f"groups: {file_groups_to_free}"
+        )
 
-        # Free the file's groups by adding them to the free chain
         if file_groups_to_free:
-            # Check if we need to rebuild the free chain from scratch
             if self._grt[0] == 0:
-                self.logger.info("Rebuilding free chain from scratch after deletion")
+                self.logger.info(
+                    "Rebuilding free chain from scratch after deletion"
+                )
 
-                # Get all currently allocated groups (before this deletion)
                 current_allocated = set(self.get_allocated_units())
-
-                # Remove the groups from the file we're deleting
                 deleted_file_groups_set = set(file_groups_to_free)
                 current_allocated -= deleted_file_groups_set
 
-                # Build free chain from all non-allocated groups
                 all_groups = set(range(1, self._num_groups_on_disk + 1))
 
-                # Exclude RGT locked-out groups
                 rgt_locked_groups = set()
                 if self._rgt:
-                    for g in range(1, min(self._num_groups_on_disk + 1, len(self._rgt))):
+                    for g in range(
+                        1,
+                        min(self._num_groups_on_disk + 1, len(self._rgt))
+                    ):
                         if self._is_group_locked_out(g):
                             rgt_locked_groups.add(g)
-                    self.logger.debug(f"Excluding {len(rgt_locked_groups)} RGT locked-out groups from free chain")
+                    self.logger.debug(
+                        f"Excluding {len(rgt_locked_groups)} RGT locked-out "
+                        "groups from free chain"
+                    )
 
-                # Free groups = all - allocated - locked
-                free_groups = sorted(all_groups - current_allocated - rgt_locked_groups)
+                free_groups = sorted(
+                    all_groups - current_allocated - rgt_locked_groups
+                )
 
-                # Link them into a chain
                 for i in range(len(free_groups) - 1):
                     self._grt[free_groups[i]] = free_groups[i + 1]
                 if free_groups:
                     self._grt[free_groups[-1]] = 0
                     self._grt[0] = free_groups[0]
 
-                self.logger.info(f"Built free chain with {len(free_groups)} groups")
+                self.logger.info(
+                    f"Built free chain with {len(free_groups)} groups"
+                )
             else:
-                # Normal case: prepend freed groups to existing free chain
                 old_free_start = self._grt[0]
 
-                # Link the freed groups together
                 for i in range(len(file_groups_to_free) - 1):
-                    self._grt[file_groups_to_free[i]] = file_groups_to_free[i + 1]
+                    self._grt[file_groups_to_free[i]] = (
+                        file_groups_to_free[i + 1]
+                    )
 
-                # Link last freed group to old free chain
                 self._grt[file_groups_to_free[-1]] = old_free_start
-
-                # Update GRT[0] to point to first freed group
                 self._grt[0] = file_groups_to_free[0]
 
-                self.logger.info(f"Prepended {len(file_groups_to_free)} freed groups to free chain")
+                self.logger.info(
+                    f"Prepended {len(file_groups_to_free)} freed groups to "
+                    "free chain"
+                )
 
-            # Write the updated GRT
             try:
                 self._write_lba(self.label.grt_start_block, self._grt)
             except (IOError, ValueError) as e:
                 self.logger.error(f"Failed to write updated GRT: {e}")
-                raise IOError("Failed to update GRT after file deletion") from e
+                raise IOError(
+                    "Failed to update GRT after file deletion"
+                ) from e
 
-        # Mark the directory entry as deleted
         try:
-            dir_block_data = bytearray(self._read_lba(entry_dir_lba) + self._read_lba(entry_dir_lba + 1))
+            dir_block_data = bytearray(
+                self._read_lba(entry_dir_lba) +
+                self._read_lba(entry_dir_lba + 1)
+            )
             dir_block_data[entry_offset_in_block] = 0xFF
-            self._write_lba(entry_dir_lba, dir_block_data[:HDOS_BYTES_PER_SECTOR])
-            self._write_lba(entry_dir_lba + 1, dir_block_data[HDOS_BYTES_PER_SECTOR:])
+            self._write_lba(
+                entry_dir_lba,
+                dir_block_data[:HDOS_BYTES_PER_SECTOR]
+            )
+            self._write_lba(
+                entry_dir_lba + 1,
+                dir_block_data[HDOS_BYTES_PER_SECTOR:]
+            )
         except (IOError, ValueError) as e:
-            self.logger.error(f"Failed to update directory after deleting {path}: {e}")
+            self.logger.error(
+                f"Failed to update directory after deleting {path}: {e}"
+            )
             raise IOError("Failed to update directory entry") from e
 
         self.disk.flush()
 
-        # Clear all cached data to force re-initialization
         self._dir_entries = None
         self._grt = None
         self._rgt = None
@@ -549,104 +392,10 @@ class HDOSFilesystem(Filesystem):
         self._data_base_lba_cache = None
         self._cached_validity_score = None
 
-        self.logger.info(f"Deleted file '{path}' and freed {len(file_groups_to_free)} groups")
-
-    def format_fs(self, profile: FormatProfile, volume_label: Optional[str] = None) -> None:
-        """
-        Formats the disk with a blank HDOS filesystem.
-
-        Args:
-            profile: The FormatProfile containing filesystem and physical parameters.
-            volume_label: An optional volume title to apply to the disk.
-
-        Raises:
-            ValueError: If the profile does not contain a valid HDOSLabelRecord.
-        """
-        if not isinstance(profile.filesystem_config, HDOSLabelRecord):
-            raise ValueError("FormatProfile must contain an HDOSLabelRecord for formatting.")
-
-        label_template = profile.filesystem_config
-        if volume_label:
-            label_template.title = volume_label
-
-        pf = profile.physical_format
-        spg = label_template.cluster_factor if label_template.cluster_factor > 0 else 1
-
-        data_area_start_lba = 2
-        total_data_sectors = pf.total_sectors - data_area_start_lba
-        num_groups_on_disk = total_data_sectors // spg
-
-        # Calculate which groups are occupied by the directory
-        dir_start_group = ((label_template.dir_start_block - data_area_start_lba) // spg) + 1
-        dir_groups_needed = (DIR_BLOCK_SECTORS + spg - 1) // spg
-        dir_reserved_groups = set(range(dir_start_group, dir_start_group + dir_groups_needed))
-
-        # Calculate which group is occupied by the GRT itself (if in data area)
-        grt_reserved_groups = set()
-        if label_template.grt_start_block >= data_area_start_lba:
-            grt_group = ((label_template.grt_start_block - data_area_start_lba) // spg) + 1
-            if 1 <= grt_group <= num_groups_on_disk:
-                grt_reserved_groups.add(grt_group)
-
-        # Calculate Track 0 groups that must be locked out
-        track0_end_lba = HDOS_SECTORS_PER_TRACK - 1  # LBA 9
-        track0_groups = set()
-        for g in range(1, num_groups_on_disk + 1):
-            group_start_lba = data_area_start_lba + (g - 1) * spg
-            if group_start_lba <= track0_end_lba:
-                track0_groups.add(g)
-
-        self.logger.info(f"Track 0 groups to lock out: {sorted(track0_groups)}")
-
-        # Combine all reserved (allocated) groups
-        reserved_groups = dir_reserved_groups | grt_reserved_groups | track0_groups
-
-        # Build the GRT with a free chain excluding reserved groups
-        grt_data = bytearray(HDOS_BYTES_PER_SECTOR)
-        free_chain_head = 0
-        for i in range(num_groups_on_disk, 0, -1):
-            if i >= len(grt_data):
-                continue
-            if i in reserved_groups:
-                grt_data[i] = 0xFF
-            else:
-                grt_data[i] = free_chain_head
-                free_chain_head = i
-        grt_data[0] = free_chain_head
-
-        # Create RGT (Reserved Group Table) marking Track 0 groups as locked out
-        rgt_data = bytearray(HDOS_BYTES_PER_SECTOR)
-        for i in range(len(rgt_data)):
-            if i == 0:
-                rgt_data[i] = 0x00  # RGT[0] not used
-            elif i in track0_groups:
-                rgt_data[i] = 0xFF  # Locked out
-            else:
-                rgt_data[i] = 0x01  # Usable
-
-        # Create empty directory
-        dir_data = bytearray(DIR_BLOCK_BYTES)
-        dir_data[0] = 0xFE
-        struct.pack_into("<H", dir_data, DIR_NEXT_BLOCK_PTR_OFFSET, 0)
-
-        # Write all structures
-        label_bytes = self._create_label_sector_bytes(label_template)
-        self._write_lba(HDOS_LABEL_SECTOR_LBA, label_bytes)
-        self._write_lba(HDOS_RGT_SECTOR_LBA, rgt_data)  # Write RGT!
-        self._write_lba(label_template.grt_start_block, grt_data)
-        self._write_lba(label_template.dir_start_block, dir_data[:HDOS_BYTES_PER_SECTOR])
-        self._write_lba(label_template.dir_start_block + 1, dir_data[HDOS_BYTES_PER_SECTOR:])
-
-        self.disk.flush()
-        self._init_completed = False
-        self._data_base_lba_cache = None
-
-        self.logger.info(f"Disk formatted with profile '{profile.name}', "
-                    f"reserved: {len(dir_reserved_groups)} dir + {len(grt_reserved_groups)} grt + {len(track0_groups)} track0 groups")
-
-    def create_directory(self, path: str) -> None:
-        """HDOS does not support creating directories."""
-        raise NotImplementedError("HDOS does not support directories.")
+        self.logger.info(
+            f"Deleted file '{path}' and freed {len(file_groups_to_free)} "
+            "groups"
+        )
 
     def delete_recursive(self, path: str) -> bool:
         """
@@ -664,26 +413,262 @@ class HDOSFilesystem(Filesystem):
         except (IOError, FileNotFoundError):
             return False
 
-    # --- Properties ---
-
-    @property
-    def allocation_unit_size(self) -> int:
+    def format_fs(
+        self,
+        profile: FormatProfile,
+        volume_label: Optional[str] = None
+    ) -> None:
         """
-        Returns the size of a single allocation unit (group) in bytes.
+        Formats the disk with a blank HDOS filesystem.
+
+        Args:
+            profile: The FormatProfile containing filesystem and physical
+                parameters.
+            volume_label: An optional volume title to apply to the disk.
+
+        Raises:
+            ValueError: If the profile does not contain a valid
+                HDOSLabelRecord.
+        """
+        if not isinstance(profile.filesystem_config, HDOSLabelRecord):
+            raise ValueError(
+                "FormatProfile must contain an HDOSLabelRecord for formatting."
+            )
+
+        label_template = profile.filesystem_config
+        if volume_label:
+            label_template.title = volume_label
+
+        pf = profile.physical_format
+        spg = (
+            label_template.cluster_factor
+            if label_template.cluster_factor > 0
+            else 1
+        )
+
+        data_area_start_lba = 2
+        total_data_sectors = pf.total_sectors - data_area_start_lba
+        num_groups_on_disk = total_data_sectors // spg
+
+        dir_start_group = (
+            (label_template.dir_start_block - data_area_start_lba) // spg
+        ) + 1
+        dir_groups_needed = (DIR_BLOCK_SECTORS + spg - 1) // spg
+        dir_reserved_groups = set(
+            range(dir_start_group, dir_start_group + dir_groups_needed)
+        )
+
+        grt_reserved_groups = set()
+        if label_template.grt_start_block >= data_area_start_lba:
+            grt_group = (
+                (label_template.grt_start_block - data_area_start_lba) // spg
+            ) + 1
+            if 1 <= grt_group <= num_groups_on_disk:
+                grt_reserved_groups.add(grt_group)
+
+        track0_end_lba = HDOS_SECTORS_PER_TRACK - 1
+        track0_groups = set()
+        for g in range(1, num_groups_on_disk + 1):
+            group_start_lba = data_area_start_lba + (g - 1) * spg
+            if group_start_lba <= track0_end_lba:
+                track0_groups.add(g)
+
+        self.logger.info(
+            f"Track 0 groups to lock out: {sorted(track0_groups)}"
+        )
+
+        reserved_groups = (
+            dir_reserved_groups | grt_reserved_groups | track0_groups
+        )
+
+        grt_data = bytearray(HDOS_BYTES_PER_SECTOR)
+        free_chain_head = 0
+        for i in range(num_groups_on_disk, 0, -1):
+            if i >= len(grt_data):
+                continue
+            if i in reserved_groups:
+                grt_data[i] = 0xFF
+            else:
+                grt_data[i] = free_chain_head
+                free_chain_head = i
+        grt_data[0] = free_chain_head
+
+        rgt_data = bytearray(HDOS_BYTES_PER_SECTOR)
+        for i in range(len(rgt_data)):
+            if i == 0:
+                rgt_data[i] = 0x00
+            elif i in track0_groups:
+                rgt_data[i] = 0xFF
+            else:
+                rgt_data[i] = 0x01
+
+        dir_data = bytearray(DIR_BLOCK_BYTES)
+        dir_data[0] = 0xFE
+        struct.pack_into("<H", dir_data, DIR_NEXT_BLOCK_PTR_OFFSET, 0)
+
+        label_bytes = self._create_label_sector_bytes(label_template)
+        self._write_lba(HDOS_LABEL_SECTOR_LBA, label_bytes)
+        self._write_lba(HDOS_RGT_SECTOR_LBA, rgt_data)
+        self._write_lba(label_template.grt_start_block, grt_data)
+        self._write_lba(
+            label_template.dir_start_block,
+            dir_data[:HDOS_BYTES_PER_SECTOR]
+        )
+        self._write_lba(
+            label_template.dir_start_block + 1,
+            dir_data[HDOS_BYTES_PER_SECTOR:]
+        )
+
+        self.disk.flush()
+        self._init_completed = False
+        self._data_base_lba_cache = None
+
+        self.logger.info(
+            f"Disk formatted with profile '{profile.name}', "
+            f"reserved: {len(dir_reserved_groups)} dir + "
+            f"{len(grt_reserved_groups)} grt + {len(track0_groups)} track0 "
+            "groups"
+        )
+
+    def get_allocated_units(self) -> List[int]:
+        """
+        Returns a sorted list of allocated group numbers.
+
+        In HDOS, the GRT free chain is the authoritative source for free
+        groups. The RGT marks groups that are locked out.
 
         Returns:
-            The group size in bytes, or 0 if the filesystem is not valid.
+            A sorted list of integers representing allocated group numbers.
         """
         if self.get_validity_score() < self.validity_threshold:
-            return 0
+            return []
         self._initialize()
-        if not self.label:
-            return 0
+        if not self._grt or not self.label:
+            return []
 
-        sectors_per_group = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
-        return sectors_per_group * HDOS_BYTES_PER_SECTOR
+        num_groups_on_disk = self._num_groups_on_disk
+        if num_groups_on_disk <= 0:
+            return []
 
-    # --- Informational and Helper Methods ---
+        all_groups = set(range(1, num_groups_on_disk + 1))
+        free_groups = set()
+        current_group = self._grt[0]
+        visited = set()
+
+        self.logger.debug(
+            f"get_allocated_units: GRT[0]={current_group}, "
+            f"num_groups={num_groups_on_disk}"
+        )
+
+        if current_group == 0:
+            self.logger.info(
+                "GRT[0]=0, no free chain - using fallback to scan file chains"
+            )
+
+            file_groups = set()
+            for entry in self._dir_entries:
+                if entry.first_group > 0:
+                    current = entry.first_group
+                    for _ in range(len(self._grt)):
+                        if current == 0 or current > num_groups_on_disk:
+                            break
+                        file_groups.add(current)
+                        if current == entry.last_group:
+                            break
+                        if current >= len(self._grt):
+                            break
+                        current = self._grt[current]
+
+            data_base = self._data_base_lba()
+            spg = (
+                self.label.cluster_factor
+                if self.label.cluster_factor > 0
+                else 1
+            )
+
+            system_groups = set()
+            cur = self.label.dir_start_block
+            visited_dirs = set()
+            while cur and cur not in visited_dirs:
+                visited_dirs.add(cur)
+                for s_offset in range(DIR_BLOCK_SECTORS):
+                    s = cur + s_offset
+                    if s >= data_base:
+                        g = ((s - data_base) // spg) + 1
+                        if 1 <= g <= num_groups_on_disk:
+                            system_groups.add(g)
+                try:
+                    blk = (
+                        self._read_lba(cur) +
+                        self._read_lba(cur + 1)
+                    )
+                    nxt = struct.unpack_from(
+                        "<H",
+                        blk,
+                        DIR_NEXT_BLOCK_PTR_OFFSET
+                    )[0]
+                    if nxt == cur or nxt == 0:
+                        break
+                    cur = nxt
+                except (IOError, ValueError, struct.error):
+                    break
+
+            if self.label.grt_start_block >= data_base:
+                grt_group = (
+                    (self.label.grt_start_block - data_base) // spg
+                ) + 1
+                if 1 <= grt_group <= num_groups_on_disk:
+                    system_groups.add(grt_group)
+
+            rgt_locked_groups = set()
+            if self._rgt:
+                for g in range(1, min(num_groups_on_disk + 1, len(self._rgt))):
+                    if self._is_group_locked_out(g):
+                        rgt_locked_groups.add(g)
+
+            allocated_groups = (
+                file_groups | system_groups | rgt_locked_groups
+            )
+            self.logger.debug(
+                f"Fallback found {len(file_groups)} file groups, "
+                f"{len(system_groups)} system groups, "
+                f"{len(rgt_locked_groups)} RGT-locked groups"
+            )
+            return sorted(list(allocated_groups))
+
+        while (current_group != 0 and
+               0 < current_group <= num_groups_on_disk):
+            if current_group in visited:
+                self.logger.warning(
+                    f"Circular reference in free chain at group "
+                    f"{current_group}"
+                )
+                break
+            if current_group >= len(self._grt):
+                self.logger.warning(
+                    f"Free chain group {current_group} beyond GRT bounds"
+                )
+                break
+
+            visited.add(current_group)
+            free_groups.add(current_group)
+            try:
+                current_group = self._grt[current_group]
+            except IndexError:
+                break
+
+        allocated_groups = all_groups - free_groups
+
+        if self._rgt:
+            for g in range(1, min(num_groups_on_disk + 1, len(self._rgt))):
+                if self._is_group_locked_out(g):
+                    allocated_groups.add(g)
+
+        self.logger.debug(
+            f"Normal traversal: {len(free_groups)} free, "
+            f"{len(allocated_groups)} allocated"
+        )
+        return sorted(list(allocated_groups))
 
     def get_disk_map_layout(self) -> Dict[str, Any]:
         """
@@ -697,39 +682,57 @@ class HDOSFilesystem(Filesystem):
             return {}
         self._initialize()
 
-        system_lbas = set(range(HDOS_SECTORS_PER_TRACK))  # Track 0
+        system_lbas = set(range(HDOS_SECTORS_PER_TRACK))
 
-        sectors_per_group = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        sectors_per_group = (
+            self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        )
         data_area_start_lba = self._data_base_lba()
 
-        # Calculate which group contains RGT
         rgt_lbas = set()
         if HDOS_RGT_SECTOR_LBA >= data_area_start_lba:
-            rgt_group = ((HDOS_RGT_SECTOR_LBA - data_area_start_lba) // sectors_per_group) + 1
-            rgt_group_start_lba = data_area_start_lba + (rgt_group - 1) * sectors_per_group
+            rgt_group = (
+                (HDOS_RGT_SECTOR_LBA - data_area_start_lba) //
+                sectors_per_group
+            ) + 1
+            rgt_group_start_lba = (
+                data_area_start_lba + (rgt_group - 1) * sectors_per_group
+            )
             for s_offset in range(sectors_per_group):
                 rgt_lbas.add(rgt_group_start_lba + s_offset)
 
-        # Calculate which group contains GRT
         grt_lbas = set()
         if self.label.grt_start_block >= data_area_start_lba:
-            grt_group = ((self.label.grt_start_block - data_area_start_lba) // sectors_per_group) + 1
-            grt_group_start_lba = data_area_start_lba + (grt_group - 1) * sectors_per_group
+            grt_group = (
+                (self.label.grt_start_block - data_area_start_lba) //
+                sectors_per_group
+            ) + 1
+            grt_group_start_lba = (
+                data_area_start_lba + (grt_group - 1) * sectors_per_group
+            )
             for s_offset in range(sectors_per_group):
                 grt_lbas.add(grt_group_start_lba + s_offset)
 
-        # Calculate all directory LBAs (these span multiple groups potentially)
         directory_lbas = set()
         current_block_lba = self.label.dir_start_block
         for _ in range(20):
-            if current_block_lba == 0: break
+            if current_block_lba == 0:
+                break
             directory_lbas.add(current_block_lba)
             directory_lbas.add(current_block_lba + 1)
 
             try:
-                dir_data = self._read_lba(current_block_lba) + self._read_lba(current_block_lba + 1)
-                next_lba = struct.unpack_from("<H", dir_data, DIR_NEXT_BLOCK_PTR_OFFSET)[0]
-                if next_lba == current_block_lba: break
+                dir_data = (
+                    self._read_lba(current_block_lba) +
+                    self._read_lba(current_block_lba + 1)
+                )
+                next_lba = struct.unpack_from(
+                    "<H",
+                    dir_data,
+                    DIR_NEXT_BLOCK_PTR_OFFSET
+                )[0]
+                if next_lba == current_block_lba:
+                    break
                 current_block_lba = next_lba
             except (IOError, ValueError):
                 break
@@ -737,7 +740,6 @@ class HDOSFilesystem(Filesystem):
         allocated_groups = set(self.get_allocated_units())
 
         def get_sector_type(lba: int) -> str:
-            # Check in priority order: system track, then specific structures, then data area
             if lba in system_lbas:
                 return "system"
             if lba in rgt_lbas:
@@ -747,9 +749,10 @@ class HDOSFilesystem(Filesystem):
             if lba in directory_lbas:
                 return "directory"
 
-            # For sectors in the data area, determine by group allocation
             if lba >= data_area_start_lba:
-                group_num = ((lba - data_area_start_lba) // sectors_per_group) + 1
+                group_num = (
+                    (lba - data_area_start_lba) // sectors_per_group
+                ) + 1
                 if group_num in allocated_groups:
                     return "data_used"
                 else:
@@ -758,11 +761,11 @@ class HDOSFilesystem(Filesystem):
 
         legend_colors = {
             "System Track": "#A0A0A0",
-            "RGT": "#FF6B6B",  # Red for RGT
-            "Directory": "#FFFF00",  # Yellow
-            "GRT": "#FFA500",  # Orange
-            "Used Data": "#FF00FF",  # Magenta
-            "Free Data": "#808080",  # Gray
+            "RGT": "#FF6B6B",
+            "Directory": "#FFFF00",
+            "GRT": "#FFA500",
+            "Used Data": "#FF00FF",
+            "Free Data": "#808080",
         }
 
         legend = [
@@ -792,124 +795,26 @@ class HDOSFilesystem(Filesystem):
             'type_color_map': type_map
         }
 
-    def get_allocated_units(self) -> List[int]:
+    def get_display_info(self) -> Dict[str, str]:
         """
-        Returns a sorted list of allocated group numbers.
-
-        In HDOS, the GRT free chain is the authoritative source for free groups.
-        The RGT marks groups that are locked out (bad sectors, system reserved).
+        Returns a dictionary of key filesystem parameters for display.
 
         Returns:
-            A sorted list of integers representing allocated group numbers.
+            A dictionary with human-readable information about the HDOS volume.
         """
         if self.get_validity_score() < self.validity_threshold:
-            return []
+            return {"Error": "HDOS not detected or not valid."}
         self._initialize()
-        if not self._grt or not self.label:
-            return []
-
-        num_groups_on_disk = self._num_groups_on_disk
-        if num_groups_on_disk <= 0:
-            return []
-
-        all_groups = set(range(1, num_groups_on_disk + 1))
-        free_groups = set()
-        current_group = self._grt[0]
-        visited = set()
-
-        self.logger.debug(f"get_allocated_units: GRT[0]={current_group}, num_groups={num_groups_on_disk}")
-
-        # If GRT[0] is 0, the disk doesn't have a maintained free chain
-        if current_group == 0:
-            self.logger.info("GRT[0]=0, no free chain - using fallback to scan file chains")
-
-            # Collect all groups actually used by files
-            file_groups = set()
-            for entry in self._dir_entries:
-                if entry.first_group > 0:
-                    current = entry.first_group
-                    for _ in range(len(self._grt)):
-                        if current == 0 or current > num_groups_on_disk:
-                            break
-                        file_groups.add(current)
-                        if current == entry.last_group:
-                            break
-                        if current >= len(self._grt):
-                            break
-                        current = self._grt[current]
-
-            # Find system groups (directory and GRT)
-            data_base = self._data_base_lba()
-            spg = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
-
-            system_groups = set()
-            # Directory groups
-            cur = self.label.dir_start_block
-            visited_dirs = set()
-            while cur and cur not in visited_dirs:
-                visited_dirs.add(cur)
-                for s_offset in range(DIR_BLOCK_SECTORS):
-                    s = cur + s_offset
-                    if s >= data_base:
-                        g = ((s - data_base) // spg) + 1
-                        if 1 <= g <= num_groups_on_disk:
-                            system_groups.add(g)
-                try:
-                    blk = self._read_lba(cur) + self._read_lba(cur + 1)
-                    nxt = struct.unpack_from("<H", blk, DIR_NEXT_BLOCK_PTR_OFFSET)[0]
-                    if nxt == cur or nxt == 0:
-                        break
-                    cur = nxt
-                except (IOError, ValueError, struct.error):
-                    break
-
-            # GRT group
-            if self.label.grt_start_block >= data_base:
-                grt_group = ((self.label.grt_start_block - data_base) // spg) + 1
-                if 1 <= grt_group <= num_groups_on_disk:
-                    system_groups.add(grt_group)
-
-            # RGT locked-out groups (uses RGT instead of hardcoding Track 0)
-            rgt_locked_groups = set()
-            if self._rgt:
-                for g in range(1, min(num_groups_on_disk + 1, len(self._rgt))):
-                    if self._is_group_locked_out(g):
-                        rgt_locked_groups.add(g)
-
-            allocated_groups = file_groups | system_groups | rgt_locked_groups
-            self.logger.debug(f"Fallback found {len(file_groups)} file groups, "
-                        f"{len(system_groups)} system groups, {len(rgt_locked_groups)} RGT-locked groups")
-            return sorted(list(allocated_groups))
-
-        # Normal free chain traversal
-        while current_group != 0 and 0 < current_group <= num_groups_on_disk:
-            if current_group in visited:
-                self.logger.warning(f"Circular reference in free chain at group {current_group}")
-                break
-            if current_group >= len(self._grt):
-                self.logger.warning(f"Free chain group {current_group} beyond GRT bounds")
-                break
-
-            visited.add(current_group)
-            free_groups.add(current_group)
-            try:
-                current_group = self._grt[current_group]
-            except IndexError:
-                break
-
-        # Calculate allocated groups as: all - free
-        allocated_groups = all_groups - free_groups
-
-        # BUT we also need to add RGT locked-out groups that might not be in the free chain
-        # These are already excluded from the free chain, but we need to ensure they're
-        # counted as allocated
-        if self._rgt:
-            for g in range(1, min(num_groups_on_disk + 1, len(self._rgt))):
-                if self._is_group_locked_out(g):
-                    allocated_groups.add(g)
-
-        self.logger.debug(f"Normal traversal: {len(free_groups)} free, {len(allocated_groups)} allocated")
-        return sorted(list(allocated_groups))
+        if not self.label:
+            return {"Error": "HDOS label could not be read."}
+        return {
+            "Filesystem Type": "HDOS",
+            "Volume Title": self.label.title,
+            "Volume Number": str(self.label.volume_number),
+            "Dir Cluster Factor": str(self.label.cluster_factor),
+            "Directory Start LBA": str(self.label.dir_start_block),
+            "GRT Start LBA": str(self.label.grt_start_block)
+        }
 
     def get_file_allocation_units(self, path: str) -> List[int]:
         """
@@ -920,7 +825,8 @@ class HDOSFilesystem(Filesystem):
 
         Returns:
             A list of group numbers used by the file, in chain order.
-            Returns an empty list if the file doesn't exist or has no allocated groups.
+            Returns an empty list if the file doesn't exist or has no
+            allocated groups.
 
         Raises:
             IOError: If the filesystem is not valid or a read error occurs.
@@ -930,14 +836,14 @@ class HDOSFilesystem(Filesystem):
 
         self._initialize()
 
-        # Parse filename with truncation (same as read_file)
         filename_upper = path.strip("/").upper()
         parts = filename_upper.split('.')
         name_part = parts[0][:8] if parts else ""
         ext_part = parts[1][:3] if len(parts) > 1 else ""
-        search_filename = f"{name_part}.{ext_part}" if ext_part else name_part
+        search_filename = (
+            f"{name_part}.{ext_part}" if ext_part else name_part
+        )
 
-        # Find the file entry
         target_entry = None
         for e in self._dir_entries:
             entry_filename = e.get_filename().upper()
@@ -946,14 +852,14 @@ class HDOSFilesystem(Filesystem):
                 break
 
         if not target_entry:
-            self.logger.warning(f"File '{path}' not found in directory.")
+            self.logger.warning(
+                f"File '{path}' not found in directory."
+            )
             return []
 
-        # If file has no groups allocated (empty file)
         if target_entry.first_group == 0:
             return []
 
-        # Follow the GRT chain to collect all groups
         file_groups = []
         current_group = target_entry.first_group
 
@@ -962,26 +868,31 @@ class HDOSFilesystem(Filesystem):
                 break
 
             if not (0 < current_group < len(self._grt)):
-                self.logger.error(f"Corrupt file chain for '{path}': group {current_group} is out of bounds.")
+                self.logger.error(
+                    f"Corrupt file chain for '{path}': group "
+                    f"{current_group} is out of bounds."
+                )
                 break
 
             file_groups.append(current_group)
 
-            # Stop if we've reached the last group
             if current_group == target_entry.last_group:
                 break
 
-            # Get next group in chain
             next_group = self._grt[current_group]
 
-            # Detect circular references
             if next_group == current_group or next_group in file_groups:
-                self.logger.error(f"Circular reference detected in file chain for '{path}' at group {current_group}.")
+                self.logger.error(
+                    f"Circular reference detected in file chain for '{path}' "
+                    f"at group {current_group}."
+                )
                 break
 
             current_group = next_group
 
-        self.logger.debug(f"File '{path}' uses {len(file_groups)} groups: {file_groups}")
+        self.logger.debug(
+            f"File '{path}' uses {len(file_groups)} groups: {file_groups}"
+        )
         return file_groups
 
     def get_free_space(self) -> Tuple[int, int]:
@@ -994,13 +905,18 @@ class HDOSFilesystem(Filesystem):
         if self.get_validity_score() < self.validity_threshold:
             return 0, 0
         self._initialize()
-        if not self._grt or not self.label or not self.disk.physical_format:
+        if (not self._grt or not self.label or
+                not self.disk.physical_format):
             return 0, 0
 
         data_base = self._data_base_lba()
-        total_data_sectors = self.disk.physical_format.total_sectors - data_base
+        total_data_sectors = (
+            self.disk.physical_format.total_sectors - data_base
+        )
         total_bytes = total_data_sectors * HDOS_BYTES_PER_SECTOR
-        spg = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        spg = (
+            self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        )
 
         num_groups_on_disk = self._num_groups_on_disk
         if num_groups_on_disk <= 0:
@@ -1008,14 +924,15 @@ class HDOSFilesystem(Filesystem):
 
         allocated_count = len(self.get_allocated_units())
         free_group_count = num_groups_on_disk - allocated_count
-
-        # Ensure free group count is non-negative
         free_group_count = max(0, free_group_count)
 
         group_size_bytes = spg * HDOS_BYTES_PER_SECTOR
         free_bytes = free_group_count * group_size_bytes
 
-        self.logger.debug(f"Free space: {free_group_count} groups × {group_size_bytes} bytes = {free_bytes} bytes")
+        self.logger.debug(
+            f"Free space: {free_group_count} groups × {group_size_bytes} "
+            f"bytes = {free_bytes} bytes"
+        )
 
         return free_bytes, total_bytes
 
@@ -1029,183 +946,310 @@ class HDOSFilesystem(Filesystem):
         self._initialize()
         return self.label
 
-    def get_display_info(self) -> Dict[str, str]:
+    def get_validity_score(self) -> int:
         """
-        Returns a dictionary of key filesystem parameters for display.
+        Scores the likelihood that the disk contains a valid HDOS filesystem.
 
         Returns:
-            A dictionary with human-readable information about the HDOS volume.
+            A score from 0 to 100 indicating the likelihood of a valid HDOS FS.
         """
-        if self.get_validity_score() < self.validity_threshold:
-            return {"Error": "HDOS not detected or not valid."}
-        self._initialize()
-        if not self.label: return {"Error": "HDOS label could not be read."}
-        return {
-            "Filesystem Type": "HDOS", "Volume Title": self.label.title,
-            "Volume Number": str(self.label.volume_number),
-            "Dir Cluster Factor": str(self.label.cluster_factor),
-            "Directory Start LBA": str(self.label.dir_start_block),
-            "GRT Start LBA": str(self.label.grt_start_block)
-        }
+        if self._cached_validity_score is not None:
+            return self._cached_validity_score
 
-    # --- Private/Internal Methods ---
+        if not self.disk:
+            return 0
+        original_pf = self.disk.physical_format
 
-    def _initialize(self) -> None:
+        try:
+            canonical_pf = FormatProfile(
+                name="hdos_canonical",
+                description="",
+                physical_format=PhysicalFormat(
+                    cylinders=HDOS_TRACKS,
+                    heads=1,
+                    rpm=300,
+                    heads_inverted=False,
+                    bytes_per_sector=HDOS_BYTES_PER_SECTOR,
+                    track_formats=[
+                        TrackFormat(
+                            0,
+                            39,
+                            0,
+                            0,
+                            HDOS_SECTORS_PER_TRACK,
+                            "FM",
+                            250,
+                            1,
+                            id_start=1
+                        )
+                    ]
+                ),
+                filesystem_config=None
+            ).physical_format
+            self.disk.set_geometry(canonical_pf)
+
+            self._initialize()
+            self._cached_validity_score = 100
+        except (ValueError, IOError, struct.error) as e:
+            self.logger.debug(f"HDOS validation failed: {e}")
+            self._cached_validity_score = 0
+        finally:
+            if original_pf:
+                self.disk.set_geometry(original_pf)
+            if self._cached_validity_score == 0:
+                self._init_completed = False
+                self.label = None
+                self._data_base_lba_cache = None
+
+        return self._cached_validity_score
+
+    def get_volume_label(self) -> Optional[str]:
         """
-        Loads and parses the core HDOS filesystem structures from the disk.
-        This method is idempotent and caches its results.
+        Returns the HDOS volume label from the label record.
+
+        Returns:
+            The volume label (title) as a string, or None if not available.
+        """
+        if self.label and self.label.title:
+            return self.label.title.strip()
+        return None
+
+    def list_directory(self, path: str) -> List[FileInfo]:
+        """
+        Lists all files in the root directory.
+
+        Args:
+            path: The directory path (must be "/").
+
+        Returns:
+            A list of FileInfo objects representing files.
 
         Raises:
-            ValueError: If the parsed Label Record contains invalid data.
+            IOError: If the filesystem is not valid.
+            NotImplementedError: If path is not root directory.
         """
-        if self._init_completed:
-            return
+        if self.get_validity_score() < self.validity_threshold:
+            raise IOError("Filesystem is not valid or not recognized as HDOS.")
+        if path != "/":
+            raise NotImplementedError(
+                "HDOS does not support subdirectories."
+            )
+        self._initialize()
+        return [
+            FileInfo(
+                name=e.get_filename(),
+                size=self._calculate_file_size(e),
+                is_dir=False,
+                datetime=e.modification_date,
+                attributes=e.attributes
+            )
+            for e in self._dir_entries
+        ]
 
-        label_data = self._read_lba(HDOS_LABEL_SECTOR_LBA)
-        self.label = HDOSLabelRecord.from_bytes(label_data)
-        if not self.label.is_valid(self.disk.physical_format.total_sectors):
-            raise ValueError(f"Parsed Label Record contains invalid pointers: {self.label}")
-
-        self.logger.info(f"HDOS Label Record parsed: Title='{self.label.title}', Vol={self.label.volume_number}, "
-                    f"DiskClusterFactor={self.label.cluster_factor}, DirStartLBA={self.label.dir_start_block}, "
-                    f"GRTStartLBA={self.label.grt_start_block}")
-
-        self._grt = bytearray(self._read_lba(self.label.grt_start_block))
-
-        # Read the RGT (Reserved Group Table) for lock-out information
-        try:
-            self._rgt = bytearray(self._read_lba(HDOS_RGT_SECTOR_LBA))
-            self.logger.debug(f"RGT loaded from LBA {HDOS_RGT_SECTOR_LBA}")
-        except (IOError, ValueError) as e:
-            self.logger.warning(f"Could not read RGT: {e}. Proceeding without lock-out map.")
-            self._rgt = None
-
-        # Calculate data base LBA *before* other calculations depend on it
-        data_base = self._data_base_lba()
-
-        # Calculate and guard the number of groups on the disk
-        spg = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
-        total_data_sectors = self.disk.physical_format.total_sectors - data_base
-        num_groups_on_disk = total_data_sectors // spg
-        if len(self._grt) <= num_groups_on_disk:
-            num_groups_on_disk = min(num_groups_on_disk, len(self._grt) - 1)
-        self._num_groups_on_disk = num_groups_on_disk
-
-        self._dir_entries = self._read_directory_chain()
-        self._init_completed = True
-
-    def _read_directory_chain(self) -> List[HDOSDirectoryEntry]:
+    def read_file(self, path: str) -> bytes:
         """
-        Reads the directory, which is a linked-list of 512-byte blocks.
+        Reads the complete content of a specified file.
+
+        Args:
+            path: The full path to the file to read (e.g., "/MYFILE.TXT").
 
         Returns:
-            A list of all valid HDOSDirectoryEntry objects found.
+            The raw byte content of the file.
+
+        Raises:
+            IOError: If the filesystem is not valid or a read error occurs.
+            FileNotFoundError: If the specified file does not exist.
         """
-        entries: List[HDOSDirectoryEntry] = []
-        current_block_lba = self.label.dir_start_block
+        if self.get_validity_score() < self.validity_threshold:
+            raise IOError("Filesystem is not valid or not recognized as HDOS.")
 
-        for _ in range(20):  # Safety break to avoid infinite loops
-            if current_block_lba == 0: break
+        self._initialize()
 
-            try:
-                sector1 = self._read_lba(current_block_lba)
-                sector2 = self._read_lba(current_block_lba + 1)
-                dir_data = sector1 + sector2
-            except (IOError, ValueError) as e:
-                self.logger.error(f"Could not read full 512-byte directory block at LBA {current_block_lba}: {e}")
+        filename_upper = path.strip("/").upper()
+        parts = filename_upper.split('.')
+        name_part = parts[0][:8] if parts else ""
+        ext_part = parts[1][:3] if len(parts) > 1 else ""
+        search_filename = (
+            f"{name_part}.{ext_part}" if ext_part else name_part
+        )
+
+        target_entry = None
+        for e in self._dir_entries:
+            entry_filename = e.get_filename().upper()
+            if entry_filename == search_filename:
+                target_entry = e
                 break
 
-            end_of_dir_found = False
-            for i in range(DIR_ENTRIES_PER_BLOCK):
-                offset = i * HDOS_DIR_ENTRY_SIZE
-                entry_data = dir_data[offset: offset + HDOS_DIR_ENTRY_SIZE]
+        if not target_entry:
+            raise FileNotFoundError(f"File not found: {path}")
 
-                first_byte = entry_data[0]
-                if first_byte == 0xFE:  # End of directory marker
-                    end_of_dir_found = True
-                    break
-                if first_byte in [0x00, 0xFF]: continue  # Empty/deleted entry
+        file_data = bytearray()
+        current_group = target_entry.first_group
 
-                entry = self._parse_single_dir_entry(entry_data)
-                if entry:
-                    entries.append(entry)
+        sectors_per_group = (
+            self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        )
+        data_area_start_lba = self._data_base_lba()
 
-            if end_of_dir_found: break
+        for _ in range(self.disk.physical_format.total_sectors):
+            if current_group == 0:
+                break
+            if not (0 < current_group < len(self._grt)):
+                raise IOError(
+                    f"Corrupt file chain: group {current_group} is out of "
+                    "GRT bounds."
+                )
 
-            current_block_lba = struct.unpack_from("<H", dir_data, DIR_NEXT_BLOCK_PTR_OFFSET)[0]
+            start_lba_of_group = (
+                data_area_start_lba + ((current_group - 1) * sectors_per_group)
+            )
 
-        return entries
+            sectors_to_read = sectors_per_group
+            if current_group == target_entry.last_group:
+                sectors_to_read = target_entry.last_sector_index
 
-    def _parse_single_dir_entry(self, data: bytes) -> Optional[HDOSDirectoryEntry]:
+            for i in range(sectors_to_read):
+                try:
+                    file_data.extend(
+                        self._read_lba(start_lba_of_group + i)
+                    )
+                except (ValueError, IOError) as e:
+                    self.logger.error(
+                        f"Failed to read LBA {start_lba_of_group + i} for "
+                        f"file {path}: {e}"
+                    )
+                    raise IOError(
+                        f"Failed reading LBA {start_lba_of_group + i}"
+                    ) from e
+
+            if current_group == target_entry.last_group:
+                break
+            current_group = self._grt[current_group]
+
+        allocated_size = self._calculate_file_size(target_entry)
+        file_data = file_data[:allocated_size]
+
+        if len(file_data) > 0:
+            last_non_null = len(file_data) - 1
+            while last_non_null >= 0 and file_data[last_non_null] == 0:
+                last_non_null -= 1
+
+            if last_non_null >= 0 and last_non_null < len(file_data) - 1:
+                non_null_portion = file_data[:last_non_null + 1]
+                text_bytes = sum(
+                    1 for b in non_null_portion
+                    if b in range(32, 127) or b in (9, 10, 13)
+                )
+                text_ratio = (
+                    text_bytes / len(non_null_portion)
+                    if len(non_null_portion) > 0
+                    else 0
+                )
+
+                if text_ratio > 0.9:
+                    file_data = file_data[:last_non_null + 1]
+                    self.logger.debug(
+                        f"Trimmed trailing nulls from text file: "
+                        f"{search_filename}"
+                    )
+
+        return bytes(file_data)
+
+    def write_file(self, path: str, data: bytes) -> None:
         """
-        Helper to parse a single 23-byte directory entry.
-        Uses pre-HDOS 3.0 format based on real disk analysis.
+        Writes data to a new file on the disk.
+
+        Deletes existing file if present.
+
+        Args:
+            path: The path of the file to write.
+            data: The binary data to write to the file.
+
+        Raises:
+            IOError: If the filesystem is invalid or there's not enough space.
         """
-        if not data or len(data) < HDOS_DIR_ENTRY_SIZE or data[0] in (0x00, 0xFF, 0xFE):
-            return None
+        if self.get_validity_score() < self.validity_threshold:
+            raise IOError("Filesystem not valid.")
 
-        # Log raw bytes in hex for debugging
-        hex_dump = ' '.join(f'{b:02X}' for b in data)
-        self.logger.debug(f"Raw directory entry: {hex_dump}")
+        try:
+            self.delete(path)
+        except FileNotFoundError:
+            pass
 
-        # Parse fields
-        name_bytes = data[0:8]
-        ext_bytes = data[8:11]
-        byte_11 = data[11]  # Project - expect 0
-        byte_12 = data[12]  # Version - expect 0 (not 1!)
-        cluster_factor = data[13]  # Sectors per group for this file
-        flags_byte = data[14]
-        byte_15 = data[15]  # Reserved - expect 0 (not 0xFF!)
-        first_group = data[16]
-        last_group = data[17]
-        last_sector_index = data[18]
-        creation_date_bytes = data[19:21]
-        mod_date_bytes = data[21:23]
+        self._initialize()
+        spg = (
+            self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        )
 
-        # Decode name and extension
-        name = "".join(chr(b & 0x7F) for b in name_bytes).strip('\x00').strip()
-        if not name:
-            return None
-        ext = "".join(chr(b & 0x7F) for b in ext_bytes).strip('\x00').strip()
+        num_sectors_needed = (
+            (len(data) + HDOS_BYTES_PER_SECTOR - 1) // HDOS_BYTES_PER_SECTOR
+        )
+        num_groups_needed = (
+            (num_sectors_needed + spg - 1) // spg
+            if num_sectors_needed > 0
+            else 0
+        )
 
-        # Parse dates
-        creation_date = self._parse_date(creation_date_bytes)
-        mod_date = self._parse_date(mod_date_bytes)
+        if num_groups_needed == 0:
+            self._create_empty_file_entry(path)
+            self.disk.flush()
+            self._dir_entries = None
+            self._init_completed = False
+            return
 
-        # Build attributes string from flags (pre-3.0 interpretation)
-        attributes = ""
-        if flags_byte & 0x80: attributes += "S"  # System
-        if flags_byte & 0x40: attributes += "L"  # Locked
-        if flags_byte & 0x20: attributes += "W"  # Write Protected
-        if flags_byte & 0x10: attributes += "C"  # Contiguous
-        if not attributes:
-            attributes = "-"
+        allocated_groups = []
+        current_group = self._grt[0]
+        for _ in range(num_groups_needed):
+            if current_group == 0:
+                raise IOError("Not enough free space on disk.")
+            allocated_groups.append(current_group)
+            current_group = self._grt[current_group]
 
-        # Log decoded info
-        self.logger.debug(f"  File: {name}.{ext if ext else ''}, Flags: 0x{flags_byte:02X} ({attributes})")
-        self.logger.debug(f"  Cluster factor: {cluster_factor}, Groups: {first_group}-{last_group}, LSI: {last_sector_index}")
-        self.logger.debug(f"  Bytes 11,12,15: {byte_11},{byte_12},{byte_15} (expect 0,0,0)")
-        self.logger.debug(f"  Created: {creation_date}, Modified: {mod_date}")
+        self._grt[0] = current_group
+        for i in range(len(allocated_groups) - 1):
+            self._grt[allocated_groups[i]] = allocated_groups[i + 1]
+        self._grt[allocated_groups[-1]] = 0
 
-        return HDOSDirectoryEntry(
-            raw_name=name_bytes,
-            name=name,
-            ext=ext,
-            cluster_factor=cluster_factor,
-            first_group=first_group,
-            last_group=last_group,
-            last_sector_index=last_sector_index,
-            creation_date=creation_date,
-            modification_date=mod_date,
-            attributes=attributes
+        padded_data = data.ljust(
+            num_sectors_needed * HDOS_BYTES_PER_SECTOR,
+            b'\x00'
+        )
+        data_area_start_lba = self._data_base_lba()
+        for i, group_num in enumerate(allocated_groups):
+            start_lba = data_area_start_lba + (group_num - 1) * spg
+            sector_offset = i * spg
+            for j in range(spg):
+                lba = start_lba + j
+                sector_index = sector_offset + j
+                if sector_index < num_sectors_needed:
+                    start = sector_index * HDOS_BYTES_PER_SECTOR
+                    end = start + HDOS_BYTES_PER_SECTOR
+                    self._write_lba(lba, padded_data[start:end])
+
+        self._create_and_write_dir_entry(
+            path,
+            allocated_groups,
+            num_sectors_needed,
+            spg
+        )
+
+        self._write_lba(self.label.grt_start_block, self._grt)
+        self.disk.flush()
+
+        self._dir_entries = None
+        self._grt = None
+        self._init_completed = False
+        self._data_base_lba_cache = None
+        self.logger.info(
+            f"Successfully wrote file '{path}' ({len(data)} bytes)."
         )
 
     def _calculate_file_size(self, entry: HDOSDirectoryEntry) -> int:
         """
         Calculates the allocated size of a file based on its directory entry.
 
-        HDOS doesn't store exact file sizes, only which groups are allocated and
-        how many sectors in the last group contain data.
+        HDOS doesn't store exact file sizes, only which groups are allocated
+        and how many sectors in the last group contain data.
 
         Args:
             entry: The directory entry for the file.
@@ -1219,7 +1263,6 @@ class HDOSFilesystem(Filesystem):
         if entry.first_group == 0:
             return 0
 
-        # Count groups in the file's chain
         group_count = 0
         current_group = entry.first_group
 
@@ -1227,7 +1270,10 @@ class HDOSFilesystem(Filesystem):
             if current_group == 0:
                 break
             if not (0 < current_group < len(self._grt)):
-                self.logger.warning(f"File '{entry.get_filename()}' has corrupt chain at group {current_group}.")
+                self.logger.warning(
+                    f"File '{entry.get_filename()}' has corrupt chain at "
+                    f"group {current_group}."
+                )
                 return 0
 
             group_count += 1
@@ -1238,118 +1284,93 @@ class HDOSFilesystem(Filesystem):
         if group_count == 0:
             return 0
 
-        sectors_per_group = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        sectors_per_group = (
+            self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        )
 
-        # Calculate full groups (all except the last)
         if group_count > 1:
             full_groups_sectors = (group_count - 1) * sectors_per_group
         else:
             full_groups_sectors = 0
 
-        # Add sectors from the last group
         last_group_sectors = entry.last_sector_index
 
         total_sectors = full_groups_sectors + last_group_sectors
         return total_sectors * HDOS_BYTES_PER_SECTOR
 
-    def _data_base_lba(self) -> int:
-        """
-        Returns LBA where group 1 starts. Per HDOS spec, this is LBA 2.
-
-        Returns:
-            The LBA of the first data group (always 2).
-
-        Raises:
-            RuntimeError: If called before the label has been parsed.
-        """
-        if self._data_base_lba_cache is not None:
-            return self._data_base_lba_cache
-
-        if not self.label:
-            raise RuntimeError("_data_base_lba called before label was parsed.")
-
-        self._data_base_lba_cache = 2
-        return 2
-
-    def _is_group_locked_out(self, group_num: int) -> bool:
-        """
-        Checks if a group is locked out in the RGT (Reserved Group Table).
-
-        Per HDOS spec:
-        - RGT byte value 0x01 = usable
-        - RGT byte value 0x00 or 0x80-0xFF (negative) = locked out
-
-        Args:
-            group_num: The group number to check (1-based).
-
-        Returns:
-            True if the group is marked as locked out, False otherwise.
-        """
-        if not self._rgt or group_num < 1 or group_num >= len(self._rgt):
-            return False
-
-        rgt_value = self._rgt[group_num]
-        # Locked out if: 0x00, or negative (0x80-0xFF)
-        return rgt_value == 0x00 or rgt_value >= 0x80
-
-    def _create_and_write_dir_entry(self, path: str, allocated_groups: List[int],
-                                num_sectors: int, cluster_factor: Optional[int] = None) -> None:
+    def _create_and_write_dir_entry(
+        self,
+        path: str,
+        allocated_groups: List[int],
+        num_sectors: int,
+        cluster_factor: Optional[int] = None
+    ) -> None:
         """
         Finds a free slot and writes a new directory entry to the disk.
+
         Uses pre-HDOS 3.0 format based on real disk analysis.
 
         Args:
             path: The filename path.
             allocated_groups: List of group numbers allocated for the file.
             num_sectors: Total number of sectors used by the file.
-            cluster_factor: Sectors per group for this file (defaults to label cluster factor).
+            cluster_factor: Sectors per group for this file (defaults to label
+                cluster factor).
+
+        Raises:
+            IOError: If no free directory space available.
         """
         filename_upper = path.strip("/").upper()
         name, ext = (filename_upper.split('.') + [''])[:2]
         name_bytes = name.ljust(8).encode('ascii')[:8]
         ext_bytes = ext.ljust(3).encode('ascii')[:3]
 
-        # Use provided cluster factor or fall back to label
         if cluster_factor is None:
-            cluster_factor = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+            cluster_factor = (
+                self.label.cluster_factor
+                if self.label.cluster_factor > 0
+                else 1
+            )
 
         spg = cluster_factor
         lsi = (num_sectors - 1) % spg + 1 if num_sectors > 0 else 0
 
         now = datetime.datetime.now()
 
-        # Cap year offset at 63 (max for 6-bit field)
         year_offset = min(now.year - 1970, 63)
         if now.year - 1970 > 63:
-            self.logger.warning(f"Year {now.year} exceeds HDOS limit, capping to 2033")
+            self.logger.warning(
+                f"Year {now.year} exceeds HDOS limit, capping to 2033"
+            )
 
         date_packed = ((year_offset << 9) | (now.month << 5) | now.day)
 
-        # Determine flags based on filename
         flags = 0
         if filename_upper in HDOS_SYSTEM_FILES:
-            flags = FLAGS_SYSTEM_CORE  # 0xF0
-            self.logger.debug(f"Setting system file flags 0xF0 for {filename_upper}")
+            flags = FLAGS_SYSTEM_CORE
+            self.logger.debug(
+                f"Setting system file flags 0xF0 for {filename_upper}"
+            )
         elif filename_upper in HDOS_DIRECT_SYS:
-            flags = FLAGS_DIRECT  # 0xE0
-            self.logger.debug(f"Setting DIRECT.SYS flags 0xE0 for {filename_upper}")
+            flags = FLAGS_DIRECT
+            self.logger.debug(
+                f"Setting DIRECT.SYS flags 0xE0 for {filename_upper}"
+            )
 
-        # Build entry using real HDOS pre-3.0 format
         entry_bytes = bytearray(HDOS_DIR_ENTRY_SIZE)
         entry_bytes[0:8] = name_bytes
         entry_bytes[8:11] = ext_bytes
-        entry_bytes[11] = 0  # Project - always 0
-        entry_bytes[12] = 0  # Version - always 0 (NOT 1 as spec suggested!)
-        entry_bytes[13] = cluster_factor + 1  # HDOS quirk: store cluster_factor + 1
-        entry_bytes[14] = flags  # Flags byte
-        entry_bytes[15] = 0  # Reserved - always 0 (NOT 0xFF as spec suggested!)
+        entry_bytes[11] = 0
+        entry_bytes[12] = 0
+        entry_bytes[13] = cluster_factor + 1
+        entry_bytes[14] = flags
+        entry_bytes[15] = 0
         entry_bytes[16] = allocated_groups[0] if allocated_groups else 0
         entry_bytes[17] = allocated_groups[-1] if allocated_groups else 0
         entry_bytes[18] = lsi
         struct.pack_into("<H", entry_bytes, 19, date_packed)
         struct.pack_into("<H", entry_bytes, 21, date_packed)
 
-        # Find free slot and write
         current_dir_lba = self.label.dir_start_block
         for _ in range(20):
             if current_dir_lba == 0:
@@ -1359,29 +1380,62 @@ class HDOSFilesystem(Filesystem):
             sector2 = self._read_lba(current_dir_lba + 1)
 
             if len(sector1) != HDOS_BYTES_PER_SECTOR:
-                raise IOError(f"Directory sector 1 size mismatch: {len(sector1)} != {HDOS_BYTES_PER_SECTOR}")
+                raise IOError(
+                    f"Directory sector 1 size mismatch: {len(sector1)} != "
+                    f"{HDOS_BYTES_PER_SECTOR}"
+                )
             if len(sector2) != HDOS_BYTES_PER_SECTOR:
-                raise IOError(f"Directory sector 2 size mismatch: {len(sector2)} != {HDOS_BYTES_PER_SECTOR}")
+                raise IOError(
+                    f"Directory sector 2 size mismatch: {len(sector2)} != "
+                    f"{HDOS_BYTES_PER_SECTOR}"
+                )
 
             dir_data = bytearray(sector1 + sector2)
 
             for i in range(DIR_ENTRIES_PER_BLOCK):
                 offset = i * HDOS_DIR_ENTRY_SIZE
                 if dir_data[offset] in (0x00, 0xFF, 0xFE):
-                    dir_data[offset:offset + HDOS_DIR_ENTRY_SIZE] = entry_bytes
+                    dir_data[offset:offset + HDOS_DIR_ENTRY_SIZE] = (
+                        entry_bytes
+                    )
 
-                    self._write_lba(current_dir_lba, bytes(dir_data[:HDOS_BYTES_PER_SECTOR]))
-                    self._write_lba(current_dir_lba + 1, bytes(dir_data[HDOS_BYTES_PER_SECTOR:HDOS_BYTES_PER_SECTOR * 2]))
-                    self.logger.info(f"Wrote directory entry for {filename_upper} with flags 0x{flags:02X}")
+                    self._write_lba(
+                        current_dir_lba,
+                        bytes(dir_data[:HDOS_BYTES_PER_SECTOR])
+                    )
+                    self._write_lba(
+                        current_dir_lba + 1,
+                        bytes(
+                            dir_data[
+                                HDOS_BYTES_PER_SECTOR:
+                                HDOS_BYTES_PER_SECTOR * 2
+                            ]
+                        )
+                    )
+                    self.logger.info(
+                        f"Wrote directory entry for {filename_upper} with "
+                        f"flags 0x{flags:02X}"
+                    )
                     return
 
-            current_dir_lba = struct.unpack_from("<H", dir_data, DIR_NEXT_BLOCK_PTR_OFFSET)[0]
+            current_dir_lba = struct.unpack_from(
+                "<H",
+                dir_data,
+                DIR_NEXT_BLOCK_PTR_OFFSET
+            )[0]
 
         raise IOError("Could not find a free directory entry slot.")
 
     def _create_empty_file_entry(self, path: str) -> None:
-        """Creates a directory entry for a zero-byte file."""
-        spg = self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        """
+        Creates a directory entry for a zero-byte file.
+
+        Args:
+            path: The file path.
+        """
+        spg = (
+            self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        )
         self._create_and_write_dir_entry(path, [], 0, spg)
         self.disk.flush()
         self.logger.info(f"Successfully wrote empty file '{path}'.")
@@ -1400,22 +1454,143 @@ class HDOSFilesystem(Filesystem):
         struct.pack_into("<H", sector, 3, label.dir_start_block)
         struct.pack_into("<H", sector, 5, label.grt_start_block)
         sector[7] = label.cluster_factor
-        # Volume number: 0 for data disks, 1 for system disks
-        sector[0] = label.volume_number if hasattr(label, 'volume_number') and label.volume_number is not None else 0
+        sector[0] = (
+            label.volume_number
+            if hasattr(label, 'volume_number') and
+            label.volume_number is not None
+            else 0
+        )
 
         title_bytes = label.title.encode('ascii', 'ignore')
         sector[17:17 + len(title_bytes)] = title_bytes
         return bytes(sector)
 
+    def _data_base_lba(self) -> int:
+        """
+        Returns LBA where group 1 starts.
+
+        Per HDOS spec, this is LBA 2.
+
+        Returns:
+            The LBA of the first data group (always 2).
+
+        Raises:
+            RuntimeError: If called before the label has been parsed.
+        """
+        if self._data_base_lba_cache is not None:
+            return self._data_base_lba_cache
+
+        if not self.label:
+            raise RuntimeError(
+                "_data_base_lba called before label was parsed."
+            )
+
+        self._data_base_lba_cache = 2
+        return 2
+
+    def _initialize(self) -> None:
+        """
+        Loads and parses the core HDOS filesystem structures from the disk.
+
+        This method is idempotent and caches its results.
+
+        Raises:
+            ValueError: If the parsed Label Record contains invalid data.
+        """
+        if self._init_completed:
+            return
+
+        label_data = self._read_lba(HDOS_LABEL_SECTOR_LBA)
+        self.label = HDOSLabelRecord.from_bytes(label_data)
+        if not self.label.is_valid(self.disk.physical_format.total_sectors):
+            raise ValueError(
+                f"Parsed Label Record contains invalid pointers: {self.label}"
+            )
+
+        self.logger.info(
+            f"HDOS Label Record parsed: Title='{self.label.title}', "
+            f"Vol={self.label.volume_number}, "
+            f"DiskClusterFactor={self.label.cluster_factor}, "
+            f"DirStartLBA={self.label.dir_start_block}, "
+            f"GRTStartLBA={self.label.grt_start_block}"
+        )
+
+        self._grt = bytearray(self._read_lba(self.label.grt_start_block))
+
+        try:
+            self._rgt = bytearray(self._read_lba(HDOS_RGT_SECTOR_LBA))
+            self.logger.debug(f"RGT loaded from LBA {HDOS_RGT_SECTOR_LBA}")
+        except (IOError, ValueError) as e:
+            self.logger.warning(
+                f"Could not read RGT: {e}. Proceeding without lock-out map."
+            )
+            self._rgt = None
+
+        data_base = self._data_base_lba()
+
+        spg = (
+            self.label.cluster_factor if self.label.cluster_factor > 0 else 1
+        )
+        total_data_sectors = self.disk.physical_format.total_sectors - data_base
+        num_groups_on_disk = total_data_sectors // spg
+        if len(self._grt) <= num_groups_on_disk:
+            num_groups_on_disk = min(num_groups_on_disk, len(self._grt) - 1)
+        self._num_groups_on_disk = num_groups_on_disk
+
+        self._dir_entries = self._read_directory_chain()
+        self._init_completed = True
+
+    def _is_group_locked_out(self, group_num: int) -> bool:
+        """
+        Checks if a group is locked out in the RGT.
+
+        Per HDOS spec:
+        - RGT byte value 0x01 = usable
+        - RGT byte value 0x00 or 0x80-0xFF (negative) = locked out
+
+        Args:
+            group_num: The group number to check (1-based).
+
+        Returns:
+            True if the group is marked as locked out, False otherwise.
+        """
+        if not self._rgt or group_num < 1 or group_num >= len(self._rgt):
+            return False
+
+        rgt_value = self._rgt[group_num]
+        return rgt_value == 0x00 or rgt_value >= 0x80
+
+    def _lba_to_ts(self, lba: int) -> Tuple[int, int]:
+        """
+        Converts a Logical Block Address (LBA) to (track, sector).
+
+        Args:
+            lba: The logical block address.
+
+        Returns:
+            Tuple of (track, sector).
+        """
+        spt = self.disk.physical_format.get_sectors_per_track(0, 0)
+        track = lba // spt
+        sector = lba % spt
+        return track, sector
+
     def _parse_date(self, date_bytes: bytes) -> datetime.datetime:
         """
         Parses a 2-byte HDOS date field.
+
         Year field is 6 bits, so maximum offset is 63 years from 1970.
+
+        Args:
+            date_bytes: 2-byte date value.
+
+        Returns:
+            Parsed datetime or default datetime on error.
         """
         word = struct.unpack_from("<H", date_bytes)[0]
         day = word & 0x1F
         month = (word >> 5) & 0x0F
-        year_offset = (word >> 9) & 0x3F  # Mask to 6 bits (max 63)
+        year_offset = (word >> 9) & 0x3F
         year = 1970 + year_offset
         try:
             if not (1 <= month <= 12 and 1 <= day <= 31):
@@ -1424,21 +1599,166 @@ class HDOSFilesystem(Filesystem):
         except (ValueError, TypeError):
             return HDOS_DEFAULT_DATETIME
 
-    # --- Low-Level Disk I/O Helpers ---
+    def _parse_single_dir_entry(
+        self,
+        data: bytes
+    ) -> Optional[HDOSDirectoryEntry]:
+        """
+        Helper to parse a single 23-byte directory entry.
 
-    def _lba_to_ts(self, lba: int) -> Tuple[int, int]:
-        """Converts a Logical Block Address (LBA) to (track, sector)."""
-        spt = self.disk.physical_format.get_sectors_per_track(0, 0)
-        track = lba // spt
-        sector = lba % spt
-        return track, sector
+        Uses pre-HDOS 3.0 format based on real disk analysis.
+
+        Args:
+            data: 23-byte directory entry data.
+
+        Returns:
+            HDOSDirectoryEntry object or None if invalid.
+        """
+        if (not data or len(data) < HDOS_DIR_ENTRY_SIZE or
+                data[0] in (0x00, 0xFF, 0xFE)):
+            return None
+
+        hex_dump = ' '.join(f'{b:02X}' for b in data)
+        self.logger.debug(f"Raw directory entry: {hex_dump}")
+
+        name_bytes = data[0:8]
+        ext_bytes = data[8:11]
+        byte_11 = data[11]
+        byte_12 = data[12]
+        cluster_factor = data[13]
+        flags_byte = data[14]
+        byte_15 = data[15]
+        first_group = data[16]
+        last_group = data[17]
+        last_sector_index = data[18]
+        creation_date_bytes = data[19:21]
+        mod_date_bytes = data[21:23]
+
+        name = "".join(
+            chr(b & 0x7F) for b in name_bytes
+        ).strip('\x00').strip()
+        if not name:
+            return None
+        ext = "".join(
+            chr(b & 0x7F) for b in ext_bytes
+        ).strip('\x00').strip()
+
+        creation_date = self._parse_date(creation_date_bytes)
+        mod_date = self._parse_date(mod_date_bytes)
+
+        attributes = ""
+        if flags_byte & 0x80:
+            attributes += "S"
+        if flags_byte & 0x40:
+            attributes += "L"
+        if flags_byte & 0x20:
+            attributes += "W"
+        if flags_byte & 0x10:
+            attributes += "C"
+        if not attributes:
+            attributes = "-"
+
+        self.logger.debug(
+            f"  File: {name}.{ext if ext else ''}, Flags: 0x{flags_byte:02X} "
+            f"({attributes})"
+        )
+        self.logger.debug(
+            f"  Cluster factor: {cluster_factor}, Groups: {first_group}-"
+            f"{last_group}, LSI: {last_sector_index}"
+        )
+        self.logger.debug(
+            f"  Bytes 11,12,15: {byte_11},{byte_12},{byte_15} "
+            "(expect 0,0,0)"
+        )
+        self.logger.debug(
+            f"  Created: {creation_date}, Modified: {mod_date}"
+        )
+
+        return HDOSDirectoryEntry(
+            raw_name=name_bytes,
+            name=name,
+            ext=ext,
+            cluster_factor=cluster_factor,
+            first_group=first_group,
+            last_group=last_group,
+            last_sector_index=last_sector_index,
+            creation_date=creation_date,
+            modification_date=mod_date,
+            attributes=attributes
+        )
+
+    def _read_directory_chain(self) -> List[HDOSDirectoryEntry]:
+        """
+        Reads the directory, which is a linked-list of 512-byte blocks.
+
+        Returns:
+            A list of all valid HDOSDirectoryEntry objects found.
+        """
+        entries: List[HDOSDirectoryEntry] = []
+        current_block_lba = self.label.dir_start_block
+
+        for _ in range(20):
+            if current_block_lba == 0:
+                break
+
+            try:
+                sector1 = self._read_lba(current_block_lba)
+                sector2 = self._read_lba(current_block_lba + 1)
+                dir_data = sector1 + sector2
+            except (IOError, ValueError) as e:
+                self.logger.error(
+                    f"Could not read full 512-byte directory block at LBA "
+                    f"{current_block_lba}: {e}"
+                )
+                break
+
+            end_of_dir_found = False
+            for i in range(DIR_ENTRIES_PER_BLOCK):
+                offset = i * HDOS_DIR_ENTRY_SIZE
+                entry_data = dir_data[offset: offset + HDOS_DIR_ENTRY_SIZE]
+
+                first_byte = entry_data[0]
+                if first_byte == 0xFE:
+                    end_of_dir_found = True
+                    break
+                if first_byte in [0x00, 0xFF]:
+                    continue
+
+                entry = self._parse_single_dir_entry(entry_data)
+                if entry:
+                    entries.append(entry)
+
+            if end_of_dir_found:
+                break
+
+            current_block_lba = struct.unpack_from(
+                "<H",
+                dir_data,
+                DIR_NEXT_BLOCK_PTR_OFFSET
+            )[0]
+
+        return entries
 
     def _read_lba(self, lba: int) -> bytes:
-        """Reads a single sector from the disk using its LBA."""
+        """
+        Reads a single sector from the disk using its LBA.
+
+        Args:
+            lba: Logical block address.
+
+        Returns:
+            Sector data as bytes.
+        """
         c, h, s = self.disk.physical_format.lba_to_chs(lba)
         return self.disk.read_sector(c, h, s)
 
     def _write_lba(self, lba: int, data: bytes) -> None:
-        """Writes a single sector to the disk using its LBA."""
+        """
+        Writes a single sector to the disk using its LBA.
+
+        Args:
+            lba: Logical block address.
+            data: Data to write (must be sector-sized).
+        """
         c, h, s = self.disk.physical_format.lba_to_chs(lba)
         self.disk.write_sector(c, h, s, data)

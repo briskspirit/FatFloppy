@@ -10,9 +10,9 @@ Classes:
     TrackFormat: Describes the format of a single track or a range of tracks.
     PhysicalFormat: Encapsulates the complete physical geometry of a disk.
 """
-from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
 import logging
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -39,6 +39,7 @@ class TrackFormat:
         gap1_bytes, gap2_bytes, gap3_bytes: Optional gap sizes in bytes.
         cskew, hskew: Optional cylinder and head skew values.
     """
+
     track_start: int
     track_end: int
     head_start: int
@@ -65,6 +66,60 @@ class TrackFormat:
         """
         if self.sector_translation_table is None:
             self.sector_translation_table = self._build_translation_table()
+
+    def logical_to_physical_sector(self, logical_index: int) -> int:
+        """
+        Converts a logical sector index (0-based) to a physical sector ID.
+
+        Args:
+            logical_index: 0-based index into the track
+
+        Returns:
+            The physical sector ID
+
+        Raises:
+            IndexError: If logical_index is out of range
+        """
+        if not (0 <= logical_index < self.sectors_per_track):
+            raise IndexError(
+                f"Logical sector index {logical_index} out of range "
+                f"(0-{self.sectors_per_track-1})"
+            )
+        return self.sector_translation_table[logical_index]
+
+    def matches(self, cylinder: int, head: int) -> bool:
+        """
+        Checks if this TrackFormat applies to the given cylinder and head.
+
+        Args:
+            cylinder: The cylinder number to check.
+            head: The head number to check.
+
+        Returns:
+            True if the CH coordinates fall within this format's range.
+        """
+        return (self.track_start <= cylinder <= self.track_end and
+                self.head_start <= head <= self.head_end)
+
+    def physical_to_logical_sector(self, physical_id: int) -> int:
+        """
+        Converts a physical sector ID to a logical sector index (0-based).
+
+        Args:
+            physical_id: The physical sector ID
+
+        Returns:
+            The 0-based logical index
+
+        Raises:
+            ValueError: If physical_id is not found in translation table
+        """
+        try:
+            return self.sector_translation_table.index(physical_id)
+        except ValueError:
+            raise ValueError(
+                f"Physical sector ID {physical_id} not found in translation table"
+            )
 
     def _build_translation_table(self) -> List[int]:
         """
@@ -93,60 +148,6 @@ class TrackFormat:
 
         return order
 
-    def logical_to_physical_sector(self, logical_index: int) -> int:
-        """
-        Converts a logical sector index (0-based) to a physical sector ID.
-
-        Args:
-            logical_index: 0-based index into the track
-
-        Returns:
-            The physical sector ID
-
-        Raises:
-            IndexError: If logical_index is out of range
-        """
-        if not (0 <= logical_index < self.sectors_per_track):
-            raise IndexError(
-                f"Logical sector index {logical_index} out of range "
-                f"(0-{self.sectors_per_track-1})"
-            )
-        return self.sector_translation_table[logical_index]
-
-    def physical_to_logical_sector(self, physical_id: int) -> int:
-        """
-        Converts a physical sector ID to a logical sector index (0-based).
-
-        Args:
-            physical_id: The physical sector ID
-
-        Returns:
-            The 0-based logical index
-
-        Raises:
-            ValueError: If physical_id is not found in translation table
-        """
-        try:
-            return self.sector_translation_table.index(physical_id)
-        except ValueError:
-            raise ValueError(
-                f"Physical sector ID {physical_id} not found in translation table"
-            )
-
-    def matches(self, cylinder: int, head: int) -> bool:
-        """
-        Checks if this TrackFormat applies to the given cylinder and head.
-
-        Args:
-            cylinder: The cylinder number to check.
-            head: The head number to check.
-
-        Returns:
-            True if the CH coordinates fall within this format's range.
-        """
-        return (self.track_start <= cylinder <= self.track_end and
-                self.head_start <= head <= self.head_end)
-
 
 @dataclass
 class PhysicalFormat:
@@ -166,6 +167,7 @@ class PhysicalFormat:
         image_in_sector_id_order: Whether a raw image is laid out by sector ID
                                   or by physical position on the track.
     """
+
     cylinders: int
     heads: int
     rpm: int
@@ -192,9 +194,9 @@ class PhysicalFormat:
                     covered.add((c, h))
         total_tracks = self.cylinders * self.heads
         if len(covered) != total_tracks:
-            logging.warning(f"Track formats cover {len(covered)}/{total_tracks} tracks")
-
-    # --- Properties ---
+            logging.warning(
+                f"Track formats cover {len(covered)}/{total_tracks} tracks"
+            )
 
     @property
     def has_variable_bps(self) -> bool:
@@ -224,7 +226,8 @@ class PhysicalFormat:
             for c in range(self.cylinders):
                 for h in range(self.heads):
                     track_format = self.get_track_format(c, h)
-                    total += track_format.sectors_per_track * track_format.bytes_per_sector
+                    total += (track_format.sectors_per_track *
+                              track_format.bytes_per_sector)
             return total
         return self.total_sectors * self.bytes_per_sector
 
@@ -242,19 +245,34 @@ class PhysicalFormat:
                 total += self.get_sectors_per_track(c, h)
         return total
 
-    # --- Public Methods ---
-
     @classmethod
     def create_default(cls) -> 'PhysicalFormat':
-        """Creates a default PhysicalFormat instance (e.g., 1.44MB)."""
+        """
+        Creates a default PhysicalFormat instance (e.g., 1.44MB).
+
+        Returns:
+            A PhysicalFormat instance with standard 1.44MB floppy settings.
+        """
         default_track_format = TrackFormat(
-            track_start=0, track_end=79, head_start=0, head_end=1,
-            sectors_per_track=18, encoding="MFM", rate=500, interleave=1,
-            id_start=1, iam_present=True, gap3_bytes=84
+            track_start=0,
+            track_end=79,
+            head_start=0,
+            head_end=1,
+            sectors_per_track=18,
+            encoding="MFM",
+            rate=500,
+            interleave=1,
+            id_start=1,
+            iam_present=True,
+            gap3_bytes=84
         )
         return cls(
-            cylinders=80, heads=2, rpm=300, heads_inverted=False,
-            bytes_per_sector=512, track_formats=[default_track_format]
+            cylinders=80,
+            heads=2,
+            rpm=300,
+            heads_inverted=False,
+            bytes_per_sector=512,
+            track_formats=[default_track_format]
         )
 
     def chs_to_byte_offset(self, cylinder: int, head: int, sector: int) -> int:
@@ -275,25 +293,20 @@ class PhysicalFormat:
         self.validate_chs(cylinder, head, sector)
         byte_offset = 0
 
-        # Sum bytes of all full cylinders before the target
         for c_iter in range(cylinder):
             for h_iter in range(self.heads):
                 tf = self.get_track_format(c_iter, h_iter)
                 byte_offset += tf.sectors_per_track * tf.bytes_per_sector
 
-        # Sum bytes of all full heads on the target cylinder before the target
         for h_iter in range(head):
             tf = self.get_track_format(cylinder, h_iter)
             byte_offset += tf.sectors_per_track * tf.bytes_per_sector
 
-        # Add the offset for the sectors on the target track
         tf = self.get_track_format(cylinder, head)
 
         if self.image_in_sector_id_order:
-            # Image is ordered by sector ID, calculate directly
             sector_index = sector - tf.id_start
         else:
-            # Image is in physical order, use translation table
             sector_index = tf.physical_to_logical_sector(sector)
 
         byte_offset += sector_index * tf.bytes_per_sector
@@ -315,16 +328,16 @@ class PhysicalFormat:
             NotImplementedError: If the disk has variable sector sizes.
         """
         if self.has_variable_bps:
-            raise NotImplementedError("CHS to LBA is not supported for variable sector sizes.")
+            raise NotImplementedError(
+                "CHS to LBA is not supported for variable sector sizes."
+            )
         self.validate_chs(cylinder, head, sector)
 
         lba = 0
-        # Sum sectors of all full cylinders before the target
         for c_iter in range(cylinder):
             for h_iter in range(self.heads):
                 lba += self.get_sectors_per_track(c_iter, h_iter)
 
-        # Sum sectors of all full heads on the target cylinder before the target
         for h_iter in range(head):
             lba += self.get_sectors_per_track(cylinder, h_iter)
 
@@ -404,9 +417,13 @@ class PhysicalFormat:
             NotImplementedError: If the disk has variable sector sizes.
         """
         if self.has_variable_bps:
-            raise NotImplementedError("LBA to CHS is not supported for variable sector sizes.")
+            raise NotImplementedError(
+                "LBA to CHS is not supported for variable sector sizes."
+            )
         if not (0 <= lba < self.total_sectors):
-            raise ValueError(f"LBA {lba} exceeds total sectors {self.total_sectors}")
+            raise ValueError(
+                f"LBA {lba} exceeds total sectors {self.total_sectors}"
+            )
 
         sector_count = 0
         for c in range(self.cylinders):
@@ -441,6 +458,7 @@ class PhysicalFormat:
 
         if not (id_start <= sector < id_start + max_sectors):
             raise ValueError(
-                f"Sector {sector} out of range ({id_start}-{id_start + max_sectors - 1}) "
+                f"Sector {sector} out of range "
+                f"({id_start}-{id_start + max_sectors - 1}) "
                 f"for C:{cylinder} H:{head}"
             )

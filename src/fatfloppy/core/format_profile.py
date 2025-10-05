@@ -3,7 +3,7 @@
 Defines the data structure for a complete disk format profile.
 """
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Any, Optional
 
 from .physical_format import PhysicalFormat
 
@@ -27,6 +27,7 @@ class FormatProfile:
         is_bootable: Whether this format is typically bootable.
         notes: Optional additional notes about the format.
     """
+
     name: str
     description: str
     physical_format: PhysicalFormat
@@ -46,12 +47,11 @@ class FormatProfile:
 
         from .filesystem_registry import FilesystemRegistry
 
-        # Find which filesystem plugin handles this config type
         config_type = type(self.filesystem_config)
 
         for fs_class in FilesystemRegistry.get_all():
-            # Each filesystem plugin declares what config type it uses
-            if hasattr(fs_class, 'config_class') and fs_class.config_class is not None:
+            if (hasattr(fs_class, 'config_class') and
+                    fs_class.config_class is not None):
                 if fs_class.config_class == config_type:
                     return fs_class.filesystem_type
 

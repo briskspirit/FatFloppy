@@ -44,3 +44,58 @@ where = ["src"]
 
 [tool.setuptools.dynamic]
 version = {attr = "fatfloppy._version.__version__"}
+
+# ============================================================================
+# Ruff Configuration - Code Formatting & Linting
+# ============================================================================
+[tool.ruff]
+line-length = 88
+target-version = "py39"  # Match your minimum Python version
+
+# Exclude common directories
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+# Enable these rule sets (good balance for portfolio projects)
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort (import sorting)
+    "N",      # pep8-naming
+    "UP",     # pyupgrade (modern Python syntax)
+    "B",      # flake8-bugbear (common bugs)
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+    "ARG",    # flake8-unused-arguments
+    "PTH",    # flake8-use-pathlib
+]
+
+# Ignore specific rules if needed
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+]
+
+# Allow autofix for all enabled rules
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.isort]
+# Sort imports nicely
+known-first-party = ["fatfloppy"]
+
+[tool.ruff.format]
+# Use double quotes (PEP 8 default)
+quote-style = "double"
+# Indent with spaces
+indent-style = "space"
+# Unix line endings
+line-ending = "auto"

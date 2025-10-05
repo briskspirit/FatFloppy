@@ -49,7 +49,6 @@ def get_dark_theme() -> str:
         background-color: #3c3c3c;
         color: #ffffff;
     }
-    /* Add more widget styles as needed */
     """
 
 
@@ -94,5 +93,4 @@ def get_light_theme() -> str:
         background-color: #ffffff;
         color: #000000;
     }
-    /* Add more widget styles as needed */
     """

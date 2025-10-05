@@ -14,15 +14,17 @@ Functions:
     setup_logger: Configures the root logger for the application.
     get_logger: Retrieves a logger instance with an appropriate name.
 """
-import os
-import sys
 import inspect
 import logging
+import os
+import sys
 from datetime import datetime
 from typing import Optional
 
 # Constants for log formatting
-LOG_FORMAT: str = '%(asctime)s - %(levelname)s - %(name)s.%(funcName)s:%(lineno)d - %(message)s'
+LOG_FORMAT: str = (
+    '%(asctime)s - %(levelname)s - %(name)s.%(funcName)s:%(lineno)d - %(message)s'
+)
 DATE_FORMAT: str = '%Y-%m-%d %H:%M:%S'
 
 
@@ -41,20 +43,16 @@ def setup_logger() -> None:
         datefmt=DATE_FORMAT,
         stream=sys.stdout,
     )
-    # Reduce verbosity from noisy libraries
     logging.getLogger('PyQt6').setLevel(logging.WARNING)
 
-    # Create a logs directory if it doesn't exist
     log_dir = 'logs'
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    # Create a file handler for writing logs to a file
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     file_handler = logging.FileHandler(f'{log_dir}/fatfloppy_{timestamp}.log')
     file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 
-    # Add the file handler to the root logger
     logging.getLogger().addHandler(file_handler)
 
 
@@ -73,20 +71,15 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
         A configured logger instance.
     """
     if name is None:
-        # Inspect the previous frame to find the caller's context
         frame = inspect.currentframe().f_back
         try:
-            # Check if the caller is a method within a class
             if 'self' in frame.f_locals:
                 name = frame.f_locals['self'].__class__.__name__
-            # Otherwise, use the filename of the calling module
             else:
                 name = os.path.splitext(os.path.basename(frame.f_code.co_filename))[0]
         finally:
-            # Avoid reference cycles as recommended by inspect module docs
             del frame
     return logging.getLogger(name)
 
 
-# Initialize the logger as soon as this module is imported.
 setup_logger()

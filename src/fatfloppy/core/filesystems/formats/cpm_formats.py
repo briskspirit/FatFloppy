@@ -1,16 +1,80 @@
-# src/fatfloppy/core/filesystems/formats/cpm_formats.py
-"""CP/M format definitions with physical format variants."""
-
-from typing import Dict, List, Tuple
 from dataclasses import replace
+from typing import Dict, List, Tuple
+
+from ..cpm_fs import CPMDiskParameterBlock
+from ...format_profile import FormatProfile
+from ...physical_format import PhysicalFormat, TrackFormat
 from ...physical_formats_library import (
+    create_525_sssd_base,
     create_8inch_sssd_base,
     create_8inch_ssdd_base,
-    create_525_sssd_base,
 )
-from ...physical_format import PhysicalFormat
-from ...format_profile import FormatProfile
-from ..cpm_fs import CPMDiskParameterBlock
+
+
+DPB_8INCH_SSSD = CPMDiskParameterBlock(
+    spt=26,
+    bsh=3,
+    blm=7,
+    exm=0,
+    dsm=242,
+    drm=63,
+    al0=0xC0,
+    al1=0x00,
+    cks=0,
+    off=2,
+)
+
+DPB_8INCH_SSDD_IMSAI = CPMDiskParameterBlock(
+    spt=52,
+    bsh=4,
+    blm=15,
+    exm=0,
+    dsm=242,
+    drm=63,
+    al0=0xC0,
+    al1=0x00,
+    cks=0,
+    off=2,
+)
+
+DPB_8INCH_MITS = CPMDiskParameterBlock(
+    spt=32,
+    bsh=4,
+    blm=15,
+    exm=0,
+    dsm=147,
+    drm=63,
+    al0=0xC0,
+    al1=0x00,
+    cks=0,
+    off=2,
+)
+
+DPB_525_SSSD = CPMDiskParameterBlock(
+    spt=20,
+    bsh=3,
+    blm=7,
+    exm=0,
+    dsm=92,
+    drm=63,
+    al0=0xC0,
+    al1=0x00,
+    cks=0,
+    off=3,
+)
+
+MITS_SYSTEM_TRACK_END = 5
+MITS_DATA_TRACK_START = 6
+MITS_DATA_TRACK_END = 76
+MITS_SECTORS_PER_TRACK = 32
+MITS_SYSTEM_SECTOR_TRANSLATION = [
+    1, 9, 17, 25, 3, 11, 19, 27, 5, 13, 21, 29, 7, 15, 23, 31,
+    2, 10, 18, 26, 4, 12, 20, 28, 6, 14, 22, 30, 8, 16, 24, 32,
+]
+MITS_DATA_SECTOR_TRANSLATION = [
+    1, 9, 17, 25, 3, 11, 19, 27, 5, 13, 21, 29, 7, 15, 23, 31,
+    18, 26, 2, 10, 20, 28, 4, 12, 22, 30, 6, 14, 24, 32, 8, 16,
+]
 
 
 def _create_8inch_sssd_variants() -> List[Tuple[str, PhysicalFormat]]:
@@ -18,36 +82,27 @@ def _create_8inch_sssd_variants() -> List[Tuple[str, PhysicalFormat]]:
     Creates 8" SSSD physical format variants with different sector orderings.
 
     Returns:
-        List of (variant_name, PhysicalFormat) tuples
+        List of (variant_name, PhysicalFormat) tuples.
     """
     base = create_8inch_sssd_base()
     variants = []
 
-    # Variant 1: Interleave 6 (most common CP/M)
     pf_i6 = replace(base)
-    pf_i6.track_formats = [replace(
-        base.track_formats[0],
-        interleave=6,
-        sector_translation_table=None  # Force rebuild
-    )]
+    pf_i6.track_formats = [
+        replace(base.track_formats[0], interleave=6, sector_translation_table=None)
+    ]
     variants.append(("interleave6", pf_i6))
 
-    # Variant 2: Interleave 4
     pf_i4 = replace(base)
-    pf_i4.track_formats = [replace(
-        base.track_formats[0],
-        interleave=4,
-        sector_translation_table=None  # Force rebuild
-    )]
+    pf_i4.track_formats = [
+        replace(base.track_formats[0], interleave=4, sector_translation_table=None)
+    ]
     variants.append(("interleave4", pf_i4))
 
-    # Variant 3: Sequential (no interleave)
     pf_seq = replace(base)
-    pf_seq.track_formats = [replace(
-        base.track_formats[0],
-        interleave=1,
-        sector_translation_table=None  # Force rebuild
-    )]
+    pf_seq.track_formats = [
+        replace(base.track_formats[0], interleave=1, sector_translation_table=None)
+    ]
     variants.append(("sequential", pf_seq))
 
     return variants
@@ -58,9 +113,10 @@ def _create_8inch_ssdd_imsai_mixed() -> PhysicalFormat:
     Creates IMSAI mixed-density format (Track 0 FM, Tracks 1-76 MFM).
 
     This is a special case where different tracks use different encodings.
-    """
-    from ...physical_format import TrackFormat
 
+    Returns:
+        A PhysicalFormat object configured for IMSAI mixed density.
+    """
     return PhysicalFormat(
         cylinders=77,
         heads=1,
@@ -69,10 +125,11 @@ def _create_8inch_ssdd_imsai_mixed() -> PhysicalFormat:
         bytes_per_sector=128,
         image_in_sector_id_order=True,
         track_formats=[
-            # Track 0: FM, 26 sectors, 128 bytes
             TrackFormat(
-                track_start=0, track_end=0,
-                head_start=0, head_end=0,
+                track_start=0,
+                track_end=0,
+                head_start=0,
+                head_end=0,
                 sectors_per_track=26,
                 bytes_per_sector=128,
                 encoding="FM",
@@ -82,10 +139,11 @@ def _create_8inch_ssdd_imsai_mixed() -> PhysicalFormat:
                 iam_present=True,
                 gap3_bytes=26,
             ),
-            # Tracks 1-76: MFM, 26 sectors, 256 bytes
             TrackFormat(
-                track_start=1, track_end=76,
-                head_start=0, head_end=0,
+                track_start=1,
+                track_end=76,
+                head_start=0,
+                head_end=0,
                 sectors_per_track=26,
                 bytes_per_sector=256,
                 encoding="MFM",
@@ -107,13 +165,10 @@ def _create_mits_altair_variants() -> List[Tuple[str, PhysicalFormat]]:
     pattern that differs between system tracks and data tracks.
 
     Returns:
-        List of (variant_name, PhysicalFormat) tuples
+        List of (variant_name, PhysicalFormat) tuples.
     """
-    from ...physical_format import TrackFormat
-
     variants = []
 
-    # Standard MITS variant with documented sector translation
     pf_mits = PhysicalFormat(
         cylinders=77,
         heads=1,
@@ -122,36 +177,32 @@ def _create_mits_altair_variants() -> List[Tuple[str, PhysicalFormat]]:
         bytes_per_sector=128,
         image_in_sector_id_order=True,
         track_formats=[
-            # System tracks (0-5): One sector translation
             TrackFormat(
-                track_start=0, track_end=5,
-                head_start=0, head_end=0,
-                sectors_per_track=32,
+                track_start=0,
+                track_end=MITS_SYSTEM_TRACK_END,
+                head_start=0,
+                head_end=0,
+                sectors_per_track=MITS_SECTORS_PER_TRACK,
                 bytes_per_sector=128,
                 encoding="FM",
                 rate=250,
                 interleave=1,
-                sector_translation_table=[
-                    1, 9, 17, 25, 3, 11, 19, 27, 5, 13, 21, 29, 7, 15, 23, 31,
-                    2, 10, 18, 26, 4, 12, 20, 28, 6, 14, 22, 30, 8, 16, 24, 32
-                ],
+                sector_translation_table=MITS_SYSTEM_SECTOR_TRANSLATION,
                 id_start=1,
                 iam_present=False,
                 gap3_bytes=0,
             ),
-            # Data tracks (6-76): Different sector translation
             TrackFormat(
-                track_start=6, track_end=76,
-                head_start=0, head_end=0,
-                sectors_per_track=32,
+                track_start=MITS_DATA_TRACK_START,
+                track_end=MITS_DATA_TRACK_END,
+                head_start=0,
+                head_end=0,
+                sectors_per_track=MITS_SECTORS_PER_TRACK,
                 bytes_per_sector=128,
                 encoding="FM",
                 rate=250,
                 interleave=1,
-                sector_translation_table=[
-                    1, 9, 17, 25, 3, 11, 19, 27, 5, 13, 21, 29, 7, 15, 23, 31,
-                    18, 26, 2, 10, 20, 28, 4, 12, 22, 30, 6, 14, 24, 32, 8, 16
-                ],
+                sector_translation_table=MITS_DATA_SECTOR_TRANSLATION,
                 id_start=1,
                 iam_present=False,
                 gap3_bytes=0,
@@ -163,88 +214,47 @@ def _create_mits_altair_variants() -> List[Tuple[str, PhysicalFormat]]:
     return variants
 
 
-# Base DPB configurations
-_DPB_8INCH_SSSD = CPMDiskParameterBlock(
-    spt=26, bsh=3, blm=7, exm=0,
-    dsm=242, drm=63,
-    al0=0xC0, al1=0x00,
-    cks=0, off=2,
-)
-
-_DPB_8INCH_SSDD_IMSAI = CPMDiskParameterBlock(
-    spt=52, bsh=4, blm=15, exm=0,
-    dsm=242, drm=63,
-    al0=0xC0, al1=0x00,
-    cks=0, off=2,
-)
-
-_DPB_8INCH_MITS = CPMDiskParameterBlock(
-    spt=32, bsh=4, blm=15, exm=0,
-    dsm=147, drm=63,
-    al0=0xC0, al1=0x00,
-    cks=0, off=2,
-)
-
-_DPB_525_SSSD = CPMDiskParameterBlock(
-    spt=20, bsh=3, blm=7, exm=0,
-    dsm=92, drm=63,
-    al0=0xC0, al1=0x00,
-    cks=0, off=3,
-)
-
-
-# Build format dictionary
 CPM_FORMATS: Dict[str, FormatProfile] = {}
 
-# Create 8" SSSD variants
 for variant_name, physical_format in _create_8inch_sssd_variants():
     format_name = f"cpm_8_sssd_250k_{variant_name}"
 
     CPM_FORMATS[format_name] = FormatProfile(
         name=format_name,
-        description=f"8\" SSSD 250KB CP/M with {variant_name}",
+        description=f'8" SSSD 250KB CP/M with {variant_name}',
         physical_format=physical_format,
-        filesystem_config=_DPB_8INCH_SSSD,
+        filesystem_config=DPB_8INCH_SSSD,
     )
 
-# Add default (most common variant)
 CPM_FORMATS["cpm_8_sssd_250k"] = CPM_FORMATS["cpm_8_sssd_250k_interleave6"]
 
-# Add IMSAI mixed density
 CPM_FORMATS["cpm_8_ssdd_imsai_mixed"] = FormatProfile(
     name="cpm_8_ssdd_imsai_mixed",
-    description="8\" SSDD IMSAI Mixed Density (T0 FM, T1-76 MFM, ~500KB)",
+    description='8" SSDD IMSAI Mixed Density (T0 FM, T1-76 MFM, ~500KB)',
     physical_format=_create_8inch_ssdd_imsai_mixed(),
-    filesystem_config=_DPB_8INCH_SSDD_IMSAI,
+    filesystem_config=DPB_8INCH_SSDD_IMSAI,
 )
 
-# Add MITS Altair variants
 for variant_name, physical_format in _create_mits_altair_variants():
     format_name = f"cpm_8_mits_altair_308k_{variant_name}"
 
     CPM_FORMATS[format_name] = FormatProfile(
         name=format_name,
-        description=f"8\" SSSD MITS Altair 308KB with {variant_name}",
+        description=f'8" SSSD MITS Altair 308KB with {variant_name}',
         physical_format=physical_format,
-        filesystem_config=_DPB_8INCH_MITS,
+        filesystem_config=DPB_8INCH_MITS,
     )
 
-# Add default MITS
 CPM_FORMATS["cpm_8_mits_dsk_308k"] = CPM_FORMATS["cpm_8_mits_altair_308k_mits_split"]
 
-# Add 5.25" format
 pf_525 = create_525_sssd_base(sectors_per_track=10, bytes_per_sector=256)
-pf_525.track_formats = [replace(
-    pf_525.track_formats[0],
-    interleave=4,
-    gap1_bytes=45,
-    gap2_bytes=12,
-    gap3_bytes=30
-)]
+pf_525.track_formats = [
+    replace(pf_525.track_formats[0], interleave=4, gap1_bytes=45, gap2_bytes=12, gap3_bytes=30)
+]
 
 CPM_FORMATS["cpm_5.25_100k"] = FormatProfile(
     name="cpm_5.25_100k",
-    description="5.25\" SSSD 100KB CP/M 2.2 (40 tracks, 1 head, 10 sectors/track)",
+    description='5.25" SSSD 100KB CP/M 2.2 (40 tracks, 1 head, 10 sectors/track)',
     physical_format=pf_525,
-    filesystem_config=_DPB_525_SSSD,
+    filesystem_config=DPB_525_SSSD,
 )

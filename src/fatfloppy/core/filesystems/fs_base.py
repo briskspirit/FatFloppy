@@ -1,39 +1,38 @@
-# src/fatfloppy/core/filesystems/fs_base.py
-"""
-Defines the abstract base classes for filesystem implementations.
-
-This module provides the core interface that all concrete filesystem handlers
-(like FAT12, CP/M, etc.) must implement. It ensures a consistent API for
-interacting with different types of filesystems on disk images.
-
-Classes:
-    FileInfo: A dataclass for holding metadata about a single file or directory.
-    Filesystem: An abstract base class defining the required methods for a
-                filesystem implementation.
-"""
 import datetime
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any, Callable, ClassVar, Type
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, Type
 
 from ..disk import Disk
 from ..format_profile import FormatProfile
-from ..utils.logging_config import get_logger
 from ..physical_format import PhysicalFormat
+from ..utils.logging_config import get_logger
 
 
 @dataclass
 class FileInfo:
     """
     A data structure to hold metadata about a file or directory.
+
+    This dataclass encapsulates all relevant metadata for filesystem entries,
+    providing a consistent interface across different filesystem implementations.
+
+    Attributes:
+        name: The filename or directory name.
+        size: The size of the file in bytes (0 for directories).
+        is_dir: True if this entry represents a directory, False for files.
+        datetime: The timestamp associated with the file or directory.
+        attributes: String representation of file attributes.
+        starting_cluster: The starting allocation unit (cluster, block, etc.).
+        extra_data: Filesystem-specific additional data.
     """
     name: str
     size: int
     is_dir: bool
     datetime: datetime.datetime
     attributes: str
-    starting_cluster: int = 0  # Represents the starting allocation unit (cluster, block, etc.)
-    extra_data: Optional[Any] = None  # For filesystem-specific additional data
+    starting_cluster: int = 0
+    extra_data: Optional[Any] = None
 
 
 class Filesystem(ABC):
@@ -44,14 +43,10 @@ class Filesystem(ABC):
     filesystems. Subclasses must implement all abstract methods to provide
     concrete functionality for a specific filesystem type.
     """
-    # Plugin metadata (must be set by subclasses)
-    filesystem_type: ClassVar[str] = ""  # e.g., "FAT12", "CPM"
-    filesystem_aliases: ClassVar[List[str]] = []  # e.g., ["FAT", "MSDOS"]
+    filesystem_type: ClassVar[str] = ""
+    filesystem_aliases: ClassVar[List[str]] = []
     validity_threshold: ClassVar[int] = 30
-
     config_class: ClassVar[Optional[Type]] = None
-
-    # Optional: Minimum version required
     min_fatfloppy_version: ClassVar[Optional[str]] = None
 
     def __init__(self, disk: Disk):
@@ -60,6 +55,9 @@ class Filesystem(ABC):
 
         Args:
             disk: The Disk object that this filesystem will operate on.
+
+        Raises:
+            ValueError: If the subclass does not define filesystem_type.
         """
         if not self.filesystem_type:
             raise ValueError(f"{self.__class__.__name__} must define filesystem_type")
@@ -74,7 +72,7 @@ class Filesystem(ABC):
         Subclasses should override this to provide their format definitions.
 
         Returns:
-            Dictionary mapping format names to FormatProfile objects
+            Dictionary mapping format names to FormatProfile objects.
         """
         return {}
 
@@ -83,6 +81,7 @@ class Filesystem(ABC):
     def configs_match(config1: Any, config2: Any) -> bool:
         """
         Compares two filesystem-specific configuration objects for equality.
+
         This is used by the format detector to match profiles.
 
         Args:
@@ -93,6 +92,23 @@ class Filesystem(ABC):
             True if the configurations are considered a match, False otherwise.
         """
         raise NotImplementedError
+
+    @staticmethod
+    def create_config_from_params(format_info: Dict[str, Any],
+                                   physical_format: PhysicalFormat) -> Optional[Any]:
+        """
+        Creates a filesystem-specific configuration object from parameters.
+
+        Subclasses should override this to provide their config creation logic.
+
+        Args:
+            format_info: Dictionary containing filesystem parameters.
+            physical_format: The physical format of the disk.
+
+        Returns:
+            A filesystem-specific config object, or None if not supported.
+        """
+        return None
 
     @abstractmethod
     def create_directory(self, path: str) -> None:
@@ -149,20 +165,6 @@ class Filesystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_file_allocation_units(self, path: str) -> List[int]:
-        """
-        Gets the allocation units (clusters, blocks, groups) used by a specific file.
-
-        Args:
-            path: The full path to the file.
-
-        Returns:
-            A list of allocation unit numbers used by the file, in order.
-            Returns an empty list if the file doesn't exist or has no allocated units.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
     def get_disk_map_layout(self) -> Dict[str, Any]:
         """
         Returns layout information for visualizing the disk map.
@@ -187,6 +189,20 @@ class Filesystem(ABC):
         Returns:
             A dictionary where keys are parameter names and values are their
             string representations.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_file_allocation_units(self, path: str) -> List[int]:
+        """
+        Gets the allocation units (clusters, blocks, groups) used by a specific file.
+
+        Args:
+            path: The full path to the file.
+
+        Returns:
+            A list of allocation unit numbers used by the file, in order.
+            Returns an empty list if the file doesn't exist or has no allocated units.
         """
         raise NotImplementedError
 
@@ -284,22 +300,5 @@ class Filesystem(ABC):
 
         Returns:
             The volume label as a string, or None if not supported or not available.
-        """
-        return None
-
-    @staticmethod
-    def create_config_from_params(format_info: Dict[str, Any],
-                                   physical_format: PhysicalFormat) -> Optional[Any]:
-        """
-        Creates a filesystem-specific configuration object from parameters.
-
-        Subclasses should override this to provide their config creation logic.
-
-        Args:
-            format_info: Dictionary containing filesystem parameters.
-            physical_format: The physical format of the disk.
-
-        Returns:
-            A filesystem-specific config object, or None if not supported.
         """
         return None

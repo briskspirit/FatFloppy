@@ -7,13 +7,12 @@ This module uses the FilesystemRegistry for all filesystem operations.
 from typing import Optional, Type
 
 from .disk import Disk
-from .filesystems.fs_base import Filesystem
 from .filesystem_registry import FilesystemRegistry
+from .filesystems.fs_base import Filesystem
 from .utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# Minimum score required for a filesystem to be considered valid
 MINIMUM_VALIDITY_SCORE = 30
 
 
@@ -28,7 +27,9 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
         An instance of a Filesystem subclass if suitable, otherwise None
     """
     if not disk or not disk.physical_format:
-        logger.warning("Cannot create filesystem: Disk or physical format not available.")
+        logger.warning(
+            "Cannot create filesystem: Disk or physical format not available."
+        )
         return None
 
     logger.debug("Attempting to detect filesystem on disk by scoring...")
@@ -42,11 +43,13 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
         try:
             logger.debug(f"Scoring filesystem type: {fs_class.__name__}")
 
-            # Temporarily apply canonical geometry if available
-            if hasattr(fs_class, 'get_canonical_format') and callable(getattr(fs_class, 'get_canonical_format')):
+            if (hasattr(fs_class, 'get_canonical_format') and
+                    callable(getattr(fs_class, 'get_canonical_format'))):
                 canonical_format = fs_class.get_canonical_format()
                 if canonical_format.physical_format != original_pf:
-                    logger.debug(f"Applying canonical geometry for {fs_class.__name__} scoring.")
+                    logger.debug(
+                        f"Applying canonical geometry for {fs_class.__name__} scoring."
+                    )
                     disk.set_geometry(canonical_format.physical_format)
 
             fs_instance = fs_class(disk)
@@ -58,25 +61,31 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
                 best_fs_instance = fs_instance
 
         except Exception as e:
-            logger.error(f"Error while scoring {fs_class.__name__}: {e}", exc_info=False)
+            logger.error(
+                f"Error while scoring {fs_class.__name__}: {e}",
+                exc_info=False
+            )
             all_scores[fs_class.__name__] = f"Error: {e}"
         finally:
-            # Always restore original geometry
             if disk.physical_format != original_pf:
                 disk.set_geometry(original_pf)
 
-    # Log all scores
     logger.debug(f"Filesystem scores: {all_scores}")
 
     if highest_score >= MINIMUM_VALIDITY_SCORE and best_fs_instance:
-        logger.info(f"Selected best match: {best_fs_instance.__class__.__name__} with score {highest_score}.")
-        # Re-initialize with final geometry
+        logger.info(
+            f"Selected best match: {best_fs_instance.__class__.__name__} "
+            f"with score {highest_score}."
+        )
         if disk.physical_format != original_pf:
             best_fs_instance = type(best_fs_instance)(disk)
-            best_fs_instance.get_validity_score()  # Re-run to initialize
+            best_fs_instance.get_validity_score()
         return best_fs_instance
 
-    logger.warning(f"No valid filesystem detected (highest score {highest_score} < threshold {MINIMUM_VALIDITY_SCORE}).")
+    logger.warning(
+        f"No valid filesystem detected (highest score {highest_score} < "
+        f"threshold {MINIMUM_VALIDITY_SCORE})."
+    )
     return None
 
 

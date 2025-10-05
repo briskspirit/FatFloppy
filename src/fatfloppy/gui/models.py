@@ -4,6 +4,7 @@ Data models for representing filesystem structures in the GUI.
 """
 
 from __future__ import annotations
+
 from typing import List, Optional
 
 

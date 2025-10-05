@@ -3,13 +3,24 @@ import logging
 import os
 from typing import Any, Dict, Optional, Tuple
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                             QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-                             QLabel, QLineEdit, QPushButton, QRadioButton,
-                             QSpinBox, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QRadioButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
-# Set up a logger for this module
 logger = logging.getLogger(__name__)
 
 
@@ -79,26 +90,39 @@ def _create_format_parameters_group() -> Tuple[QGroupBox, Dict[str, QWidget]]:
     widgets["iam_present_check"].setChecked(True)
     layout.addRow(widgets["iam_present_check"])
 
-    for gap_name, default_val in [("gap1_bytes", 0), ("gap2_bytes", 0), ("gap3_bytes", 84)]:
+    for gap_name, default_val in [
+        ("gap1_bytes", 0),
+        ("gap2_bytes", 0),
+        ("gap3_bytes", 84)
+    ]:
         widgets[f"{gap_name}_spin"] = QSpinBox()
         widgets[f"{gap_name}_spin"].setRange(0, 255)
         widgets[f"{gap_name}_spin"].setSpecialValueText("Default (0)")
         if default_val != 0:
             widgets[f"{gap_name}_spin"].setValue(default_val)
-        layout.addRow(f"{gap_name.replace('_', ' ').capitalize()}:", widgets[f"{gap_name}_spin"])
+        layout.addRow(
+            f"{gap_name.replace('_', ' ').capitalize()}:",
+            widgets[f"{gap_name}_spin"]
+        )
 
     for skew_name, default_val in [("cskew", 0), ("hskew", 0)]:
         widgets[f"{skew_name}_spin"] = QSpinBox()
         widgets[f"{skew_name}_spin"].setRange(0, 255)
         widgets[f"{skew_name}_spin"].setSpecialValueText("Default (0)")
         widgets[f"{skew_name}_spin"].setValue(default_val)
-        layout.addRow(f"{skew_name.replace('skew', ' Skew').capitalize()}:", widgets[f"{skew_name}_spin"])
+        layout.addRow(
+            f"{skew_name.replace('skew', ' Skew').capitalize()}:",
+            widgets[f"{skew_name}_spin"]
+        )
 
     group.setLayout(layout)
     return group, widgets
 
 
-def _set_default_parameters_for_size(size: str, widgets: Dict[str, QWidget]) -> None:
+def _set_default_parameters_for_size(
+    size: str,
+    widgets: Dict[str, QWidget]
+) -> None:
     """
     Sets default format parameters on the widgets based on the drive size.
 
@@ -110,31 +134,48 @@ def _set_default_parameters_for_size(size: str, widgets: Dict[str, QWidget]) -> 
         widgets["cylinders_spin"].setValue(80)
         widgets["heads_spin"].setValue(2)
         widgets["sectors_spin"].setValue(18)
-        widgets["bytes_per_sector_combo"].setCurrentIndex(widgets["bytes_per_sector_combo"].findData(512))
-        widgets["encoding_combo"].setCurrentIndex(widgets["encoding_combo"].findData("MFM"))
-        widgets["rate_combo"].setCurrentIndex(widgets["rate_combo"].findData(500))
+        widgets["bytes_per_sector_combo"].setCurrentIndex(
+            widgets["bytes_per_sector_combo"].findData(512)
+        )
+        widgets["encoding_combo"].setCurrentIndex(
+            widgets["encoding_combo"].findData("MFM")
+        )
+        widgets["rate_combo"].setCurrentIndex(
+            widgets["rate_combo"].findData(500)
+        )
         widgets["rpm_combo"].setCurrentIndex(widgets["rpm_combo"].findData(300))
         widgets["gap3_bytes_spin"].setValue(84)
     elif size == "5.25":
         widgets["cylinders_spin"].setValue(40)
         widgets["heads_spin"].setValue(2)
         widgets["sectors_spin"].setValue(9)
-        widgets["bytes_per_sector_combo"].setCurrentIndex(widgets["bytes_per_sector_combo"].findData(512))
-        widgets["encoding_combo"].setCurrentIndex(widgets["encoding_combo"].findData("MFM"))
-        widgets["rate_combo"].setCurrentIndex(widgets["rate_combo"].findData(250))
+        widgets["bytes_per_sector_combo"].setCurrentIndex(
+            widgets["bytes_per_sector_combo"].findData(512)
+        )
+        widgets["encoding_combo"].setCurrentIndex(
+            widgets["encoding_combo"].findData("MFM")
+        )
+        widgets["rate_combo"].setCurrentIndex(
+            widgets["rate_combo"].findData(250)
+        )
         widgets["rpm_combo"].setCurrentIndex(widgets["rpm_combo"].findData(300))
         widgets["gap3_bytes_spin"].setValue(50)
     elif size == "8":
         widgets["cylinders_spin"].setValue(77)
         widgets["heads_spin"].setValue(1)
         widgets["sectors_spin"].setValue(26)
-        widgets["bytes_per_sector_combo"].setCurrentIndex(widgets["bytes_per_sector_combo"].findData(128))
-        widgets["encoding_combo"].setCurrentIndex(widgets["encoding_combo"].findData("FM"))
-        widgets["rate_combo"].setCurrentIndex(widgets["rate_combo"].findData(250))
+        widgets["bytes_per_sector_combo"].setCurrentIndex(
+            widgets["bytes_per_sector_combo"].findData(128)
+        )
+        widgets["encoding_combo"].setCurrentIndex(
+            widgets["encoding_combo"].findData("FM")
+        )
+        widgets["rate_combo"].setCurrentIndex(
+            widgets["rate_combo"].findData(250)
+        )
         widgets["rpm_combo"].setCurrentIndex(widgets["rpm_combo"].findData(360))
         widgets["gap3_bytes_spin"].setValue(26)
 
-    # Common defaults
     widgets["interleave_spin"].setValue(1)
     widgets["id_start_spin"].setValue(1)
     widgets["iam_present_check"].setChecked(True)
@@ -144,7 +185,10 @@ def _set_default_parameters_for_size(size: str, widgets: Dict[str, QWidget]) -> 
     widgets["hskew_spin"].setValue(0)
 
 
-def _populate_params_from_profile(profile: Any, widgets: Dict[str, QWidget]) -> None:
+def _populate_params_from_profile(
+    profile: Any,
+    widgets: Dict[str, QWidget]
+) -> None:
     """
     Populates the format parameter widgets from a format profile object.
 
@@ -153,7 +197,8 @@ def _populate_params_from_profile(profile: Any, widgets: Dict[str, QWidget]) -> 
         widgets: A dictionary of the format parameter widgets.
     """
     try:
-        if not (profile and profile.physical_format and profile.physical_format.track_formats):
+        if not (profile and profile.physical_format and
+                profile.physical_format.track_formats):
             return
 
         pf = profile.physical_format
@@ -162,15 +207,22 @@ def _populate_params_from_profile(profile: Any, widgets: Dict[str, QWidget]) -> 
         widgets["cylinders_spin"].setValue(pf.cylinders)
         widgets["heads_spin"].setValue(pf.heads)
         widgets["sectors_spin"].setValue(tf.sectors_per_track)
-        widgets["bytes_per_sector_combo"].setCurrentIndex(widgets["bytes_per_sector_combo"].findData(pf.bytes_per_sector))
-        widgets["encoding_combo"].setCurrentIndex(widgets["encoding_combo"].findData(tf.encoding))
-        widgets["rate_combo"].setCurrentIndex(widgets["rate_combo"].findData(tf.rate))
+        widgets["bytes_per_sector_combo"].setCurrentIndex(
+            widgets["bytes_per_sector_combo"].findData(pf.bytes_per_sector)
+        )
+        widgets["encoding_combo"].setCurrentIndex(
+            widgets["encoding_combo"].findData(tf.encoding)
+        )
+        widgets["rate_combo"].setCurrentIndex(
+            widgets["rate_combo"].findData(tf.rate)
+        )
         widgets["rpm_combo"].setCurrentIndex(widgets["rpm_combo"].findData(pf.rpm))
         widgets["interleave_spin"].setValue(tf.interleave)
 
-        # Set optional attributes with defaults
         val_id_start = getattr(tf, 'id_start', 1)
-        widgets["id_start_spin"].setValue(val_id_start if val_id_start is not None else 1)
+        widgets["id_start_spin"].setValue(
+            val_id_start if val_id_start is not None else 1
+        )
         widgets["iam_present_check"].setChecked(getattr(tf, 'iam_present', True))
 
         for attr_name in ['gap1_bytes', 'gap2_bytes', 'gap3_bytes', 'cskew', 'hskew']:
@@ -182,9 +234,8 @@ def _populate_params_from_profile(profile: Any, widgets: Dict[str, QWidget]) -> 
 
 
 class DriveSelectionDialog(QDialog):
-    """
-    A dialog for selecting a floppy drive and its format parameters.
-    """
+    """A dialog for selecting a floppy drive and its format parameters."""
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """
         Initializes the DriveSelectionDialog.
@@ -199,10 +250,6 @@ class DriveSelectionDialog(QDialog):
         self.format_params_group: QGroupBox
         self.format_widgets: Dict[str, QWidget]
         self._init_ui()
-
-    # ##################################################################
-    # Public Methods
-    # ##################################################################
 
     def get_selection(self) -> Tuple[str, str, Optional[Dict[str, Any]]]:
         """
@@ -223,15 +270,18 @@ class DriveSelectionDialog(QDialog):
                 "cylinders": self.format_widgets["cylinders_spin"].value(),
                 "heads": self.format_widgets["heads_spin"].value(),
                 "sectors_per_track": self.format_widgets["sectors_spin"].value(),
-                "bytes_per_sector": self.format_widgets["bytes_per_sector_combo"].currentData(),
+                "bytes_per_sector": (
+                    self.format_widgets["bytes_per_sector_combo"].currentData()
+                ),
                 "encoding": self.format_widgets["encoding_combo"].currentData(),
                 "rate": self.format_widgets["rate_combo"].currentData(),
                 "rpm": self.format_widgets["rpm_combo"].currentData(),
                 "interleave": self.format_widgets["interleave_spin"].value(),
                 "id_start": self.format_widgets["id_start_spin"].value(),
-                "iam_present": self.format_widgets["iam_present_check"].isChecked(),
+                "iam_present": (
+                    self.format_widgets["iam_present_check"].isChecked()
+                ),
             }
-            # Add optional gap and skew values only if they are not default (0)
             for key in ["gap1_bytes", "gap2_bytes", "gap3_bytes", "cskew", "hskew"]:
                 value = self.format_widgets[f"{key}_spin"].value()
                 format_info[key] = value if value != 0 else None
@@ -241,40 +291,11 @@ class DriveSelectionDialog(QDialog):
 
         return drive, size, format_info
 
-    # ##################################################################
-    # Private UI Setup Methods
-    # ##################################################################
-
-    def _init_ui(self) -> None:
-        """Initializes and lays out the UI components."""
-        main_layout = QVBoxLayout()
-
-        self._create_drive_type_group(main_layout)
-        self._create_drive_selection_widgets(main_layout)
-        self._create_size_widgets(main_layout)
-        self._create_format_widgets(main_layout)
-
-        self.format_params_group, self.format_widgets = _create_format_parameters_group()
-        self.format_params_group.setEnabled(False)
-        main_layout.addWidget(self.format_params_group)
-
-        self._update_format_list()
-        self.format_combo.currentIndexChanged.connect(self._on_format_changed)
-
-        self._create_buttons(main_layout)
-
-        main_layout.addStretch()
-        self.setLayout(main_layout)
-
-        if not self._is_greaseweazle_connected():
-            self.ok_button.setEnabled(False)
-            no_device_label = QLabel("No Greaseweazle device found")
-            main_layout.addWidget(no_device_label)
-
     def _create_buttons(self, layout: QVBoxLayout) -> None:
         """Creates the OK and Cancel buttons."""
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -328,9 +349,33 @@ class DriveSelectionDialog(QDialog):
         size_layout.addStretch()
         layout.addLayout(size_layout)
 
-    # ##################################################################
-    # Private Helper Methods & Slots
-    # ##################################################################
+    def _init_ui(self) -> None:
+        """Initializes and lays out the UI components."""
+        main_layout = QVBoxLayout()
+
+        self._create_drive_type_group(main_layout)
+        self._create_drive_selection_widgets(main_layout)
+        self._create_size_widgets(main_layout)
+        self._create_format_widgets(main_layout)
+
+        self.format_params_group, self.format_widgets = (
+            _create_format_parameters_group()
+        )
+        self.format_params_group.setEnabled(False)
+        main_layout.addWidget(self.format_params_group)
+
+        self._update_format_list()
+        self.format_combo.currentIndexChanged.connect(self._on_format_changed)
+
+        self._create_buttons(main_layout)
+
+        main_layout.addStretch()
+        self.setLayout(main_layout)
+
+        if not self._is_greaseweazle_connected():
+            self.ok_button.setEnabled(False)
+            no_device_label = QLabel("No Greaseweazle device found")
+            main_layout.addWidget(no_device_label)
 
     def _is_greaseweazle_connected(self) -> bool:
         """
@@ -341,6 +386,7 @@ class DriveSelectionDialog(QDialog):
         """
         try:
             from greaseweazle.tools.util import usb_open
+
             usb = usb_open(None)
             if usb and hasattr(usb, 'ser') and usb.ser:
                 usb.ser.close()
@@ -352,6 +398,7 @@ class DriveSelectionDialog(QDialog):
     def _on_format_changed(self) -> None:
         """
         Handles changes in the format selection combo box.
+
         Enables/disables and populates the format parameters group.
         """
         format_key = self.format_combo.currentData()
@@ -359,19 +406,28 @@ class DriveSelectionDialog(QDialog):
         self.format_params_group.setEnabled(is_custom)
 
         if is_custom:
-            _set_default_parameters_for_size(self.size_combo.currentData(), self.format_widgets)
+            _set_default_parameters_for_size(
+                self.size_combo.currentData(),
+                self.format_widgets
+            )
         elif format_key is not None:
             try:
                 from ..core.filesystem_registry import FilesystemRegistry
+
                 all_formats = FilesystemRegistry.get_all_formats()
                 profile = all_formats.get(format_key)
                 _populate_params_from_profile(profile, self.format_widgets)
             except Exception as e:
-                logger.error(f"Error loading format definition for '{format_key}': {e}")
+                logger.error(
+                    f"Error loading format definition for '{format_key}': {e}"
+                )
 
     def _update_drive_options(self, checked: Optional[bool] = None) -> None:
         """
         Updates the available drive options based on the selected interface type.
+
+        Args:
+            checked: Unused parameter from signal.
         """
         self.drive_combo.clear()
         if self.ibm_radio.isChecked():
@@ -393,10 +449,14 @@ class DriveSelectionDialog(QDialog):
 
         try:
             from ..core.filesystem_registry import FilesystemRegistry
+
             all_formats = FilesystemRegistry.get_all_formats()
             for name, profile in all_formats.items():
                 if f'{drive_size}"' in profile.description:
-                    self.format_combo.addItem(f"{profile.description} ({name})", name)
+                    self.format_combo.addItem(
+                        f"{profile.description} ({name})",
+                        name
+                    )
         except Exception as e:
             logger.error(f"Error loading format definitions: {e}")
 
@@ -409,9 +469,8 @@ class DriveSelectionDialog(QDialog):
 
 
 class CreateImageDialog(QDialog):
-    """
-    A dialog for creating a new blank disk image file with specified parameters.
-    """
+    """A dialog for creating a new blank disk image file with specified parameters."""
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """
         Initializes the CreateImageDialog.
@@ -427,21 +486,17 @@ class CreateImageDialog(QDialog):
         self.format_widgets: Dict[str, QWidget]
         self._init_ui()
 
-    # ##################################################################
-    # Public Methods
-    # ##################################################################
-
     def get_selection(self) -> Tuple[str, Dict[str, Any], str, str]:
         """
         Gets the user's selections for creating a new disk image.
 
-        Raises:
-            ValueError: If the directory or file name is not provided, or if
-                        the specified path is a directory.
-
         Returns:
             A tuple containing the full file path, format information dictionary,
             volume label, and output format type.
+
+        Raises:
+            ValueError: If the directory or file name is not provided, or if
+                        the specified path is a directory.
         """
         directory = self.directory_input.text().strip()
         file_name = self.file_name_input.text().strip()
@@ -450,9 +505,14 @@ class CreateImageDialog(QDialog):
 
         file_path = os.path.join(directory, file_name)
         if os.path.isdir(file_path):
-            raise ValueError(f"The path '{file_path}' is a directory. Please specify a valid file name.")
+            raise ValueError(
+                f"The path '{file_path}' is a directory. Please specify a "
+                f"valid file name."
+            )
 
-        volume_label = self.volume_label_input.text().strip().upper() or "NO NAME"
+        volume_label = (
+            self.volume_label_input.text().strip().upper() or "NO NAME"
+        )
         output_format = self.extension_combo.currentData()
         format_info: Dict[str, Any] = {}
 
@@ -461,13 +521,17 @@ class CreateImageDialog(QDialog):
                 "cylinders": self.format_widgets["cylinders_spin"].value(),
                 "heads": self.format_widgets["heads_spin"].value(),
                 "sectors_per_track": self.format_widgets["sectors_spin"].value(),
-                "bytes_per_sector": self.format_widgets["bytes_per_sector_combo"].currentData(),
+                "bytes_per_sector": (
+                    self.format_widgets["bytes_per_sector_combo"].currentData()
+                ),
                 "encoding": self.format_widgets["encoding_combo"].currentData(),
                 "rate": self.format_widgets["rate_combo"].currentData(),
                 "rpm": self.format_widgets["rpm_combo"].currentData(),
                 "interleave": self.format_widgets["interleave_spin"].value(),
                 "id_start": self.format_widgets["id_start_spin"].value(),
-                "iam_present": self.format_widgets["iam_present_check"].isChecked(),
+                "iam_present": (
+                    self.format_widgets["iam_present_check"].isChecked()
+                ),
             }
             for key in ["gap1_bytes", "gap2_bytes", "gap3_bytes", "cskew", "hskew"]:
                 value = self.format_widgets[f"{key}_spin"].value()
@@ -475,35 +539,13 @@ class CreateImageDialog(QDialog):
         else:
             profile_name = self.format_combo.currentData()
             if not profile_name:
-                raise ValueError("A format profile must be selected if not using advanced settings.")
+                raise ValueError(
+                    "A format profile must be selected if not using advanced "
+                    "settings."
+                )
             format_info = {"profile_name": profile_name}
 
         return file_path, format_info, volume_label, output_format
-
-    # ##################################################################
-    # Private UI Setup Methods
-    # ##################################################################
-
-    def _init_ui(self) -> None:
-        """Initializes and lays out the UI components."""
-        main_layout = QVBoxLayout()
-
-        self._create_size_widgets(main_layout)
-        self._create_format_widgets(main_layout)
-        self._create_file_path_widgets(main_layout)
-        self._create_advanced_settings_widgets(main_layout)
-
-        self.format_params_group, self.format_widgets = _create_format_parameters_group()
-        main_layout.addWidget(self.format_params_group)
-
-        self._create_volume_label_widgets(main_layout)
-
-        self._update_format_list()
-        self.format_combo.currentIndexChanged.connect(self._on_format_changed)
-
-        self._create_buttons(main_layout)
-        self.setLayout(main_layout)
-        self._toggle_advanced_settings()
 
     def _create_advanced_settings_widgets(self, layout: QVBoxLayout) -> None:
         """Creates the 'Advanced Settings' checkbox."""
@@ -514,7 +556,8 @@ class CreateImageDialog(QDialog):
     def _create_buttons(self, layout: QVBoxLayout) -> None:
         """Creates the OK and Cancel buttons."""
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -580,23 +623,47 @@ class CreateImageDialog(QDialog):
         volume_label_layout.addStretch()
         layout.addLayout(volume_label_layout)
 
-    # ##################################################################
-    # Private Helper Methods & Slots
-    # ##################################################################
+    def _init_ui(self) -> None:
+        """Initializes and lays out the UI components."""
+        main_layout = QVBoxLayout()
+
+        self._create_size_widgets(main_layout)
+        self._create_format_widgets(main_layout)
+        self._create_file_path_widgets(main_layout)
+        self._create_advanced_settings_widgets(main_layout)
+
+        self.format_params_group, self.format_widgets = (
+            _create_format_parameters_group()
+        )
+        main_layout.addWidget(self.format_params_group)
+
+        self._create_volume_label_widgets(main_layout)
+
+        self._update_format_list()
+        self.format_combo.currentIndexChanged.connect(self._on_format_changed)
+
+        self._create_buttons(main_layout)
+        self.setLayout(main_layout)
+        self._toggle_advanced_settings()
 
     def _on_format_changed(self) -> None:
         """
         Handles changes in the format selection combo box.
+
         Populates the format parameter fields from the selected profile.
         """
         if self.advanced_checkbox.isChecked():
-            _set_default_parameters_for_size(self.size_combo.currentData(), self.format_widgets)
+            _set_default_parameters_for_size(
+                self.size_combo.currentData(),
+                self.format_widgets
+            )
             return
 
         format_key = self.format_combo.currentData()
         if format_key:
             try:
                 from ..core.filesystem_registry import FilesystemRegistry
+
                 all_formats = FilesystemRegistry.get_all_formats()
                 profile = all_formats.get(format_key)
                 _populate_params_from_profile(profile, self.format_widgets)
@@ -604,37 +671,51 @@ class CreateImageDialog(QDialog):
             except Exception as e:
                 logger.error(f"Error processing format change: {e}")
         else:
-            _set_default_parameters_for_size(self.size_combo.currentData(), self.format_widgets)
+            _set_default_parameters_for_size(
+                self.size_combo.currentData(),
+                self.format_widgets
+            )
 
     def _select_directory(self) -> None:
         """Opens a dialog to select a directory."""
         start_dir = self.directory_input.text() or os.path.expanduser("~")
-        directory = QFileDialog.getExistingDirectory(self, "Select Directory", start_dir)
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Directory",
+            start_dir
+        )
         if directory:
             self.directory_input.setText(directory)
 
     def _toggle_advanced_settings(self) -> None:
         """
-        Shows or hides the advanced format parameters group based on the
-        state of the 'Advanced Settings' checkbox.
+        Shows or hides the advanced format parameters group.
+
+        Based on the state of the 'Advanced Settings' checkbox.
         """
         is_checked = self.advanced_checkbox.isChecked()
         self.format_params_group.setEnabled(is_checked)
         if is_checked:
-            _set_default_parameters_for_size(self.size_combo.currentData(), self.format_widgets)
+            _set_default_parameters_for_size(
+                self.size_combo.currentData(),
+                self.format_widgets
+            )
         else:
             self._on_format_changed()
 
     def _update_file_name(self) -> None:
         """
-        Updates the file name with the correct extension and a default
-        name based on the selected format if no name is entered.
+        Updates the file name with the correct extension.
+
+        Uses a default name based on the selected format if no name is entered.
         """
         current_text = self.file_name_input.text().strip()
         base_name, _ = os.path.splitext(current_text)
 
         if not base_name and self.format_combo.currentData():
-            base_name = self.format_combo.currentData().replace("\"", "").replace(" ", "_")
+            base_name = (
+                self.format_combo.currentData().replace("\"", "").replace(" ", "_")
+            )
 
         extension = self.extension_combo.currentText()
         if base_name:
@@ -650,10 +731,14 @@ class CreateImageDialog(QDialog):
 
         try:
             from ..core.filesystem_registry import FilesystemRegistry
+
             all_formats = FilesystemRegistry.get_all_formats()
             for name, profile in all_formats.items():
                 if f'{drive_size}"' in profile.description:
-                    self.format_combo.addItem(f"{profile.description} ({name})", name)
+                    self.format_combo.addItem(
+                        f"{profile.description} ({name})",
+                        name
+                    )
 
             if self.format_combo.count() > 0:
                 idx_to_select = 0

@@ -1,16 +1,10 @@
-# tests/hardware/conftest.py
 """
 Configuration and fixtures for hardware-level floppy drive tests.
 
-This file sets up the pytest environment for running tests that interact
-directly with floppy drive hardware via the Greaseweazle tool.
-
-It includes:
-- Command-line options to control test behavior (e.g., non-interactive mode).
-- Markers for identifying hardware tests.
-- Logic to skip hardware tests unless explicitly enabled.
-- Prerequisite checks for required tools and resource files.
-- Fixtures to provide test data and helper functions for drive preparation.
+This module sets up the pytest environment for running tests that interact
+directly with floppy drive hardware via the Greaseweazle tool. It includes
+command-line options, markers, prerequisite checks, and fixtures for drive
+preparation.
 """
 
 import os
@@ -19,37 +13,29 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List
 
 import pytest
 from _pytest.config import Config
 from _pytest.config.argparsing import Parser
 from _pytest.nodes import Item
 
-# Add the 'src' directory to the Python path to allow for module imports.
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-# --- Constants ---
-
-RESOURCE_DIR: Path = Path(__file__).parent.parent / 'resources'
+RESOURCE_DIR: Path = Path(__file__).parent.parent / "resources"
 GW_EXECUTABLE: str = os.environ.get("GW_PATH", "gw")
 
-# Image file paths
 EMPTY_144M_IMG: str = str(RESOURCE_DIR / "empty_formatted_144m.img")
 POPULATED_144M_IMG: str = str(RESOURCE_DIR / "populated_read_test_144m.img")
 EMPTY_360K_IMG: str = str(RESOURCE_DIR / "empty_formatted_360k.img")
 POPULATED_360K_IMG: str = str(RESOURCE_DIR / "populated_read_test_360k.img")
 
-# Greaseweazle format strings
 GW_FORMAT_144M: str = "ibm.1440"
 GW_FORMAT_360K: str = "ibm.360"
 
-# Test file paths
-TEST_FILE_TXT_PATH: str = str(RESOURCE_DIR / 'TEST.TXT')
-PATTERN_FILE_BIN_PATH: str = str(RESOURCE_DIR / 'PATTERN.BIN')
+TEST_FILE_TXT_PATH: str = str(RESOURCE_DIR / "TEST.TXT")
+PATTERN_FILE_BIN_PATH: str = str(RESOURCE_DIR / "PATTERN.BIN")
 
-
-# --- Private Helper Functions ---
 
 def _check_prerequisites() -> None:
     """
@@ -63,12 +49,15 @@ def _check_prerequisites() -> None:
         pytest.exit(
             f"ERROR: '{GW_EXECUTABLE}' command not found. Install Greaseweazle "
             "host tools and ensure it's in PATH or set GW_PATH env var.",
-            returncode=1
+            returncode=1,
         )
 
     missing_files: List[str] = []
     image_paths: List[str] = [
-        EMPTY_144M_IMG, POPULATED_144M_IMG, EMPTY_360K_IMG, POPULATED_360K_IMG
+        EMPTY_144M_IMG,
+        POPULATED_144M_IMG,
+        EMPTY_360K_IMG,
+        POPULATED_360K_IMG,
     ]
     for img_path in image_paths:
         if not os.path.isfile(img_path):
@@ -77,7 +66,7 @@ def _check_prerequisites() -> None:
     if missing_files:
         pytest.exit(
             f"ERROR: Master image files not found: {', '.join(missing_files)}",
-            returncode=1
+            returncode=1,
         )
 
     missing_resources: List[str] = []
@@ -94,19 +83,14 @@ def _check_prerequisites() -> None:
 
 
 def _run_gw_write(
-    drive: str,
-    image_path: str,
-    gw_format: str,
-    description: str,
-    auto_mode: bool
+    drive: str, image_path: str, gw_format: str, description: str, auto_mode: bool
 ) -> bool:
     """
     Writes a disk image to a specified floppy drive using Greaseweazle.
 
     This function prompts the user to insert a floppy (unless in auto_mode)
-    and then executes the 'gw write' command. It includes retry logic in
-    case of an initial failure. If writing fails twice or times out, it
-    skips the tests for that drive.
+    and executes the 'gw write' command with retry logic. If writing fails
+    twice or times out, it skips the tests for that drive.
 
     Args:
         drive: The drive identifier to use (e.g., 'A').
@@ -125,44 +109,47 @@ def _run_gw_write(
     print(f" >>> Using GW format: {gw_format}")
 
     if not auto_mode:
-        input(f" >>> Please insert the correct floppy into Drive {drive} and press Enter...")
+        input(
+            f" >>> Please insert the correct floppy into Drive {drive} and press "
+            "Enter..."
+        )
 
     cmd: List[str] = [
-        GW_EXECUTABLE, "write", f"--drive={drive}", f"--format={gw_format}",
-        image_path, "--retries=10"
+        GW_EXECUTABLE,
+        "write",
+        f"--drive={drive}",
+        f"--format={gw_format}",
+        image_path,
+        "--retries=10",
     ]
     print(f"Running command: {' '.join(cmd)}")
 
     for attempt in range(1, 3):
         try:
             result = subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=180
+                cmd, check=True, capture_output=True, text=True, timeout=180
             )
             print("STDOUT:\n" + result.stdout)
             print("STDERR:\n" + result.stderr)
             print(f"Drive {drive} prepared successfully.")
-            time.sleep(2)  # Give drive time to settle
+            time.sleep(2)
             return True
         except FileNotFoundError:
             pytest.fail(
                 f"ERROR: Failed to execute '{GW_EXECUTABLE}'. Is it in PATH or "
                 "is GW_PATH set?",
-                pytrace=False
+                pytrace=False,
             )
-            return False  # Should not be reached due to pytest.fail
+            return False
         except subprocess.CalledProcessError as e:
             print(f"ERROR: 'gw write' failed for Drive {drive} (Attempt {attempt}).")
             print("STDOUT:\n" + e.stdout)
             print("STDERR:\n" + e.stderr)
-            if attempt == 2:  # If the second attempt fails
+            if attempt == 2:
                 pytest.skip(
                     f"Failed to prepare Drive {drive} using 'gw write' on second "
                     "attempt. Aborting tests for this drive.",
-                    allow_module_level=True
+                    allow_module_level=True,
                 )
                 return False
             print("Retrying after 2 seconds...")
@@ -170,51 +157,54 @@ def _run_gw_write(
         except subprocess.TimeoutExpired:
             pytest.skip(
                 f"'gw write' timed out for Drive {drive}. Check drive/connection.",
-                allow_module_level=True
+                allow_module_level=True,
             )
             return False
 
-    return False  # Should be unreachable
+    return False
 
-
-# --- Pytest Hooks ---
 
 def pytest_addoption(parser: Parser) -> None:
     """
     Adds a custom command-line option to pytest.
 
-    --hw-auto: Run hardware tests without interactive prompts.
+    Args:
+        parser: The pytest argument parser.
     """
     parser.addoption(
         "--hw-auto",
         action="store_true",
         default=False,
-        help="Run hardware tests without interactive prompts."
+        help="Run hardware tests without interactive prompts.",
     )
 
 
 def pytest_configure(config: Config) -> None:
     """
     Adds a custom marker for hardware tests.
+
+    Args:
+        config: The pytest configuration object.
     """
-    config.addinivalue_line(
-        "markers", "hardware: mark test as requiring hardware"
-    )
+    config.addinivalue_line("markers", "hardware: mark test as requiring hardware")
 
 
 def pytest_collection_modifyitems(config: Config, items: List[Item]) -> None:
     """
-    Skips tests marked with 'hardware' if the TEST_HW environment variable
-    is not set to 'true'.
+    Skips tests marked with 'hardware' if TEST_HW is not set to 'true'.
+
+    Args:
+        config: The pytest configuration object.
+        items: List of collected test items.
     """
-    if os.getenv('TEST_HW', 'false').lower() != 'true':
-        skip_hw = pytest.mark.skip(reason="Hardware tests skipped (TEST_HW not 'true')")
+    if os.getenv("TEST_HW", "false").lower() != "true":
+        skip_hw = pytest.mark.skip(
+            reason="Hardware tests skipped (TEST_HW not 'true')"
+        )
         for item in items:
             if "hardware" in item.keywords:
                 item.add_marker(skip_hw)
 
-
-# --- Fixtures ---
 
 @pytest.fixture(scope="session")
 def expected_file_content() -> Dict[str, bytes]:
@@ -222,13 +212,12 @@ def expected_file_content() -> Dict[str, bytes]:
     A session-scoped fixture that loads the expected content of test files.
 
     This fixture reads 'TEST.TXT' and 'PATTERN.BIN' from the resources
-    directory into memory. Tests can use this to verify file contents read
-    from a floppy drive.
+    directory into memory for verification in tests.
 
     Returns:
-        A dictionary where keys are file identifiers ('test_txt',
-        'pattern_bin') and values are the file content as bytes.
-        Returns an empty dictionary if files are not found.
+        A dictionary where keys are file identifiers ('test_txt', 'pattern_bin')
+        and values are the file content as bytes. Returns an empty dictionary
+        if files are not found.
     """
     content: Dict[str, bytes] = {}
     try:
@@ -241,7 +230,4 @@ def expected_file_content() -> Dict[str, bytes]:
     return content
 
 
-# --- Initial Prerequisite Check ---
-
-# Run prerequisite checks when pytest loads this conftest file.
 _check_prerequisites()

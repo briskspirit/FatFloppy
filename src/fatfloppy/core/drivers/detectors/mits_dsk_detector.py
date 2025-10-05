@@ -1,41 +1,42 @@
-# src/fatfloppy/core/drivers/detectors/mits_dsk_detector.py
-"""
-Format detector for MITS Altair .DSK disk images.
-
-Uses variant testing identical to IMG detector, but accounts for the
-MITS-specific 137-byte physical sector / 128-byte logical sector format.
-"""
-
 import copy
-from typing import Optional, Tuple, Any, Dict, List
 from collections import defaultdict
+from typing import Any, Dict, List, Optional, Tuple
 
+from ...filesystem_factory import get_filesystem_class_by_type
 from ...format_detection import FormatDetector
 from ...format_profile import FormatProfile
 from ...physical_format import PhysicalFormat
-from ...filesystem_factory import get_filesystem_class_by_type
 from ...utils.logging_config import get_logger
 
-logger = get_logger(__name__)
 
-# Thresholds for variant testing
 MINIMUM_VALIDITY_SCORE = 30
 EXCELLENT_MATCH_SCORE = 95
+SIZE_TOLERANCE_BYTES = 1024
 
-# MITS DSK sector size constants
 MITS_PHYSICAL_SECTOR_SIZE = 137
 MITS_LOGICAL_SECTOR_SIZE = 128
 
 
+logger = get_logger("MITSDSKDetector")
+
+
 class MITSDSKDetector(FormatDetector):
     """
-    Format detector for MITS Altair .DSK format.
+    Format detector for MITS Altair .DSK disk images.
+
+    This detector implements variant testing similar to the IMG detector, but
+    accounts for the MITS-specific sector format where 137-byte physical sectors
+    contain 128 bytes of logical data plus metadata.
 
     Strategy:
-    1. Calculate logical size (physical sectors contain metadata)
-    2. Group formats by base geometry
-    3. Try all variants for size-matched geometry groups
-    4. Return best scoring variant
+    1. Calculate logical size (physical sectors contain metadata overhead)
+    2. Group known formats by base geometry (C/H/S/BPS/encoding/rate)
+    3. For each size-matched geometry group, test all filesystem variants
+    4. Score each variant via filesystem validation
+    5. Return best scoring variant above threshold
+
+    The detector uses logical size (128 bytes per sector) for size matching since
+    the MITS driver exposes 128-byte logical sectors to the filesystem layer.
     """
 
     detector_for_driver = "MITSDSKDriver"
@@ -45,16 +46,14 @@ class MITSDSKDetector(FormatDetector):
         Detects format by iterating through known profiles with variant testing.
 
         Returns:
-            Tuple of (format_name, filesystem_config, physical_format)
+            Tuple of (format_name, filesystem_config, physical_format).
         """
         logger.info("Starting MITS DSK format detection")
 
-        if not hasattr(self.driver, 'image_data'):
+        if not hasattr(self.driver, "image_data"):
             logger.error("Driver has no image_data")
             return None, None, None
 
-        # MITS DSK stores 137-byte physical sectors but exposes 128-byte logical sectors
-        # Calculate logical size for profile matching
         physical_size = len(self.driver.image_data)
         num_sectors = physical_size // MITS_PHYSICAL_SECTOR_SIZE
         logical_size = num_sectors * MITS_LOGICAL_SECTOR_SIZE
@@ -63,37 +62,34 @@ class MITSDSKDetector(FormatDetector):
         logger.debug(f"Logical data size: {logical_size} bytes ({num_sectors} sectors)")
         logger.debug(f"Known formats count: {len(self.known_formats)}")
 
-        # Group formats by base geometry
         geometry_groups = self._group_formats_by_base_geometry()
         logger.debug(f"Found {len(geometry_groups)} geometry groups")
 
-        # Track overall best match
         best_score = 0
-        best_match = None  # (profile_name, fs_config, physical_format)
+        best_match = None
 
-        # Try each geometry group
         for geometry_key, profiles in geometry_groups.items():
             cyls, heads, spt, bps, encoding, rate = geometry_key
             expected_size = cyls * heads * spt * bps
 
-            # Size check with tolerance - use logical size
             size_diff = abs(logical_size - expected_size)
-            if size_diff > 1024:
-                logger.debug(f"Skipping geometry {cyls}C x {heads}H x {spt}S x {bps}B: "
-                           f"size mismatch ({expected_size} vs {logical_size}, diff={size_diff})")
+            if size_diff > SIZE_TOLERANCE_BYTES:
+                logger.debug(
+                    f"Skipping geometry {cyls}C x {heads}H x {spt}S x {bps}B: "
+                    f"size mismatch ({expected_size} vs {logical_size}, diff={size_diff})"
+                )
                 continue
 
-            logger.debug(f"Testing geometry group: {cyls}C x {heads}H x {spt}S x {bps}B "
-                        f"({len(profiles)} variants)")
+            logger.debug(
+                f"Testing geometry group: {cyls}C x {heads}H x {spt}S x {bps}B "
+                f"({len(profiles)} variants)"
+            )
 
-            # Try each variant in this geometry group
             for profile in profiles:
                 try:
-                    # Set geometry
                     temp_format = copy.deepcopy(profile.physical_format)
                     self.disk.set_geometry(temp_format)
 
-                    # Get filesystem type and create instance
                     fs_type = profile.get_filesystem_type()
                     if not fs_type:
                         logger.debug(f"Profile {profile.name}: no filesystem type")
@@ -101,15 +97,15 @@ class MITSDSKDetector(FormatDetector):
 
                     fs_class = get_filesystem_class_by_type(fs_type)
                     if not fs_class:
-                        logger.debug(f"Profile {profile.name}: no filesystem class for {fs_type}")
+                        logger.debug(
+                            f"Profile {profile.name}: no filesystem class for {fs_type}"
+                        )
                         continue
 
-                    # Score this variant - pass config if available
                     if profile.filesystem_config:
                         try:
                             fs = fs_class(self.disk, config=profile.filesystem_config)
                         except TypeError:
-                            # Fallback if constructor doesn't accept config
                             fs = fs_class(self.disk)
                     else:
                         fs = fs_class(self.disk)
@@ -122,7 +118,6 @@ class MITSDSKDetector(FormatDetector):
                         best_match = (profile.name, fs.get_specific_config(), temp_format)
                         logger.debug(f"New best match: {profile.name} (score={score})")
 
-                    # Short-circuit on excellent match
                     if score >= EXCELLENT_MATCH_SCORE:
                         logger.info(f"Excellent match found: {profile.name} (score={score})")
                         return best_match
@@ -131,7 +126,6 @@ class MITSDSKDetector(FormatDetector):
                     logger.debug(f"Profile {profile.name} failed: {e}")
                     continue
 
-        # Return best match if above threshold
         if best_score >= MINIMUM_VALIDITY_SCORE:
             logger.info(f"Best match: {best_match[0]} (score={best_score})")
             return best_match
@@ -143,8 +137,11 @@ class MITSDSKDetector(FormatDetector):
         """
         Groups formats by base geometry, ignoring sector translation details.
 
+        This allows testing multiple sector translation variants (e.g., different
+        interleave patterns or skew tables) for the same physical geometry.
+
         Returns:
-            Dictionary mapping (cyls, heads, spt, bps, encoding, rate) to list of profiles
+            Dictionary mapping (cyls, heads, spt, bps, encoding, rate) to list of profiles.
         """
         groups = defaultdict(list)
 
@@ -157,23 +154,17 @@ class MITSDSKDetector(FormatDetector):
             if not tf:
                 continue
 
-            # Key by base geometry (ignoring interleave/sector_translation)
             key = (
                 pf.cylinders,
                 pf.heads,
                 tf.sectors_per_track,
                 pf.bytes_per_sector,
                 tf.encoding,
-                tf.rate
+                tf.rate,
             )
             groups[key].append(profile)
 
-        # Sort variants within each group for consistency
-        # Priority: profiles with filesystem_config first
         for key in groups:
-            groups[key].sort(key=lambda p: (
-                p.filesystem_config is None,  # Profiles with config first
-                p.name
-            ))
+            groups[key].sort(key=lambda p: (p.filesystem_config is None, p.name))
 
         return dict(groups)

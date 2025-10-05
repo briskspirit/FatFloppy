@@ -10,17 +10,39 @@ import os
 from typing import Any, Callable, Dict, List, Optional
 
 from PyQt6.QtCore import QPointF, Qt, pyqtSlot
-from PyQt6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPalette, QAction
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QFontDatabase,
+    QIcon,
+    QPalette,
+)
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QDockWidget, QGraphicsView, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMenu, QMessageBox,
-    QPlainTextEdit, QPushButton, QSizePolicy, QToolBar, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget
+    QAbstractItemView,
+    QApplication,
+    QDockWidget,
+    QGraphicsView,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSizePolicy,
+    QToolBar,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..core.controller import DiskController
-from ..core.drivers import GREASEWEAZLE_AVAILABLE
 from ..core.driver_factory import DriverFactory
+from ..core.drivers import GREASEWEAZLE_AVAILABLE
 from ..core.utils.logging_config import get_logger
 from .disk_map import DiskMapView
 from .file_browser import DragDropTreeWidget
@@ -28,13 +50,24 @@ from .managers import DiskManager, EditorManager, FileManager, SettingsManager
 from .models import FileSystemNode
 from .themes import get_dark_theme, get_light_theme
 
+MAX_RECENT_FILES = 10
+DEFAULT_DOCK_MIN_WIDTH = 150
+DEFAULT_DOCK_MAX_WIDTH = 400
+TREE_DOCK_MIN_WIDTH = 320
+TREE_DOCK_MAX_WIDTH = 400
+FILE_LIST_MIN_WIDTH = 400
+DISK_MAP_MIN_WIDTH = 300
+DEFAULT_FONT_SIZE = 12
+TAB_STOP_SPACES = 8
+
 
 class FileBrowserApp(QMainWindow):
     """
     Main application window for the FatFloppy Disk Browser.
     Coordinates UI and delegates operations to managers.
     """
-    MAX_RECENT_FILES = 10
+
+    MAX_RECENT_FILES = MAX_RECENT_FILES
     logger: logging.Logger = get_logger(__name__)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -46,19 +79,16 @@ class FileBrowserApp(QMainWindow):
         """
         super().__init__(parent)
 
-        # Filesystem state (managed by main window)
         self.root_node: Optional[FileSystemNode] = None
         self.current_node: Optional[FileSystemNode] = None
         self.current_path: str = "/"
         self.controller: Optional[DiskController] = None
 
-        # Driver discovery
         self.greaseweazle_available: bool = GREASEWEAZLE_AVAILABLE
         self.extension_to_driver_map: Dict[str, str] = {}
         self.file_dialog_filter: str = ""
         self._build_file_dialog_filter()
 
-        # UI Components (initialized in _init_ui)
         self.app_font: QFont
         self.toolbar: QToolBar
         self.tree_dock: QDockWidget
@@ -83,31 +113,24 @@ class FileBrowserApp(QMainWindow):
         self.recent_files_menu: QMenu
         self.restore_layout_action: QAction
 
-        # Initialize UI first
         self._init_ui()
         self._setup_fonts()
         self._update_theme()
 
-        # Create managers AFTER UI is initialized
         self.disk_manager = DiskManager(self)
         self.file_manager = FileManager(self)
         self.editor_manager = EditorManager(self)
         self.settings_manager = SettingsManager(self, self.MAX_RECENT_FILES)
 
-        # Connect manager signals
         self._connect_manager_signals()
-
-        # NOW load window state (after managers exist)
         self._load_window_state()
 
-        # Connect theme updates
-        QApplication.instance().styleHints().colorSchemeChanged.connect(self._update_theme)
+        QApplication.instance().styleHints().colorSchemeChanged.connect(
+            self._update_theme
+        )
 
-        # Reset to initial state
         self.reset_ui()
         self.logger.info("FatFloppy application initialized.")
-
-    # --- Public Action Methods (Delegate to Managers) ---
 
     @pyqtSlot()
     def add_file(self) -> None:
@@ -135,58 +158,6 @@ class FileBrowserApp(QMainWindow):
         self.editor_manager.discard_changes()
 
     @pyqtSlot()
-    def extract_selected_items(self) -> None:
-        """Delegates to FileManager."""
-        self.file_manager.extract_selected_items()
-
-    @pyqtSlot()
-    def open_disk_image_file(self) -> None:
-        """Delegates to DiskManager."""
-        self.disk_manager.open_disk_image_file()
-
-    @pyqtSlot()
-    def open_physical_floppy(self) -> None:
-        """Delegates to DiskManager."""
-        self.disk_manager.open_physical_floppy()
-
-    @pyqtSlot()
-    def save_file(self) -> bool:
-        """
-        Delegates to EditorManager.
-
-        Returns:
-            True if save succeeded or no changes, False otherwise.
-        """
-        return self.editor_manager.save_file()
-
-    @pyqtSlot()
-    def toggle_head(self) -> None:
-        """Delegates to DiskManager."""
-        self.disk_manager.toggle_head()
-
-    @pyqtSlot()
-    def view_file_content(self) -> None:
-        """Delegates to EditorManager."""
-        self.editor_manager.view_file_content()
-
-    # --- Public UI Methods ---
-
-    @pyqtSlot(QTreeWidgetItem, int)
-    def select_directory(self, item: QTreeWidgetItem, column: int) -> None:
-        """
-        Handles directory selection in the tree widget.
-
-        Args:
-            item: The selected QTreeWidgetItem.
-            column: The column index (unused but required by signal).
-        """
-        self.logger.debug(f"Directory '{item.text(0)}' selected in tree.")
-        self.current_node = item.node
-        self.current_path = self._build_path_from_node(item.node)
-        self.update_file_list()
-        self.statusBar().showMessage(f"Viewing: {self.current_path}")
-
-    @pyqtSlot()
     def draw_disk_map(self) -> None:
         """Draws or redraws the disk map visualization."""
         if not self.controller:
@@ -212,21 +183,64 @@ class FileBrowserApp(QMainWindow):
             selected_file_path=map_data['selected_file_path']
         )
 
-        # Update head action text
         if self.controller and self.controller.physical_format:
             if self.controller.physical_format.heads > 1:
-                self.head_action.setText(f"Switch Head (Current: {self.disk_manager.current_head})")
+                self.head_action.setText(
+                    f"Switch Head (Current: {self.disk_manager.current_head})"
+                )
 
-        self.logger.debug(f"Disk map drawn for head {self.disk_manager.current_head}.")
+        self.logger.debug(
+            f"Disk map drawn for head {self.disk_manager.current_head}."
+        )
 
-    def refresh_filesystem_ui(self, preserve_path: Optional[str] = None) -> None:
+    @pyqtSlot()
+    def extract_selected_items(self) -> None:
+        """Delegates to FileManager."""
+        self.file_manager.extract_selected_items()
+
+    def import_multiple_paths(
+        self,
+        file_paths: List[str],
+        target_path: str,
+        auto_name: bool = True
+    ) -> None:
+        """
+        Delegates to FileManager.
+
+        Args:
+            file_paths: List of local paths to import.
+            target_path: Target path on disk image.
+            auto_name: Whether to auto-generate names.
+        """
+        self.file_manager.import_multiple_paths(
+            file_paths,
+            target_path,
+            auto_name
+        )
+
+    @pyqtSlot()
+    def open_disk_image_file(self) -> None:
+        """Delegates to DiskManager."""
+        self.disk_manager.open_disk_image_file()
+
+    @pyqtSlot()
+    def open_physical_floppy(self) -> None:
+        """Delegates to DiskManager."""
+        self.disk_manager.open_physical_floppy()
+
+    def refresh_filesystem_ui(
+        self,
+        preserve_path: Optional[str] = None
+    ) -> None:
         """
         Refreshes filesystem UI elements.
 
         Args:
             preserve_path: Path to navigate to after refresh, or None for root.
         """
-        self.logger.info(f"Refreshing filesystem UI (preserve_path: {preserve_path}).")
+        self.logger.info(
+            f"Refreshing filesystem UI (preserve_path: {preserve_path})."
+        )
         self.root_node = self._build_fs_tree()
         self._populate_tree_widget()
 
@@ -248,7 +262,6 @@ class FileBrowserApp(QMainWindow):
         """Resets UI to initial no-disk-loaded state."""
         self.logger.info("Resetting UI to initial state.")
 
-        # Clear state
         self.root_node = None
         self.current_node = None
         self.current_path = "/"
@@ -258,14 +271,12 @@ class FileBrowserApp(QMainWindow):
             self.logger.debug("Closed existing disk controller.")
         self.controller = None
 
-        # Reset manager state
         self.disk_manager.current_head = 0
         self.disk_manager.busy_units = []
         self.disk_manager.free_space = 0
         self.disk_manager.total_space = 0
         self.disk_manager.clear_file_selection()
 
-        # Clear UI
         self.tree_widget.clear()
         self.file_list.clear()
         self.physical_format_info.setText("No disk image loaded")
@@ -281,6 +292,36 @@ class FileBrowserApp(QMainWindow):
 
         self.disk_map_dock.raise_()
         self.logger.debug("UI reset complete.")
+
+    @pyqtSlot()
+    def save_file(self) -> bool:
+        """
+        Delegates to EditorManager.
+
+        Returns:
+            True if save succeeded or no changes, False otherwise.
+        """
+        return self.editor_manager.save_file()
+
+    @pyqtSlot(QTreeWidgetItem, int)
+    def select_directory(self, item: QTreeWidgetItem, column: int) -> None:
+        """
+        Handles directory selection in the tree widget.
+
+        Args:
+            item: The selected QTreeWidgetItem.
+            column: The column index (unused but required by signal).
+        """
+        self.logger.debug(f"Directory '{item.text(0)}' selected in tree.")
+        self.current_node = item.node
+        self.current_path = self._build_path_from_node(item.node)
+        self.update_file_list()
+        self.statusBar().showMessage(f"Viewing: {self.current_path}")
+
+    @pyqtSlot()
+    def toggle_head(self) -> None:
+        """Delegates to DiskManager."""
+        self.disk_manager.toggle_head()
 
     def update_file_list(self) -> None:
         """Updates the file list widget based on current directory."""
@@ -300,7 +341,182 @@ class FileBrowserApp(QMainWindow):
                 item.node = child
         self.logger.debug(f"File list updated for path: {self.current_path}")
 
-    # --- Public Utility Methods (Used by Managers) ---
+    @pyqtSlot()
+    def view_file_content(self) -> None:
+        """Delegates to EditorManager."""
+        self.editor_manager.view_file_content()
+
+    def closeEvent(self, event) -> None:
+        """
+        Handles window close event.
+
+        Args:
+            event: The close event.
+        """
+        if self.editor_manager.has_unsaved_changes():
+            reply = QMessageBox.question(
+                self,
+                "Unsaved Changes",
+                f"Do you want to save changes to "
+                f"{os.path.basename(self.editor_manager.current_file_path)}?",
+                QMessageBox.StandardButton.Save |
+                QMessageBox.StandardButton.Discard |
+                QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel
+            )
+
+            if reply == QMessageBox.StandardButton.Save:
+                if not self.save_file():
+                    event.ignore()
+                    return
+            elif reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+
+        self.settings_manager.save_window_state()
+        event.accept()
+
+    def _build_file_dialog_filter(self) -> None:
+        """
+        Dynamically builds file dialog filter string from discovered drivers.
+        """
+        self.logger.debug(
+            "Building file dialog filter from discovered drivers."
+        )
+        self.extension_to_driver_map = DriverFactory.get_extension_map()
+
+        all_extensions = sorted(self.extension_to_driver_map.keys())
+
+        driver_to_exts: Dict[str, List[str]] = {}
+        for ext, driver_type in self.extension_to_driver_map.items():
+            driver_to_exts.setdefault(driver_type, []).append(f"*{ext}")
+
+        filters = []
+        all_ext_str = " ".join(f"*{ext}" for ext in all_extensions)
+        filters.append(f"All Supported Images ({all_ext_str})")
+
+        for driver_type, exts in sorted(driver_to_exts.items()):
+            exts_str = " ".join(exts)
+            desc = getattr(
+                DriverFactory.get_driver_class(driver_type),
+                'driver_description',
+                f"{driver_type} Files"
+            )
+            filters.append(f"{desc} ({exts_str})")
+
+        filters.append("All Files (*)")
+        self.file_dialog_filter = ";;".join(filters)
+        self.logger.info(
+            f"Generated file dialog filter: {self.file_dialog_filter}"
+        )
+
+    def _build_fs_tree(self) -> Optional[FileSystemNode]:
+        """
+        Builds hierarchical representation of disk's filesystem.
+
+        Returns:
+            Root FileSystemNode of the tree, or None if no controller.
+        """
+        if not self.controller:
+            return None
+
+        self.logger.debug("Building filesystem tree.")
+        root_node = FileSystemNode("Root", is_dir=True, attributes="-")
+        node_dict: Dict[str, FileSystemNode] = {"/": root_node}
+
+        all_directories_to_scan: List[str] = ["/"]
+        scanned_directories: List[str] = []
+        directory_contents: Dict[str, List[Dict[str, Any]]] = {}
+
+        while all_directories_to_scan:
+            current_dir_path = all_directories_to_scan.pop(0)
+            if current_dir_path in scanned_directories:
+                continue
+            scanned_directories.append(current_dir_path)
+
+            try:
+                items = self.controller.list_directory(current_dir_path)
+                directory_contents[current_dir_path] = items
+                for item in items:
+                    if item["is_dir"] and item["name"] not in [".", ".."]:
+                        next_dir_path = os.path.normpath(
+                            os.path.join(current_dir_path, item["name"])
+                        )
+                        if (next_dir_path not in scanned_directories and
+                                next_dir_path not in all_directories_to_scan):
+                            all_directories_to_scan.append(next_dir_path)
+            except Exception as e:
+                self.logger.error(
+                    f"Error listing directory {current_dir_path} during "
+                    f"tree build: {e}"
+                )
+
+        sorted_dir_paths = sorted(node_dict.keys(), key=lambda p: p.count('/'))
+        for dir_path in sorted_dir_paths:
+            if dir_path == "/":
+                continue
+
+            parts = dir_path.strip("/").split("/")
+            parent_path = os.path.normpath("/" + "/".join(parts[:-1]))
+            dir_name = parts[-1]
+
+            parent_node = node_dict.get(parent_path)
+            if not parent_node:
+                self.logger.warning(
+                    f"Parent node for '{dir_path}' not found. Skipping."
+                )
+                continue
+
+            dir_info_found = None
+            for item in directory_contents.get(parent_path, []):
+                if item["is_dir"] and item["name"] == dir_name:
+                    dir_info_found = item
+                    break
+
+            if not dir_info_found:
+                self.logger.warning(
+                    f"Directory info not found for '{dir_path}'. Skipping."
+                )
+                continue
+
+            node = FileSystemNode(
+                name=dir_name,
+                size=0,
+                is_dir=True,
+                modified=(
+                    dir_info_found["datetime"].strftime("%Y-%m-%d %H:%M:%S")
+                    if isinstance(dir_info_found["datetime"], datetime.datetime)
+                    else str(dir_info_found["datetime"])
+                ),
+                attributes=dir_info_found["attributes"],
+                parent=parent_node
+            )
+            parent_node.appendChild(node)
+            node_dict[dir_path] = node
+
+        for dir_path, items in directory_contents.items():
+            parent_node = node_dict.get(dir_path)
+            if not parent_node:
+                continue
+
+            for item in items:
+                if not item["is_dir"]:
+                    node = FileSystemNode(
+                        name=item["name"],
+                        size=item["size"],
+                        is_dir=False,
+                        modified=(
+                            item["datetime"].strftime("%Y-%m-%d %H:%M:%S")
+                            if isinstance(item["datetime"], datetime.datetime)
+                            else str(item["datetime"])
+                        ),
+                        attributes=item["attributes"],
+                        parent=parent_node
+                    )
+                    parent_node.appendChild(node)
+
+        self.logger.debug("Filesystem tree built successfully.")
+        return root_node
 
     def _build_full_path(self, name: str) -> str:
         """
@@ -317,242 +533,67 @@ class FileBrowserApp(QMainWindow):
             path += "/"
         return os.path.normpath(path + name)
 
-    def _run_threaded_operation(
-        self,
-        operation: Callable,
-        operation_name: str,
-        on_success: Optional[Callable] = None,
-        on_error: Optional[Callable] = None,
-        cancelable: bool = False,
-        *args,
-        **kwargs
-    ) -> None:
+    def _build_path_from_node(self, node: FileSystemNode) -> str:
         """
-        Runs a disk operation in background thread with progress dialog.
+        Constructs full filesystem path from a FileSystemNode.
 
         Args:
-            operation: Function to run in background.
-            operation_name: Name for progress dialog.
-            on_success: Callback for successful completion.
-            on_error: Callback for errors.
-            cancelable: Whether operation can be cancelled.
-            *args, **kwargs: Arguments for the operation.
-        """
-        from .worker import DiskOperationWorker
-        from .progress_dialog import ProgressDialog
+            node: The FileSystemNode to get the path for.
 
-        progress = ProgressDialog(
-            title=operation_name,
-            message=f"{operation_name}...",
-            cancelable=cancelable,
-            parent=self
+        Returns:
+            The full path string.
+        """
+        path_parts: List[str] = []
+        curr = node
+        while curr and curr.parent:
+            path_parts.insert(0, curr.name)
+            curr = curr.parent
+        return "/" + "/".join(path_parts) if path_parts else "/"
+
+    def _connect_manager_signals(self) -> None:
+        """Connects manager signals to UI updates."""
+        self.disk_manager.disk_opened.connect(self._on_disk_opened)
+        self.disk_manager.disk_closed.connect(self.reset_ui)
+        self.disk_manager.status_message.connect(
+            lambda msg: self.statusBar().showMessage(msg)
+        )
+        self.disk_manager.error_occurred.connect(
+            lambda title, msg: QMessageBox.critical(self, title, msg)
+        )
+        self.disk_manager.map_update_needed.connect(self.draw_disk_map)
+
+        self.file_manager.operation_complete.connect(
+            lambda msg: self.statusBar().showMessage(msg)
+        )
+        self.file_manager.refresh_needed.connect(self.refresh_filesystem_ui)
+        self.file_manager.error_occurred.connect(
+            lambda title, msg: QMessageBox.critical(self, title, msg)
         )
 
-        worker = DiskOperationWorker(operation, *args, **kwargs)
-        worker.progress.connect(progress.update_progress)
-
-        def on_finished(result):
-            progress.accept()
-            if on_success:
-                on_success(result)
-
-        def on_worker_error(exception):
-            progress.reject()
-            if on_error:
-                on_error(exception)
-            else:
-                QMessageBox.critical(
-                    self, "Error",
-                    f"{operation_name} failed: {str(exception)}"
-                )
-                self.logger.exception(f"Threaded operation '{operation_name}' failed")
-
-        worker.finished.connect(on_finished)
-        worker.error.connect(on_worker_error)
-
-        if cancelable:
-            progress.rejected.connect(worker.cancel)
-
-        worker.start()
-        progress.exec()
-        worker.wait()
-
-    def import_multiple_paths(
-        self,
-        file_paths: List[str],
-        target_path: str,
-        auto_name: bool = True
-    ) -> None:
-        """
-        Delegates to FileManager.
-
-        Args:
-            file_paths: List of local paths to import.
-            target_path: Target path on disk image.
-            auto_name: Whether to auto-generate names.
-        """
-        self.file_manager.import_multiple_paths(file_paths, target_path, auto_name)
-
-    # --- Private UI Initialization ---
-
-    def _init_ui(self) -> None:
-        """Initializes main UI components."""
-        from PyQt6.QtCore import QSettings
-
-        settings = QSettings("FatFloppy", "FatFloppy")
-        restore_dock_layout = settings.value("window/restore_dock_layout", False, type=bool)
-
-        self._init_window_settings()
-        self._create_menus()
-        self._create_toolbars()
-        self._create_docks()
-
-        if not restore_dock_layout:
-            self._setup_dock_layout()
-
-        self._connect_signals_slots()
-        self.logger.debug("UI components initialized.")
-
-    def _init_window_settings(self) -> None:
-        """Sets up initial window title and geometry."""
-        self.setWindowTitle("FatFloppy Disk Browser")
-        self.setGeometry(100, 100, 1200, 800)
-        self.setDockNestingEnabled(True)
-
-    def _create_menus(self) -> None:
-        """Creates application menu bar."""
-        menu_bar = self.menuBar()
-        file_menu = menu_bar.addMenu("File")
-
-        create_image_action = QAction("Create Disk Image", self)
-        create_image_action.triggered.connect(self.create_disk_image)
-        file_menu.addAction(create_image_action)
-
-        open_image_action = QAction("Open Disk Image File", self)
-        open_image_action.setToolTip("Open a disk image file (.ima, .img, .imd)")
-        open_image_action.triggered.connect(self.open_disk_image_file)
-        file_menu.addAction(open_image_action)
-
-        self.recent_files_menu = QMenu("Recent Files", self)
-        file_menu.addMenu(self.recent_files_menu)
-
-        file_menu.addSeparator()
-
-        open_floppy_action = QAction("Open Physical Floppy", self)
-        open_floppy_action.triggered.connect(self.open_physical_floppy)
-        if not self.greaseweazle_available:
-            open_floppy_action.setEnabled(False)
-            self.logger.info("Greaseweazle not available, 'Open Physical Floppy' disabled.")
-        file_menu.addAction(open_floppy_action)
-
-        file_menu.addSeparator()
-
-        exit_action = QAction("Exit", self)
-        exit_action.setMenuRole(QAction.MenuRole.QuitRole)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-
-        # View Menu
-        view_menu = menu_bar.addMenu("&View")
-
-        save_layout_action = QAction("Save Current Layout", self)
-        save_layout_action.triggered.connect(self._save_current_layout)
-        view_menu.addAction(save_layout_action)
-
-        reset_layout_action = QAction("Reset to Default Layout", self)
-        reset_layout_action.triggered.connect(self._reset_layout)
-        view_menu.addAction(reset_layout_action)
-
-        view_menu.addSeparator()
-
-        from PyQt6.QtCore import QSettings
-        settings = QSettings("FatFloppy", "FatFloppy")
-
-        self.restore_layout_action = QAction("Restore Custom Layout on Startup", self)
-        self.restore_layout_action.setCheckable(True)
-        self.restore_layout_action.setChecked(
-            settings.value("window/restore_dock_layout", False, type=bool)
+        self.editor_manager.refresh_needed.connect(self.refresh_filesystem_ui)
+        self.editor_manager.error_occurred.connect(
+            lambda title, msg: QMessageBox.critical(self, title, msg)
         )
-        self.restore_layout_action.triggered.connect(self._toggle_restore_layout)
-        view_menu.addAction(self.restore_layout_action)
 
-        self.logger.debug("Menus created.")
+        self.settings_manager.recent_files_changed.connect(
+            lambda: self.settings_manager.update_recent_files_menu(
+                self.recent_files_menu
+            )
+        )
+        self.settings_manager.open_file_requested.connect(
+            self.disk_manager.open_disk_image_by_path
+        )
 
-    def _create_toolbars(self) -> None:
-        """Creates main toolbar."""
-        self.toolbar = QToolBar("Main Toolbar", self)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
+        self.text_viewer.textChanged.connect(
+            self.editor_manager.on_text_editor_changed
+        )
 
-        # Left side - Disk operations
-        create_image_action = QAction("Create Image", self)
-        create_image_action.setToolTip("Create a new blank disk image")
-        create_image_action.triggered.connect(self.create_disk_image)
-        self.toolbar.addAction(create_image_action)
-
-        open_image_action = QAction("Open Image", self)
-        open_image_action.setToolTip("Open a disk image file")
-        open_image_action.triggered.connect(self.open_disk_image_file)
-        self.toolbar.addAction(open_image_action)
-
-        open_floppy_action = QAction("Open Floppy", self)
-        open_floppy_action.setToolTip("Open a physical floppy drive")
-        open_floppy_action.triggered.connect(self.open_physical_floppy)
-        if not self.greaseweazle_available:
-            open_floppy_action.setEnabled(False)
-        self.toolbar.addAction(open_floppy_action)
-
-        # Spacer
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.toolbar.addWidget(spacer)
-
-        # Right side - File operations
-        view_action = QAction("View File", self)
-        view_action.setToolTip("View selected file content")
-        view_action.triggered.connect(self.view_file_content)
-        self.toolbar.addAction(view_action)
-
-        add_file_action = QAction("Add File", self)
-        add_file_action.setToolTip("Add a file to current directory")
-        add_file_action.triggered.connect(self.add_file)
-        self.toolbar.addAction(add_file_action)
-
-        extract_action = QAction("Extract", self)
-        extract_action.setToolTip("Extract selected item(s) to local filesystem")
-        extract_action.triggered.connect(self.extract_selected_items)
-        self.toolbar.addAction(extract_action)
-
-        delete_action = QAction("Delete", self)
-        delete_action.setToolTip("Delete selected file(s) or directory")
-        delete_action.triggered.connect(self.delete_selected_items)
-        self.toolbar.addAction(delete_action)
-
-        create_dir_action = QAction("New Folder", self)
-        create_dir_action.setToolTip("Create a new directory in current location")
-        create_dir_action.triggered.connect(self.create_directory)
-        self.toolbar.addAction(create_dir_action)
-
-        self.logger.debug("Toolbars created.")
-
-    def _create_docks(self) -> None:
-        """Creates all dockable widgets."""
-        self._create_tree_dock()
-        self._create_disk_info_dock()
-        self._create_file_list_dock()
-        self._create_disk_map_dock()
-        self._create_text_editor_dock()
-        self._create_hex_viewer_dock()
-        self.logger.debug("Docks created.")
-
-    def _create_tree_dock(self) -> None:
-        """Creates directory tree dock."""
-        self.tree_dock = QDockWidget("Directory Tree", self)
-        self.tree_dock.setObjectName("TreeDock")
-        self.tree_widget = QTreeWidget()
-        self.tree_widget.setHeaderLabel("Directories")
-        self.tree_widget.itemClicked.connect(self.select_directory)
-        self.tree_dock.setWidget(self.tree_widget)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.tree_dock)
+    def _connect_signals_slots(self) -> None:
+        """Connects UI signals to slots."""
+        self.file_list.selectionModel().selectionChanged.connect(
+            self._on_file_list_selection_changed
+        )
+        self.statusBar().showMessage("Ready")
 
     def _create_disk_info_dock(self) -> None:
         """Creates disk information dock."""
@@ -566,7 +607,9 @@ class FileBrowserApp(QMainWindow):
 
         self.physical_format_group = QGroupBox("Physical Geometry")
         self.physical_format_info = QLabel("No disk image loaded")
-        self.physical_format_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.physical_format_info.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.physical_format_info.setWordWrap(True)
         self.physical_format_info.setSizePolicy(
             QSizePolicy.Policy.Preferred,
@@ -579,7 +622,9 @@ class FileBrowserApp(QMainWindow):
 
         self.filesystem_group = QGroupBox("Filesystem")
         self.filesystem_info = QLabel("No filesystem detected")
-        self.filesystem_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.filesystem_info.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.filesystem_info.setWordWrap(True)
         self.filesystem_info.setSizePolicy(
             QSizePolicy.Policy.Preferred,
@@ -596,31 +641,10 @@ class FileBrowserApp(QMainWindow):
 
         disk_info_widget.setLayout(disk_info_layout)
         self.disk_info_dock.setWidget(disk_info_widget)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.disk_info_dock)
-
-    def _create_file_list_dock(self) -> None:
-        """Creates file list dock."""
-        self.file_list_dock = QDockWidget("Files", self)
-        self.file_list_dock.setObjectName("FileListDock")
-
-        self.file_list = DragDropTreeWidget(self)
-        self.file_list.itemDoubleClicked.connect(self._on_file_double_clicked)
-        self.file_list.setHeaderLabels(["Name", "Size", "Date/Time", "Attr"])
-        self.file_list.setDragEnabled(True)
-        self.file_list.setAcceptDrops(True)
-        self.file_list.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
-        self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-
-        self.file_list_dock.setWidget(self.file_list)
-
-        header = self.file_list.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setStretchLastSection(False)
-
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_list_dock)
+        self.addDockWidget(
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+            self.disk_info_dock
+        )
 
     def _create_disk_map_dock(self) -> None:
         """Creates disk map dock."""
@@ -650,7 +674,146 @@ class FileBrowserApp(QMainWindow):
         disk_map_layout.addWidget(self.disk_map_view)
 
         self.disk_map_dock.setWidget(disk_map_container)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.disk_map_dock)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.disk_map_dock
+        )
+
+    def _create_docks(self) -> None:
+        """Creates all dockable widgets."""
+        self._create_tree_dock()
+        self._create_disk_info_dock()
+        self._create_file_list_dock()
+        self._create_disk_map_dock()
+        self._create_text_editor_dock()
+        self._create_hex_viewer_dock()
+        self.logger.debug("Docks created.")
+
+    def _create_file_list_dock(self) -> None:
+        """Creates file list dock."""
+        self.file_list_dock = QDockWidget("Files", self)
+        self.file_list_dock.setObjectName("FileListDock")
+
+        self.file_list = DragDropTreeWidget(self)
+        self.file_list.itemDoubleClicked.connect(self._on_file_double_clicked)
+        self.file_list.setHeaderLabels(["Name", "Size", "Date/Time", "Attr"])
+        self.file_list.setDragEnabled(True)
+        self.file_list.setAcceptDrops(True)
+        self.file_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.DragDrop
+        )
+        self.file_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+
+        self.file_list_dock.setWidget(self.file_list)
+
+        header = self.file_list.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(False)
+
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.file_list_dock
+        )
+
+    def _create_hex_viewer_dock(self) -> None:
+        """Creates hex viewer dock."""
+        self.hex_viewer_dock = QDockWidget("Hex Viewer", self)
+        self.hex_viewer_dock.setObjectName("HexViewerDock")
+
+        hex_viewer_widget = QWidget()
+        hex_viewer_layout = QVBoxLayout(hex_viewer_widget)
+        hex_viewer_layout.setContentsMargins(2, 2, 2, 2)
+        hex_viewer_layout.setSpacing(4)
+
+        self.hex_viewer = QPlainTextEdit()
+        self.hex_viewer.setReadOnly(True)
+        self.hex_viewer.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+
+        font_metrics = self.hex_viewer.fontMetrics()
+        self.hex_viewer.setTabStopDistance(
+            font_metrics.horizontalAdvance(' ') * TAB_STOP_SPACES
+        )
+
+        hex_viewer_layout.addWidget(self.hex_viewer)
+        hex_viewer_widget.setLayout(hex_viewer_layout)
+        self.hex_viewer_dock.setWidget(hex_viewer_widget)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.hex_viewer_dock
+        )
+
+    def _create_menus(self) -> None:
+        """Creates application menu bar."""
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("File")
+
+        create_image_action = QAction("Create Disk Image", self)
+        create_image_action.triggered.connect(self.create_disk_image)
+        file_menu.addAction(create_image_action)
+
+        open_image_action = QAction("Open Disk Image File", self)
+        open_image_action.setToolTip(
+            "Open a disk image file (.ima, .img, .imd)"
+        )
+        open_image_action.triggered.connect(self.open_disk_image_file)
+        file_menu.addAction(open_image_action)
+
+        self.recent_files_menu = QMenu("Recent Files", self)
+        file_menu.addMenu(self.recent_files_menu)
+
+        file_menu.addSeparator()
+
+        open_floppy_action = QAction("Open Physical Floppy", self)
+        open_floppy_action.triggered.connect(self.open_physical_floppy)
+        if not self.greaseweazle_available:
+            open_floppy_action.setEnabled(False)
+            self.logger.info(
+                "Greaseweazle not available, 'Open Physical Floppy' disabled."
+            )
+        file_menu.addAction(open_floppy_action)
+
+        file_menu.addSeparator()
+
+        exit_action = QAction("Exit", self)
+        exit_action.setMenuRole(QAction.MenuRole.QuitRole)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        view_menu = menu_bar.addMenu("&View")
+
+        save_layout_action = QAction("Save Current Layout", self)
+        save_layout_action.triggered.connect(self._save_current_layout)
+        view_menu.addAction(save_layout_action)
+
+        reset_layout_action = QAction("Reset to Default Layout", self)
+        reset_layout_action.triggered.connect(self._reset_layout)
+        view_menu.addAction(reset_layout_action)
+
+        view_menu.addSeparator()
+
+        from PyQt6.QtCore import QSettings
+
+        settings = QSettings("FatFloppy", "FatFloppy")
+
+        self.restore_layout_action = QAction(
+            "Restore Custom Layout on Startup",
+            self
+        )
+        self.restore_layout_action.setCheckable(True)
+        self.restore_layout_action.setChecked(
+            settings.value("window/restore_dock_layout", False, type=bool)
+        )
+        self.restore_layout_action.triggered.connect(
+            self._toggle_restore_layout
+        )
+        view_menu.addAction(self.restore_layout_action)
+
+        self.logger.debug("Menus created.")
 
     def _create_text_editor_dock(self) -> None:
         """Creates text editor dock."""
@@ -686,305 +849,112 @@ class FileBrowserApp(QMainWindow):
 
         text_viewer_widget.setLayout(text_viewer_layout)
         self.text_viewer_dock.setWidget(text_viewer_widget)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.text_viewer_dock)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.text_viewer_dock
+        )
 
-    def _create_hex_viewer_dock(self) -> None:
-        """Creates hex viewer dock."""
-        self.hex_viewer_dock = QDockWidget("Hex Viewer", self)
-        self.hex_viewer_dock.setObjectName("HexViewerDock")
+    def _create_toolbars(self) -> None:
+        """Creates main toolbar."""
+        self.toolbar = QToolBar("Main Toolbar", self)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
 
-        hex_viewer_widget = QWidget()
-        hex_viewer_layout = QVBoxLayout(hex_viewer_widget)
-        hex_viewer_layout.setContentsMargins(2, 2, 2, 2)
-        hex_viewer_layout.setSpacing(4)
+        create_image_action = QAction("Create Image", self)
+        create_image_action.setToolTip("Create a new blank disk image")
+        create_image_action.triggered.connect(self.create_disk_image)
+        self.toolbar.addAction(create_image_action)
 
-        self.hex_viewer = QPlainTextEdit()
-        self.hex_viewer.setReadOnly(True)
-        self.hex_viewer.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        open_image_action = QAction("Open Image", self)
+        open_image_action.setToolTip("Open a disk image file")
+        open_image_action.triggered.connect(self.open_disk_image_file)
+        self.toolbar.addAction(open_image_action)
 
-        font_metrics = self.hex_viewer.fontMetrics()
-        self.hex_viewer.setTabStopDistance(font_metrics.horizontalAdvance(' ') * 8)
+        open_floppy_action = QAction("Open Floppy", self)
+        open_floppy_action.setToolTip("Open a physical floppy drive")
+        open_floppy_action.triggered.connect(self.open_physical_floppy)
+        if not self.greaseweazle_available:
+            open_floppy_action.setEnabled(False)
+        self.toolbar.addAction(open_floppy_action)
 
-        hex_viewer_layout.addWidget(self.hex_viewer)
-        hex_viewer_widget.setLayout(hex_viewer_layout)
-        self.hex_viewer_dock.setWidget(hex_viewer_widget)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.hex_viewer_dock)
+        spacer = QWidget()
+        spacer.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding
+        )
+        self.toolbar.addWidget(spacer)
 
-    def _setup_dock_layout(self) -> None:
-        """Arranges dockable widgets."""
-        self.splitDockWidget(self.tree_dock, self.disk_info_dock, Qt.Orientation.Vertical)
-        self.splitDockWidget(self.file_list_dock, self.disk_map_dock, Qt.Orientation.Horizontal)
+        view_action = QAction("View File", self)
+        view_action.setToolTip("View selected file content")
+        view_action.triggered.connect(self.view_file_content)
+        self.toolbar.addAction(view_action)
 
-        self.tabifyDockWidget(self.disk_map_dock, self.text_viewer_dock)
-        self.tabifyDockWidget(self.text_viewer_dock, self.hex_viewer_dock)
-        self.disk_map_dock.raise_()
+        add_file_action = QAction("Add File", self)
+        add_file_action.setToolTip("Add a file to current directory")
+        add_file_action.triggered.connect(self.add_file)
+        self.toolbar.addAction(add_file_action)
 
-        self.resizeDocks([self.tree_dock, self.file_list_dock], [200, 1000], Qt.Orientation.Horizontal)
-        self.resizeDocks([self.file_list_dock, self.disk_map_dock], [400, 600], Qt.Orientation.Horizontal)
-        self.resizeDocks([self.tree_dock, self.disk_info_dock], [400, 400], Qt.Orientation.Vertical)
+        extract_action = QAction("Extract", self)
+        extract_action.setToolTip(
+            "Extract selected item(s) to local filesystem"
+        )
+        extract_action.triggered.connect(self.extract_selected_items)
+        self.toolbar.addAction(extract_action)
 
-        self.tree_dock.setMinimumWidth(320)
-        self.tree_dock.setMaximumWidth(400)
-        self.disk_info_dock.setMinimumWidth(150)
-        self.disk_info_dock.setMaximumWidth(400)
-        self.file_list_dock.setMinimumWidth(400)
-        self.disk_map_dock.setMinimumWidth(300)
+        delete_action = QAction("Delete", self)
+        delete_action.setToolTip("Delete selected file(s) or directory")
+        delete_action.triggered.connect(self.delete_selected_items)
+        self.toolbar.addAction(delete_action)
 
+        create_dir_action = QAction("New Folder", self)
+        create_dir_action.setToolTip(
+            "Create a new directory in current location"
+        )
+        create_dir_action.triggered.connect(self.create_directory)
+        self.toolbar.addAction(create_dir_action)
+
+        self.logger.debug("Toolbars created.")
+
+    def _create_tree_dock(self) -> None:
+        """Creates directory tree dock."""
+        self.tree_dock = QDockWidget("Directory Tree", self)
+        self.tree_dock.setObjectName("TreeDock")
+        self.tree_widget = QTreeWidget()
+        self.tree_widget.setHeaderLabel("Directories")
+        self.tree_widget.itemClicked.connect(self.select_directory)
+        self.tree_dock.setWidget(self.tree_widget)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.tree_dock)
+
+    def _init_ui(self) -> None:
+        """Initializes main UI components."""
         from PyQt6.QtCore import QSettings
+
         settings = QSettings("FatFloppy", "FatFloppy")
-        if not settings.contains("window/default_state"):
-            settings.setValue("window/default_state", self.saveState())
-            self.logger.debug("Saved default dock layout state")
-
-        self.logger.debug("Dock layout configured.")
-
-    def _connect_signals_slots(self) -> None:
-        """Connects UI signals to slots."""
-        self.file_list.selectionModel().selectionChanged.connect(
-            self._on_file_list_selection_changed
-        )
-        self.statusBar().showMessage("Ready")
-
-    def _connect_manager_signals(self) -> None:
-        """Connects manager signals to UI updates."""
-        # DiskManager signals
-        self.disk_manager.disk_opened.connect(self._on_disk_opened)
-        self.disk_manager.disk_closed.connect(self.reset_ui)
-        self.disk_manager.status_message.connect(
-            lambda msg: self.statusBar().showMessage(msg)
-        )
-        self.disk_manager.error_occurred.connect(
-            lambda title, msg: QMessageBox.critical(self, title, msg)
-        )
-        self.disk_manager.map_update_needed.connect(self.draw_disk_map)
-
-        # FileManager signals
-        self.file_manager.operation_complete.connect(
-            lambda msg: self.statusBar().showMessage(msg)
-        )
-        self.file_manager.refresh_needed.connect(self.refresh_filesystem_ui)
-        self.file_manager.error_occurred.connect(
-            lambda title, msg: QMessageBox.critical(self, title, msg)
+        restore_dock_layout = settings.value(
+            "window/restore_dock_layout",
+            False,
+            type=bool
         )
 
-        # EditorManager signals
-        self.editor_manager.refresh_needed.connect(self.refresh_filesystem_ui)
-        self.editor_manager.error_occurred.connect(
-            lambda title, msg: QMessageBox.critical(self, title, msg)
-        )
+        self._init_window_settings()
+        self._create_menus()
+        self._create_toolbars()
+        self._create_docks()
 
-        # SettingsManager signals
-        self.settings_manager.recent_files_changed.connect(
-            lambda: self.settings_manager.update_recent_files_menu(self.recent_files_menu)
-        )
-        self.settings_manager.open_file_requested.connect(
-            self.disk_manager.open_disk_image_by_path
-        )
+        if not restore_dock_layout:
+            self._setup_dock_layout()
 
-        # Text viewer connetctions
-        self.text_viewer.textChanged.connect(self.editor_manager.on_text_editor_changed)
+        self._connect_signals_slots()
+        self.logger.debug("UI components initialized.")
 
-    @pyqtSlot(QTreeWidgetItem, int)
-    def _on_file_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
-        """
-        Handles double-click on file list item.
+    def _init_window_settings(self) -> None:
+        """Sets up initial window title and geometry."""
+        self.setWindowTitle("FatFloppy Disk Browser")
+        self.setGeometry(100, 100, 1200, 800)
+        self.setDockNestingEnabled(True)
 
-        Args:
-            item: The item that was double-clicked.
-            column: The column that was double-clicked.
-        """
-        if not hasattr(item, 'node'):
-            return
-
-        node = item.node
-
-        if node.is_dir:
-            new_path = self._build_full_path(node.name)
-            self._navigate_to_path(new_path)
-            self.logger.debug(f"Navigated to directory: {new_path}")
-        else:
-            self.view_file_content()
-
-    @pyqtSlot()
-    def _on_file_list_selection_changed(self) -> None:
-        """Handles changes in file list selection."""
-        if self.editor_manager.has_unsaved_changes():
-            reply = QMessageBox.warning(
-                self, "Unsaved Changes",
-                f"Do you want to save the changes to {os.path.basename(self.editor_manager.current_file_path)}?",
-                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard |
-                QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel
-            )
-
-            if reply == QMessageBox.StandardButton.Save:
-                if not self.save_file():
-                    self.logger.warning("Save during selection change failed/cancelled.")
-                    return
-            elif reply == QMessageBox.StandardButton.Cancel:
-                self.logger.debug("Selection change cancelled due to unsaved changes.")
-                return
-
-        self.disk_manager.clear_file_selection()
-        self.editor_manager.clear_text_viewer_state()
-        self.editor_manager.clear_hex_viewer_state()
-        self.disk_map_dock.raise_()
-
-        selected_items = self.file_list.selectedItems()
-
-        if len(selected_items) == 1:
-            item = selected_items[0]
-
-            if not hasattr(item, 'node'):
-                self.logger.warning("Selected item does not have 'node' attribute.")
-                return
-
-            node = item.node
-
-            if not node.is_dir:
-                file_path = self._build_full_path(node.name)
-                self.disk_manager.update_file_selection(file_path)
-
-        self.draw_disk_map()
-
-    def _on_disk_opened(self, source_identifier: str) -> None:
-        """
-        Handles disk opened signal from DiskManager.
-
-        Args:
-            source_identifier: Description of opened disk.
-        """
-        self.refresh_filesystem_ui()
-
-        if self.controller and self.controller.physical_format:
-            if self.controller.physical_format.heads > 1:
-                self.head_action.setEnabled(True)
-                self.head_action.setText(f"Switch Head (Current: {self.disk_manager.current_head})")
-            else:
-                self.head_action.setEnabled(False)
-                self.head_action.setText("Single-sided disk")
-
-        # Add to recent files if it's an image file
-        if os.path.exists(source_identifier):
-            self.settings_manager.add_to_recent_files(source_identifier)
-
-    # --- Private Filesystem Methods ---
-
-    def _build_fs_tree(self) -> Optional[FileSystemNode]:
-        """
-        Builds hierarchical representation of disk's filesystem.
-
-        Returns:
-            Root FileSystemNode of the tree, or None if no controller.
-        """
-        if not self.controller:
-            return None
-
-        self.logger.debug("Building filesystem tree.")
-        root_node = FileSystemNode("Root", is_dir=True, attributes="-")
-        node_dict: Dict[str, FileSystemNode] = {"/": root_node}
-
-        all_directories_to_scan: List[str] = ["/"]
-        scanned_directories: List[str] = []
-        directory_contents: Dict[str, List[Dict[str, Any]]] = {}
-
-        while all_directories_to_scan:
-            current_dir_path = all_directories_to_scan.pop(0)
-            if current_dir_path in scanned_directories:
-                continue
-            scanned_directories.append(current_dir_path)
-
-            try:
-                items = self.controller.list_directory(current_dir_path)
-                directory_contents[current_dir_path] = items
-                for item in items:
-                    if item["is_dir"] and item["name"] not in [".", ".."]:
-                        next_dir_path = os.path.normpath(
-                            os.path.join(current_dir_path, item["name"])
-                        )
-                        if next_dir_path not in scanned_directories and \
-                           next_dir_path not in all_directories_to_scan:
-                            all_directories_to_scan.append(next_dir_path)
-            except Exception as e:
-                self.logger.error(
-                    f"Error listing directory {current_dir_path} during tree build: {e}"
-                )
-
-        sorted_dir_paths = sorted(node_dict.keys(), key=lambda p: p.count('/'))
-        for dir_path in sorted_dir_paths:
-            if dir_path == "/":
-                continue
-
-            parts = dir_path.strip("/").split("/")
-            parent_path = os.path.normpath("/" + "/".join(parts[:-1]))
-            dir_name = parts[-1]
-
-            parent_node = node_dict.get(parent_path)
-            if not parent_node:
-                self.logger.warning(f"Parent node for '{dir_path}' not found. Skipping.")
-                continue
-
-            dir_info_found = None
-            for item in directory_contents.get(parent_path, []):
-                if item["is_dir"] and item["name"] == dir_name:
-                    dir_info_found = item
-                    break
-
-            if not dir_info_found:
-                self.logger.warning(f"Directory info not found for '{dir_path}'. Skipping.")
-                continue
-
-            node = FileSystemNode(
-                name=dir_name,
-                size=0,
-                is_dir=True,
-                modified=dir_info_found["datetime"].strftime("%Y-%m-%d %H:%M:%S")
-                if isinstance(dir_info_found["datetime"], datetime.datetime)
-                else str(dir_info_found["datetime"]),
-                attributes=dir_info_found["attributes"],
-                parent=parent_node
-            )
-            parent_node.appendChild(node)
-            node_dict[dir_path] = node
-
-        for dir_path, items in directory_contents.items():
-            parent_node = node_dict.get(dir_path)
-            if not parent_node:
-                continue
-
-            for item in items:
-                if not item["is_dir"]:
-                    node = FileSystemNode(
-                        name=item["name"],
-                        size=item["size"],
-                        is_dir=False,
-                        modified=item["datetime"].strftime("%Y-%m-%d %H:%M:%S")
-                        if isinstance(item["datetime"], datetime.datetime)
-                        else str(item["datetime"]),
-                        attributes=item["attributes"],
-                        parent=parent_node
-                    )
-                    parent_node.appendChild(node)
-
-        self.logger.debug("Filesystem tree built successfully.")
-        return root_node
-
-    def _build_path_from_node(self, node: FileSystemNode) -> str:
-        """
-        Constructs full filesystem path from a FileSystemNode.
-
-        Args:
-            node: The FileSystemNode to get the path for.
-
-        Returns:
-            The full path string.
-        """
-        path_parts: List[str] = []
-        curr = node
-        while curr and curr.parent:
-            path_parts.insert(0, curr.name)
-            curr = curr.parent
-        return "/" + "/".join(path_parts) if path_parts else "/"
+    def _load_window_state(self) -> None:
+        """Loads and restores window geometry and dock positions."""
+        self.settings_manager.load_window_state()
 
     def _navigate_to_path(self, path: str) -> bool:
         """
@@ -1016,7 +986,9 @@ class FileBrowserApp(QMainWindow):
                         found = True
                         break
             if not found:
-                self.logger.warning(f"Path part '{part}' not found. Resetting to root.")
+                self.logger.warning(
+                    f"Path part '{part}' not found. Resetting to root."
+                )
                 self.current_node = self.root_node
                 self.current_path = "/"
                 self.update_file_list()
@@ -1029,6 +1001,104 @@ class FileBrowserApp(QMainWindow):
         self._select_tree_item_by_path(path)
         self.logger.info(f"Successfully navigated to path: {path}")
         return True
+
+    def _on_disk_opened(self, source_identifier: str) -> None:
+        """
+        Handles disk opened signal from DiskManager.
+
+        Args:
+            source_identifier: Description of opened disk.
+        """
+        self.refresh_filesystem_ui()
+
+        if self.controller and self.controller.physical_format:
+            if self.controller.physical_format.heads > 1:
+                self.head_action.setEnabled(True)
+                self.head_action.setText(
+                    f"Switch Head (Current: {self.disk_manager.current_head})"
+                )
+            else:
+                self.head_action.setEnabled(False)
+                self.head_action.setText("Single-sided disk")
+
+        if os.path.exists(source_identifier):
+            self.settings_manager.add_to_recent_files(source_identifier)
+
+    @pyqtSlot(QTreeWidgetItem, int)
+    def _on_file_double_clicked(
+        self,
+        item: QTreeWidgetItem,
+        column: int
+    ) -> None:
+        """
+        Handles double-click on file list item.
+
+        Args:
+            item: The item that was double-clicked.
+            column: The column that was double-clicked.
+        """
+        if not hasattr(item, 'node'):
+            return
+
+        node = item.node
+
+        if node.is_dir:
+            new_path = self._build_full_path(node.name)
+            self._navigate_to_path(new_path)
+            self.logger.debug(f"Navigated to directory: {new_path}")
+        else:
+            self.view_file_content()
+
+    @pyqtSlot()
+    def _on_file_list_selection_changed(self) -> None:
+        """Handles changes in file list selection."""
+        if self.editor_manager.has_unsaved_changes():
+            reply = QMessageBox.warning(
+                self,
+                "Unsaved Changes",
+                f"Do you want to save the changes to "
+                f"{os.path.basename(self.editor_manager.current_file_path)}?",
+                QMessageBox.StandardButton.Save |
+                QMessageBox.StandardButton.Discard |
+                QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel
+            )
+
+            if reply == QMessageBox.StandardButton.Save:
+                if not self.save_file():
+                    self.logger.warning(
+                        "Save during selection change failed/cancelled."
+                    )
+                    return
+            elif reply == QMessageBox.StandardButton.Cancel:
+                self.logger.debug(
+                    "Selection change cancelled due to unsaved changes."
+                )
+                return
+
+        self.disk_manager.clear_file_selection()
+        self.editor_manager.clear_text_viewer_state()
+        self.editor_manager.clear_hex_viewer_state()
+        self.disk_map_dock.raise_()
+
+        selected_items = self.file_list.selectedItems()
+
+        if len(selected_items) == 1:
+            item = selected_items[0]
+
+            if not hasattr(item, 'node'):
+                self.logger.warning(
+                    "Selected item does not have 'node' attribute."
+                )
+                return
+
+            node = item.node
+
+            if not node.is_dir:
+                file_path = self._build_full_path(node.name)
+                self.disk_manager.update_file_selection(file_path)
+
+        self.draw_disk_map()
 
     def _populate_tree_widget(self) -> None:
         """Populates QTreeWidget from internal FileSystemNode tree."""
@@ -1064,6 +1134,77 @@ class FileBrowserApp(QMainWindow):
                 child_item.node = child
                 self._recursive_populate_tree_widget(child, child_item)
 
+    def _reset_layout(self) -> None:
+        """Wrapper to delegate to SettingsManager."""
+        self.settings_manager.reset_layout()
+
+    def _run_threaded_operation(
+        self,
+        operation: Callable,
+        operation_name: str,
+        on_success: Optional[Callable] = None,
+        on_error: Optional[Callable] = None,
+        cancelable: bool = False,
+        *args,
+        **kwargs
+    ) -> None:
+        """
+        Runs a disk operation in background thread with progress dialog.
+
+        Args:
+            operation: Function to run in background.
+            operation_name: Name for progress dialog.
+            on_success: Callback for successful completion.
+            on_error: Callback for errors.
+            cancelable: Whether operation can be cancelled.
+            *args, **kwargs: Arguments for the operation.
+        """
+        from .progress_dialog import ProgressDialog
+        from .worker import DiskOperationWorker
+
+        progress = ProgressDialog(
+            title=operation_name,
+            message=f"{operation_name}...",
+            cancelable=cancelable,
+            parent=self
+        )
+
+        worker = DiskOperationWorker(operation, *args, **kwargs)
+        worker.progress.connect(progress.update_progress)
+
+        def on_finished(result):
+            progress.accept()
+            if on_success:
+                on_success(result)
+
+        def on_worker_error(exception):
+            progress.reject()
+            if on_error:
+                on_error(exception)
+            else:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"{operation_name} failed: {str(exception)}"
+                )
+                self.logger.exception(
+                    f"Threaded operation '{operation_name}' failed"
+                )
+
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_worker_error)
+
+        if cancelable:
+            progress.rejected.connect(worker.cancel)
+
+        worker.start()
+        progress.exec()
+        worker.wait()
+
+    def _save_current_layout(self) -> None:
+        """Wrapper to delegate to SettingsManager."""
+        self.settings_manager.save_current_layout()
+
     def _select_tree_item_by_path(self, path: str) -> None:
         """
         Selects corresponding item in directory tree widget for given path.
@@ -1073,7 +1214,9 @@ class FileBrowserApp(QMainWindow):
         """
         if path == "/":
             if self.tree_widget.topLevelItemCount() > 0:
-                self.tree_widget.setCurrentItem(self.tree_widget.topLevelItem(0))
+                self.tree_widget.setCurrentItem(
+                    self.tree_widget.topLevelItem(0)
+                )
             return
 
         parts = path.strip("/").split("/")
@@ -1091,45 +1234,62 @@ class FileBrowserApp(QMainWindow):
                     found = True
                     break
             if not found:
-                self.logger.warning(f"Tree item for path part '{part}' not found.")
+                self.logger.warning(
+                    f"Tree item for path part '{part}' not found."
+                )
                 return
 
         self.tree_widget.setCurrentItem(current_tree_item)
         self.logger.debug(f"Tree item selected for path: {path}")
 
-    # --- Private Utility Methods ---
+    def _setup_dock_layout(self) -> None:
+        """Arranges dockable widgets."""
+        self.splitDockWidget(
+            self.tree_dock,
+            self.disk_info_dock,
+            Qt.Orientation.Vertical
+        )
+        self.splitDockWidget(
+            self.file_list_dock,
+            self.disk_map_dock,
+            Qt.Orientation.Horizontal
+        )
 
-    def _build_file_dialog_filter(self) -> None:
-        """Dynamically builds file dialog filter string from discovered drivers."""
-        self.logger.debug("Building file dialog filter from discovered drivers.")
-        self.extension_to_driver_map = DriverFactory.get_extension_map()
+        self.tabifyDockWidget(self.disk_map_dock, self.text_viewer_dock)
+        self.tabifyDockWidget(self.text_viewer_dock, self.hex_viewer_dock)
+        self.disk_map_dock.raise_()
 
-        all_extensions = sorted(self.extension_to_driver_map.keys())
+        self.resizeDocks(
+            [self.tree_dock, self.file_list_dock],
+            [200, 1000],
+            Qt.Orientation.Horizontal
+        )
+        self.resizeDocks(
+            [self.file_list_dock, self.disk_map_dock],
+            [400, 600],
+            Qt.Orientation.Horizontal
+        )
+        self.resizeDocks(
+            [self.tree_dock, self.disk_info_dock],
+            [400, 400],
+            Qt.Orientation.Vertical
+        )
 
-        driver_to_exts: Dict[str, List[str]] = {}
-        for ext, driver_type in self.extension_to_driver_map.items():
-            driver_to_exts.setdefault(driver_type, []).append(f"*{ext}")
+        self.tree_dock.setMinimumWidth(TREE_DOCK_MIN_WIDTH)
+        self.tree_dock.setMaximumWidth(TREE_DOCK_MAX_WIDTH)
+        self.disk_info_dock.setMinimumWidth(DEFAULT_DOCK_MIN_WIDTH)
+        self.disk_info_dock.setMaximumWidth(DEFAULT_DOCK_MAX_WIDTH)
+        self.file_list_dock.setMinimumWidth(FILE_LIST_MIN_WIDTH)
+        self.disk_map_dock.setMinimumWidth(DISK_MAP_MIN_WIDTH)
 
-        filters = []
-        all_ext_str = " ".join(f"*{ext}" for ext in all_extensions)
-        filters.append(f"All Supported Images ({all_ext_str})")
+        from PyQt6.QtCore import QSettings
 
-        for driver_type, exts in sorted(driver_to_exts.items()):
-            exts_str = " ".join(exts)
-            desc = getattr(
-                DriverFactory.get_driver_class(driver_type),
-                'driver_description',
-                f"{driver_type} Files"
-            )
-            filters.append(f"{desc} ({exts_str})")
+        settings = QSettings("FatFloppy", "FatFloppy")
+        if not settings.contains("window/default_state"):
+            settings.setValue("window/default_state", self.saveState())
+            self.logger.debug("Saved default dock layout state")
 
-        filters.append("All Files (*)")
-        self.file_dialog_filter = ";;".join(filters)
-        self.logger.info(f"Generated file dialog filter: {self.file_dialog_filter}")
-
-    def _load_window_state(self) -> None:
-        """Loads and restores window geometry and dock positions from settings."""
-        self.settings_manager.load_window_state()
+        self.logger.debug("Dock layout configured.")
 
     def _setup_fonts(self) -> None:
         """Configures and sets fonts for UI elements."""
@@ -1137,11 +1297,16 @@ class FileBrowserApp(QMainWindow):
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         root_dir = current_dir
-        while not os.path.exists(os.path.join(root_dir, 'assets')) and \
-              root_dir != os.path.dirname(root_dir):
+        while (not os.path.exists(os.path.join(root_dir, 'assets')) and
+                root_dir != os.path.dirname(root_dir)):
             root_dir = os.path.dirname(root_dir)
 
-        font_path = os.path.join(root_dir, 'assets', 'fonts', 'JetBrainsMono-Regular.ttf')
+        font_path = os.path.join(
+            root_dir,
+            'assets',
+            'fonts',
+            'JetBrainsMono-Regular.ttf'
+        )
 
         self.logger.debug(f"Looking for font at: {font_path}")
         self.logger.debug(f"Font file exists: {os.path.exists(font_path)}")
@@ -1157,12 +1322,17 @@ class FileBrowserApp(QMainWindow):
                 if font_families:
                     family_name = font_families[0]
                     self.app_font = QFont(family_name)
-                    self.app_font.setPointSize(12)
+                    self.app_font.setPointSize(DEFAULT_FONT_SIZE)
                     QApplication.instance().setFont(self.app_font)
                     custom_font_loaded = True
-                    self.logger.info(f"Successfully loaded custom font: {family_name}")
+                    self.logger.info(
+                        f"Successfully loaded custom font: {family_name}"
+                    )
                 else:
-                    self.logger.warning(f"Font loaded but no families returned from {font_path}")
+                    self.logger.warning(
+                        f"Font loaded but no families returned from "
+                        f"{font_path}"
+                    )
             else:
                 self.logger.warning(f"Failed to load font from {font_path}")
         else:
@@ -1170,8 +1340,14 @@ class FileBrowserApp(QMainWindow):
 
         if not custom_font_loaded:
             monospace_fonts: List[str] = [
-                "JetBrainsMono", "Courier New", "DejaVu Sans Mono", "Consolas",
-                "Menlo", "Liberation Mono", "Monaco", "SF Mono"
+                "JetBrainsMono",
+                "Courier New",
+                "DejaVu Sans Mono",
+                "Consolas",
+                "Menlo",
+                "Liberation Mono",
+                "Monaco",
+                "SF Mono"
             ]
             self.app_font = QFont()
             found_font = False
@@ -1179,23 +1355,29 @@ class FileBrowserApp(QMainWindow):
             for font_name in monospace_fonts:
                 if QFontDatabase.hasFamily(font_name):
                     self.app_font.setFamily(font_name)
-                    self.app_font.setPointSize(12)
+                    self.app_font.setPointSize(DEFAULT_FONT_SIZE)
                     found_font = True
-                    self.logger.info(f"Using fallback monospace font: {font_name}")
+                    self.logger.info(
+                        f"Using fallback monospace font: {font_name}"
+                    )
                     break
 
             if not found_font:
-                default_monospace = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+                default_monospace = QFontDatabase.systemFont(
+                    QFontDatabase.SystemFont.FixedFont
+                )
                 self.app_font = default_monospace
-                self.app_font.setPointSize(12)
-                self.logger.info(f"Using system default monospace font: {default_monospace.family()}")
+                self.app_font.setPointSize(DEFAULT_FONT_SIZE)
+                self.logger.info(
+                    f"Using system default monospace font: "
+                    f"{default_monospace.family()}"
+                )
 
             QApplication.instance().setFont(self.app_font)
 
         QApplication.instance().setFont(self.app_font)
         self.setFont(self.app_font)
 
-        # Apply to all widgets
         self.tree_widget.setFont(self.app_font)
         self.file_list.setFont(self.app_font)
         self.physical_format_info.setFont(self.app_font)
@@ -1215,9 +1397,18 @@ class FileBrowserApp(QMainWindow):
         self.statusBar().setFont(self.app_font)
 
         font_metrics = self.hex_viewer.fontMetrics()
-        self.hex_viewer.setTabStopDistance(font_metrics.horizontalAdvance(' ') * 8)
+        self.hex_viewer.setTabStopDistance(
+            font_metrics.horizontalAdvance(' ') * TAB_STOP_SPACES
+        )
 
-        self.logger.info(f"Final font in use: {self.app_font.family()}, Size: {self.app_font.pointSize()}")
+        self.logger.info(
+            f"Final font in use: {self.app_font.family()}, "
+            f"Size: {self.app_font.pointSize()}"
+        )
+
+    def _toggle_restore_layout(self, checked: bool) -> None:
+        """Wrapper to delegate to SettingsManager."""
+        self.settings_manager.toggle_restore_layout(checked)
 
     @pyqtSlot()
     def _update_theme(self) -> None:
@@ -1233,49 +1424,6 @@ class FileBrowserApp(QMainWindow):
             style_sheet = get_dark_theme()
             self.logger.debug("Applying default dark theme.")
         self.setStyleSheet(style_sheet)
-
-    # --- Event Overrides ---
-
-    def closeEvent(self, event) -> None:
-        """
-        Handles window close event.
-
-        Args:
-            event: The close event.
-        """
-        if self.editor_manager.has_unsaved_changes():
-            reply = QMessageBox.question(
-                self, "Unsaved Changes",
-                f"Do you want to save changes to {os.path.basename(self.editor_manager.current_file_path)}?",
-                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard |
-                QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel
-            )
-
-            if reply == QMessageBox.StandardButton.Save:
-                if not self.save_file():
-                    event.ignore()
-                    return
-            elif reply == QMessageBox.StandardButton.Cancel:
-                event.ignore()
-                return
-
-        self.settings_manager.save_window_state()
-        event.accept()
-
-    # --- Private Action Wrappers ---
-
-    def _save_current_layout(self) -> None:
-        """Wrapper to delegate to SettingsManager."""
-        self.settings_manager.save_current_layout()
-
-    def _reset_layout(self) -> None:
-        """Wrapper to delegate to SettingsManager."""
-        self.settings_manager.reset_layout()
-
-    def _toggle_restore_layout(self, checked: bool) -> None:
-        """Wrapper to delegate to SettingsManager."""
-        self.settings_manager.toggle_restore_layout(checked)
 
 
 def run_gui() -> None:
@@ -1297,8 +1445,8 @@ def run_gui() -> None:
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = current_dir
-    while not os.path.exists(os.path.join(root_dir, 'assets')) and \
-          root_dir != os.path.dirname(root_dir):
+    while (not os.path.exists(os.path.join(root_dir, 'assets')) and
+            root_dir != os.path.dirname(root_dir)):
         root_dir = os.path.dirname(root_dir)
     icon_path = os.path.join(root_dir, 'assets', 'icons', 'fatfloppy_icon.png')
 
@@ -1306,12 +1454,13 @@ def run_gui() -> None:
         app_icon = QIcon(icon_path)
         app.setWindowIcon(app_icon)
     else:
-        FileBrowserApp.logger.warning(f"Application icon not found at: {icon_path}")
+        FileBrowserApp.logger.warning(
+            f"Application icon not found at: {icon_path}"
+        )
 
     window = FileBrowserApp()
     window.show()
 
-    # Update recent files menu after window is shown
     window.settings_manager.update_recent_files_menu(window.recent_files_menu)
 
     sys.exit(app.exec())

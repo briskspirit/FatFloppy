@@ -8,7 +8,7 @@ import importlib
 import inspect
 import pkgutil
 from pathlib import Path
-from typing import Type, List, Callable
+from typing import Callable, List, Type
 
 from .utils.logging_config import get_logger
 
@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 
 class PluginValidationError(Exception):
     """Raised when a plugin fails validation."""
+
     pass
 
 
@@ -46,43 +47,44 @@ class PluginScanner:
         discovered_plugins = []
 
         try:
-            # Import the package
             package = importlib.import_module(package_name)
             package_path = Path(package.__file__).parent
 
-            # Scan all Python files in the directory
             for finder, name, ispkg in pkgutil.iter_modules([str(package_path)]):
                 if name.startswith('_'):
-                    continue  # Skip private modules
+                    continue
 
                 module_name = f"{package_name}.{name}"
 
                 try:
                     module = importlib.import_module(module_name)
 
-                    # Find all classes that inherit from base_class
-                    for item_name, item in inspect.getmembers(module, inspect.isclass):
-                        # Must be subclass but not the base class itself
+                    for item_name, item in inspect.getmembers(
+                        module,
+                        inspect.isclass
+                    ):
                         if (issubclass(item, base_class) and
-                            item is not base_class and
-                            not inspect.isabstract(item) and
-                            item.__module__ == module_name):  # ← Only discover classes defined in this module
+                                item is not base_class and
+                                not inspect.isabstract(item) and
+                                item.__module__ == module_name):
 
-                            # Run validation if provided
                             if validator:
                                 try:
                                     validator(item)
                                 except Exception as e:
                                     logger.error(
-                                        f"Plugin validation failed for {item.__name__} "
-                                        f"in {module_name}: {e}"
+                                        f"Plugin validation failed for "
+                                        f"{item.__name__} in {module_name}: {e}"
                                     )
                                     raise PluginValidationError(
                                         f"{item.__name__} failed validation: {e}"
                                     ) from e
 
                             discovered_plugins.append(item)
-                            logger.debug(f"Discovered plugin: {item.__name__} from {module_name}")
+                            logger.debug(
+                                f"Discovered plugin: {item.__name__} "
+                                f"from {module_name}"
+                            )
 
                 except ImportError as e:
                     logger.warning(f"Failed to import module {module_name}: {e}")
@@ -112,7 +114,6 @@ class PluginScanner:
             if not hasattr(cls, attr):
                 missing.append(attr)
             elif getattr(cls, attr) == "" or getattr(cls, attr) == []:
-                # Empty string or list also counts as missing
                 missing.append(attr)
 
         if missing:
@@ -134,12 +135,10 @@ class PluginScanner:
         """
         abstract_methods = set()
 
-        # Collect all abstract methods from base class and its parents
         for base in inspect.getmro(base_class):
             if hasattr(base, '__abstractmethods__'):
                 abstract_methods.update(base.__abstractmethods__)
 
-        # Check if all are implemented
         unimplemented = []
         for method_name in abstract_methods:
             if not hasattr(cls, method_name) or getattr(cls, method_name) is None:

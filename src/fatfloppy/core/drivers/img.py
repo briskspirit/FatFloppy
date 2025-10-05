@@ -1,20 +1,16 @@
-# src/fatfloppy/core/drivers/img.py
-"""
-Raw disk image (.IMG) file format driver.
-
-This module provides a DiskIODriver for handling raw, sector-by-sector
-disk images. It treats the image file as a contiguous block of data and
-relies on a PhysicalFormat definition to map Cylinder/Head/Sector (CHS)
-coordinates to a byte offset within the file.
-"""
-
 import copy
 import os
-from typing import Dict, List, Optional, Tuple, Any, ClassVar
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
 from .base_driver import DiskIODriver
+
+
+EDSK_MAGIC = b"EXTENDED CPC DSK"
+AMSTRAD_DSK_MAGIC = b"MV - CPC"
+HEADER_PEEK_SIZE = 34
+
 
 logger = get_logger("IMGImageDriver")
 
@@ -27,12 +23,12 @@ class IMGImageDriver(DiskIODriver):
     the disk's sectors laid out sequentially. A PhysicalFormat must be provided
     to describe the disk geometry and sector ordering.
     """
-    # Plugin metadata
+
     driver_type: ClassVar[str] = "IMG"
     driver_file_extensions: ClassVar[List[str]] = [".img", ".ima", ".dsk", ".h8d"]
     driver_category: ClassVar[str] = "raw"
     driver_description: ClassVar[str] = "Raw sector image driver"
-    driver_priority: ClassVar[int] = 10 
+    driver_priority: ClassVar[int] = 10
 
     def __init__(self, file_path: str, image_data: Optional[bytes] = None):
         """
@@ -54,6 +50,7 @@ class IMGImageDriver(DiskIODriver):
             IOError: If there is an error reading the file.
         """
         super().__init__()
+        self.logger = get_logger(self.__class__.__name__)
         self.file_path: str = file_path
         self.physical_format: Optional[PhysicalFormat] = None
         self.physical_format_set: bool = False
@@ -64,113 +61,111 @@ class IMGImageDriver(DiskIODriver):
         if image_data is not None:
             self.image_data = bytearray(image_data)
             self.dirty = True
-            logger.debug(f"Initialized IMG driver with provided image data of size {len(self.image_data)}")
+            self.logger.debug(
+                f"Initialized IMG driver with provided image data of size {len(self.image_data)}"
+            )
         else:
             if not self.file_path:
-                logger.error("IMG driver initialized without file_path and no image_data.")
-                raise ValueError("File path must be provided for IMG driver if image_data is not given.")
+                self.logger.error("IMG driver initialized without file_path and no image_data.")
+                raise ValueError(
+                    "File path must be provided for IMG driver if image_data is not given."
+                )
 
             try:
                 with open(self.file_path, "rb") as f:
-                    # Check for common non-raw formats that might be mistaken for .IMG
-                    header_peek = f.read(34)
+                    header_peek = f.read(HEADER_PEEK_SIZE)
                     f.seek(0)
-                    if header_peek.startswith(b'EXTENDED CPC DSK'):
-                        msg = (f"EDSK (Extended DSK) format detected in '{self.file_path}'. "
-                               "This format is structured and not a raw image.")
-                        logger.error(msg)
+                    if header_peek.startswith(EDSK_MAGIC):
+                        msg = (
+                            f"EDSK (Extended DSK) format detected in '{self.file_path}'. "
+                            "This format is structured and not a raw image."
+                        )
+                        self.logger.error(msg)
                         raise ValueError(msg)
-                    elif header_peek.startswith(b'MV - CPC'):
-                        msg = (f"Standard Amstrad DSK format detected in '{self.file_path}'. "
-                               "This structured format is not a raw image.")
-                        logger.error(msg)
+                    elif header_peek.startswith(AMSTRAD_DSK_MAGIC):
+                        msg = (
+                            f"Standard Amstrad DSK format detected in '{self.file_path}'. "
+                            "This structured format is not a raw image."
+                        )
+                        self.logger.error(msg)
                         raise ValueError(msg)
 
                     self.image_data = bytearray(f.read())
-                logger.info(f"Loaded image file {self.file_path} as raw image, size {len(self.image_data)}")
+                self.logger.info(
+                    f"Loaded image file {self.file_path} as raw image, "
+                    f"size {len(self.image_data)}"
+                )
             except FileNotFoundError:
-                logger.error(f"Image file not found: {self.file_path}")
+                self.logger.error(f"Image file not found: {self.file_path}")
                 raise
             except ValueError as ve:
-                # Re-raise ValueError to propagate format detection errors
-                logger.debug(f"ValueError during IMG driver init for {self.file_path}: {ve}")
+                self.logger.debug(f"ValueError during IMG driver init for {self.file_path}: {ve}")
                 raise
             except Exception as e:
-                logger.error(f"Failed to read image file {self.file_path}: {e}")
-                # If the error is an IOError/OSError, re-raise it to preserve its
-                # specific message. Otherwise, wrap it in a generic IOError.
+                self.logger.error(f"Failed to read image file {self.file_path}: {e}")
                 if isinstance(e, OSError):
                     raise
                 raise IOError(f"Failed to read image file {self.file_path}") from e
 
-    # -- Properties --
-
-    @property
-    def has_embedded_geometry(self) -> bool:
-        """IMG files have no embedded geometry information."""
-        return False
-
     @property
     def allows_geometry_override(self) -> bool:
-        """IMG files require geometry to be set externally."""
+        """
+        IMG files require geometry to be set externally.
+
+        Returns:
+            True as geometry override is allowed and required.
+        """
         return True
 
     @property
+    def has_embedded_geometry(self) -> bool:
+        """
+        IMG files have no embedded geometry information.
+
+        Returns:
+            False as IMG files have no embedded geometry.
+        """
+        return False
+
+    @property
     def supports_in_place_formatting(self) -> bool:
-        """IMG files can be formatted by overwriting their content."""
+        """
+        IMG files can be formatted by overwriting their content.
+
+        Returns:
+            True as in-place formatting is supported.
+        """
         return True
 
     @property
     def supports_new_image_creation(self) -> bool:
-        """IMG driver can create new blank image files."""
+        """
+        IMG driver can create new blank image files.
+
+        Returns:
+            True as new image creation is supported.
+        """
         return True
 
-    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+    def flush(self) -> None:
         """
-        Validates IMG driver state after opening.
+        Writes the in-memory image data back to the file if it is dirty.
 
-        Returns:
-            Tuple of (is_valid, error_message).
+        Raises:
+            IOError: If the file cannot be written.
         """
-        # Check that we have image data
-        if not hasattr(self, 'image_data') or not self.image_data:
-            return False, "IMG driver has no image data"
+        if not self.dirty:
+            self.logger.debug("No changes to flush")
+            return
 
-        # For IMG, we don't require physical_format at open time
-        # since it can be set later
-        return True, None
-
-    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
-        """
-        Validates whether an IMG file can be opened.
-
-        Args:
-            source: Path to the IMG file.
-            **kwargs: Unused for IMG driver.
-
-        Returns:
-            Tuple of (is_valid, error_message).
-        """
-        import os
-
-        if not os.path.exists(source):
-            return False, f"IMG file not found: {source}"
-
-        # Check for non-raw formats that might be mistaken for IMG
         try:
-            with open(source, "rb") as f:
-                header_peek = f.read(34)
-
-            if header_peek.startswith(b'EXTENDED CPC DSK'):
-                return False, "File is EDSK format, not a raw IMG"
-
-            if header_peek.startswith(b'MV - CPC'):
-                return False, "File is Amstrad DSK format, not a raw IMG"
-
+            with open(self.file_path, "wb") as f:
+                f.write(self.image_data)
+            self.logger.info(f"Flushed {len(self.image_data)} bytes to {self.file_path}")
+            self.dirty = False
         except Exception as e:
-            return False, f"Cannot read file: {e}"
-
-        return True, None
+            self.logger.error(f"Failed to flush image data to {self.file_path}: {e}")
+            raise IOError(f"Flush failed: {e}") from e
 
     def get_format_requirements(self) -> dict:
         """
@@ -180,10 +175,10 @@ class IMGImageDriver(DiskIODriver):
             Dictionary describing what format information is needed.
         """
         return {
-            'needs_format_for_open': False,  # Can open without format
-            'needs_format_for_io': True,     # But needs format for actual I/O
-            'can_derive_format': True,       # Detection system can figure it out
-            'preferred_detection_method': 'auto'  # Should use auto-detection
+            "needs_format_for_open": False,
+            "needs_format_for_io": True,
+            "can_derive_format": True,
+            "preferred_detection_method": "auto",
         }
 
     def prepare_for_format_application(self, format_info: dict) -> Tuple[bool, Optional[str]]:
@@ -196,22 +191,20 @@ class IMGImageDriver(DiskIODriver):
         Returns:
             Tuple of (is_ready, error_message).
         """
-        # IMG files can accept any format, but warn if size mismatch
-        if 'physical_format' in format_info:
-            pf = format_info['physical_format']
-            expected_size = pf.total_bytes if hasattr(pf, 'total_bytes') else None
+        if "physical_format" in format_info:
+            pf = format_info["physical_format"]
+            expected_size = pf.total_bytes if hasattr(pf, "total_bytes") else None
 
             if expected_size and len(self.image_data) != expected_size:
-                message = (f"Format size ({expected_size} bytes) does not match "
-                        f"image size ({len(self.image_data)} bytes). "
-                        f"This may indicate a format mismatch.")
-                logger.warning(message)
-                # Return True but with a warning message
+                message = (
+                    f"Format size ({expected_size} bytes) does not match "
+                    f"image size ({len(self.image_data)} bytes). "
+                    f"This may indicate a format mismatch."
+                )
+                self.logger.warning(message)
                 return True, message
 
         return True, None
-
-    # --- Public Methods ---
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         """
@@ -238,8 +231,75 @@ class IMGImageDriver(DiskIODriver):
         if offset + bytes_per_sector > len(self.image_data):
             raise IOError(f"Sector C:{cylinder} H:{head} S:{sector} out of bounds")
 
-        logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector}")
-        return bytes(self.image_data[offset:offset + bytes_per_sector])
+        self.logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector}")
+        return bytes(self.image_data[offset : offset + bytes_per_sector])
+
+    def set_physical_format(self, physical_format: PhysicalFormat) -> None:
+        """
+        Sets the physical format of the disk.
+
+        This is a required step to enable sector I/O, as it defines the
+        disk geometry and CHS-to-offset mapping.
+
+        Args:
+            physical_format: The PhysicalFormat object to apply.
+
+        Raises:
+            TypeError: If the provided object is not a PhysicalFormat.
+        """
+        if not isinstance(physical_format, PhysicalFormat):
+            raise TypeError("Expected PhysicalFormat object")
+
+        self.physical_format = copy.deepcopy(physical_format)
+        self.physical_format_set = True
+
+        if self.image_data and self.physical_format.total_bytes != len(self.image_data):
+            self.logger.warning(
+                f"Format size {self.physical_format.total_bytes} != "
+                f"image size {len(self.image_data)}"
+            )
+        self.logger.info(f"Physical format set with total bytes: {self.physical_format.total_bytes}")
+
+    def validate_for_opening(self, source: str, **kwargs) -> Tuple[bool, Optional[str]]:
+        """
+        Validates whether an IMG file can be opened.
+
+        Args:
+            source: Path to the IMG file.
+            **kwargs: Unused for IMG driver.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        if not os.path.exists(source):
+            return False, f"IMG file not found: {source}"
+
+        try:
+            with open(source, "rb") as f:
+                header_peek = f.read(HEADER_PEEK_SIZE)
+
+            if header_peek.startswith(EDSK_MAGIC):
+                return False, "File is EDSK format, not a raw IMG"
+
+            if header_peek.startswith(AMSTRAD_DSK_MAGIC):
+                return False, "File is Amstrad DSK format, not a raw IMG"
+
+        except Exception as e:
+            return False, f"Cannot read file: {e}"
+
+        return True, None
+
+    def validate_state_for_opening(self) -> Tuple[bool, Optional[str]]:
+        """
+        Validates IMG driver state after opening.
+
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        if not hasattr(self, "image_data") or not self.image_data:
+            return False, "IMG driver has no image data"
+
+        return True, None
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
         """
@@ -271,57 +331,9 @@ class IMGImageDriver(DiskIODriver):
         if offset + bytes_per_sector > len(self.image_data):
             raise IOError(f"Write out of bounds for C:{cylinder} H:{head} S:{sector}")
 
-        self.image_data[offset:offset + bytes_per_sector] = data
+        self.image_data[offset : offset + bytes_per_sector] = data
         self.dirty = True
-        logger.debug(f"Wrote sector C:{cylinder} H:{head} S:{sector}")
-
-    def flush(self) -> None:
-        """
-        Writes the in-memory image data back to the file if it is dirty.
-
-        Raises:
-            IOError: If the file cannot be written.
-        """
-        if not self.dirty:
-            logger.debug("No changes to flush")
-            return
-
-        try:
-            with open(self.file_path, "wb") as f:
-                f.write(self.image_data)
-            logger.info(f"Flushed {len(self.image_data)} bytes to {self.file_path}")
-            self.dirty = False
-        except Exception as e:
-            logger.error(f"Failed to flush image data to {self.file_path}: {e}")
-            raise IOError(f"Flush failed: {e}") from e
-
-    def set_physical_format(self, physical_format: PhysicalFormat) -> None:
-        """
-        Sets the physical format of the disk.
-
-        This is a required step to enable sector I/O, as it defines the
-        disk geometry and CHS-to-offset mapping.
-
-        Args:
-            physical_format: The PhysicalFormat object to apply.
-
-        Raises:
-            TypeError: If the provided object is not a PhysicalFormat.
-        """
-        if not isinstance(physical_format, PhysicalFormat):
-            raise TypeError("Expected PhysicalFormat object")
-
-        self.physical_format = copy.deepcopy(physical_format)
-        self.physical_format_set = True
-
-        if self.image_data and self.physical_format.total_bytes != len(self.image_data):
-            logger.warning(
-                f"Format size {self.physical_format.total_bytes} != "
-                f"image size {len(self.image_data)}"
-            )
-        logger.info(f"Physical format set with total bytes: {self.physical_format.total_bytes}")
-
-    # --- Private Methods ---
+        self.logger.debug(f"Wrote sector C:{cylinder} H:{head} S:{sector}")
 
     def _calculate_sector_offset(self, cylinder: int, head: int, sector: int) -> int:
         """
@@ -344,5 +356,5 @@ class IMGImageDriver(DiskIODriver):
         try:
             return self.physical_format.chs_to_byte_offset(cylinder, head, sector)
         except (ValueError, NotImplementedError) as e:
-            logger.error(f"Invalid CHS C:{cylinder} H:{head} S:{sector}: {e}")
+            self.logger.error(f"Invalid CHS C:{cylinder} H:{head} S:{sector}: {e}")
             raise ValueError(f"Invalid sector access: {e}") from e

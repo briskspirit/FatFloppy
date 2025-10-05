@@ -1,4 +1,3 @@
-# tests/software/test_02_formats_pytest.py
 """
 Tests for format detection, profile management, and boot sector data structures.
 
@@ -6,6 +5,7 @@ This module covers the functionality of the DiskController in managing and
 identifying disk formats, as well as the serialization and deserialization
 of FAT12 boot sector information via the FATVolumeInfo data class.
 """
+
 import struct
 import sys
 from pathlib import Path
@@ -13,7 +13,6 @@ from typing import List, Tuple
 
 import pytest
 
-# Add the source directory to the Python path to allow for local imports.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from fatfloppy.core.controller import DiskController
@@ -24,17 +23,12 @@ from fatfloppy.core.filesystem_registry import FilesystemRegistry
 from fatfloppy.core.format_profile import FormatProfile
 from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
 
-# --- Constants ---
-
 RESOURCE_DIR = Path(__file__).parent.parent / "resources"
 EMPTY_IMG_SRC = RESOURCE_DIR / "empty_formatted_144m.img"
 
-# Get format from registry
 _ALL_FORMATS = FilesystemRegistry.get_all_formats()
 FMT_144 = _ALL_FORMATS["ibm_3.5_1.44m"]
 
-
-# --- Fixtures ---
 
 @pytest.fixture(scope="module")
 def disk_controller() -> DiskController:
@@ -42,18 +36,16 @@ def disk_controller() -> DiskController:
     return DiskController()
 
 
-# --- DiskController Tests ---
-
-def test_01_list_known_formats(disk_controller: DiskController) -> None:
+def test_list_known_formats(disk_controller: DiskController) -> None:
     """Test that the controller can list all known floppy formats."""
     formats: List[Tuple[str, str]] = disk_controller.list_formats()
     assert isinstance(formats, list)
     assert len(formats) > 0
     assert isinstance(formats[0], tuple)
-    assert len(formats[0]) == 2, "Each format entry should be a (name, description) tuple."
+    assert len(formats[0]) == 2
 
 
-def test_02_get_format_by_name(disk_controller: DiskController) -> None:
+def test_get_format_by_name(disk_controller: DiskController) -> None:
     """Test retrieving a specific format profile by its name."""
     profile = disk_controller.get_format_by_name("ibm_3.5_1.44m")
     assert profile is not None
@@ -69,7 +61,7 @@ def test_02_get_format_by_name(disk_controller: DiskController) -> None:
     assert profile_none is None
 
 
-def test_03_detect_format_144mb(disk_controller: DiskController) -> None:
+def test_detect_format_144mb(disk_controller: DiskController) -> None:
     """Test detecting a standard 1.44MB format from a real disk image."""
     if not EMPTY_IMG_SRC.exists():
         pytest.skip(f"Resource file not found: {EMPTY_IMG_SRC}")
@@ -80,43 +72,43 @@ def test_03_detect_format_144mb(disk_controller: DiskController) -> None:
     assert disk_controller.driver is not None
 
     detected_format_result = disk_controller.detect_format()
-    assert isinstance(detected_format_result, tuple), "detect_format should return a tuple."
-    assert detected_format_result[0] == "ibm_3.5_1.44m", "Detected format name mismatch."
-    assert isinstance(detected_format_result[1], FATVolumeInfo), "Second element should be FATVolumeInfo."
+    assert isinstance(detected_format_result, tuple)
+    assert detected_format_result[0] == "ibm_3.5_1.44m"
+    assert isinstance(detected_format_result[1], FATVolumeInfo)
 
     disk_controller.close_disk()
 
 
-def test_04_detect_format_no_match(disk_controller: DiskController) -> None:
+def test_detect_format_no_match(disk_controller: DiskController) -> None:
     """
     Test format detection with a custom BPB that doesn't match known profiles.
 
     Even if the format is not recognized, the BPB data should still be parsed
     correctly into a FATVolumeInfo object.
     """
-    # Create a dummy boot sector with non-standard geometry
     dummy_boot = bytearray(512)
-    dummy_boot[0:3] = b"\xEB\xFE\x90"  # JMP instruction
+    dummy_boot[0:3] = b"\xEB\xFE\x90"
     dummy_boot[3:11] = b"NONAME  "
-    struct.pack_into("<H", dummy_boot, 0x0B, 512)  # bytes_per_sector
-    struct.pack_into("<B", dummy_boot, 0x0D, 1)    # sectors_per_cluster
-    struct.pack_into("<H", dummy_boot, 0x0E, 1)    # reserved_sectors
-    struct.pack_into("<B", dummy_boot, 0x10, 2)    # num_fats
-    struct.pack_into("<H", dummy_boot, 0x11, 224)  # root_entries
-    struct.pack_into("<H", dummy_boot, 0x13, 1000) # total_sectors_16
-    struct.pack_into("<B", dummy_boot, 0x15, 0xF1) # media_descriptor
-    struct.pack_into("<H", dummy_boot, 0x16, 5)    # sectors_per_fat_16
-    struct.pack_into("<H", dummy_boot, 0x18, 10)   # sectors_per_track
-    struct.pack_into("<H", dummy_boot, 0x1A, 3)    # num_heads
-    struct.pack_into("<I", dummy_boot, 0x1C, 0)    # hidden_sectors
-    struct.pack_into("<I", dummy_boot, 0x20, 0)    # total_sectors_32
-    struct.pack_into("<H", dummy_boot, 0x1FE, 0xAA55)  # boot_signature
+    struct.pack_into("<H", dummy_boot, 0x0B, 512)
+    struct.pack_into("<B", dummy_boot, 0x0D, 1)
+    struct.pack_into("<H", dummy_boot, 0x0E, 1)
+    struct.pack_into("<B", dummy_boot, 0x10, 2)
+    struct.pack_into("<H", dummy_boot, 0x11, 224)
+    struct.pack_into("<H", dummy_boot, 0x13, 1000)
+    struct.pack_into("<B", dummy_boot, 0x15, 0xF1)
+    struct.pack_into("<H", dummy_boot, 0x16, 5)
+    struct.pack_into("<H", dummy_boot, 0x18, 10)
+    struct.pack_into("<H", dummy_boot, 0x1A, 3)
+    struct.pack_into("<I", dummy_boot, 0x1C, 0)
+    struct.pack_into("<I", dummy_boot, 0x20, 0)
+    struct.pack_into("<H", dummy_boot, 0x1FE, 0xAA55)
 
-    driver = IMGImageDriver("dummy", image_data=bytes(dummy_boot) + b"\x00" * 1024 * 100)
+    driver = IMGImageDriver(
+        "dummy", image_data=bytes(dummy_boot) + b"\x00" * 1024 * 100
+    )
     disk_controller.driver = driver
     disk_controller.disk = Disk(driver)
 
-    # Create a PhysicalFormat that matches the dummy BPB
     temp_heads = 3
     temp_spt = 10
     temp_cylinders = 1000 // (temp_spt * temp_heads)
@@ -145,28 +137,21 @@ def test_04_detect_format_no_match(disk_controller: DiskController) -> None:
         disk_controller.driver.set_physical_format(temp_geom)
 
     detected_format_result = disk_controller.detect_format()
-    assert isinstance(detected_format_result, tuple), "detect_format should return a tuple."
-    assert len(detected_format_result) == 3, "detect_format should return 3 values"
+    assert isinstance(detected_format_result, tuple)
+    assert len(detected_format_result) == 3
 
     format_name, fs_config, physical_format = detected_format_result
 
-    # The detector should at least try to parse BPB data even without format match
-    # However, with the generic fallback, it might not parse BPB if geometry doesn't match standard formats
-    # So we just check that we got a 3-tuple back
-    assert format_name is None or isinstance(format_name, str), "Format name should be None or string"
-    # fs_config may be None if no filesystem could parse it
+    assert format_name is None or isinstance(format_name, str)
     if fs_config is not None:
-        assert isinstance(fs_config, FATVolumeInfo), "If fs_config exists, should be FATVolumeInfo"
+        assert isinstance(fs_config, FATVolumeInfo)
 
-    # Clean up controller state
     disk_controller.close_disk()
     disk_controller.driver = None
     disk_controller.disk = None
 
 
-# --- FATVolumeInfo (Boot Sector Data) Tests ---
-
-def test_01_bsd_to_bytes_from_bytes_roundtrip() -> None:
+def test_fat_volume_info_to_bytes_from_bytes_roundtrip() -> None:
     """Test the roundtrip conversion of FATVolumeInfo to bytes and back."""
     bsd = FATVolumeInfo(
         oem_id="MYDOS6.2",
@@ -207,7 +192,7 @@ def test_01_bsd_to_bytes_from_bytes_roundtrip() -> None:
     assert bsd_reloaded.fs_type.strip() == "FAT12"
 
 
-def test_02_bsd_from_bytes_real_image() -> None:
+def test_fat_volume_info_from_bytes_real_image() -> None:
     """Test creating a FATVolumeInfo object from a real 1.44MB image."""
     if not EMPTY_IMG_SRC.exists():
         pytest.skip(f"Resource file not found: {EMPTY_IMG_SRC}")
@@ -228,24 +213,24 @@ def test_02_bsd_from_bytes_real_image() -> None:
     assert bsd.fs_type.startswith("FAT12")
 
 
-@pytest.mark.skip(reason="Boot signature check is currently disabled in FATVolumeInfo.from_bytes")
-def test_03_bsd_from_bytes_invalid_signature() -> None:
+@pytest.mark.skip(
+    reason="Boot signature check is currently disabled in FATVolumeInfo.from_bytes"
+)
+def test_fat_volume_info_from_bytes_invalid_signature() -> None:
     """Test that an invalid boot signature raises a ValueError."""
     invalid_boot = bytearray(FMT_144.filesystem_config.to_bytes())
-    invalid_boot[510:512] = b"\x00\x00"  # Corrupt the signature
+    invalid_boot[510:512] = b"\x00\x00"
     with pytest.raises(ValueError, match="Invalid boot signature"):
         FATVolumeInfo.from_bytes(bytes(invalid_boot))
 
 
-def test_04_bsd_from_bytes_too_short() -> None:
+def test_fat_volume_info_from_bytes_too_short() -> None:
     """Test that data shorter than a full sector raises a ValueError."""
     short_boot = b"\x00" * 100
     try:
         FATVolumeInfo.from_bytes(short_boot)
         pytest.fail("ValueError was not raised for short boot sector")
     except ValueError as e:
-        assert "Sector data too short" in str(e), (
-            f"Expected 'Sector data too short' in exception message, but got: {e}"
-        )
+        assert "Sector data too short" in str(e)
     except Exception as e:
         pytest.fail(f"Raised {type(e).__name__} instead of ValueError: {e}")
