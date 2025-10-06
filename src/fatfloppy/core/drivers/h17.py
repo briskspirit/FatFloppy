@@ -9,7 +9,7 @@ from ..utils.logging_config import get_logger
 from .base_driver import DiskIODriver
 
 H17_MAGIC = b"H17D"
-H17_VERSION = b"2.0.0"
+H17_VERSION_2_0 = b"2.0.0"
 H17_8BIT_CHECK = 0xFF
 
 H17_SECTORS_PER_TRACK = 10
@@ -18,6 +18,7 @@ H17_RPM = 300
 H17_ENCODING = "FM"
 H17_BIT_RATE = 250
 
+# Version 2.0 block IDs (4-byte ASCII)
 BLOCK_DISK_FORMAT = b"DskF"
 BLOCK_PARAMETERS = b"Parm"
 BLOCK_DATE = b"Date"
@@ -28,6 +29,22 @@ BLOCK_H8D_DATA = b"H8DB"
 BLOCK_SECTOR_META = b"SecM"
 BLOCK_LABEL = b"Labl"
 BLOCK_COMMENT = b"Comm"
+
+# Draft block IDs (1-byte numeric)
+DRAFT_BLOCK_DISK_FORMAT = 0x00
+DRAFT_BLOCK_PARAMETERS = 0x01
+DRAFT_BLOCK_COMMENT = 0x02
+DRAFT_BLOCK_LABEL = 0x03
+DRAFT_BLOCK_DATE = 0x04
+DRAFT_BLOCK_IMAGER = 0x05
+DRAFT_BLOCK_PROGRAM = 0x06
+DRAFT_BLOCK_DATA = 0x10
+DRAFT_BLOCK_HOLE = 0x20
+DRAFT_BLOCK_RAW_DATA = 0x30
+
+# Draft sub-block IDs
+DRAFT_SUBBLOCK_TRACK = 0x11
+DRAFT_SUBBLOCK_SECTOR = 0x12
 
 H8D_BLOCK_OFFSET = 256
 H8D_BLOCK_HEADER_OFFSET = H8D_BLOCK_OFFSET - 8
@@ -171,10 +188,10 @@ class H17ImageDriver(DiskIODriver):
     """
     Disk I/O driver for H17 (Heathkit hard-sectored) disk images.
 
-    This driver provides full support for the H17Disk v2.0.0 format, including
-    reading/writing sector data, preserving sector headers with volume numbers,
-    maintaining sector metadata for error tracking, and supporting all optional
-    metadata blocks.
+    This driver provides full support for both draft and H17Disk v2.0.0 formats,
+    including reading/writing sector data, preserving sector headers with volume
+    numbers, maintaining sector metadata for error tracking, and supporting all
+    optional metadata blocks.
     """
 
     driver_type: ClassVar[str] = "H17"
@@ -202,6 +219,7 @@ class H17ImageDriver(DiskIODriver):
 
         self.file_data: bytearray = bytearray()
         self.h8d_block_offset: int = 0
+        self.file_version: str = "2.0.0"  # Track which version we're reading
 
         self.sector_cache: dict[tuple[int, int, int], bytes] = {}
         self.modified_sectors: dict[tuple[int, int, int], bytes] = {}
@@ -209,7 +227,9 @@ class H17ImageDriver(DiskIODriver):
         if self._file_exists():
             try:
                 self._load_and_parse()
-                self.logger.info(f"Successfully loaded H17 image: {file_path}")
+                self.logger.info(
+                    f"Successfully loaded H17 image: {file_path} (version: {self.file_version})"
+                )
             except Exception as e:
                 self.logger.error(f"Failed to load H17 image {file_path}: {e}")
                 raise
@@ -777,6 +797,7 @@ class H17ImageDriver(DiskIODriver):
     ) -> None:
         """
         Builds a complete new H17 file structure in memory.
+        Always creates version 2.0.0 format.
 
         Args:
             sides: Number of sides.
@@ -786,13 +807,15 @@ class H17ImageDriver(DiskIODriver):
         """
         self.file_data = bytearray()
 
+        # Write header for version 2.0.0
         self.file_data.extend(H17_MAGIC)
-        self.file_data.extend(b"2.0.0")
+        self.file_data.extend(H17_VERSION_2_0)
         self.file_data.append(H17_8BIT_CHECK)
+        self.file_version = "2.0.0"
 
-        self._write_block(BLOCK_DISK_FORMAT, bytes([sides, tracks, 0]))
+        self._write_block_v2(BLOCK_DISK_FORMAT, bytes([sides, tracks, 0]))
 
-        self._write_block(
+        self._write_block_v2(
             BLOCK_PARAMETERS,
             bytes(
                 [self.parameters.distribution_disk, self.parameters.source_of_headers]
@@ -800,26 +823,26 @@ class H17ImageDriver(DiskIODriver):
         )
 
         if self.metadata.date:
-            self._write_block(BLOCK_DATE, self.metadata.date.encode("utf-8"))
+            self._write_block_v2(BLOCK_DATE, self.metadata.date.encode("utf-8"))
         if self.metadata.program:
-            self._write_block(BLOCK_PROGRAM, self.metadata.program.encode("utf-8"))
+            self._write_block_v2(BLOCK_PROGRAM, self.metadata.program.encode("utf-8"))
         if self.metadata.label:
-            self._write_block(BLOCK_LABEL, self.metadata.label.encode("utf-8"))
+            self._write_block_v2(BLOCK_LABEL, self.metadata.label.encode("utf-8"))
         if self.metadata.comment:
-            self._write_block(BLOCK_COMMENT, self.metadata.comment.encode("utf-8"))
+            self._write_block_v2(BLOCK_COMMENT, self.metadata.comment.encode("utf-8"))
 
         current_offset = len(self.file_data) + 8
         padding_needed = H8D_BLOCK_OFFSET - current_offset
         if padding_needed > 0:
-            self._write_block(BLOCK_PADDING, bytes(padding_needed))
+            self._write_block_v2(BLOCK_PADDING, bytes(padding_needed))
 
         num_sectors = tracks * sides * H17_SECTORS_PER_TRACK
         h8d_data = bytes(num_sectors * H17_BYTES_PER_SECTOR)
-        self._write_block(BLOCK_H8D_DATA, h8d_data)
+        self._write_block_v2(BLOCK_H8D_DATA, h8d_data)
         self.h8d_block_offset = H8D_BLOCK_OFFSET
 
         secm_data = self._build_sector_metadata(sides, tracks, scheme, hdos_volume)
-        self._write_block(BLOCK_SECTOR_META, secm_data)
+        self._write_block_v2(BLOCK_SECTOR_META, secm_data)
 
     def _build_sector_metadata(
         self, sides: int, tracks: int, scheme: str, hdos_volume: int
@@ -914,6 +937,33 @@ class H17ImageDriver(DiskIODriver):
             f"{self.disk_format.sides}H x {H17_SECTORS_PER_TRACK}S"
         )
 
+    def _detect_version(self) -> tuple[str, int]:
+        """
+        Detects whether this is draft or version 2.0 format.
+
+        Returns:
+            Tuple of (version_string, blocks_start_offset)
+        """
+        if len(self.file_data) < 8:
+            raise ValueError("File too small to be valid H17 format")
+
+        # Check if byte 7 is 0xFF (version 2.0)
+        if self.file_data[7] == H17_8BIT_CHECK:
+            # Version 2.0 - ASCII version bytes
+            version_bytes = self.file_data[4:7]
+            try:
+                version_str = version_bytes.decode("ascii")
+                return f"2.0 ({version_str})", 8
+            except UnicodeDecodeError:
+                return "2.0 (unknown)", 8
+
+        # Draft version - no 0xFF at byte 7
+        version_bytes = self.file_data[4:7]
+        version_str = (
+            f"draft ({version_bytes[0]}.{version_bytes[1]}.{version_bytes[2]})"
+        )
+        return version_str, 7
+
     def _file_exists(self) -> bool:
         """
         Checks if the file path exists.
@@ -926,6 +976,7 @@ class H17ImageDriver(DiskIODriver):
     def _load_and_parse(self) -> None:
         """
         Loads and parses an existing H17 file.
+        Supports both draft and version 2.0 formats.
 
         Raises:
             ValueError: If the file is invalid or corrupted.
@@ -941,20 +992,75 @@ class H17ImageDriver(DiskIODriver):
                 f"Invalid magic number, expected {H17_MAGIC}, got {self.file_data[0:4]}"
             )
 
-        version = self.file_data[4:7]
-        self.logger.debug(f"H17 version: {version.decode('ascii', errors='ignore')}")
+        # Detect version and get block start offset
+        self.file_version, blocks_offset = self._detect_version()
+        self.logger.debug(f"Detected H17 version: {self.file_version}")
 
-        if self.file_data[7] != H17_8BIT_CHECK:
-            raise ValueError("8-bit check failed, file may be corrupted")
+        # Parse blocks based on format
+        if self.file_version.startswith("draft"):
+            self._parse_blocks_draft(blocks_offset)
+        else:
+            self._parse_blocks_v2(blocks_offset)
 
-        self._parse_blocks()
         self._derive_physical_format()
 
-    def _parse_blocks(self) -> None:
+    def _parse_blocks_draft(self, start_offset: int = 7) -> None:
         """
-        Parses all blocks in the file.
+        Parses blocks in draft format (1-byte ID, 1-byte flags, 4-byte length).
+
+        Args:
+            start_offset: Byte offset where blocks begin (7 for draft)
         """
-        offset = 8
+        offset = start_offset
+
+        while offset + 6 <= len(self.file_data):
+            block_id = self.file_data[offset]
+            flags = self.file_data[offset + 1]
+            block_length = struct.unpack(">I", self.file_data[offset + 2 : offset + 6])[
+                0
+            ]
+
+            block_data = self.file_data[offset + 6 : offset + 6 + block_length]
+
+            self.logger.debug(
+                f"Parsing draft block 0x{block_id:02X} at offset {offset}, "
+                f"length {block_length}, flags 0x{flags:02X}"
+            )
+
+            if block_id == DRAFT_BLOCK_DISK_FORMAT:
+                self._parse_disk_format_block(block_data)
+            elif block_id == DRAFT_BLOCK_PARAMETERS:
+                self._parse_parameters_block(block_data)
+            elif block_id == DRAFT_BLOCK_COMMENT:
+                self.metadata.comment = block_data.decode("utf-8", errors="ignore")
+            elif block_id == DRAFT_BLOCK_LABEL:
+                self.metadata.label = block_data.decode("utf-8", errors="ignore")
+            elif block_id == DRAFT_BLOCK_DATE:
+                self.metadata.date = block_data.decode("utf-8", errors="ignore")
+            elif block_id == DRAFT_BLOCK_IMAGER:
+                self.metadata.imager = block_data.decode("utf-8", errors="ignore")
+            elif block_id == DRAFT_BLOCK_PROGRAM:
+                self.metadata.program = block_data.decode("utf-8", errors="ignore")
+            elif block_id == DRAFT_BLOCK_DATA:
+                # Draft data block with nested track/sector sub-blocks
+                self._parse_draft_data_block(block_data, offset + 6)
+            elif block_id == DRAFT_BLOCK_HOLE:
+                self.logger.debug("Skipping draft Hole block")
+            elif block_id == DRAFT_BLOCK_RAW_DATA:
+                self.logger.debug("Skipping draft Raw Data block")
+            else:
+                self.logger.warning(f"Unknown draft block ID: 0x{block_id:02X}")
+
+            offset += 6 + block_length
+
+    def _parse_blocks_v2(self, start_offset: int = 8) -> None:
+        """
+        Parses blocks in version 2.0 format (4-byte ASCII ID, 4-byte length).
+
+        Args:
+            start_offset: Byte offset where blocks begin (8 for v2.0)
+        """
+        offset = start_offset
 
         while offset + 8 <= len(self.file_data):
             block_id = self.file_data[offset : offset + 4]
@@ -965,7 +1071,7 @@ class H17ImageDriver(DiskIODriver):
             block_data = self.file_data[offset + 8 : offset + 8 + block_length]
 
             self.logger.debug(
-                f"Parsing block {block_id} at offset {offset}, length {block_length}"
+                f"Parsing v2.0 block {block_id} at offset {offset}, length {block_length}"
             )
 
             if block_id == BLOCK_DISK_FORMAT:
@@ -992,13 +1098,13 @@ class H17ImageDriver(DiskIODriver):
             elif block_id == BLOCK_PADDING:
                 pass
             else:
-                self.logger.warning(f"Unknown block ID: {block_id}")
+                self.logger.warning(f"Unknown v2.0 block ID: {block_id}")
 
             offset += 8 + block_length
 
     def _parse_disk_format_block(self, data: bytes) -> None:
         """
-        Parses the DskF block.
+        Parses the DskF block (same for both draft and v2.0).
 
         Args:
             data: The block data bytes.
@@ -1026,9 +1132,212 @@ class H17ImageDriver(DiskIODriver):
             f"Disk format: {sides} sides, {tracks} tracks, R/O={read_only}"
         )
 
+    def _parse_draft_data_block(self, data: bytes, data_offset: int) -> None:
+        """
+        Parses the draft Data Block with nested track and sector sub-blocks.
+
+        Draft format structure:
+        - Track Sub-block (0x11): ID, head, track, length[2]
+        - Sector Sub-block (0x12): ID, sector#, error_status[4], length[2], data[variable]
+
+        The sector data contains raw physical sector with variable-length gaps and timing bytes.
+        We must dynamically search for sync bytes (0xFD) rather than using fixed offsets.
+
+        Args:
+            data: The block data bytes.
+            data_offset: Absolute file offset where this block's data starts.
+
+        Raises:
+            ValueError: If the block structure is invalid.
+        """
+        if not self.disk_format:
+            raise ValueError("DskF block must be parsed before Data block")
+
+        offset = 0
+        sector_count = 0
+
+        while offset < len(data):
+            if offset + 5 > len(data):
+                break
+
+            # Check for track sub-block
+            if data[offset] == DRAFT_SUBBLOCK_TRACK:
+                head = data[offset + 1]
+                track = data[offset + 2]
+                track_length = struct.unpack(">H", data[offset + 3 : offset + 5])[0]
+
+                self.logger.debug(
+                    f"Track sub-block: T={track} H={head} length={track_length}"
+                )
+
+                offset += 5
+                track_offset = 0
+
+                # Parse sectors in this track
+                while track_offset < track_length and offset < len(data):
+                    if offset + 8 > len(data):
+                        self.logger.warning(
+                            f"Incomplete sector header at offset {offset}"
+                        )
+                        break
+
+                    # Check for sector sub-block
+                    if data[offset] != DRAFT_SUBBLOCK_SECTOR:
+                        self.logger.warning(
+                            f"Expected sector sub-block 0x12, got 0x{data[offset]:02X} "
+                            f"at offset {offset}"
+                        )
+                        break
+
+                    sector_num = data[offset + 1]
+                    error_status = struct.unpack(">I", data[offset + 2 : offset + 6])[0]
+
+                    # Calculate sector data size from track length
+                    bytes_per_sector = track_length // H17_SECTORS_PER_TRACK
+                    sector_length = bytes_per_sector - 6  # Subtract header bytes
+
+                    self.logger.debug(
+                        f"Sector sub-block: sector={sector_num} status=0x{error_status:08X} "
+                        f"data_length={sector_length} at offset {offset}"
+                    )
+
+                    offset += 6
+                    track_offset += 6
+
+                    # Read sector data (variable length in draft format)
+                    if offset + sector_length > len(data):
+                        self.logger.error(
+                            f"Sector data extends beyond block boundary at offset {offset}"
+                        )
+                        break
+
+                    sector_data = data[offset : offset + sector_length]
+
+                    # Calculate absolute file offset for this sector's raw data
+                    # This is where the sector sub-block data starts in the file
+                    sector_data_file_offset = data_offset + offset
+
+                    # The sector data in draft format contains the raw physical sector
+                    # We need to dynamically find the header sync and data sync bytes
+                    # Format: [gap bytes] FD volume track sector checksum [gap bytes] FD [256 data bytes] checksum [gap]
+
+                    # Search for header sync (first 0xFD)
+                    header_sync_pos = sector_data.find(b"\xfd")
+
+                    if header_sync_pos >= 0 and header_sync_pos + 5 < sector_length:
+                        # Extract header information
+                        header_sync = sector_data[header_sync_pos]
+                        volume = sector_data[header_sync_pos + 1]
+                        track_in_header = sector_data[header_sync_pos + 2]
+                        # sector_in_header would be: sector_data[header_sync_pos + 3]
+                        # but we use sector_num from the sub-block instead
+                        header_checksum = sector_data[header_sync_pos + 4]
+
+                        # Search for data sync (second 0xFD) starting after header
+                        data_sync_pos = sector_data.find(b"\xfd", header_sync_pos + 5)
+
+                        if (
+                            data_sync_pos >= 0
+                            and data_sync_pos + 1 + H17_BYTES_PER_SECTOR
+                            <= sector_length
+                        ):
+                            data_sync = sector_data[data_sync_pos]
+                            user_data_offset = data_sync_pos + 1
+
+                            # Calculate absolute file offset where user data starts
+                            # This is the offset in the file where we'll read/write the 256 data bytes
+                            # Note: We don't extract user_data here - it's already in file_data
+                            user_data_file_offset = (
+                                sector_data_file_offset + user_data_offset
+                            )
+
+                            data_checksum = (
+                                sector_data[user_data_offset + H17_BYTES_PER_SECTOR]
+                                if user_data_offset + H17_BYTES_PER_SECTOR
+                                < sector_length
+                                else 0
+                            )
+
+                            if track == 0 and (sector_num == 9 or sector_num <= 2):
+                                # Debug first few sectors and label sector
+                                self.logger.debug(
+                                    f"T:{track} H:{head} S:{sector_num} structure: "
+                                    f"header_sync@{header_sync_pos}, data_sync@{data_sync_pos}, "
+                                    f"user_data@{user_data_offset}, file_offset={user_data_file_offset}, vol={volume}"
+                                )
+                        else:
+                            # No data sync found - malformed sector
+                            # We can't write to this sector, so set offset to 0
+                            self.logger.warning(
+                                f"No data sync found for T:{track} H:{head} S:{sector_num}, "
+                                f"header_sync@{header_sync_pos} - sector will be read-only"
+                            )
+                            user_data_file_offset = 0
+                            data_sync = H17_DATA_SYNC
+                            data_checksum = 0
+                    else:
+                        # No header sync found - severely malformed sector
+                        self.logger.warning(
+                            f"No header sync found for T:{track} H:{head} S:{sector_num} - sector will be read-only"
+                        )
+                        user_data_file_offset = 0
+                        header_sync = H17_HEADER_SYNC
+                        volume = 0
+                        track_in_header = track
+                        header_checksum = 0
+                        data_sync = H17_DATA_SYNC
+                        data_checksum = 0
+
+                    # Create metadata pointing to the actual location in the draft format
+                    # NOT a linearized offset - this is where the data actually lives in the file
+                    meta = H17SectorMetadata(
+                        offset_to_data=user_data_file_offset,
+                        status=error_status,
+                        header_sync=header_sync,
+                        volume=volume,
+                        track=track_in_header,
+                        sector=sector_num,
+                        header_checksum=header_checksum,
+                        data_sync=data_sync,
+                        data_checksum=data_checksum,
+                        valid_bytes=H17_BYTES_PER_SECTOR,
+                    )
+
+                    # Draft format: sector numbers are 0-9 in the file
+                    # Internal storage: physical_sector is 0-9
+                    # API: sectors are 1-10
+                    physical_sector = sector_num
+
+                    self.sector_metadata[(track, head, physical_sector)] = meta
+
+                    self.logger.debug(
+                        f"Parsed sector T:{track} H:{head} S:{sector_num} "
+                        f"(phys {physical_sector}) volume={volume} status=0x{error_status:08X} "
+                        f"at file offset {user_data_file_offset}"
+                    )
+
+                    offset += sector_length
+                    track_offset += sector_length
+                    sector_count += 1
+
+            else:
+                self.logger.warning(
+                    f"Expected track sub-block 0x11, got 0x{data[offset]:02X} "
+                    f"at offset {offset}"
+                )
+                break
+
+        # For draft format, data lives within Track/Sector sub-blocks at various offsets
+        # We don't have a separate H8DB block, so h8d_block_offset is not used
+        self.h8d_block_offset = 0
+        self.logger.info(
+            f"Parsed draft data block: {sector_count} sectors, "
+            f"data preserved in original draft format structure"
+        )
+
     def _parse_parameters_block(self, data: bytes) -> None:
         """
-        Parses the Parm block.
+        Parses the Parm block (same for both draft and v2.0).
 
         Args:
             data: The block data bytes.
@@ -1048,7 +1357,7 @@ class H17ImageDriver(DiskIODriver):
 
     def _parse_sector_metadata_block(self, data: bytes) -> None:
         """
-        Parses the SecM block and builds sector metadata map.
+        Parses the SecM block and builds sector metadata map (v2.0 only).
 
         Args:
             data: The block data bytes.
@@ -1114,12 +1423,12 @@ class H17ImageDriver(DiskIODriver):
             valid_bytes=struct.unpack(">H", data[12:14])[0],
         )
 
-    def _write_block(self, block_id: bytes, data: bytes) -> None:
+    def _write_block_v2(self, block_id: bytes, data: bytes) -> None:
         """
-        Writes a block to file_data.
+        Writes a block to file_data in version 2.0 format.
 
         Args:
-            block_id: The 4-byte block identifier.
+            block_id: The 4-byte ASCII block identifier.
             data: The block data bytes.
         """
         self.file_data.extend(block_id)
