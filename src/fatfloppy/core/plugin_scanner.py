@@ -84,6 +84,8 @@ class PluginScanner:
 
                 except ImportError as e:
                     logger.warning(f"Failed to import module {module_name}: {e}")
+                except PluginValidationError:
+                    raise
                 except Exception as e:
                     logger.error(f"Error processing module {module_name}: {e}")
 
