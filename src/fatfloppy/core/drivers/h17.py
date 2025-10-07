@@ -1144,6 +1144,11 @@ class H17ImageDriver(DiskIODriver):
         The sector data contains raw physical sector with variable-length gaps and timing bytes.
         We must dynamically search for sync bytes (0xFD) rather than using fixed offsets.
 
+        IMPORTANT: The draft sub-block sector# field represents the physical position in the file,
+        while the actual sector header contains the LOGICAL sector number. We must use the
+        logical sector number from the header, not the sub-block position, to support
+        interleaved sector layouts.
+
         Args:
             data: The block data bytes.
             data_offset: Absolute file offset where this block's data starts.
@@ -1190,7 +1195,8 @@ class H17ImageDriver(DiskIODriver):
                         )
                         break
 
-                    sector_num = data[offset + 1]
+                    # NOTE: This is the physical position in the file, NOT the logical sector number
+                    file_position = data[offset + 1]
                     error_status = struct.unpack(">I", data[offset + 2 : offset + 6])[0]
 
                     # Calculate sector data size from track length
@@ -1198,7 +1204,7 @@ class H17ImageDriver(DiskIODriver):
                     sector_length = bytes_per_sector - 6  # Subtract header bytes
 
                     self.logger.debug(
-                        f"Sector sub-block: sector={sector_num} status=0x{error_status:08X} "
+                        f"Sector sub-block: file_position={file_position} status=0x{error_status:08X} "
                         f"data_length={sector_length} at offset {offset}"
                     )
 
@@ -1215,7 +1221,6 @@ class H17ImageDriver(DiskIODriver):
                     sector_data = data[offset : offset + sector_length]
 
                     # Calculate absolute file offset for this sector's raw data
-                    # This is where the sector sub-block data starts in the file
                     sector_data_file_offset = data_offset + offset
 
                     # The sector data in draft format contains the raw physical sector
@@ -1230,8 +1235,8 @@ class H17ImageDriver(DiskIODriver):
                         header_sync = sector_data[header_sync_pos]
                         volume = sector_data[header_sync_pos + 1]
                         track_in_header = sector_data[header_sync_pos + 2]
-                        # sector_in_header would be: sector_data[header_sync_pos + 3]
-                        # but we use sector_num from the sub-block instead
+                        # THIS IS THE FIX: Use the logical sector number from the header
+                        logical_sector_num = sector_data[header_sync_pos + 3]
                         header_checksum = sector_data[header_sync_pos + 4]
 
                         # Search for data sync (second 0xFD) starting after header
@@ -1246,8 +1251,6 @@ class H17ImageDriver(DiskIODriver):
                             user_data_offset = data_sync_pos + 1
 
                             # Calculate absolute file offset where user data starts
-                            # This is the offset in the file where we'll read/write the 256 data bytes
-                            # Note: We don't extract user_data here - it's already in file_data
                             user_data_file_offset = (
                                 sector_data_file_offset + user_data_offset
                             )
@@ -1259,19 +1262,20 @@ class H17ImageDriver(DiskIODriver):
                                 else 0
                             )
 
-                            if track == 0 and (sector_num == 9 or sector_num <= 2):
+                            if track == 0 and (
+                                logical_sector_num == 9 or logical_sector_num <= 2
+                            ):
                                 # Debug first few sectors and label sector
                                 self.logger.debug(
-                                    f"T:{track} H:{head} S:{sector_num} structure: "
+                                    f"T:{track} H:{head} S:{logical_sector_num} (file_pos:{file_position}) "
                                     f"header_sync@{header_sync_pos}, data_sync@{data_sync_pos}, "
                                     f"user_data@{user_data_offset}, file_offset={user_data_file_offset}, vol={volume}"
                                 )
                         else:
                             # No data sync found - malformed sector
-                            # We can't write to this sector, so set offset to 0
                             self.logger.warning(
-                                f"No data sync found for T:{track} H:{head} S:{sector_num}, "
-                                f"header_sync@{header_sync_pos} - sector will be read-only"
+                                f"No data sync found for T:{track} H:{head} S:{logical_sector_num} "
+                                f"(file_pos:{file_position}), header_sync@{header_sync_pos} - sector will be read-only"
                             )
                             user_data_file_offset = 0
                             data_sync = H17_DATA_SYNC
@@ -1279,41 +1283,43 @@ class H17ImageDriver(DiskIODriver):
                     else:
                         # No header sync found - severely malformed sector
                         self.logger.warning(
-                            f"No header sync found for T:{track} H:{head} S:{sector_num} - sector will be read-only"
+                            f"No header sync found for file_position {file_position} on T:{track} H:{head} "
+                            f"- sector will be read-only"
                         )
                         user_data_file_offset = 0
                         header_sync = H17_HEADER_SYNC
                         volume = 0
                         track_in_header = track
+                        logical_sector_num = file_position  # Fallback to file position
                         header_checksum = 0
                         data_sync = H17_DATA_SYNC
                         data_checksum = 0
 
                     # Create metadata pointing to the actual location in the draft format
-                    # NOT a linearized offset - this is where the data actually lives in the file
                     meta = H17SectorMetadata(
                         offset_to_data=user_data_file_offset,
                         status=error_status,
                         header_sync=header_sync,
                         volume=volume,
                         track=track_in_header,
-                        sector=sector_num,
+                        sector=logical_sector_num,  # FIXED: Use logical sector from header
                         header_checksum=header_checksum,
                         data_sync=data_sync,
                         data_checksum=data_checksum,
                         valid_bytes=H17_BYTES_PER_SECTOR,
                     )
 
-                    # Draft format: sector numbers are 0-9 in the file
+                    # KEY FIX: Use the logical sector number from the header, not the file position
+                    # Draft format: sector numbers are 0-9 in the headers
                     # Internal storage: physical_sector is 0-9
                     # API: sectors are 1-10
-                    physical_sector = sector_num
+                    physical_sector = logical_sector_num
 
                     self.sector_metadata[(track, head, physical_sector)] = meta
 
                     self.logger.debug(
-                        f"Parsed sector T:{track} H:{head} S:{sector_num} "
-                        f"(phys {physical_sector}) volume={volume} status=0x{error_status:08X} "
+                        f"Parsed sector T:{track} H:{head} S:{logical_sector_num} "
+                        f"(file_pos {file_position}) volume={volume} status=0x{error_status:08X} "
                         f"at file offset {user_data_file_offset}"
                     )
 
