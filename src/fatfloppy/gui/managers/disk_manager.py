@@ -72,6 +72,7 @@ class DiskManager(QObject):
             return
 
         try:
+            # Get the profile to validate it exists/can be created
             profile = self._get_format_profile(format_info)
             if not profile:
                 self.error_occurred.emit(
@@ -90,13 +91,28 @@ class DiskManager(QObject):
                 )
                 return
 
-            controller = DiskController()
+            # For predefined profiles, use the profile name
+            # For custom profiles, temporarily register it so controller can find it
+            controller = self.parent.controller or DiskController()
+            format_name = profile.name
+
+            # If this is a custom profile, add it to the controller's known formats
+            if "profile_name" not in format_info:
+                controller.known_formats[format_name] = profile
+                self.logger.debug(
+                    f"Temporarily registered custom profile: {format_name}"
+                )
+
             self.status_message.emit(
                 f"Creating and formatting disk image: {Path(file_path).name}..."
             )
 
-            if controller.create_and_format_image(
-                file_path, profile, volume_label, output_format
+            # Use the existing format_disk_media method with explicit disk_type
+            if controller.format_disk_media(
+                format_name=format_name,
+                volume_label=volume_label,
+                file_path=file_path,
+                disk_type=output_format,  # This forces the correct driver!
             ):
                 self.logger.info(
                     f"Successfully created and formatted disk image: {file_path}"
@@ -108,6 +124,7 @@ class DiskManager(QObject):
                     "Error", "Failed to create and format disk image."
                 )
                 self.logger.error(f"Failed to create/format disk image: {file_path}")
+
         except Exception as e:
             self.error_occurred.emit(
                 "Error", f"An unexpected error occurred during image creation: {str(e)}"

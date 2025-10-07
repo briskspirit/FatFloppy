@@ -239,21 +239,40 @@ class DriveSelectionDialog(QDialog):
         self.format_widgets: dict[str, QWidget]
         self._init_ui()
 
-    def get_selection(self) -> tuple[str, str, Optional[dict[str, Any]]]:
+    def get_selection(self) -> tuple[str, dict[str, Any], str, str]:
         """
-        Gets the user's drive and format selection from the dialog.
+        Gets the user's selections for creating a new disk image.
 
         Returns:
-            A tuple containing the selected drive, size, and format info.
-            The format info is a dictionary for custom formats, a profile name
-            for predefined formats, or None for auto-detect.
-        """
-        drive = self.drive_combo.currentData()
-        size = self.size_combo.currentData()
-        format_key = self.format_combo.currentData()
-        format_info: Optional[dict[str, Any]] = None
+            A tuple containing the full file path, format information dictionary,
+            volume label, and output format type (driver type).
 
-        if format_key == "custom" and self.format_params_group.isEnabled():
+        Raises:
+            ValueError: If the directory or file name is not provided, or if
+                        the specified path is a directory.
+        """
+        directory = self.directory_input.text().strip()
+        file_name = self.file_name_input.text().strip()
+        if not directory or not file_name:
+            raise ValueError("Both directory and file name must be provided.")
+
+        file_path = Path(directory) / file_name
+        if file_path.is_dir():
+            raise ValueError(
+                f"The path '{file_path}' is a directory. Please specify a "
+                f"valid file name."
+            )
+
+        volume_label = self.volume_label_input.text().strip().upper() or "NO NAME"
+
+        ext_data = self.extension_combo.currentData()
+        output_format = (
+            ext_data[1] if ext_data and isinstance(ext_data, tuple) else "IMG"
+        )
+
+        format_info: dict[str, Any] = {}
+
+        if self.advanced_checkbox.isChecked():
             format_info = {
                 "cylinders": self.format_widgets["cylinders_spin"].value(),
                 "heads": self.format_widgets["heads_spin"].value(),
@@ -271,11 +290,15 @@ class DriveSelectionDialog(QDialog):
             for key in ["gap1_bytes", "gap2_bytes", "gap3_bytes", "cskew", "hskew"]:
                 value = self.format_widgets[f"{key}_spin"].value()
                 format_info[key] = value if value != 0 else None
+        else:
+            profile_name = self.format_combo.currentData()
+            if not profile_name:
+                raise ValueError(
+                    "A format profile must be selected if not using advanced settings."
+                )
+            format_info = {"profile_name": profile_name}
 
-        elif format_key is not None and format_key != "custom":
-            format_info = {"profile_name": format_key}
-
-        return drive, size, format_info
+        return str(file_path), format_info, volume_label, output_format
 
     def _create_buttons(self, layout: QVBoxLayout) -> None:
         """Creates the OK and Cancel buttons."""
@@ -471,7 +494,7 @@ class CreateImageDialog(QDialog):
 
         Returns:
             A tuple containing the full file path, format information dictionary,
-            volume label, and output format type.
+            volume label, and output format type (driver type string like "IMG" or "IMD").
 
         Raises:
             ValueError: If the directory or file name is not provided, or if
@@ -490,7 +513,26 @@ class CreateImageDialog(QDialog):
             )
 
         volume_label = self.volume_label_input.text().strip().upper() or "NO NAME"
-        output_format = self.extension_combo.currentData()
+
+        # Get output format (driver type) from combo box data
+        # The combo stores tuples of (extension, driver_type)
+        ext_data = self.extension_combo.currentData()
+        if ext_data and isinstance(ext_data, tuple) and len(ext_data) >= 2:
+            output_format = ext_data[1]  # Second element is driver type string
+            logger.debug(f"Selected format: {ext_data[0]} -> {output_format}")
+        else:
+            output_format = "IMG"  # Fallback default
+            logger.warning(
+                f"Could not extract driver type from combo data: {ext_data}, using IMG"
+            )
+
+        # Ensure output_format is a string, not a tuple
+        if not isinstance(output_format, str):
+            logger.error(
+                f"output_format is not a string: {type(output_format)} - {output_format}"
+            )
+            output_format = "IMG"
+
         format_info: dict[str, Any] = {}
 
         if self.advanced_checkbox.isChecked():
@@ -518,6 +560,11 @@ class CreateImageDialog(QDialog):
                     "A format profile must be selected if not using advanced settings."
                 )
             format_info = {"profile_name": profile_name}
+
+        logger.debug(
+            f"get_selection returning: path={file_path}, format_info={format_info}, "
+            f"volume={volume_label}, driver_type={output_format} (type: {type(output_format)})"
+        )
 
         return str(file_path), format_info, volume_label, output_format
 
@@ -555,11 +602,8 @@ class CreateImageDialog(QDialog):
         self.file_name_input.setPlaceholderText("Enter file name")
         file_name_layout.addWidget(self.file_name_input)
         self.extension_combo = QComboBox()
-        self.extension_combo.addItem(".img", "IMG")
-        self.extension_combo.addItem(".ima", "IMG")
-        self.extension_combo.addItem(".h8d", "IMG")
-        self.extension_combo.addItem(".imd", "IMD")
-        self.extension_combo.addItem(".h17", "H17")
+        # Populate dynamically instead of hardcoding
+        self._populate_extension_combo()
         self.extension_combo.currentIndexChanged.connect(self._update_file_name)
         file_name_layout.addWidget(self.extension_combo)
         layout.addLayout(file_name_layout)
@@ -647,6 +691,48 @@ class CreateImageDialog(QDialog):
                 self.size_combo.currentData(), self.format_widgets
             )
 
+    def _populate_extension_combo(self) -> None:
+        """
+        Dynamically populates the extension combo box from discovered drivers.
+
+        For extensions with multiple drivers (like .dsk), each driver is listed
+        as a separate option so the user can choose which format to create.
+        """
+        from ..core.driver_factory import DriverFactory
+
+        self.extension_combo.clear()
+        extension_to_drivers_map = DriverFactory.get_extension_to_drivers_map()
+
+        # Flatten to list of (ext, driver_type, description) and sort
+        all_options = []
+        for ext, driver_list in extension_to_drivers_map.items():
+            for driver_type, description, _ in driver_list:
+                all_options.append((ext, driver_type, description))
+
+        # Sort by extension first, then by driver type
+        all_options.sort(key=lambda x: (x[0], x[1]))
+
+        # Track IMG default index
+        default_index = 0
+        img_found = False
+
+        for i, (ext, driver_type, description) in enumerate(all_options):
+            # Create display text showing both extension and driver description
+            display_text = f"{ext} ({description})"
+
+            # Store tuple of (extension, driver_type) as data
+            self.extension_combo.addItem(display_text, (ext, driver_type))
+
+            # Set default to first IMG driver extension (.img or .ima)
+            if not img_found and driver_type == "IMG" and ext in [".img", ".ima"]:
+                default_index = i
+                img_found = True
+
+        if self.extension_combo.count() > 0:
+            self.extension_combo.setCurrentIndex(default_index)
+        else:
+            logger.warning("No disk image drivers discovered for extension combo")
+
     def _select_directory(self) -> None:
         """Opens a dialog to select a directory."""
         start_dir = self.directory_input.text() or str(Path.home())
@@ -686,7 +772,9 @@ class CreateImageDialog(QDialog):
                 self.format_combo.currentData().replace('"', "").replace(" ", "_")
             )
 
-        extension = self.extension_combo.currentText()
+        ext_data = self.extension_combo.currentData()
+        extension = ext_data[0] if ext_data and isinstance(ext_data, tuple) else ".img"
+
         if base_name:
             self.file_name_input.setText(f"{base_name}{extension}")
 

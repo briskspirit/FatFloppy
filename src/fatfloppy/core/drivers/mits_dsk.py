@@ -98,25 +98,44 @@ class MITSDSKDriver(DiskIODriver):
                     "File path must be provided for MITS DSK driver if image_data is not given."
                 )
 
-            try:
-                with Path(self.file_path).open("rb") as f:
-                    self.image_data = bytearray(f.read())
-
-                self._validate_format()
+            if not Path(self.file_path).exists():
                 self.logger.info(
-                    f"Loaded MITS DSK file {self.file_path}, size {len(self.image_data)}"
+                    f"File {self.file_path} does not exist. Initializing empty for new image creation."
                 )
-            except FileNotFoundError:
-                self.logger.error(f"MITS DSK file not found: {self.file_path}")
-                raise
-            except ValueError as ve:
-                self.logger.error(f"Invalid MITS DSK format in {self.file_path}: {ve}")
-                raise
-            except Exception as e:
-                self.logger.error(f"Failed to read MITS DSK file {self.file_path}: {e}")
-                if isinstance(e, OSError):
+                expected_size = (
+                    MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
+                )
+                self.image_data = bytearray(expected_size)
+                self.dirty = True
+                self.logger.debug(
+                    f"Initialized empty MITS DSK driver for new image creation, size {len(self.image_data)}"
+                )
+            else:
+                try:
+                    with Path(self.file_path).open("rb") as f:
+                        self.image_data = bytearray(f.read())
+
+                    self._validate_format()
+                    self.logger.info(
+                        f"Loaded MITS DSK file {self.file_path}, size {len(self.image_data)}"
+                    )
+                except FileNotFoundError:
+                    self.logger.error(f"MITS DSK file not found: {self.file_path}")
                     raise
-                raise OSError(f"Failed to read MITS DSK file {self.file_path}") from e
+                except ValueError as ve:
+                    self.logger.error(
+                        f"Invalid MITS DSK format in {self.file_path}: {ve}"
+                    )
+                    raise
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to read MITS DSK file {self.file_path}: {e}"
+                    )
+                    if isinstance(e, OSError):
+                        raise
+                    raise OSError(
+                        f"Failed to read MITS DSK file {self.file_path}"
+                    ) from e
 
     @property
     def allows_geometry_override(self) -> bool:

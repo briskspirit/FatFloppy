@@ -1,6 +1,6 @@
 import copy
 from pathlib import Path
-from typing import ClassVar, Optional
+from typing import Any, ClassVar, Optional
 
 from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
@@ -72,43 +72,53 @@ class IMGImageDriver(DiskIODriver):
                     "File path must be provided for IMG driver if image_data is not given."
                 )
 
-            try:
-                with Path(self.file_path).open("rb") as f:
-                    header_peek = f.read(HEADER_PEEK_SIZE)
-                    f.seek(0)
-                    if header_peek.startswith(EDSK_MAGIC):
-                        msg = (
-                            f"EDSK (Extended DSK) format detected in '{self.file_path}'. "
-                            "This format is structured and not a raw image."
-                        )
-                        self.logger.error(msg)
-                        raise ValueError(msg)
-                    elif header_peek.startswith(AMSTRAD_DSK_MAGIC):
-                        msg = (
-                            f"Standard Amstrad DSK format detected in '{self.file_path}'. "
-                            "This structured format is not a raw image."
-                        )
-                        self.logger.error(msg)
-                        raise ValueError(msg)
-
-                    self.image_data = bytearray(f.read())
+            if not Path(self.file_path).exists():
                 self.logger.info(
-                    f"Loaded image file {self.file_path} as raw image, "
-                    f"size {len(self.image_data)}"
+                    f"File {self.file_path} does not exist. Initializing empty for new image creation."
                 )
-            except FileNotFoundError:
-                self.logger.error(f"Image file not found: {self.file_path}")
-                raise
-            except ValueError as ve:
-                self.logger.debug(
-                    f"ValueError during IMG driver init for {self.file_path}: {ve}"
-                )
-                raise
-            except Exception as e:
-                self.logger.error(f"Failed to read image file {self.file_path}: {e}")
-                if isinstance(e, OSError):
+                self.image_data = bytearray()
+                self.dirty = True
+                self.logger.debug("Initialized empty IMG driver for new image creation")
+            else:
+                try:
+                    with Path(self.file_path).open("rb") as f:
+                        header_peek = f.read(HEADER_PEEK_SIZE)
+                        f.seek(0)
+                        if header_peek.startswith(EDSK_MAGIC):
+                            msg = (
+                                f"EDSK (Extended DSK) format detected in '{self.file_path}'. "
+                                "This format is structured and not a raw image."
+                            )
+                            self.logger.error(msg)
+                            raise ValueError(msg)
+                        elif header_peek.startswith(AMSTRAD_DSK_MAGIC):
+                            msg = (
+                                f"Standard Amstrad DSK format detected in '{self.file_path}'. "
+                                "This structured format is not a raw image."
+                            )
+                            self.logger.error(msg)
+                            raise ValueError(msg)
+
+                        self.image_data = bytearray(f.read())
+                    self.logger.info(
+                        f"Loaded image file {self.file_path} as raw image, "
+                        f"size {len(self.image_data)}"
+                    )
+                except FileNotFoundError:
+                    self.logger.error(f"Image file not found: {self.file_path}")
                     raise
-                raise OSError(f"Failed to read image file {self.file_path}") from e
+                except ValueError as ve:
+                    self.logger.debug(
+                        f"ValueError during IMG driver init for {self.file_path}: {ve}"
+                    )
+                    raise
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to read image file {self.file_path}: {e}"
+                    )
+                    if isinstance(e, OSError):
+                        raise
+                    raise OSError(f"Failed to read image file {self.file_path}") from e
 
     @property
     def allows_geometry_override(self) -> bool:
@@ -185,6 +195,28 @@ class IMGImageDriver(DiskIODriver):
             "can_derive_format": True,
             "preferred_detection_method": "auto",
         }
+
+    def initialize_new_image(
+        self, physical_format: PhysicalFormat, _profile: Optional[Any] = None
+    ) -> None:
+        """
+        Creates a new blank IMG image with the specified format.
+
+        Args:
+            physical_format: The physical format to use for the new image.
+            _profile: Optional format profile (unused for IMG driver).
+        """
+        self.logger.info("Creating new blank IMG image")
+
+        # Calculate required size and initialize image data
+        total_size = physical_format.total_bytes
+        self.image_data = bytearray(total_size)
+        self.dirty = True
+
+        # Set the physical format
+        self.set_physical_format(physical_format)
+
+        self.logger.info(f"Created blank IMG image of size {total_size} bytes")
 
     def prepare_for_format_application(
         self, format_info: dict

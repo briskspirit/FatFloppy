@@ -131,6 +131,41 @@ class DriverFactory:
         return result
 
     @classmethod
+    def get_extension_to_drivers_map(cls) -> dict[str, list[tuple[str, str, str]]]:
+        """
+        Returns a mapping of file extensions to ALL their supported drivers.
+
+        Unlike get_extension_map() which returns "AUTO" for conflicts, this
+        returns the full list of (driver_type, description, extension) tuples
+        for each extension. Useful for creation dialogs where the user needs
+        to explicitly choose which format to create.
+
+        Returns:
+            Dictionary mapping extensions to list of (driver_type, description, ext) tuples.
+            Drivers are sorted by priority (highest first).
+            Example: {
+                '.img': [('IMG', 'Raw sector image driver', '.img')],
+                '.dsk': [
+                    ('MITS_DSK', 'MITS Altair DSK format driver', '.dsk'),
+                    ('IMG', 'Raw sector image driver', '.dsk')
+                ]
+            }
+        """
+        if not cls._initialized:
+            cls._discover_and_register()
+
+        result = {}
+        for ext, driver_classes in cls._extension_map.items():
+            driver_info = []
+            for driver_class in driver_classes:
+                driver_type = driver_class.driver_type
+                description = getattr(driver_class, "driver_description", driver_type)
+                driver_info.append((driver_type, description, ext))
+            result[ext] = driver_info
+
+        return result
+
+    @classmethod
     def list_drivers(cls) -> list[dict[str, Any]]:
         """
         Returns information about all registered drivers.
