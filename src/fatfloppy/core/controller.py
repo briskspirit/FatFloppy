@@ -874,11 +874,9 @@ class DiskController:
     def _execute_format(self, profile: FormatProfile, volume_label: str) -> bool:
         """
         Executes the actual formatting operation.
-
         Args:
             profile: The FormatProfile to use for formatting.
             volume_label: Volume label to apply.
-
         Returns:
             True if formatting succeeded, False otherwise.
         """
@@ -886,18 +884,15 @@ class DiskController:
         if not fs_type:
             self.logger.error("Cannot determine filesystem type from profile")
             return False
-
         from .filesystem_factory import get_filesystem_class_by_type
 
         fs_class = get_filesystem_class_by_type(fs_type)
         if not fs_class:
             self.logger.error(f"No filesystem handler for type '{fs_type}'")
             return False
-
         self.logger.info(
             f"Formatting with profile: {profile.name} (filesystem: {fs_type})"
         )
-
         try:
             if self.disk.physical_format != profile.physical_format or (
                 hasattr(self.driver, "physical_format")
@@ -905,22 +900,24 @@ class DiskController:
             ):
                 self.set_format(profile)
 
-            filesystem_handler = fs_class(self.disk)
-            filesystem_handler.format_fs(profile, volume_label=volume_label)
+            if profile.filesystem_config:
+                filesystem_handler = fs_class(
+                    self.disk, config=profile.filesystem_config
+                )
+            else:
+                filesystem_handler = fs_class(self.disk)
 
+            filesystem_handler.format_fs(profile, volume_label=volume_label)
             self.filesystem = filesystem_handler
             self.physical_format = self.disk.physical_format
             self.active_filesystem_config = profile.filesystem_config
-
             self.flush()
             final_vol_label = self.filesystem.get_volume_label() or volume_label
-
             self.logger.info(
                 f"Format complete for profile '{profile.name}'. "
                 f"Volume: '{final_vol_label}'"
             )
             return True
-
         except Exception as e:
             self.logger.exception(
                 f"Error during format with profile '{profile.name}': {e}"
