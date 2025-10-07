@@ -39,19 +39,27 @@ def hdos_controller() -> Iterator[DiskController]:
         controller.close_disk()
 
 
-def test_disk_image_read_and_verify(hdos_controller: DiskController) -> None:
+@pytest.mark.parametrize(
+    "image_file,disk_type",
+    [
+        ("HDOS_2-0_TEST.h8d", "IMG"),
+        ("HDOS_2-0_TEST.h17disk", "H17"),
+    ],
+)
+def test_disk_image_read_and_verify(
+    hdos_controller: DiskController, image_file: str, disk_type: str
+) -> None:
     """
     Tests opening an HDOS disk image, verifying format detection,
     directory listing, free space, and file content integrity.
     """
-    image_file = "HDOS_2-0_TEST.h8d"
     expected_files = ["BITS.ACM", "DVDIO.ACM", "H47LIB.ACM"]
     expected_file_count = 61
     expected_format_name = "hdos_5.25_100k"
     expected_free_space_bytes = 0
 
     img_path = HDOS_RESOURCE_DIR / image_file
-    success = hdos_controller.open_disk(str(img_path), disk_type="IMG")
+    success = hdos_controller.open_disk(str(img_path), disk_type=disk_type)
     assert success
     assert hdos_controller.disk is not None
     assert isinstance(hdos_controller.filesystem, HDOSFilesystem)
@@ -72,11 +80,17 @@ def test_disk_image_read_and_verify(hdos_controller: DiskController) -> None:
     assert free_bytes == pytest.approx(expected_free_space_bytes, rel=0.01)
 
 
+@pytest.mark.parametrize(
+    "image_file,disk_type",
+    [
+        ("HDOS_2-0_TEST.h8d", "IMG"),
+        ("HDOS_2-0_TEST.h17disk", "H17"),
+    ],
+)
 def test_file_write_delete_and_verify(
-    hdos_controller: DiskController, tmp_path: Path
+    hdos_controller: DiskController, tmp_path: Path, image_file: str, disk_type: str
 ) -> None:
     """Tests a full delete -> write -> read -> verify cycle for a file on an HDOS image."""
-    image_file = "HDOS_2-0_TEST.h8d"
     file_to_test = "DVDIO.ACM"
 
     original_img_path = HDOS_RESOURCE_DIR / image_file
@@ -87,7 +101,7 @@ def test_file_write_delete_and_verify(
     ground_truth_content = ground_truth_path.read_bytes()
     assert ground_truth_content
 
-    success = hdos_controller.open_disk(str(temp_img_path), disk_type="IMG")
+    success = hdos_controller.open_disk(str(temp_img_path), disk_type=disk_type)
     assert success
     assert isinstance(hdos_controller.filesystem, HDOSFilesystem)
 
@@ -201,15 +215,21 @@ def test_validity_score(hdos_controller: DiskController, tmp_path: Path) -> None
     assert hdos_fs_on_garbage.get_validity_score() == 0
 
 
+@pytest.mark.parametrize(
+    "image_file,disk_type",
+    [
+        ("HDOS_2-0_TEST.h8d", "IMG"),
+        ("HDOS_2-0_TEST.h17disk", "H17"),
+    ],
+)
 def test_system_file_protection(
-    hdos_controller: DiskController, tmp_path: Path
+    hdos_controller: DiskController, tmp_path: Path, image_file: str, disk_type: str
 ) -> None:
     """Tests that system files cannot be deleted."""
-    image_file = "HDOS_2-0_TEST.h8d"
     temp_img_path = tmp_path / image_file
     shutil.copy(HDOS_RESOURCE_DIR / image_file, temp_img_path)
 
-    assert hdos_controller.open_disk(str(temp_img_path), disk_type="IMG")
+    assert hdos_controller.open_disk(str(temp_img_path), disk_type=disk_type)
 
     dir_listing = hdos_controller.list_directory("/")
     filenames = {item["name"] for item in dir_listing}
@@ -304,13 +324,21 @@ def test_rgt_lockout_functionality(
     hdos_controller.close_disk()
 
 
-def test_write_to_full_disk(hdos_controller: DiskController, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "image_file,disk_type",
+    [
+        ("HDOS_2-0_TEST.h8d", "IMG"),
+        ("HDOS_2-0_TEST.h17disk", "H17"),
+    ],
+)
+def test_write_to_full_disk(
+    hdos_controller: DiskController, tmp_path: Path, image_file: str, disk_type: str
+) -> None:
     """Tests behavior when attempting to write to a full or nearly-full disk."""
-    image_file = "HDOS_2-0_TEST.h8d"
     temp_img_path = tmp_path / image_file
     shutil.copy(HDOS_RESOURCE_DIR / image_file, temp_img_path)
 
-    assert hdos_controller.open_disk(str(temp_img_path), disk_type="IMG")
+    assert hdos_controller.open_disk(str(temp_img_path), disk_type=disk_type)
 
     free_bytes, _ = hdos_controller.get_free_space()
 
@@ -407,13 +435,21 @@ def test_multiple_file_operations(
     hdos_controller.close_disk()
 
 
-def test_free_chain_rebuild(hdos_controller: DiskController, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "image_file,disk_type",
+    [
+        ("HDOS_2-0_TEST.h8d", "IMG"),
+        ("HDOS_2-0_TEST.h17disk", "H17"),
+    ],
+)
+def test_free_chain_rebuild(
+    hdos_controller: DiskController, tmp_path: Path, image_file: str, disk_type: str
+) -> None:
     """Tests that the free chain is properly rebuilt when GRT[0] = 0."""
-    image_file = "HDOS_2-0_TEST.h8d"
     temp_img_path = tmp_path / image_file
     shutil.copy(HDOS_RESOURCE_DIR / image_file, temp_img_path)
 
-    assert hdos_controller.open_disk(str(temp_img_path), disk_type="IMG")
+    assert hdos_controller.open_disk(str(temp_img_path), disk_type=disk_type)
 
     fs = hdos_controller.filesystem
     initial_grt_0 = fs._grt[0]
@@ -559,17 +595,23 @@ def test_filename_edge_cases(hdos_controller: DiskController, tmp_path: Path) ->
     hdos_controller.close_disk()
 
 
+@pytest.mark.parametrize(
+    "image_file,disk_type",
+    [
+        ("HDOS_2-0_TEST.h8d", "IMG"),
+        ("HDOS_2-0_TEST.h17disk", "H17"),
+    ],
+)
 def test_read_only_operations_no_modification(
-    hdos_controller: DiskController, tmp_path: Path
+    hdos_controller: DiskController, tmp_path: Path, image_file: str, disk_type: str
 ) -> None:
     """Tests that read-only operations do not modify the disk image."""
-    image_file = "HDOS_2-0_TEST.h8d"
     temp_img_path = tmp_path / image_file
     shutil.copy(HDOS_RESOURCE_DIR / image_file, temp_img_path)
 
     initial_hash = hashlib.sha256(temp_img_path.read_bytes()).hexdigest()
 
-    assert hdos_controller.open_disk(str(temp_img_path), disk_type="IMG")
+    assert hdos_controller.open_disk(str(temp_img_path), disk_type=disk_type)
     assert isinstance(hdos_controller.filesystem, HDOSFilesystem)
 
     dir_listing_1 = hdos_controller.list_directory("/")
@@ -593,7 +635,7 @@ def test_read_only_operations_no_modification(
 
     assert initial_hash == final_hash
 
-    assert hdos_controller.open_disk(str(temp_img_path), disk_type="IMG")
+    assert hdos_controller.open_disk(str(temp_img_path), disk_type=disk_type)
     final_dir_listing = hdos_controller.list_directory("/")
     assert final_dir_listing == dir_listing_1
 
