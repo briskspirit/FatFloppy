@@ -729,74 +729,25 @@ def test_format_new_image_cleanup_on_failure(controller, tmp_path) -> None:
         assert result is False
 
 
-def test_handle_metadata_based_format_no_physical(controller) -> None:
-    """Tests _handle_metadata_based_format when driver has no format."""
-    controller.driver = MagicMock()
-    controller.driver.driver_category = "metadata_based"
-    controller.driver.physical_format = None
-    controller.disk = MagicMock()
-
-    result = controller._handle_metadata_based_format(None)
-    assert result is False
-
-
-def test_handle_metadata_based_format_with_override(controller, tmp_path) -> None:
-    """Tests _handle_metadata_based_format with format override."""
-    if not EMPTY_IMG_SRC.exists():
-        pytest.skip("Resource not found")
-
-    test_img = tmp_path / "test.imd"
-
-    imd_data = b"IMD 1.18: Test\x1a"
-    imd_data += bytes([3, 0, 0, 9, 2])
-    imd_data += bytes(range(1, 10))
-    for _ in range(9):
-        imd_data += bytes([2, 0xE5])
-
-    test_img.write_bytes(imd_data)
-
-    controller = DiskController()
-    format_info = {"format_name": "ibm_3.5_720k", "cylinders": 80, "heads": 2}
-
-    result = controller.open_disk(
-        str(test_img), disk_type="IMD", format_info=format_info
-    )
-    assert result is True
-    controller.close_disk()
-
-
-def test_handle_raw_driver_format_no_geometry(controller) -> None:
-    """Tests _handle_raw_driver_format when no geometry set."""
-    controller.driver = MagicMock()
-    controller.driver.driver_category = "raw"
-    controller.driver.image_data = b"\x00" * 10240
-    controller.disk = MagicMock()
-    controller.disk.physical_format = None
-
-    result = controller._handle_raw_driver_format()
-    assert result is False
-
-
-def test_handle_raw_driver_format_with_geometry(controller) -> None:
-    """Tests _handle_raw_driver_format with geometry set."""
-    controller.driver = MagicMock()
-    controller.driver.driver_category = "raw"
-    controller.disk = MagicMock()
-    controller.disk.physical_format = FMT_144.physical_format
-
-    result = controller._handle_raw_driver_format()
-    assert result is True
-
-
-def test_handle_user_format_failure(controller_with_disk) -> None:
-    """Tests _handle_user_format when application fails."""
+def test_apply_user_format_failure(controller_with_disk) -> None:
+    """Tests _apply_user_format when application fails."""
     controller = controller_with_disk
 
-    with patch.object(
-        controller, "_apply_user_format", side_effect=ValueError("Format error")
+    with (
+        patch.object(
+            controller, "set_geometry", side_effect=ValueError("Geometry error")
+        ),
+        pytest.raises(ValueError, match="Failed to apply format"),
     ):
-        result = controller._handle_user_format({"format_name": "test"})
-        assert result is False
+        controller._apply_user_format({"format_name": "ibm_3.5_1.44m"})
+
+
+def test_apply_user_format_cannot_resolve(controller_with_disk) -> None:
+    """Tests _apply_user_format when format cannot be resolved."""
+    controller = controller_with_disk
+
+    with pytest.raises(ValueError, match="Could not resolve a valid physical format"):
+        controller._apply_user_format({"format_name": "nonexistent_format"})
 
 
 def test_resolve_format_profile_matches_geometry(controller_with_disk) -> None:
@@ -822,65 +773,6 @@ def test_resolve_format_profile_from_driver(controller) -> None:
     assert profile.name == "custom_runtime"
 
 
-def test_try_auto_detection_success(controller_with_disk) -> None:
-    """Tests _try_auto_detection successful detection."""
-    controller = controller_with_disk
-    controller._detection_cached = False
-
-    with patch.object(
-        controller, "detect_format", return_value=("ibm_3.5_1.44m", None, None)
-    ):
-        result = controller._try_auto_detection()
-        assert result is True
-
-
-def test_try_auto_detection_fs_config_only(controller_with_disk) -> None:
-    """Tests _try_auto_detection with only filesystem config."""
-    controller = controller_with_disk
-    controller._detection_cached = False
-
-    with patch.object(
-        controller, "detect_format", return_value=(None, FATVolumeInfo(), None)
-    ):
-        result = controller._try_auto_detection()
-        assert result is True
-
-
-def test_try_auto_detection_geometry_only(controller_with_disk) -> None:
-    """Tests _try_auto_detection with only geometry."""
-    controller = controller_with_disk
-    controller._detection_cached = False
-    controller.disk.physical_format = FMT_144.physical_format
-
-    with patch.object(
-        controller, "detect_format", return_value=(None, None, FMT_144.physical_format)
-    ):
-        result = controller._try_auto_detection()
-        assert result is True
-
-
-def test_try_auto_detection_failure(controller_with_disk) -> None:
-    """Tests _try_auto_detection when nothing detected."""
-    controller = controller_with_disk
-    controller._detection_cached = False
-    controller.disk.physical_format = None
-
-    with patch.object(controller, "detect_format", return_value=(None, None, None)):
-        result = controller._try_auto_detection()
-        assert result is False
-
-
-def test_try_auto_detection_exception(controller_with_disk) -> None:
-    """Tests _try_auto_detection when detection raises exception."""
-    controller = controller_with_disk
-
-    with patch.object(
-        controller, "detect_format", side_effect=RuntimeError("Detection error")
-    ):
-        result = controller._try_auto_detection()
-        assert result is False
-
-
 def test_handle_format_physical_no_explicit_format(controller) -> None:
     """Tests _handle_format for physical drive without explicit format."""
     controller.driver = MagicMock()
@@ -904,6 +796,7 @@ def test_handle_format_unknown_category(controller) -> None:
         "can_derive_format": False,
     }
     controller.disk = MagicMock()
+    controller.disk.physical_format = None
 
     result = controller._handle_format(None, "3.5")
     assert result is False
@@ -924,33 +817,6 @@ def test_format_new_image_cleanup_failure(controller, tmp_path) -> None:
             str(test_img), "ibm_3.5_1.44m", "TEST", "IMG"
         )
         assert result is False
-
-
-def test_handle_metadata_format_override_fails(controller) -> None:
-    """Tests _handle_metadata_based_format when override fails."""
-    controller.driver = MagicMock()
-    controller.driver.driver_category = "metadata_based"
-    controller.driver.physical_format = FMT_144.physical_format
-    controller.disk = MagicMock()
-
-    format_info = {"format_name": "ibm_3.5_1.44m"}
-
-    with patch.object(
-        controller, "_apply_user_format", side_effect=ValueError("Override failed")
-    ):
-        result = controller._handle_metadata_based_format(format_info)
-        assert result is False
-
-
-def test_handle_raw_driver_format_has_geometry(controller) -> None:
-    """Tests _handle_raw_driver_format success path when geometry exists."""
-    controller.driver = MagicMock()
-    controller.driver.driver_category = "raw"
-    controller.disk = MagicMock()
-    controller.disk.physical_format = FMT_144.physical_format
-
-    result = controller._handle_raw_driver_format()
-    assert result is True
 
 
 def test_resolve_format_profile_no_match_creates_custom(controller_with_disk) -> None:
@@ -983,3 +849,38 @@ def test_resolve_format_profile_no_match_creates_custom(controller_with_disk) ->
     assert profile is not None
     assert profile.name == "custom_runtime"
     assert profile.physical_format.cylinders == 33
+
+
+def test_handle_format_with_explicit_format(controller_with_disk) -> None:
+    """Tests _handle_format applying explicit user format."""
+    controller = controller_with_disk
+
+    format_info = {"format_name": "ibm_3.5_720k"}
+    result = controller._handle_format(format_info, "3.5")
+
+    assert result is True
+    assert controller.disk.physical_format.cylinders == 80
+
+
+def test_handle_format_auto_detection_success(controller_with_disk) -> None:
+    """Tests _handle_format with successful auto-detection."""
+    controller = controller_with_disk
+    controller._detection_cached = False
+
+    result = controller._handle_format(None, "3.5")
+    assert result is True
+
+
+def test_handle_format_auto_detection_no_format_required(controller) -> None:
+    """Tests _handle_format when no format required for I/O."""
+    controller.driver = MagicMock()
+    controller.driver.get_format_requirements.return_value = {
+        "needs_format_for_io": False,
+        "can_derive_format": True,
+    }
+    controller.disk = MagicMock()
+    controller.disk.physical_format = None
+
+    with patch.object(controller, "detect_format", return_value=(None, None, None)):
+        result = controller._handle_format(None, "3.5")
+        assert result is True  # Should succeed even without format

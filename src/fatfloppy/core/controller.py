@@ -313,7 +313,7 @@ class DiskController:
         self,
         target_path: str,
         target_disk_type: str,
-        _volume_label: Optional[str] = None,
+        volume_label: Optional[str] = None,  # noqa: ARG002
     ) -> bool:
         """
         Exports the currently open disk to a different format, preserving physical layout.
@@ -324,7 +324,7 @@ class DiskController:
         Args:
             target_path: Path where the exported image should be created.
             target_disk_type: Type of target format (IMG, IMD, H17, etc.).
-            _volume_label: Optional volume label (currently unused).
+            volume_label: Optional volume label (currently unused).
 
         Returns:
             True if export succeeded and target was opened, False otherwise.
@@ -1183,70 +1183,6 @@ class DiskController:
                     Path(target_path).unlink()
             raise OSError(f"Export failed: {e}") from e
 
-    def _find_matching_format_by_geometry(
-        self, physical_format: PhysicalFormat
-    ) -> Optional[FormatProfile]:
-        """
-        Attempts to find a matching format profile by comparing physical geometry
-        including sector translation tables and variable bytes_per_sector.
-
-        Args:
-            physical_format: The PhysicalFormat to match.
-
-        Returns:
-            The matching FormatProfile, or None if no match found.
-        """
-        for profile in self.known_formats.values():
-            if not profile.physical_format:
-                continue
-
-            pf = profile.physical_format
-
-            if (
-                pf.cylinders != physical_format.cylinders
-                or pf.heads != physical_format.heads
-            ):
-                continue
-
-            if (
-                not pf.has_variable_bps
-                and not physical_format.has_variable_bps
-                and pf.bytes_per_sector != physical_format.bytes_per_sector
-            ):
-                continue
-
-            if len(pf.track_formats) != len(physical_format.track_formats):
-                continue
-
-            all_match = True
-            for tf1, tf2 in zip(pf.track_formats, physical_format.track_formats):
-                if (
-                    tf1.track_start != tf2.track_start
-                    or tf1.track_end != tf2.track_end
-                    or tf1.sectors_per_track != tf2.sectors_per_track
-                    or tf1.bytes_per_sector != tf2.bytes_per_sector
-                ):
-                    all_match = False
-                    break
-
-                if tf1.encoding.upper() != tf2.encoding.upper():
-                    all_match = False
-                    break
-
-                if (
-                    not pf.image_in_sector_id_order
-                    and tf1.sector_translation_table != tf2.sector_translation_table
-                ):
-                    all_match = False
-                    break
-
-            if all_match:
-                self.logger.info(f"Found exact geometry match: {profile.name}")
-                return profile
-
-        self.logger.debug("No exact geometry match found")
-        return None
-
     def _format_existing_disk(self, format_name: str, volume_label: str) -> bool:
         """
         Formats an already-open disk.
@@ -1338,7 +1274,7 @@ class DiskController:
         self, format_info: Optional[dict[str, Any]], drive_size: str
     ) -> bool:
         """
-        Coordinates the format handling process when a disk is opened.
+        Coordinates format handling when a disk is opened.
 
         Args:
             format_info: Optional format information dictionary.
@@ -1348,161 +1284,57 @@ class DiskController:
             True if format handling succeeded, False otherwise.
         """
         self._drive_size_hint = drive_size
-        requirements = self.driver.get_format_requirements()
 
-        if self.driver.driver_category == "metadata_based":
-            return self._handle_metadata_based_format(format_info)
-
+        # User provided explicit format - apply it
         if format_info:
-            return self._handle_user_format(format_info)
-
-        if requirements["can_derive_format"] and self._try_auto_detection():
-            return True
-
-        if self.driver.driver_category == "raw":
-            return self._handle_raw_driver_format()
-
-        if self.driver.driver_category == "physical":
-            self.logger.info(
-                "Physical drive opened without explicit format, "
-                "will use track scanning for geometry detection"
-            )
-            return True
-
-        self.logger.error(
-            f"Could not establish format for {self.driver.driver_category} driver"
-        )
-        return False
-
-    def _handle_metadata_based_format(
-        self, format_info: Optional[dict[str, Any]]
-    ) -> bool:
-        """
-        Handles format for metadata-based drivers (IMD, H17).
-
-        Args:
-            format_info: Optional format override information.
-
-        Returns:
-            True if format handling succeeded, False otherwise.
-        """
-        if not self.driver.physical_format:
-            self.logger.error(
-                f"{self.driver.__class__.__name__} has no physical format after loading"
-            )
-            return False
-
-        self.disk.set_geometry(self.driver.physical_format)
-        self.physical_format = self.driver.physical_format
-
-        if format_info:
-            self.logger.warning(
-                f"Applying user format to {self.driver.__class__.__name__} "
-                "will override embedded metadata"
-            )
+            self.logger.info("Applying user-provided format")
             try:
                 self._apply_user_format(format_info)
+                return True
             except Exception as e:
-                self.logger.error(f"Failed to apply user format override: {e}")
+                self.logger.error(f"Failed to apply user format: {e}")
                 return False
-        else:
-            self.logger.info(
-                "No explicit format provided, attempting to match derived geometry "
-                "against known formats"
-            )
-            try:
-                format_name, fs_config, _ = self.detect_format()
-                if format_name:
-                    self.logger.info(
-                        f"Matched derived geometry to format: {format_name}"
-                    )
-                    self._cached_format_name = format_name
-                if fs_config:
-                    self.active_filesystem_config = fs_config
-                    self.logger.info(
-                        f"Found filesystem config: {type(fs_config).__name__}"
-                    )
 
-                if not fs_config and self.driver.physical_format:
-                    self.logger.info(
-                        "Standard detection failed, attempting deep geometry match "
-                        "with sector translation tables"
-                    )
-                    matched_format = self._find_matching_format_by_geometry(
-                        self.driver.physical_format
-                    )
-                    if matched_format:
-                        self.logger.info(
-                            f"Deep match found format: {matched_format.name}"
-                        )
-                        self._cached_format_name = matched_format.name
-                        if matched_format.filesystem_config:
-                            self.active_filesystem_config = (
-                                matched_format.filesystem_config
-                            )
-                            self.logger.info(
-                                f"Using filesystem config from matched format: "
-                                f"{type(matched_format.filesystem_config).__name__}"
-                            )
+        # No explicit format - use auto-detection
+        self.logger.info("No explicit format provided, using auto-detection")
+        try:
+            format_name, fs_config, physical_format = self.detect_format()
 
-                        if matched_format.physical_format:
-                            self.logger.info(
-                                "Applying matched format's PhysicalFormat to correct "
-                                "any discrepancies in IMD-derived format"
-                            )
-                            self.set_geometry(matched_format.physical_format)
+            # Apply detected format
+            if format_name:
+                self.logger.info(f"Auto-detected format: {format_name}")
+                self._cached_format_name = format_name
 
-            except Exception as e:
-                self.logger.warning(
-                    f"Could not match derived geometry to known format: {e}"
+                # For metadata-based formats, use the profile's canonical geometry
+                # to correct any discrepancies in the derived format
+                if format_name in self.known_formats:
+                    profile = self.known_formats[format_name]
+                    if profile.physical_format:
+                        self.set_geometry(profile.physical_format)
+
+            if physical_format and not format_name:
+                # Geometry detected but no named format
+                self.set_geometry(physical_format)
+                self.logger.info("Auto-detection set geometry without format name")
+
+            if fs_config:
+                self.active_filesystem_config = fs_config
+                self.logger.info(
+                    f"Auto-detection found filesystem config: {type(fs_config).__name__}"
                 )
 
-        return True
+            # Check if we have enough to proceed
+            requirements = self.driver.get_format_requirements()
+            if requirements["needs_format_for_io"] and not self.disk.physical_format:
+                self.logger.error(
+                    "Auto-detection failed and format is required for I/O"
+                )
+                return False
 
-    def _handle_raw_driver_format(self) -> bool:
-        """
-        Handles format requirements for raw image drivers.
-
-        Raw drivers require explicit format information since they have no
-        metadata.
-
-        Returns:
-            True if format is properly set, False otherwise.
-        """
-        if not self.disk.physical_format:
-            img_data_len = (
-                len(self.driver.image_data)
-                if hasattr(self.driver, "image_data")
-                else "unknown"
-            )
-            self.logger.error(
-                "Raw image driver requires format information. "
-                "Auto-detection failed and no explicit format provided. "
-                f"Image size: {img_data_len} bytes"
-            )
-            return False
-
-        self.logger.info(f"Raw driver has geometry set: {self.disk.physical_format}")
-        return True
-
-    def _handle_user_format(self, format_info: dict[str, Any]) -> bool:
-        """
-        Handles user-provided format information.
-
-        Args:
-            format_info: Dictionary containing format parameters.
-
-        Returns:
-            True if format was successfully applied, False otherwise.
-        """
-        try:
-            self._apply_user_format(format_info)
-            self.logger.debug(
-                f"Applied user format. Geometry: {self.disk.physical_format}"
-            )
             return True
+
         except Exception as e:
-            self.logger.error(f"Failed applying user format: {e}")
+            self.logger.error(f"Auto-detection failed: {e}", exc_info=True)
             return False
 
     def _resolve_format_profile(self, format_name: str) -> Optional[FormatProfile]:
@@ -1549,68 +1381,3 @@ class DiskController:
             return None
 
         return profile
-
-    def _track_ranges_compatible(
-        self, track_formats1: list[TrackFormat], track_formats2: list[TrackFormat]
-    ) -> bool:
-        """
-        Checks if two lists of track formats cover the same tracks.
-
-        Args:
-            track_formats1: First list of track formats.
-            track_formats2: Second list of track formats.
-
-        Returns:
-            True if both cover the same tracks.
-        """
-        covered1 = set()
-        for tf in track_formats1:
-            for c in range(tf.track_start, tf.track_end + 1):
-                for h in range(tf.head_start, tf.head_end + 1):
-                    covered1.add((c, h))
-
-        covered2 = set()
-        for tf in track_formats2:
-            for c in range(tf.track_start, tf.track_end + 1):
-                for h in range(tf.head_start, tf.head_end + 1):
-                    covered2.add((c, h))
-
-        return covered1 == covered2
-
-    def _try_auto_detection(self) -> bool:
-        """
-        Attempts auto-detection of disk format.
-
-        Returns:
-            True if auto-detection succeeded and set a valid format.
-        """
-        self.logger.debug(
-            f"Attempting auto-detection for {self.driver.__class__.__name__}"
-        )
-        try:
-            format_name, fs_config, physical_format = self.detect_format()
-
-            if format_name:
-                self.logger.info(f"Auto-detection successful: format='{format_name}'")
-                return True
-
-            if fs_config:
-                self.logger.info(
-                    f"Auto-detection found filesystem config: "
-                    f"{type(fs_config).__name__}"
-                )
-                return True
-
-            if self.disk.physical_format:
-                self.logger.info("Auto-detection set geometry without format name")
-                return True
-
-            self.logger.warning(
-                f"Auto-detection returned no results for "
-                f"{self.driver.__class__.__name__}"
-            )
-            return False
-
-        except Exception as e:
-            self.logger.error(f"Auto-detection raised exception: {e}", exc_info=True)
-            return False

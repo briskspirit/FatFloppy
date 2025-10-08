@@ -152,24 +152,56 @@ class MetadataBasedDetector(FormatDetector, ABC):
         self, profile_pf: PhysicalFormat, detected_pf: PhysicalFormat
     ) -> bool:
         """
-        Checks if two physical formats match.
+        Checks if two physical formats match exactly (including rate).
+
+        Overrides base class to properly handle variable BPS formats.
 
         Args:
             profile_pf: Physical format from the profile
             detected_pf: Detected physical format
 
         Returns:
-            True if the formats match
+            True if the formats match exactly
         """
-        return (
-            profile_pf.cylinders == detected_pf.cylinders
-            and profile_pf.heads == detected_pf.heads
-            and profile_pf.bytes_per_sector == detected_pf.bytes_per_sector
-            and profile_pf.get_sectors_per_track(0, 0)
-            == detected_pf.get_sectors_per_track(0, 0)
-            and profile_pf.get_sectors_per_track(35, 0)
-            == detected_pf.get_sectors_per_track(35, 0)
-        )
+        if (
+            profile_pf.cylinders != detected_pf.cylinders
+            or profile_pf.heads != detected_pf.heads
+        ):
+            return False
+
+        if profile_pf.has_variable_bps != detected_pf.has_variable_bps:
+            return False
+
+        if (
+            not profile_pf.has_variable_bps
+            and profile_pf.bytes_per_sector != detected_pf.bytes_per_sector
+        ):
+            return False
+
+        if len(profile_pf.track_formats) != len(detected_pf.track_formats):
+            return False
+
+        for tf_profile, tf_detected in zip(
+            profile_pf.track_formats, detected_pf.track_formats
+        ):
+            if (
+                tf_profile.track_start != tf_detected.track_start
+                or tf_profile.track_end != tf_detected.track_end
+                or tf_profile.sectors_per_track != tf_detected.sectors_per_track
+                or tf_profile.bytes_per_sector != tf_detected.bytes_per_sector
+                or tf_profile.encoding.upper() != tf_detected.encoding.upper()
+                or tf_profile.rate != tf_detected.rate
+            ):
+                return False
+
+            if (
+                not profile_pf.image_in_sector_id_order
+                and tf_profile.sector_translation_table
+                != tf_detected.sector_translation_table
+            ):
+                return False
+
+        return True
 
 
 def create_format_detector(
