@@ -104,7 +104,7 @@ def test_write_sector_and_flush(driver_setup: DriverSetupFixture) -> None:
     driver.write_sector(cyl, head, sect, test_data)
     assert driver.dirty is True
 
-    offset = physical_format.chs_to_lba(cyl, head, sect) * bytes_per_sector
+    offset = physical_format.chs_to_byte_offset(cyl, head, sect)
     assert driver.image_data[offset : offset + len(test_data)] == test_data
 
     driver.flush()

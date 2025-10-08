@@ -284,39 +284,6 @@ class PhysicalFormat:
         byte_offset += sector_index * tf.bytes_per_sector
         return byte_offset
 
-    def chs_to_lba(self, cylinder: int, head: int, sector: int) -> int:
-        """
-        Converts CHS coordinates to a Logical Block Address (LBA).
-
-        Args:
-            cylinder: The cylinder number.
-            head: The head number.
-            sector: The sector number (physical sector ID).
-
-        Returns:
-            The calculated LBA.
-
-        Raises:
-            NotImplementedError: If the disk has variable sector sizes.
-        """
-        if self.has_variable_bps:
-            raise NotImplementedError(
-                "CHS to LBA is not supported for variable sector sizes."
-            )
-        self.validate_chs(cylinder, head, sector)
-
-        lba = 0
-        for c_iter in range(cylinder):
-            for h_iter in range(self.heads):
-                lba += self.get_sectors_per_track(c_iter, h_iter)
-
-        for h_iter in range(head):
-            lba += self.get_sectors_per_track(cylinder, h_iter)
-
-        tf = self.get_track_format(cylinder, head)
-        lba += sector - tf.id_start
-        return lba
-
     def get_bytes_per_sector(self, cylinder: int, head: int) -> int:
         """
         Gets the bytes per sector for a specific cylinder and head.

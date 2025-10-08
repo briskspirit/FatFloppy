@@ -66,8 +66,7 @@ def disk_setup(tmp_path: Path) -> Generator[tuple[Disk, PhysicalFormat], None, N
             spt = phys_fmt.get_sectors_per_track(c, h)
             for s in range(1, spt + 1):
                 try:
-                    lba = phys_fmt.chs_to_lba(c, h, s)
-                    offset = lba * BYTES_PER_SECTOR
+                    offset = phys_fmt.chs_to_byte_offset(c, h, s)
                     sector_val = c * 100 + h * 10 + s
                     sector_byte = sector_val % 256
                     sector_data = bytes([sector_byte] * BYTES_PER_SECTOR)

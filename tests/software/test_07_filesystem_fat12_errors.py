@@ -146,7 +146,8 @@ def mock_fs_setup() -> Generator[tuple[FATFilesystem, dict[str, Any]], None, Non
         result = bytearray()
         geom = mock_disk_geometry
         try:
-            start_lba = geom.chs_to_lba(start_c, start_h, start_s)
+            start_byte_offset = geom.chs_to_byte_offset(start_c, start_h, start_s)
+            start_lba = start_byte_offset // geom.bytes_per_sector
         except (ValueError, IndexError):
             return b"\x00" * num_sectors * geom.bytes_per_sector
 
@@ -181,7 +182,8 @@ def mock_fs_setup() -> Generator[tuple[FATFilesystem, dict[str, Any]], None, Non
         """Mocks writing sectors to an in-memory cache and updates core data structures."""
         geom = mock_disk_geometry
         try:
-            start_lba = geom.chs_to_lba(start_c, start_h, start_s)
+            start_byte_offset = geom.chs_to_byte_offset(start_c, start_h, start_s)
+            start_lba = start_byte_offset // geom.bytes_per_sector
         except (ValueError, IndexError):
             return
 
