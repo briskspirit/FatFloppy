@@ -90,7 +90,7 @@ def test_set_physical_format(driver_setup: DriverSetupFixture) -> None:
 def test_read_sector(driver_setup: DriverSetupFixture) -> None:
     """Test reading a single sector from the disk image."""
     driver, _, bytes_per_sector, _ = driver_setup
-    boot_sector = driver.read_sector(0, 0, 1)
+    boot_sector = driver.read_sector(0, 0, 0)
     assert len(boot_sector) == bytes_per_sector
     assert boot_sector[510:512] == b"\x55\xaa"
 
@@ -99,7 +99,7 @@ def test_write_sector_and_flush(driver_setup: DriverSetupFixture) -> None:
     """Test writing data to a sector and flushing changes to the file."""
     driver, test_img_path, bytes_per_sector, physical_format = driver_setup
     test_data = b"TEST" + b"\xee" * (bytes_per_sector - 4)
-    cyl, head, sect = 5, 1, 3
+    cyl, head, sect = 5, 1, 2
 
     driver.write_sector(cyl, head, sect, test_data)
     assert driver.dirty is True
@@ -120,7 +120,7 @@ def test_read_beyond_image_size(driver_setup: DriverSetupFixture) -> None:
     """Test that reading beyond the defined geometry raises an error."""
     driver, _, bytes_per_sector, physical_format = driver_setup
     invalid_cyl = physical_format.cylinders
-    invalid_head, invalid_sect = 0, 1
+    invalid_head, invalid_sect = 0, 0
 
     disk = Disk(driver)
     disk.set_geometry(physical_format)
@@ -131,7 +131,7 @@ def test_read_beyond_image_size(driver_setup: DriverSetupFixture) -> None:
 
     last_valid_c = physical_format.cylinders - 1
     last_valid_h = physical_format.heads - 1
-    last_valid_s = physical_format.get_sectors_per_track(last_valid_c, last_valid_h)
+    last_valid_s = physical_format.get_sectors_per_track(last_valid_c, last_valid_h) - 1
     last_sector_data = driver.read_sector(last_valid_c, last_valid_h, last_valid_s)
     assert len(last_sector_data) == bytes_per_sector
 
@@ -144,7 +144,7 @@ def test_write_within_bounds(driver_setup: DriverSetupFixture) -> None:
 
     last_cyl = physical_format.cylinders - 1
     last_head = physical_format.heads - 1
-    last_sect = physical_format.get_sectors_per_track(last_cyl, last_head)
+    last_sect = physical_format.get_sectors_per_track(last_cyl, last_head) - 1
     driver.write_sector(last_cyl, last_head, last_sect, test_data)
     driver.flush()
 
@@ -157,16 +157,16 @@ def test_write_within_bounds(driver_setup: DriverSetupFixture) -> None:
     with pytest.raises(
         ValueError, match=f"No TrackFormat for cylinder {invalid_cyl}, head 0"
     ):
-        driver.write_sector(invalid_cyl, 0, 1, test_data)
+        driver.write_sector(invalid_cyl, 0, 0, test_data)
 
     invalid_head = physical_format.heads
     with pytest.raises(
         ValueError, match=f"No TrackFormat for cylinder 0, head {invalid_head}"
     ):
-        driver.write_sector(0, invalid_head, 1, test_data)
+        driver.write_sector(0, invalid_head, 0, test_data)
 
     max_spt = physical_format.get_sectors_per_track(0, 0)
-    invalid_sect = max_spt + 1
+    invalid_sect = max_spt  # Index equal to count is out of bounds
     with pytest.raises(
         ValueError, match=f"Invalid sector access: Sector {invalid_sect} out of range"
     ):
@@ -192,7 +192,7 @@ def test_write_invalid_sector_size(driver_setup: DriverSetupFixture) -> None:
     driver.set_physical_format(invalid_geom)
 
     with pytest.raises(ValueError, match="Invalid sector size: 0"):
-        driver.write_sector(0, 0, 1, b"")
+        driver.write_sector(0, 0, 0, b"")
 
     driver.set_physical_format(original_format)
 
@@ -201,7 +201,7 @@ def test_flush_io_error(driver_setup: DriverSetupFixture) -> None:
     """Test that an IOError during flush is handled correctly."""
     driver, _, bytes_per_sector, _ = driver_setup
 
-    driver.write_sector(0, 0, 1, b"\xaa" * bytes_per_sector)
+    driver.write_sector(0, 0, 0, b"\xaa" * bytes_per_sector)
     assert driver.dirty
 
     with patch("pathlib.Path.open", mock_open()) as mocked_file:

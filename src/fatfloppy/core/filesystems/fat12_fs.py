@@ -613,7 +613,7 @@ class FATFilesystem(Filesystem):
             boot_sector_config.volume_label = "NO NAME".ljust(11)
 
         boot_sector_bytes = boot_sector_config.to_bytes()
-        self.disk.write_sector(0, 0, 1, boot_sector_bytes)
+        self.disk.write_sector(0, 0, 0, boot_sector_bytes)
         self.logger.info("Wrote boot sector")
 
         fat_size_bytes = (
@@ -883,7 +883,7 @@ class FATFilesystem(Filesystem):
 
         score = 0
         try:
-            boot_sector_data = self.disk.read_sector(0, 0, 1)
+            boot_sector_data = self.disk.read_sector(0, 0, 0)
             if not boot_sector_data:
                 return 0
 
@@ -1665,7 +1665,7 @@ class FATFilesystem(Filesystem):
     def _load_boot_sector(self) -> None:
         """Reads sector 0 and attempts to parse it as a FAT boot sector."""
         try:
-            boot_sector_data = self.disk.read_sector(0, 0, 1)
+            boot_sector_data = self.disk.read_sector(0, 0, 0)
             if not boot_sector_data:
                 self.logger.error("Boot sector read returned empty data.")
                 self.boot_sector = None

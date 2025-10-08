@@ -50,26 +50,42 @@ class Disk:
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number.
+            sector: The logical sector index (0-based, sequential within track).
 
         Returns:
-            A bytes object containing the sector data. The data is padded with
-            zeros or truncated to match the expected sector size.
+            A bytes object containing the sector data.
 
         Raises:
             ValueError: If the disk geometry has not been set.
             IOError: If the read operation fails at the driver level.
         """
-        self._validate_chs(cylinder, head, sector)
-        self.logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector}")
+        if not self.physical_format:
+            raise ValueError("Disk geometry not set")
+
+        self.physical_format.validate_chs(cylinder, head, sector)
+        self.logger.debug(f"Reading sector C:{cylinder} H:{head} LS:{sector}")
+
         try:
-            bytes_per_sector = self.physical_format.get_bytes_per_sector(cylinder, head)
+            track_format = self.physical_format.get_track_format(cylinder, head)
+            bytes_per_sector = track_format.bytes_per_sector
+
             physical_head = (
                 self.physical_format.get_physical_head(head)
                 if getattr(self.driver, "uses_physical_heads", False)
                 else head
             )
-            data = self.driver.read_sector(cylinder, physical_head, sector)
+
+            uses_sector_metadata = getattr(self.driver, "uses_sector_metadata", False)
+
+            if uses_sector_metadata:
+                sector_param = track_format.logical_to_physical_sector(sector)
+                self.logger.debug(
+                    f"Metadata driver: translating LS:{sector} → PS:{sector_param}"
+                )
+            else:
+                sector_param = sector
+
+            data = self.driver.read_sector(cylinder, physical_head, sector_param)
 
             if len(data) < bytes_per_sector:
                 data += bytes(bytes_per_sector - len(data))
@@ -78,11 +94,11 @@ class Disk:
             return data
         except Exception as e:
             self.logger.error(
-                f"Failed to read sector C:{cylinder} H:{head} S:{sector}: {e}",
+                f"Failed to read sector C:{cylinder} H:{head} LS:{sector}: {e}",
                 exc_info=True,
             )
             raise OSError(
-                f"Failed to read sector C:{cylinder} H:{head} S:{sector}"
+                f"Failed to read sector C:{cylinder} H:{head} LS:{sector}"
             ) from e
 
     def read_sectors(
@@ -94,7 +110,7 @@ class Disk:
         Args:
             start_cylinder: The starting cylinder number.
             start_head: The starting head number.
-            start_sector: The starting sector number.
+            start_sector: The starting logical sector index (0-based).
             num_sectors: The total number of sectors to read.
 
         Returns:
@@ -116,12 +132,11 @@ class Disk:
         cylinder, head, sector = start_cylinder, start_head, start_sector
 
         for _ in range(num_sectors):
-            self.physical_format.validate_chs(cylinder, head, sector)
             result.extend(self.read_sector(cylinder, head, sector))
 
             sector += 1
-            if sector > self.physical_format.get_sectors_per_track(cylinder, head):
-                sector = 1
+            if sector >= self.physical_format.get_sectors_per_track(cylinder, head):
+                sector = 0
                 head += 1
                 if head >= self.physical_format.heads:
                     head = 0
@@ -163,7 +178,7 @@ class Disk:
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number.
+            sector: The logical sector index (0-based, sequential within track).
             data: The byte data to write. Must match the sector size.
 
         Raises:
@@ -171,26 +186,43 @@ class Disk:
                 disk geometry is not set.
             IOError: If the write operation fails at the driver level.
         """
-        self._validate_chs(cylinder, head, sector)
-        bytes_per_sector = self.physical_format.get_bytes_per_sector(cylinder, head)
+        if not self.physical_format:
+            raise ValueError("Disk geometry not set")
+
+        self.physical_format.validate_chs(cylinder, head, sector)
+
+        track_format = self.physical_format.get_track_format(cylinder, head)
+        bytes_per_sector = track_format.bytes_per_sector
+
         if len(data) != bytes_per_sector:
             raise ValueError(f"Data size {len(data)} != sector size {bytes_per_sector}")
 
-        self.logger.debug(f"Writing sector C:{cylinder} H:{head} S:{sector}")
+        self.logger.debug(f"Writing sector C:{cylinder} H:{head} LS:{sector}")
         try:
             physical_head = (
                 self.physical_format.get_physical_head(head)
                 if getattr(self.driver, "uses_physical_heads", False)
                 else head
             )
-            self.driver.write_sector(cylinder, physical_head, sector, data)
+
+            uses_sector_metadata = getattr(self.driver, "uses_sector_metadata", False)
+
+            if uses_sector_metadata:
+                sector_param = track_format.logical_to_physical_sector(sector)
+                self.logger.debug(
+                    f"Metadata driver: translating LS:{sector} → PS:{sector_param}"
+                )
+            else:
+                sector_param = sector
+
+            self.driver.write_sector(cylinder, physical_head, sector_param, data)
         except Exception as e:
             self.logger.error(
-                f"Failed to write sector C:{cylinder} H:{head} S:{sector}: {e}",
+                f"Failed to write sector C:{cylinder} H:{head} LS:{sector}: {e}",
                 exc_info=True,
             )
             raise OSError(
-                f"Failed to write sector C:{cylinder} H:{head} S:{sector}"
+                f"Failed to write sector C:{cylinder} H:{head} LS:{sector}"
             ) from e
 
     def write_sectors(
@@ -202,7 +234,7 @@ class Disk:
         Args:
             start_cylinder: The starting cylinder number.
             start_head: The starting head number.
-            start_sector: The starting sector number.
+            start_sector: The starting logical sector index (0-based).
             data: The byte data to write. If the data length is not a multiple
                 of the sector size, it will be padded with zeros.
 
@@ -222,7 +254,6 @@ class Disk:
         data_pos = 0
 
         while data_pos < len(data):
-            self.physical_format.validate_chs(cylinder, head, sector)
             bytes_per_sector = self.physical_format.get_bytes_per_sector(cylinder, head)
 
             chunk = data[data_pos : data_pos + bytes_per_sector]
@@ -233,26 +264,9 @@ class Disk:
             data_pos += bytes_per_sector
 
             sector += 1
-            if sector > self.physical_format.get_sectors_per_track(cylinder, head):
-                sector = 1
+            if sector >= self.physical_format.get_sectors_per_track(cylinder, head):
+                sector = 0
                 head += 1
                 if head >= self.physical_format.heads:
                     head = 0
                     cylinder += 1
-
-    def _validate_chs(self, cylinder: int, head: int, sector: int) -> None:
-        """
-        Validates CHS coordinates against the current physical format.
-
-        Args:
-            cylinder: The cylinder number to validate.
-            head: The head number to validate.
-            sector: The sector number to validate.
-
-        Raises:
-            ValueError: If disk geometry is not set.
-            IndexError: If any CHS value is out of bounds.
-        """
-        if not self.physical_format:
-            raise ValueError("Disk geometry not set")
-        self.physical_format.validate_chs(cylinder, head, sector)

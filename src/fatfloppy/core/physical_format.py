@@ -87,6 +87,10 @@ class TrackFormat:
                 f"Logical sector index {logical_index} out of range "
                 f"(0-{self.sectors_per_track - 1})"
             )
+
+        if self.sector_translation_table is None:
+            self.sector_translation_table = self._build_translation_table()
+
         return self.sector_translation_table[logical_index]
 
     def matches(self, cylinder: int, head: int) -> bool:
@@ -123,7 +127,7 @@ class TrackFormat:
         idx = 0
 
         for i in range(spt):
-            order.append(start_id + idx)
+            order.append(start_id + idx)  # Store sector ID
             used[idx] = True
             if i < spt - 1:
                 idx = (idx + interleave) % spt
@@ -261,7 +265,7 @@ class PhysicalFormat:
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number (logical sector number, 1-based with id_start).
+            sector: The logical sector index (0-based, sequential within track).
 
         Returns:
             The calculated byte offset.
@@ -279,9 +283,14 @@ class PhysicalFormat:
             byte_offset += tf.sectors_per_track * tf.bytes_per_sector
 
         tf = self.get_track_format(cylinder, head)
-        sector_index = sector - tf.id_start
 
-        byte_offset += sector_index * tf.bytes_per_sector
+        if tf.sector_translation_table is None:
+            tf.sector_translation_table = tf._build_translation_table()
+
+        physical_sector_id = tf.sector_translation_table[sector]
+        file_position = physical_sector_id - tf.id_start
+
+        byte_offset += file_position * tf.bytes_per_sector
         return byte_offset
 
     def get_bytes_per_sector(self, cylinder: int, head: int) -> int:
@@ -349,7 +358,8 @@ class PhysicalFormat:
             lba: The LBA to convert.
 
         Returns:
-            A tuple containing the (cylinder, head, sector).
+            A tuple containing (cylinder, head, logical_sector_index) where
+            logical_sector_index is 0-based and sequential within the track.
 
         Raises:
             ValueError: If the LBA is out of range.
@@ -369,8 +379,7 @@ class PhysicalFormat:
                 spt = tf.sectors_per_track
                 if sector_count + spt > lba:
                     sector_offset = lba - sector_count
-                    sector = tf.id_start + sector_offset
-                    return c, h, sector
+                    return c, h, sector_offset
                 sector_count += spt
         raise ValueError("LBA conversion failed unexpectedly.")
 
@@ -381,7 +390,7 @@ class PhysicalFormat:
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number (physical sector ID).
+            sector: The logical sector index (0-based, sequential within track).
 
         Raises:
             ValueError: If any CHS value is out of range.
@@ -391,11 +400,9 @@ class PhysicalFormat:
 
         track_format = self.get_track_format(cylinder, head)
         max_sectors = track_format.sectors_per_track
-        id_start = track_format.id_start
 
-        if not (id_start <= sector < id_start + max_sectors):
+        if not (0 <= sector < max_sectors):
             raise ValueError(
-                f"Sector {sector} out of range "
-                f"({id_start}-{id_start + max_sectors - 1}) "
+                f"Sector {sector} out of range (0-{max_sectors - 1}) "
                 f"for C:{cylinder} H:{head}"
             )

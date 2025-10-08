@@ -890,9 +890,9 @@ class DiskController:
         """
         Copies all sectors to preserve disk layout.
 
-        Reads sectors from source (using sector IDs), writes to target.
-        The sector IDs and their order are what matter - drivers handle
-        their own physical layout internally.
+        Reads sectors from source using logical indices, writes to target.
+        The logical sector indices and their order are what matter - drivers
+        handle their own physical layout internally.
 
         Args:
             target_disk: The target Disk instance.
@@ -921,36 +921,37 @@ class DiskController:
                     continue
 
                 sectors_per_track = track_format.sectors_per_track
-                id_start = track_format.id_start
 
-                for sector_offset in range(sectors_per_track):
-                    sector_id = id_start + sector_offset
-
+                # Iterate through logical sector indices (0-based, sequential)
+                for logical_sector_index in range(sectors_per_track):
                     try:
-                        sector_data = self.disk.read_sector(cylinder, head, sector_id)
+                        # Read using logical sector index
+                        sector_data = self.disk.read_sector(
+                            cylinder, head, logical_sector_index
+                        )
 
                         if sector_data is None or len(sector_data) == 0:
-                            self.logger.info(
-                                f"DEBUG: C:{cylinder} H:{head} S:{sector_id} - First 16 bytes: "
-                                f"{sector_data[:16].hex() if sector_data else 'None'}"
-                            )
                             bytes_per_sector = track_format.bytes_per_sector
                             sector_data = bytes(bytes_per_sector)
                             self.logger.debug(
                                 f"Padded unavailable sector C:{cylinder} H:{head} "
-                                f"S:{sector_id}"
+                                f"LS:{logical_sector_index}"
                             )
 
-                        target_disk.write_sector(cylinder, head, sector_id, sector_data)
+                        # Write using logical sector index
+                        target_disk.write_sector(
+                            cylinder, head, logical_sector_index, sector_data
+                        )
                         total_sectors += 1
 
                     except Exception as e:
                         self.logger.error(
                             f"Failed to copy sector C:{cylinder} H:{head} "
-                            f"S:{sector_id}: {e}"
+                            f"LS:{logical_sector_index}: {e}"
                         )
                         raise OSError(
-                            f"Sector copy failed at C:{cylinder} H:{head} S:{sector_id}"
+                            f"Sector copy failed at C:{cylinder} H:{head} "
+                            f"LS:{logical_sector_index}"
                         ) from e
 
                 if (cylinder + 1) % 10 == 0 or cylinder == cylinders - 1:

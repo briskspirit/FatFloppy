@@ -170,6 +170,8 @@ class IMDImageDriver(DiskIODriver):
     driver_description: ClassVar[str] = "ImageDisk format driver"
     driver_priority: ClassVar[int] = 50
 
+    uses_sector_metadata = True
+
     def __init__(self, file_path: str):
         """
         Initializes the IMDImageDriver.

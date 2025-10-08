@@ -31,11 +31,7 @@ def disk_setup(tmp_path: Path) -> Generator[tuple[Disk, PhysicalFormat], None, N
     """
     Sets up an in-memory disk with a defined geometry and test data.
 
-    Args:
-        tmp_path: The pytest temporary path fixture.
-
-    Yields:
-        Tuple containing the initialized Disk object and its PhysicalFormat.
+    FIXED: Changed to use 0-based logical sector indices.
     """
     track_fmt = TrackFormat(
         track_start=0,
@@ -64,7 +60,7 @@ def disk_setup(tmp_path: Path) -> Generator[tuple[Disk, PhysicalFormat], None, N
     for c in range(phys_fmt.cylinders):
         for h in range(phys_fmt.heads):
             spt = phys_fmt.get_sectors_per_track(c, h)
-            for s in range(1, spt + 1):
+            for s in range(spt):
                 try:
                     offset = phys_fmt.chs_to_byte_offset(c, h, s)
                     sector_val = c * 100 + h * 10 + s
@@ -86,10 +82,10 @@ def disk_setup(tmp_path: Path) -> Generator[tuple[Disk, PhysicalFormat], None, N
 def test_read_sectors_single_track(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """Tests reading multiple sectors that are all on the same track."""
     disk, phys_fmt = disk_setup
-    c, h, start_s, num_s = 0, 1, 1, 2
+    c, h, start_s, num_s = 0, 1, 0, 2
     expected_len = num_s * phys_fmt.bytes_per_sector
-    expected_data = bytes([11] * phys_fmt.bytes_per_sector) + bytes(
-        [12] * phys_fmt.bytes_per_sector
+    expected_data = bytes([10] * phys_fmt.bytes_per_sector) + bytes(
+        [11] * phys_fmt.bytes_per_sector
     )
 
     read_data = disk.read_sectors(c, h, start_s, num_s)
@@ -101,12 +97,12 @@ def test_read_sectors_single_track(disk_setup: tuple[Disk, PhysicalFormat]) -> N
 def test_read_sectors_span_track(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """Tests reading multiple sectors that span across a head/track boundary."""
     disk, phys_fmt = disk_setup
-    c, h, start_s, num_s = 0, 0, 2, 3
+    c, h, start_s, num_s = 0, 0, 1, 3
     expected_len = num_s * phys_fmt.bytes_per_sector
     expected_data = (
-        bytes([2] * phys_fmt.bytes_per_sector)
-        + bytes([3] * phys_fmt.bytes_per_sector)
-        + bytes([11] * phys_fmt.bytes_per_sector)
+        bytes([1] * phys_fmt.bytes_per_sector)
+        + bytes([2] * phys_fmt.bytes_per_sector)
+        + bytes([10] * phys_fmt.bytes_per_sector)
     )
 
     read_data = disk.read_sectors(c, h, start_s, num_s)
@@ -118,10 +114,10 @@ def test_read_sectors_span_track(disk_setup: tuple[Disk, PhysicalFormat]) -> Non
 def test_read_sectors_span_cylinder(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """Tests reading multiple sectors that span across a cylinder boundary."""
     disk, phys_fmt = disk_setup
-    c, h, start_s, num_s = 0, 1, 3, 2
+    c, h, start_s, num_s = 0, 1, 2, 2
     expected_len = num_s * phys_fmt.bytes_per_sector
-    expected_data = bytes([13] * phys_fmt.bytes_per_sector) + bytes(
-        [101] * phys_fmt.bytes_per_sector
+    expected_data = bytes([12] * phys_fmt.bytes_per_sector) + bytes(
+        [100] * phys_fmt.bytes_per_sector
     )
 
     read_data = disk.read_sectors(c, h, start_s, num_s)
@@ -133,7 +129,7 @@ def test_read_sectors_span_cylinder(disk_setup: tuple[Disk, PhysicalFormat]) -> 
 def test_write_sectors_single_track(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     """Tests writing multiple sectors that are all on the same track."""
     disk, phys_fmt = disk_setup
-    c, h, start_s = 1, 0, 1
+    c, h, start_s = 1, 0, 0
     bytes_per_sector = phys_fmt.bytes_per_sector
     write_data = bytes([0xAA] * bytes_per_sector) + bytes([0xBB] * bytes_per_sector)
     disk.write_sector = MagicMock()
@@ -141,8 +137,8 @@ def test_write_sectors_single_track(disk_setup: tuple[Disk, PhysicalFormat]) -> 
     disk.write_sectors(c, h, start_s, write_data)
 
     expected_calls = [
-        call(1, 0, 1, bytes([0xAA] * bytes_per_sector)),
-        call(1, 0, 2, bytes([0xBB] * bytes_per_sector)),
+        call(1, 0, 0, bytes([0xAA] * bytes_per_sector)),
+        call(1, 0, 1, bytes([0xBB] * bytes_per_sector)),
     ]
     disk.write_sector.assert_has_calls(expected_calls)
     assert disk.write_sector.call_count == 2
@@ -153,7 +149,7 @@ def test_write_sectors_span_track_cylinder(
 ) -> None:
     """Tests writing multiple sectors spanning track and cylinder boundaries."""
     disk, phys_fmt = disk_setup
-    c, h, start_s = 0, 1, 2
+    c, h, start_s = 0, 1, 1
     bytes_per_sector = phys_fmt.bytes_per_sector
     write_data = (
         bytes([0x11] * bytes_per_sector)
@@ -165,21 +161,18 @@ def test_write_sectors_span_track_cylinder(
     disk.write_sectors(c, h, start_s, write_data)
 
     expected_calls = [
-        call(0, 1, 2, bytes([0x11] * bytes_per_sector)),
-        call(0, 1, 3, bytes([0x22] * bytes_per_sector)),
-        call(1, 0, 1, bytes([0x33] * bytes_per_sector)),
+        call(0, 1, 1, bytes([0x11] * bytes_per_sector)),
+        call(0, 1, 2, bytes([0x22] * bytes_per_sector)),
+        call(1, 0, 0, bytes([0x33] * bytes_per_sector)),
     ]
     disk.write_sector.assert_has_calls(expected_calls)
     assert disk.write_sector.call_count == 3
 
 
 def test_write_sectors_padding(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
-    """
-    Tests that writing data smaller than a full number of sectors correctly
-    pads the final sector with zeros.
-    """
+    """Tests padding of partial sectors."""
     disk, phys_fmt = disk_setup
-    c, h, start_s = 1, 1, 1
+    c, h, start_s = 1, 1, 0
     bytes_per_sector = phys_fmt.bytes_per_sector
     partial_data_len = bytes_per_sector + 50
     write_data = bytes([0xCC] * partial_data_len)
@@ -191,93 +184,83 @@ def test_write_sectors_padding(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
     disk.write_sectors(c, h, start_s, write_data)
 
     expected_calls = [
-        call(1, 1, 1, expected_s1_data),
-        call(1, 1, 2, expected_s2_data),
+        call(1, 1, 0, expected_s1_data),
+        call(1, 1, 1, expected_s2_data),
     ]
     disk.write_sector.assert_has_calls(expected_calls)
     assert disk.write_sector.call_count == 2
 
 
 def test_error_no_geometry_read(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
-    """
-    Tests that read operations fail with a ValueError if disk geometry is not set.
-    """
+    """Tests that read operations fail with a ValueError if disk geometry is not set."""
     disk_no_geom = Disk(disk_setup[0].driver)
     assert disk_no_geom.physical_format is None
 
     with pytest.raises(ValueError, match="Disk geometry not set"):
-        disk_no_geom.read_sector(0, 0, 1)
+        disk_no_geom.read_sector(0, 0, 0)
 
     with pytest.raises(ValueError, match="Disk geometry not set"):
-        disk_no_geom.read_sectors(0, 0, 1, 1)
+        disk_no_geom.read_sectors(0, 0, 0, 1)
 
 
 def test_error_no_geometry_write(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
-    """
-    Tests that write operations fail with a ValueError if disk geometry is not set.
-    """
+    """Tests that write operations fail with a ValueError if disk geometry is not set."""
     disk_no_geom = Disk(disk_setup[0].driver)
     assert disk_no_geom.physical_format is None
     bytes_per_sector = disk_setup[1].bytes_per_sector
     data = b"\x00" * bytes_per_sector
 
     with pytest.raises(ValueError, match="Disk geometry not set"):
-        disk_no_geom.write_sector(0, 0, 1, data)
+        disk_no_geom.write_sector(0, 0, 0, data)
 
     with pytest.raises(ValueError, match="Disk geometry not set"):
-        disk_no_geom.write_sectors(0, 0, 1, data)
+        disk_no_geom.write_sectors(0, 0, 0, data)
 
 
 def test_error_invalid_address_read(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
-    """
-    Tests that read operations fail with ValueError for out-of-bounds CHS addresses.
-    """
+    """Tests that read operations fail with ValueError for out-of-bounds CHS addresses."""
     disk, phys_fmt = disk_setup
 
-    with pytest.raises(ValueError, match=f"Invalid CHS: {phys_fmt.cylinders}, 0, 1"):
-        disk.read_sector(phys_fmt.cylinders, 0, 1)
+    # Test out-of-bounds cylinder
+    with pytest.raises(ValueError, match=f"Invalid CHS: {phys_fmt.cylinders}, 0, 0"):
+        disk.read_sector(phys_fmt.cylinders, 0, 0)
 
-    with pytest.raises(ValueError, match=f"Invalid CHS: 0, {phys_fmt.heads}, 1"):
-        disk.read_sector(0, phys_fmt.heads, 1)
+    # Test out-of-bounds head
+    with pytest.raises(ValueError, match=f"Invalid CHS: 0, {phys_fmt.heads}, 0"):
+        disk.read_sector(0, phys_fmt.heads, 0)
 
-    with pytest.raises(ValueError, match="Sector 0 out of range"):
-        disk.read_sector(0, 0, 0)
-
+    # Test out-of-bounds sector (index >= count)
     max_spt = phys_fmt.get_sectors_per_track(0, 0)
-    with pytest.raises(ValueError, match=f"Sector {max_spt + 1} out of range"):
-        disk.read_sector(0, 0, max_spt + 1)
+    with pytest.raises(ValueError, match=f"Sector {max_spt} out of range"):
+        disk.read_sector(0, 0, max_spt)
 
 
 def test_error_invalid_address_write(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
-    """
-    Tests that write operations fail with ValueError for out-of-bounds CHS addresses.
-    """
+    """Tests that write operations fail with ValueError for out-of-bounds CHS addresses."""
     disk, phys_fmt = disk_setup
     data = b"\x00" * phys_fmt.bytes_per_sector
 
-    with pytest.raises(ValueError, match=f"Invalid CHS: {phys_fmt.cylinders}, 0, 1"):
-        disk.write_sector(phys_fmt.cylinders, 0, 1, data)
+    # Test out-of-bounds cylinder
+    with pytest.raises(ValueError, match=f"Invalid CHS: {phys_fmt.cylinders}, 0, 0"):
+        disk.write_sector(phys_fmt.cylinders, 0, 0, data)
 
-    with pytest.raises(ValueError, match=f"Invalid CHS: 0, {phys_fmt.heads}, 1"):
-        disk.write_sector(0, phys_fmt.heads, 1, data)
+    # Test out-of-bounds head
+    with pytest.raises(ValueError, match=f"Invalid CHS: 0, {phys_fmt.heads}, 0"):
+        disk.write_sector(0, phys_fmt.heads, 0, data)
 
-    with pytest.raises(ValueError, match="Sector 0 out of range"):
-        disk.write_sector(0, 0, 0, data)
-
+    # Test out-of-bounds sector (index >= count)
     max_spt = phys_fmt.get_sectors_per_track(0, 0)
-    with pytest.raises(ValueError, match=f"Sector {max_spt + 1} out of range"):
-        disk.write_sector(0, 0, max_spt + 1, data)
+    with pytest.raises(ValueError, match=f"Sector {max_spt} out of range"):
+        disk.write_sector(0, 0, max_spt, data)
 
 
 def test_error_invalid_write_size(disk_setup: tuple[Disk, PhysicalFormat]) -> None:
-    """
-    Tests that write_sector fails if the data size does not match the sector size.
-    """
+    """Tests that write_sector fails if the data size does not match the sector size."""
     disk, phys_fmt = disk_setup
     error_match = "Data size .* != sector size .*"
 
     with pytest.raises(ValueError, match=error_match):
-        disk.write_sector(0, 0, 1, b"\x00" * (phys_fmt.bytes_per_sector - 1))
+        disk.write_sector(0, 0, 0, b"\x00" * (phys_fmt.bytes_per_sector - 1))
 
     with pytest.raises(ValueError, match=error_match):
-        disk.write_sector(0, 0, 1, b"\x00" * (phys_fmt.bytes_per_sector + 1))
+        disk.write_sector(0, 0, 0, b"\x00" * (phys_fmt.bytes_per_sector + 1))

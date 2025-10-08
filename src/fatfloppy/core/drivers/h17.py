@@ -199,6 +199,8 @@ class H17ImageDriver(DiskIODriver):
     driver_description: ClassVar[str] = "Heathkit H17 Disk Image Driver"
     driver_priority: ClassVar[int] = 50
 
+    uses_sector_metadata = True
+
     def __init__(self, file_path: str):
         """
         Initializes the H17ImageDriver.

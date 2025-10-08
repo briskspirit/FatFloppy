@@ -452,13 +452,15 @@ class CPMFilesystem(Filesystem):
             spt = self.disk.physical_format.get_sectors_per_track(phys_cyl, phys_head)
             bps = self.disk.physical_format.get_bytes_per_sector(phys_cyl, phys_head)
             fill_data = bytes([CPM_DELETED_ENTRY_MARKER] * bps)
-            for s in range(1, spt + 1):
+            for logical_sector_index in range(spt):
                 try:
-                    self.disk.write_sector(phys_cyl, phys_head, s, fill_data)
+                    self.disk.write_sector(
+                        phys_cyl, phys_head, logical_sector_index, fill_data
+                    )
                 except Exception as e:
                     self.logger.error(
                         f"Error writing to reserved track {i} "
-                        f"(C:{phys_cyl} H:{phys_head} S:{s}): {e}"
+                        f"(C:{phys_cyl} H:{phys_head} LS:{logical_sector_index}): {e}"
                     )
                     raise OSError("Failed to clear system tracks during format") from e
 
@@ -1443,38 +1445,39 @@ class CPMFilesystem(Filesystem):
             logical_sectors_left -= spt
             current_cpm_track += 1
 
-    def _map_logical_to_physical_sector(
+    def _map_logical_to_sector_location(
         self, cpm_track: int, logical_sector_on_track: int
     ) -> tuple[int, int, int, int]:
         """
-        Maps a logical sector address to its physical disk location.
+        Maps a CP/M logical 128-byte sector to its location on disk.
 
         Args:
             cpm_track: The CP/M track number.
-            logical_sector_on_track: The logical sector number on the track.
+            logical_sector_on_track: The CP/M logical sector number on the track.
 
         Returns:
-            A tuple of (phys_cyl, phys_head, phys_sector_id, offset_in_phys).
+            A tuple of (phys_cyl, phys_head, logical_sector_index, offset_in_sector)
+            where logical_sector_index is the 0-based sequential sector on the track.
 
         Raises:
-            ValueError: If the physical index exceeds the translation table length.
+            ValueError: If the logical sector exceeds available physical sectors.
         """
         phys_cyl, phys_head = self._cpm_track_to_chs_coords(cpm_track)
         tf = self.disk.physical_format.get_track_format(phys_cyl, phys_head)
 
         phys_bps = tf.bytes_per_sector
         log_per_phys = phys_bps // CPM_SECTOR_SIZE
-        phys_index = logical_sector_on_track // log_per_phys
-        offset_in_phys = (logical_sector_on_track % log_per_phys) * CPM_SECTOR_SIZE
 
-        order = tf.sector_translation_table
-        if phys_index >= len(order):
+        logical_sector_index = logical_sector_on_track // log_per_phys
+        offset_in_sector = (logical_sector_on_track % log_per_phys) * CPM_SECTOR_SIZE
+
+        if logical_sector_index >= tf.sectors_per_track:
             raise ValueError(
-                f"Physical index {phys_index} exceeds order length {len(order)}."
+                f"Logical sector index {logical_sector_index} exceeds "
+                f"sectors per track {tf.sectors_per_track}."
             )
-        phys_sector_id = order[phys_index]
 
-        return phys_cyl, phys_head, phys_sector_id, offset_in_phys
+        return phys_cyl, phys_head, logical_sector_index, offset_in_sector
 
     def _parse_cpm_path(self, path: str) -> tuple[int, str]:
         """
@@ -1673,7 +1676,7 @@ class CPMFilesystem(Filesystem):
 
         Raises:
             ValueError: If disk or physical format is not available, or if the
-                       logical sector exceeds the SPT for the track.
+                    logical sector exceeds the SPT for the track.
         """
         if not self.disk or not self.disk.physical_format:
             raise ValueError("Disk or physical format not available.")
@@ -1682,12 +1685,14 @@ class CPMFilesystem(Filesystem):
                 f"Logical sector {logical_sector_on_track} exceeds SPT for CP/M track {cpm_track}."
             )
 
-        phys_cyl, phys_head, phys_sector_id, offset_in_phys = (
-            self._map_logical_to_physical_sector(cpm_track, logical_sector_on_track)
+        phys_cyl, phys_head, logical_sector_index, offset_in_sector = (
+            self._map_logical_to_sector_location(cpm_track, logical_sector_on_track)
+        )
+        phys_sector_data = self.disk.read_sector(
+            phys_cyl, phys_head, logical_sector_index
         )
 
-        phys_sector_data = self.disk.read_sector(phys_cyl, phys_head, phys_sector_id)
-        return phys_sector_data[offset_in_phys : offset_in_phys + CPM_SECTOR_SIZE]
+        return phys_sector_data[offset_in_sector : offset_in_sector + CPM_SECTOR_SIZE]
 
     def _try_derive_dpb(self) -> bool:
         """
@@ -1802,8 +1807,8 @@ class CPMFilesystem(Filesystem):
 
         Raises:
             ValueError: If the DPB, disk, or physical format is not available,
-                       or if the data size is incorrect, or if the logical sector
-                       exceeds the SPT for the track.
+                    or if the data size is incorrect, or if the logical sector
+                    exceeds the SPT for the track.
             IOError: If reading the physical sector returns 0 bytes.
         """
         if not self.dpb or not self.disk or not self.disk.physical_format:
@@ -1817,18 +1822,20 @@ class CPMFilesystem(Filesystem):
                 f"Logical sector {logical_sector_on_track} exceeds SPT for CP/M track {cpm_track}."
             )
 
-        phys_cyl, phys_head, phys_sector_id, offset_in_phys = (
-            self._map_logical_to_physical_sector(cpm_track, logical_sector_on_track)
+        phys_cyl, phys_head, logical_sector_index, offset_in_sector = (
+            self._map_logical_to_sector_location(cpm_track, logical_sector_on_track)
         )
-
-        phys_sector_data = self.disk.read_sector(phys_cyl, phys_head, phys_sector_id)
+        phys_sector_data = self.disk.read_sector(
+            phys_cyl, phys_head, logical_sector_index
+        )
         if len(phys_sector_data) == 0:
             raise OSError(
-                f"Read 0 bytes from physical sector C:{phys_cyl} H:{phys_head} S:{phys_sector_id}"
+                f"Read 0 bytes from physical sector C:{phys_cyl} H:{phys_head} "
+                f"LS:{logical_sector_index}"
             )
 
         phys_sector_data = bytearray(phys_sector_data)
-        phys_sector_data[offset_in_phys : offset_in_phys + CPM_SECTOR_SIZE] = data
+        phys_sector_data[offset_in_sector : offset_in_sector + CPM_SECTOR_SIZE] = data
         self.disk.write_sector(
-            phys_cyl, phys_head, phys_sector_id, bytes(phys_sector_data)
+            phys_cyl, phys_head, logical_sector_index, bytes(phys_sector_data)
         )

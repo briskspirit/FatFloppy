@@ -59,6 +59,8 @@ class MITSDSKDriver(DiskIODriver):
     driver_description: ClassVar[str] = "MITS Altair DSK format driver"
     driver_priority: ClassVar[int] = 100
 
+    uses_sector_metadata = True
+
     def __init__(self, file_path: str, image_data: Optional[bytes] = None):
         """
         Initializes the MITSDSKDriver.
