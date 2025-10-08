@@ -312,10 +312,6 @@ class IMGFormatDetector(FormatDetector):
 
         for geometry_key, profiles in geometry_groups.items():
             cyls, heads, spt, bps, encoding, rate = geometry_key
-            expected_size = cyls * heads * spt * bps
-
-            if abs(image_size - expected_size) > SIZE_TOLERANCE_BYTES:
-                continue
 
             logger.debug(
                 f"Testing geometry group: {cyls}C x {heads}H x {spt}S x {bps}B "
@@ -324,6 +320,13 @@ class IMGFormatDetector(FormatDetector):
 
             for profile in profiles:
                 try:
+                    # Use the profile's actual total_bytes calculation
+                    # This handles variable BPS formats correctly
+                    expected_size = profile.physical_format.total_bytes
+
+                    if abs(image_size - expected_size) > SIZE_TOLERANCE_BYTES:
+                        continue
+
                     temp_format = copy.deepcopy(profile.physical_format)
                     self.disk.set_geometry(temp_format)
 
