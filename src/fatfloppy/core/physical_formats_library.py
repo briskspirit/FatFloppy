@@ -31,7 +31,6 @@ def create_8inch_sssd_base(
         rpm=360,
         heads_inverted=False,
         bytes_per_sector=bytes_per_sector,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -70,7 +69,6 @@ def create_8inch_dssd_base(
         rpm=360,
         heads_inverted=False,
         bytes_per_sector=bytes_per_sector,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -109,7 +107,6 @@ def create_8inch_ssdd_base(
         rpm=360,
         heads_inverted=False,
         bytes_per_sector=bytes_per_sector,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -148,7 +145,6 @@ def create_8inch_dsdd_base(
         rpm=360,
         heads_inverted=False,
         bytes_per_sector=bytes_per_sector,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -188,7 +184,6 @@ def create_525_sssd_base(
         rpm=300,
         heads_inverted=False,
         bytes_per_sector=bytes_per_sector,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -227,7 +222,6 @@ def create_525_dssd_base(
         rpm=300,
         heads_inverted=False,
         bytes_per_sector=bytes_per_sector,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -266,7 +260,6 @@ def create_525_ssdd_base(
         rpm=300,
         heads_inverted=False,
         bytes_per_sector=bytes_per_sector,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -305,7 +298,6 @@ def create_525_dsdd_base(
         rpm=300,
         heads_inverted=False,
         bytes_per_sector=bytes_per_sector,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -341,7 +333,6 @@ def create_525_dshd_base(sectors_per_track: int = 15) -> PhysicalFormat:
         rpm=360,
         heads_inverted=False,
         bytes_per_sector=512,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -377,7 +368,6 @@ def create_35_ssdd_base(sectors_per_track: int = 9) -> PhysicalFormat:
         rpm=300,
         heads_inverted=False,
         bytes_per_sector=512,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -413,7 +403,6 @@ def create_35_dsdd_base(sectors_per_track: int = 9) -> PhysicalFormat:
         rpm=300,
         heads_inverted=False,
         bytes_per_sector=512,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -452,7 +441,6 @@ def create_35_dshd_base(
         rpm=300,
         heads_inverted=False,
         bytes_per_sector=512,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -488,7 +476,6 @@ def create_35_dsed_base(sectors_per_track: int = 36) -> PhysicalFormat:
         rpm=300,
         heads_inverted=False,
         bytes_per_sector=512,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,

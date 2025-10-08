@@ -101,7 +101,7 @@ class MetadataBasedDetector(FormatDetector, ABC):
         return False
 
     def _match_to_known_profile(
-        self, physical_format: PhysicalFormat, fs_config: Any
+        self, physical_format: PhysicalFormat, fs_config: Any, strict: bool = True
     ) -> Optional[str]:
         """
         Attempts to match the detected format to a known profile.
@@ -109,6 +109,7 @@ class MetadataBasedDetector(FormatDetector, ABC):
         Args:
             physical_format: The detected physical format
             fs_config: The detected filesystem configuration
+            strict: If False, uses lenient matching (ignores rate differences)
 
         Returns:
             The name of the matching profile, or None if no match found
@@ -117,7 +118,7 @@ class MetadataBasedDetector(FormatDetector, ABC):
             if not profile.physical_format:
                 continue
             if not self._physical_formats_match(
-                profile.physical_format, physical_format
+                profile.physical_format, physical_format, strict=strict
             ):
                 continue
             if self._filesystem_configs_match(
@@ -149,19 +150,21 @@ class MetadataBasedDetector(FormatDetector, ABC):
         return None
 
     def _physical_formats_match(
-        self, profile_pf: PhysicalFormat, detected_pf: PhysicalFormat
+        self,
+        profile_pf: PhysicalFormat,
+        detected_pf: PhysicalFormat,
+        strict: bool = True,
     ) -> bool:
         """
-        Checks if two physical formats match exactly (including rate).
-
-        Overrides base class to properly handle variable BPS formats.
+        Checks if two physical formats match exactly.
 
         Args:
             profile_pf: Physical format from the profile
             detected_pf: Detected physical format
+            strict: If False, ignores rate differences (lenient matching for IMD)
 
         Returns:
-            True if the formats match exactly
+            True if the formats match
         """
         if (
             profile_pf.cylinders != detected_pf.cylinders
@@ -190,15 +193,10 @@ class MetadataBasedDetector(FormatDetector, ABC):
                 or tf_profile.sectors_per_track != tf_detected.sectors_per_track
                 or tf_profile.bytes_per_sector != tf_detected.bytes_per_sector
                 or tf_profile.encoding.upper() != tf_detected.encoding.upper()
-                or tf_profile.rate != tf_detected.rate
             ):
                 return False
 
-            if (
-                not profile_pf.image_in_sector_id_order
-                and tf_profile.sector_translation_table
-                != tf_detected.sector_translation_table
-            ):
+            if strict and tf_profile.rate != tf_detected.rate:
                 return False
 
         return True

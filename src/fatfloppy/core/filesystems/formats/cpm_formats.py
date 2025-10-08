@@ -180,7 +180,6 @@ def _create_8inch_ssdd_imsai_mixed() -> PhysicalFormat:
         rpm=360,
         heads_inverted=False,
         bytes_per_sector=128,
-        image_in_sector_id_order=True,
         track_formats=[
             TrackFormat(
                 track_start=0,
@@ -232,7 +231,6 @@ def _create_mits_altair_variants() -> list[tuple[str, PhysicalFormat]]:
         rpm=360,
         heads_inverted=False,
         bytes_per_sector=128,
-        image_in_sector_id_order=False,
         track_formats=[
             TrackFormat(
                 track_start=0,

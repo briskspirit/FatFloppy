@@ -706,7 +706,7 @@ class IMDImageDriver(DiskIODriver):
         end: int,
         props: tuple[str, int, int, int, int],
         max_head_idx: int,
-        sector_translation_table: Optional[list[int]] = None,  # NEW PARAMETER
+        sector_translation_table: Optional[list[int]] = None,
     ) -> None:
         """
         Helper to create and add a TrackFormat object to a list.
@@ -790,7 +790,7 @@ class IMDImageDriver(DiskIODriver):
                         cyl - 1,
                         prev_props,
                         max_head_idx,
-                        prev_sector_map,  # NEW: Pass sector map
+                        prev_sector_map,
                     )
                 current_start_cyl = cyl + 1
                 prev_props = None
@@ -807,7 +807,7 @@ class IMDImageDriver(DiskIODriver):
             )
 
             current_props = (encoding, rate, spt, bps, track_info.mode)
-            current_sector_map = track_info.sector_num_map  # NEW: Get sector map
+            current_sector_map = track_info.sector_num_map
 
             if prev_props is not None and (
                 current_props != prev_props or current_sector_map != prev_sector_map
@@ -848,19 +848,6 @@ class IMDImageDriver(DiskIODriver):
         all_bps = {tf.bytes_per_sector for tf in track_formats}
         disk_bps = list(all_bps)[0] if len(all_bps) == 1 else IMD_FALLBACK_BPS
 
-        # Determine image_in_sector_id_order based on sector translation table
-        # If any track has non-sequential sector ordering, the source format
-        # likely stored sectors in physical order (image_in_sector_id_order=False)
-        image_in_sector_id_order = True
-        for tf in track_formats:
-            if tf.sector_translation_table:
-                expected_sequential = list(
-                    range(tf.id_start, tf.id_start + tf.sectors_per_track)
-                )
-                if tf.sector_translation_table != expected_sequential:
-                    image_in_sector_id_order = False
-                    break
-
         self.physical_format = PhysicalFormat(
             cylinders=max_cyl_idx + 1,
             heads=max_head_idx + 1,
@@ -868,13 +855,11 @@ class IMDImageDriver(DiskIODriver):
             heads_inverted=False,
             bytes_per_sector=disk_bps,
             track_formats=track_formats,
-            image_in_sector_id_order=image_in_sector_id_order,
         )
         self.logger.info(
             f"Derived format: Cyls={self.physical_format.cylinders}, "
             f"Heads={self.physical_format.heads}, RPM={rpm}, "
-            f"Variable BPS={len(all_bps) > 1}, "
-            f"Sector ID order={image_in_sector_id_order}"
+            f"Variable BPS={len(all_bps) > 1}"
         )
 
     def _get_sector_size(

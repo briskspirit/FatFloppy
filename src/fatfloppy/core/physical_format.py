@@ -104,26 +104,6 @@ class TrackFormat:
             and self.head_start <= head <= self.head_end
         )
 
-    def physical_to_logical_sector(self, physical_id: int) -> int:
-        """
-        Converts a physical sector ID to a logical sector index (0-based).
-
-        Args:
-            physical_id: The physical sector ID
-
-        Returns:
-            The 0-based logical index
-
-        Raises:
-            ValueError: If physical_id is not found in translation table
-        """
-        try:
-            return self.sector_translation_table.index(physical_id)
-        except ValueError:
-            raise ValueError(
-                f"Physical sector ID {physical_id} not found in translation table"
-            ) from None
-
     def _build_translation_table(self) -> list[int]:
         """
         Builds a sector translation table based on interleave.
@@ -167,8 +147,6 @@ class PhysicalFormat:
         heads_inverted: Whether the head numbering is physically inverted.
         bytes_per_sector: The default size of a sector in bytes.
         track_formats: A list of TrackFormat objects describing the disk's layout.
-        image_in_sector_id_order: Whether a raw image is laid out by sector ID
-                                  or by physical position on the track.
     """
 
     cylinders: int
@@ -177,7 +155,6 @@ class PhysicalFormat:
     heads_inverted: bool
     bytes_per_sector: int
     track_formats: list[TrackFormat]
-    image_in_sector_id_order: bool = True
 
     def __post_init__(self) -> None:
         """
@@ -281,13 +258,10 @@ class PhysicalFormat:
         """
         Converts CHS coordinates to a byte offset from the start of the disk image.
 
-        This calculation uses the sector_translation_table to determine physical
-        ordering when image_in_sector_id_order is False.
-
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number (physical sector ID).
+            sector: The sector number (logical sector number, 1-based with id_start).
 
         Returns:
             The calculated byte offset.
@@ -305,11 +279,7 @@ class PhysicalFormat:
             byte_offset += tf.sectors_per_track * tf.bytes_per_sector
 
         tf = self.get_track_format(cylinder, head)
-
-        if self.image_in_sector_id_order:
-            sector_index = sector - tf.id_start
-        else:
-            sector_index = tf.physical_to_logical_sector(sector)
+        sector_index = sector - tf.id_start
 
         byte_offset += sector_index * tf.bytes_per_sector
         return byte_offset
