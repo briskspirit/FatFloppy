@@ -559,7 +559,6 @@ class MITSDSKDriver(DiskIODriver):
             rate=MITS_RATE,
             interleave=1,
             bytes_per_sector=MITS_LOGICAL_SECTOR_SIZE,
-            id_start=1,
             iam_present=False,
             gap3_bytes=MITS_GAP3_BYTES,
         )

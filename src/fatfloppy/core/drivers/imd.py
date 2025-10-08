@@ -748,7 +748,6 @@ class IMDImageDriver(DiskIODriver):
             interleave=interleave,
             bytes_per_sector=bps,
             sector_translation_table=sector_translation_table,
-            id_start=1,
             iam_present=iam_present,
             gap1_bytes=None,
             gap2_bytes=None,

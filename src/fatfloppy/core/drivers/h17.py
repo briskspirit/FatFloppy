@@ -68,7 +68,6 @@ H17_HEADER_SYNC = 0xFD
 H17_DATA_SYNC = 0xFD
 
 H17_GAP3_BYTES = 26
-H17_ID_START = 1
 H17_INTERLEAVE = 1
 
 DISTRIBUTION_UNKNOWN = 0
@@ -919,7 +918,6 @@ class H17ImageDriver(DiskIODriver):
             rate=H17_BIT_RATE,
             interleave=H17_INTERLEAVE,
             bytes_per_sector=H17_BYTES_PER_SECTOR,
-            id_start=H17_ID_START,
             iam_present=False,
             gap3_bytes=H17_GAP3_BYTES,
         )

@@ -902,7 +902,6 @@ class HDOSFilesystem(Filesystem):
                             "FM",
                             250,
                             1,
-                            id_start=1,
                         )
                     ],
                 ),

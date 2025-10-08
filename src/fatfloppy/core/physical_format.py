@@ -35,7 +35,8 @@ class TrackFormat:
         sector_translation_table: An optional explicit mapping of logical to
                                   physical sector IDs. If None, will be auto-generated
                                   from interleave during __post_init__.
-        id_start: The starting sector ID number (usually 0 or 1).
+        id_start: The starting sector ID number (usually 0 or 1), only for physical
+                   drivers like Greaseweazle.
         iam_present: Whether an Index Address Mark is present.
         gap1_bytes, gap2_bytes, gap3_bytes: Optional gap sizes in bytes.
         cskew, hskew: Optional cylinder and head skew values.
@@ -241,7 +242,6 @@ class PhysicalFormat:
             encoding="MFM",
             rate=500,
             interleave=1,
-            id_start=1,
             iam_present=True,
             gap3_bytes=84,
         )

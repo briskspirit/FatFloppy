@@ -1018,7 +1018,6 @@ class DiskController:
             encoding="MFM",
             rate=500,
             interleave=1,
-            id_start=1,
             iam_present=True,
             gap3_bytes=84,
         )
@@ -1047,7 +1046,6 @@ class DiskController:
             encoding=format_info.get("encoding", default_track_format.encoding),
             rate=format_info.get("rate", default_track_format.rate),
             interleave=format_info.get("interleave", default_track_format.interleave),
-            id_start=format_info.get("id_start", default_track_format.id_start),
             iam_present=format_info.get(
                 "iam_present", default_track_format.iam_present
             ),

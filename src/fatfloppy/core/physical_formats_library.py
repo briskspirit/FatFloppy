@@ -40,7 +40,6 @@ def create_8inch_sssd_base(
                 sectors_per_track=sectors_per_track,
                 encoding="FM",
                 rate=250,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=26,
             )
@@ -78,7 +77,6 @@ def create_8inch_dssd_base(
                 sectors_per_track=sectors_per_track,
                 encoding="FM",
                 rate=250,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=26,
             )
@@ -116,7 +114,6 @@ def create_8inch_ssdd_base(
                 sectors_per_track=sectors_per_track,
                 encoding="MFM",
                 rate=500,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=54,
             )
@@ -154,7 +151,6 @@ def create_8inch_dsdd_base(
                 sectors_per_track=sectors_per_track,
                 encoding="MFM",
                 rate=500,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=54,
             )
@@ -193,7 +189,6 @@ def create_525_sssd_base(
                 sectors_per_track=sectors_per_track,
                 encoding="FM",
                 rate=250,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=30,
             )
@@ -231,7 +226,6 @@ def create_525_dssd_base(
                 sectors_per_track=sectors_per_track,
                 encoding="FM",
                 rate=250,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=30,
             )
@@ -269,7 +263,6 @@ def create_525_ssdd_base(
                 sectors_per_track=sectors_per_track,
                 encoding="MFM",
                 rate=250,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=84,
             )
@@ -307,7 +300,6 @@ def create_525_dsdd_base(
                 sectors_per_track=sectors_per_track,
                 encoding="MFM",
                 rate=250,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=84,
             )
@@ -342,7 +334,6 @@ def create_525_dshd_base(sectors_per_track: int = 15) -> PhysicalFormat:
                 sectors_per_track=sectors_per_track,
                 encoding="MFM",
                 rate=500,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=84,
             )
@@ -377,7 +368,6 @@ def create_35_ssdd_base(sectors_per_track: int = 9) -> PhysicalFormat:
                 sectors_per_track=sectors_per_track,
                 encoding="MFM",
                 rate=250,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=84,
             )
@@ -412,7 +402,6 @@ def create_35_dsdd_base(sectors_per_track: int = 9) -> PhysicalFormat:
                 sectors_per_track=sectors_per_track,
                 encoding="MFM",
                 rate=250,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=84,
             )
@@ -450,7 +439,6 @@ def create_35_dshd_base(
                 sectors_per_track=sectors_per_track,
                 encoding="MFM",
                 rate=500,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=84,
             )
@@ -485,7 +473,6 @@ def create_35_dsed_base(sectors_per_track: int = 36) -> PhysicalFormat:
                 sectors_per_track=sectors_per_track,
                 encoding="MFM",
                 rate=1000,
-                id_start=1,
                 iam_present=True,
                 gap3_bytes=41,
             )
