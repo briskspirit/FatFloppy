@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QMainWindow, QMessageBox
 
 from ...core.controller import DiskController
 from ...core.filesystem_registry import FilesystemRegistry
+from ..dialogs import SaveAsDialog
 
 
 class DiskManager(QObject):
@@ -286,6 +287,98 @@ class DiskManager(QObject):
                 "Error", f"Failed to open physical floppy: {str(e)}"
             )
             self.logger.exception("Unexpected error opening physical floppy.")
+
+    def save_as_disk_image(self) -> None:
+        """Opens dialog to save current disk image to a different format/location."""
+
+        if not self.parent.controller or not self.parent.controller.disk:
+            QMessageBox.warning(
+                self.parent,
+                "No Disk Open",
+                "No disk is currently open to save.",
+            )
+            self.logger.warning("Save As called with no disk open.")
+            return
+
+        current_source = getattr(self.parent.controller.driver, "file_path", "unknown")
+        current_driver_type = self.parent.controller.driver.driver_type
+
+        self.logger.debug(
+            f"Opening Save As dialog (current: {current_source}, "
+            f"type: {current_driver_type})"
+        )
+
+        dialog = SaveAsDialog(current_source, current_driver_type, self.parent)
+        if not dialog.exec():
+            self.logger.debug("Save As dialog cancelled.")
+            return
+
+        try:
+            target_path, target_driver_type = dialog.get_selection()
+            self.logger.info(
+                f"Save As: target={target_path}, format={target_driver_type}"
+            )
+        except ValueError as e:
+            QMessageBox.warning(self.parent, "Warning", str(e))
+            self.logger.warning(f"Invalid Save As selection: {e}")
+            return
+
+        if Path(target_path).exists():
+            reply = QMessageBox.question(
+                self.parent,
+                "Overwrite File?",
+                f"The file '{Path(target_path).name}' already exists.\n"
+                "Do you want to overwrite it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self.logger.debug("Save As cancelled - user declined overwrite.")
+                return
+
+        volume_label = None
+        if self.parent.controller.filesystem:
+            try:
+                volume_label = self.parent.controller.filesystem.get_volume_label()
+                self.logger.debug(f"Current volume label: {volume_label}")
+            except Exception as e:
+                self.logger.warning(f"Could not get volume label: {e}")
+
+        try:
+            self.status_message.emit(
+                f"Saving disk image as {target_driver_type}: "
+                f"{Path(target_path).name}..."
+            )
+
+            success = self.parent.controller.export_disk(
+                target_path=target_path,
+                target_disk_type=target_driver_type,
+                volume_label=volume_label,
+            )
+
+            if success:
+                self.logger.info(f"Successfully saved disk image to: {target_path}")
+                self.status_message.emit(f"Saved as: {Path(target_path).name}")
+                QMessageBox.information(
+                    self.parent,
+                    "Success",
+                    f"Disk image successfully saved as:\n{target_path}",
+                )
+                self.parent.settings_manager.add_to_recent_files(target_path)
+                self._finalize_disk_open(target_path, is_image=True)
+            else:
+                self.error_occurred.emit(
+                    "Error",
+                    "Failed to save disk image. Check logs for details.",
+                )
+                self.logger.error(f"Failed to save disk image to: {target_path}")
+
+        except Exception as e:
+            self.error_occurred.emit(
+                "Error",
+                f"An error occurred while saving disk image:\n{str(e)}",
+            )
+            self.logger.exception("Error during Save As operation.")
 
     def toggle_head(self) -> None:
         """

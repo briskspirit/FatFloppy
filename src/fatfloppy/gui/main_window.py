@@ -282,6 +282,11 @@ class FileBrowserApp(QMainWindow):
         self.logger.debug("UI reset complete.")
 
     @pyqtSlot()
+    def save_as_disk_image(self) -> None:
+        """Delegates to DiskManager."""
+        self.disk_manager.save_as_disk_image()
+
+    @pyqtSlot()
     def save_file(self) -> bool:
         """
         Delegates to EditorManager.
@@ -733,6 +738,13 @@ class FileBrowserApp(QMainWindow):
 
         self.recent_files_menu = QMenu("Recent Files", self)
         file_menu.addMenu(self.recent_files_menu)
+
+        save_as_action = QAction("Save As...", self)
+        save_as_action.setToolTip(
+            "Save current disk image to a different format or location"
+        )
+        save_as_action.triggered.connect(self.save_as_disk_image)
+        file_menu.addAction(save_as_action)
 
         file_menu.addSeparator()
 

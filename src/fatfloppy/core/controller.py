@@ -1,3 +1,5 @@
+# src/fatfloppy/core/controller.py
+import contextlib
 import copy
 from pathlib import Path
 from typing import Any, Optional
@@ -306,6 +308,114 @@ class DiskController:
             if profile and profile.physical_format:
                 return profile.physical_format
         return None
+
+    def export_disk(
+        self,
+        target_path: str,
+        target_disk_type: str,
+        _volume_label: Optional[str] = None,
+    ) -> bool:
+        """
+        Exports the currently open disk to a different format, preserving physical layout.
+
+        Copies all sectors in physical order from the current disk to a new image file,
+        preserving interleaving and sector ordering, then closes source and opens target.
+
+        Args:
+            target_path: Path where the exported image should be created.
+            target_disk_type: Type of target format (IMG, IMD, H17, etc.).
+            _volume_label: Optional volume label (currently unused).
+
+        Returns:
+            True if export succeeded and target was opened, False otherwise.
+
+        Raises:
+            ValueError: If no disk is open or target format is invalid.
+            IOError: If the export operation fails.
+        """
+        if not self.disk or not self.driver or not self.physical_format:
+            raise ValueError("No disk currently open to export")
+
+        source_path = getattr(self.driver, "file_path", None)
+        source_type = self.driver.driver_type
+
+        if source_type == target_disk_type and source_path:
+            return self._export_same_format(source_path, target_path, target_disk_type)
+
+        if Path(target_path).exists():
+            self.logger.warning(f"Target file '{target_path}' will be overwritten")
+
+        self.logger.info(
+            f"Exporting {source_type} → {target_disk_type}: "
+            f"{source_path or 'memory'} → {target_path}"
+        )
+
+        source_geometry = copy.deepcopy(self.physical_format)
+        source_filesystem_config = self.active_filesystem_config
+
+        try:
+            target_driver = DriverFactory.create(target_disk_type, source=target_path)
+
+            if not target_driver.supports_new_image_creation:
+                raise ValueError(
+                    f"{target_disk_type} driver does not support creating new images"
+                )
+
+            if hasattr(target_driver, "initialize_new_image"):
+                profile = FormatProfile(
+                    name="export_temp",
+                    description="Temporary profile for export",
+                    physical_format=source_geometry,
+                    filesystem_config=source_filesystem_config,
+                )
+                target_driver.initialize_new_image(source_geometry, profile)
+
+            target_disk = Disk(target_driver)
+            target_disk.set_geometry(source_geometry)
+
+            total_sectors = self._copy_sectors_preserving_layout(
+                target_disk, source_geometry
+            )
+
+            if hasattr(target_driver, "flush"):
+                target_driver.flush()
+
+            self.logger.info(
+                f"Successfully copied {total_sectors} sectors to {target_path}"
+            )
+
+            self.close_disk()
+
+            format_info = {"physical_format": source_geometry}
+            if source_filesystem_config:
+                format_info["filesystem_config"] = source_filesystem_config
+
+            success = self.open_disk(
+                source=target_path,
+                disk_type=target_disk_type,
+                format_info=format_info,
+            )
+
+            if success:
+                self.logger.info(f"Export complete. Now using {target_path}")
+            else:
+                self.logger.error(
+                    f"Export succeeded but failed to reopen {target_path}"
+                )
+
+            return success
+
+        except Exception as e:
+            self.logger.exception(f"Export failed: {e}")
+            if Path(target_path).exists():
+                try:
+                    Path(target_path).unlink()
+                    self.logger.info(f"Cleaned up partial file: {target_path}")
+                except Exception as cleanup_error:
+                    self.logger.warning(
+                        f"Could not clean up {target_path}: {cleanup_error}"
+                    )
+            raise OSError(f"Failed to export disk: {e}") from e
 
     def flush(self) -> None:
         """
@@ -710,7 +820,22 @@ class DiskController:
         physical_format = None
         filesystem_config = None
 
-        if "format_name" in format_info:
+        if "physical_format" in format_info:
+            physical_format = format_info["physical_format"]
+            if not isinstance(physical_format, PhysicalFormat):
+                raise ValueError(
+                    "'physical_format' key must contain a PhysicalFormat object"
+                )
+            self.logger.debug("Using directly provided PhysicalFormat object")
+
+            if "filesystem_config" in format_info:
+                filesystem_config = format_info["filesystem_config"]
+                self.logger.debug(
+                    f"Using directly provided filesystem config: "
+                    f"{type(filesystem_config).__name__}"
+                )
+
+        elif "format_name" in format_info:
             profile = self.get_format_by_name(format_info["format_name"])
             if profile:
                 physical_format = profile.physical_format
@@ -719,9 +844,7 @@ class DiskController:
                     f"Resolved format from profile: {format_info['format_name']}"
                 )
 
-        if not physical_format and any(
-            k in format_info for k in ["cylinders", "heads", "sectors_per_track"]
-        ):
+        elif any(k in format_info for k in ["cylinders", "heads", "sectors_per_track"]):
             physical_format = self._create_physical_format(format_info)
             self.logger.debug("Created custom physical format from parameters")
 
@@ -760,6 +883,83 @@ class DiskController:
         except Exception as e:
             self.logger.error(f"Error applying user format: {e}")
             raise ValueError(f"Failed to apply format: {e}") from e
+
+    def _copy_sectors_preserving_layout(
+        self, target_disk: Disk, geometry: PhysicalFormat
+    ) -> int:
+        """
+        Copies all sectors to preserve disk layout.
+
+        Reads sectors from source (using sector IDs), writes to target.
+        The sector IDs and their order are what matter - drivers handle
+        their own physical layout internally.
+
+        Args:
+            target_disk: The target Disk instance.
+            geometry: The PhysicalFormat containing layout information.
+
+        Returns:
+            Total number of sectors copied.
+
+        Raises:
+            IOError: If sector operations fail.
+        """
+        total_sectors = 0
+        cylinders = geometry.cylinders
+        heads = geometry.heads
+
+        self.logger.info(f"Copying disk: {cylinders} cylinders, {heads} heads")
+
+        for cylinder in range(cylinders):
+            for head in range(heads):
+                try:
+                    track_format = geometry.get_track_format(cylinder, head)
+                except ValueError:
+                    self.logger.warning(
+                        f"No track format for C:{cylinder} H:{head}, skipping"
+                    )
+                    continue
+
+                sectors_per_track = track_format.sectors_per_track
+                id_start = track_format.id_start
+
+                for sector_offset in range(sectors_per_track):
+                    sector_id = id_start + sector_offset
+
+                    try:
+                        sector_data = self.disk.read_sector(cylinder, head, sector_id)
+
+                        if sector_data is None or len(sector_data) == 0:
+                            self.logger.info(
+                                f"DEBUG: C:{cylinder} H:{head} S:{sector_id} - First 16 bytes: "
+                                f"{sector_data[:16].hex() if sector_data else 'None'}"
+                            )
+                            bytes_per_sector = track_format.bytes_per_sector
+                            sector_data = bytes(bytes_per_sector)
+                            self.logger.debug(
+                                f"Padded unavailable sector C:{cylinder} H:{head} "
+                                f"S:{sector_id}"
+                            )
+
+                        target_disk.write_sector(cylinder, head, sector_id, sector_data)
+                        total_sectors += 1
+
+                    except Exception as e:
+                        self.logger.error(
+                            f"Failed to copy sector C:{cylinder} H:{head} "
+                            f"S:{sector_id}: {e}"
+                        )
+                        raise OSError(
+                            f"Sector copy failed at C:{cylinder} H:{head} S:{sector_id}"
+                        ) from e
+
+                if (cylinder + 1) % 10 == 0 or cylinder == cylinders - 1:
+                    self.logger.debug(
+                        f"Export progress: cylinder {cylinder + 1}/{cylinders} "
+                        f"({total_sectors} sectors copied)"
+                    )
+
+        return total_sectors
 
     def _create_filesystem_with_config(self) -> Optional[Filesystem]:
         """
@@ -926,6 +1126,127 @@ class DiskController:
             self.active_filesystem_config = None
             return False
 
+    def _export_same_format(
+        self, source_path: str, target_path: str, disk_type: str
+    ) -> bool:
+        """
+        Handles export when source and target formats are the same.
+
+        Simply copies the file and reopens it - no sector-level operations needed.
+
+        Args:
+            source_path: Source file path.
+            target_path: Target file path.
+            disk_type: Disk type for both source and target.
+
+        Returns:
+            True if successful.
+
+        Raises:
+            IOError: If file operations fail.
+        """
+        self.logger.info(
+            f"Same format export ({disk_type}): copying file and reopening"
+        )
+
+        format_info = None
+        if self.physical_format:
+            format_info = {"physical_format": copy.deepcopy(self.physical_format)}
+            if self.active_filesystem_config:
+                format_info["filesystem_config"] = self.active_filesystem_config
+
+        try:
+            self.close_disk()
+
+            import shutil
+
+            shutil.copy2(source_path, target_path)
+            self.logger.info(f"Copied {source_path} → {target_path}")
+
+            success = self.open_disk(
+                source=target_path,
+                disk_type=disk_type,
+                format_info=format_info,
+            )
+
+            if success:
+                self.logger.info(f"Reopened {target_path}")
+            else:
+                self.logger.error(f"Failed to reopen {target_path}")
+
+            return success
+
+        except Exception as e:
+            self.logger.error(f"Same-format export failed: {e}")
+            if Path(target_path).exists() and target_path != source_path:
+                with contextlib.suppress(Exception):
+                    Path(target_path).unlink()
+            raise OSError(f"Export failed: {e}") from e
+
+    def _find_matching_format_by_geometry(
+        self, physical_format: PhysicalFormat
+    ) -> Optional[FormatProfile]:
+        """
+        Attempts to find a matching format profile by comparing physical geometry
+        including sector translation tables and variable bytes_per_sector.
+
+        Args:
+            physical_format: The PhysicalFormat to match.
+
+        Returns:
+            The matching FormatProfile, or None if no match found.
+        """
+        for profile in self.known_formats.values():
+            if not profile.physical_format:
+                continue
+
+            pf = profile.physical_format
+
+            if (
+                pf.cylinders != physical_format.cylinders
+                or pf.heads != physical_format.heads
+            ):
+                continue
+
+            if (
+                not pf.has_variable_bps
+                and not physical_format.has_variable_bps
+                and pf.bytes_per_sector != physical_format.bytes_per_sector
+            ):
+                continue
+
+            if len(pf.track_formats) != len(physical_format.track_formats):
+                continue
+
+            all_match = True
+            for tf1, tf2 in zip(pf.track_formats, physical_format.track_formats):
+                if (
+                    tf1.track_start != tf2.track_start
+                    or tf1.track_end != tf2.track_end
+                    or tf1.sectors_per_track != tf2.sectors_per_track
+                    or tf1.bytes_per_sector != tf2.bytes_per_sector
+                ):
+                    all_match = False
+                    break
+
+                if tf1.encoding.upper() != tf2.encoding.upper():
+                    all_match = False
+                    break
+
+                if (
+                    not pf.image_in_sector_id_order
+                    and tf1.sector_translation_table != tf2.sector_translation_table
+                ):
+                    all_match = False
+                    break
+
+            if all_match:
+                self.logger.info(f"Found exact geometry match: {profile.name}")
+                return profile
+
+        self.logger.debug("No exact geometry match found")
+        return None
+
     def _format_existing_disk(self, format_name: str, volume_label: str) -> bool:
         """
         Formats an already-open disk.
@@ -1084,6 +1405,57 @@ class DiskController:
             except Exception as e:
                 self.logger.error(f"Failed to apply user format override: {e}")
                 return False
+        else:
+            self.logger.info(
+                "No explicit format provided, attempting to match derived geometry "
+                "against known formats"
+            )
+            try:
+                format_name, fs_config, _ = self.detect_format()
+                if format_name:
+                    self.logger.info(
+                        f"Matched derived geometry to format: {format_name}"
+                    )
+                    self._cached_format_name = format_name
+                if fs_config:
+                    self.active_filesystem_config = fs_config
+                    self.logger.info(
+                        f"Found filesystem config: {type(fs_config).__name__}"
+                    )
+
+                if not fs_config and self.driver.physical_format:
+                    self.logger.info(
+                        "Standard detection failed, attempting deep geometry match "
+                        "with sector translation tables"
+                    )
+                    matched_format = self._find_matching_format_by_geometry(
+                        self.driver.physical_format
+                    )
+                    if matched_format:
+                        self.logger.info(
+                            f"Deep match found format: {matched_format.name}"
+                        )
+                        self._cached_format_name = matched_format.name
+                        if matched_format.filesystem_config:
+                            self.active_filesystem_config = (
+                                matched_format.filesystem_config
+                            )
+                            self.logger.info(
+                                f"Using filesystem config from matched format: "
+                                f"{type(matched_format.filesystem_config).__name__}"
+                            )
+
+                        if matched_format.physical_format:
+                            self.logger.info(
+                                "Applying matched format's PhysicalFormat to correct "
+                                "any discrepancies in IMD-derived format"
+                            )
+                            self.set_geometry(matched_format.physical_format)
+
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not match derived geometry to known format: {e}"
+                )
 
         return True
 
@@ -1177,6 +1549,33 @@ class DiskController:
             return None
 
         return profile
+
+    def _track_ranges_compatible(
+        self, track_formats1: list[TrackFormat], track_formats2: list[TrackFormat]
+    ) -> bool:
+        """
+        Checks if two lists of track formats cover the same tracks.
+
+        Args:
+            track_formats1: First list of track formats.
+            track_formats2: Second list of track formats.
+
+        Returns:
+            True if both cover the same tracks.
+        """
+        covered1 = set()
+        for tf in track_formats1:
+            for c in range(tf.track_start, tf.track_end + 1):
+                for h in range(tf.head_start, tf.head_end + 1):
+                    covered1.add((c, h))
+
+        covered2 = set()
+        for tf in track_formats2:
+            for c in range(tf.track_start, tf.track_end + 1):
+                for h in range(tf.head_start, tf.head_end + 1):
+                    covered2.add((c, h))
+
+        return covered1 == covered2
 
     def _try_auto_detection(self) -> bool:
         """

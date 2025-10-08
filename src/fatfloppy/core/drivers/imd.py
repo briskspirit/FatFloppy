@@ -323,7 +323,7 @@ class IMDImageDriver(DiskIODriver):
                 sector_map = (
                     track_info.sector_num_map
                     if track_info and len(track_info.sector_num_map) == spt
-                    else list(range(1, spt + 1))
+                    else track_format.sector_translation_table
                 )
                 head_flags = (
                     (head & IMD_HEAD_FLAG_HEAD_MASK)
@@ -458,6 +458,13 @@ class IMDImageDriver(DiskIODriver):
                     continue
 
                 spt = track_format.sectors_per_track
+                sector_num_map = track_format.sector_translation_table
+                track_info = IMDTrackInfo(
+                    mode, cyl, head & IMD_HEAD_FLAG_HEAD_MASK, spt, size_code
+                )
+                track_info.sector_num_map = sector_num_map
+                self.tracks[(cyl, head)] = track_info
+
                 self.image_data.extend(
                     struct.pack(
                         "<BBBBB",
@@ -468,7 +475,8 @@ class IMDImageDriver(DiskIODriver):
                         size_code,
                     )
                 )
-                self.image_data.extend(struct.pack(f"<{spt}B", *range(1, spt + 1)))
+                self.image_data.extend(struct.pack(f"<{spt}B", *sector_num_map))
+
                 for _ in range(spt):
                     self.image_data.extend([IMD_SECTOR_COMPRESSED, fill_byte])
 
@@ -698,6 +706,7 @@ class IMDImageDriver(DiskIODriver):
         end: int,
         props: tuple[str, int, int, int, int],
         max_head_idx: int,
+        sector_translation_table: Optional[list[int]] = None,  # NEW PARAMETER
     ) -> None:
         """
         Helper to create and add a TrackFormat object to a list.
@@ -708,10 +717,25 @@ class IMDImageDriver(DiskIODriver):
             end: The ending cylinder for this format.
             props: A tuple of (encoding, rate, spt, bps, mode).
             max_head_idx: The maximum head index for this format range.
+            sector_translation_table: Optional sector translation table from IMD.
         """
         encoding, rate, spt, bps, _ = props
-        interleave = IMD_INTERLEAVE_FM if encoding == "FM" else IMD_INTERLEAVE_MFM
-        gap3_bytes = IMD_GAP3_FM if encoding == "FM" else IMD_GAP3_MFM
+
+        if sector_translation_table:
+            expected_sequential = list(range(1, spt + 1))
+            is_custom_ordering = sector_translation_table != expected_sequential
+        else:
+            is_custom_ordering = False
+
+        if is_custom_ordering:
+            # Custom sector ordering - use minimal defaults
+            interleave = 1
+            iam_present = False
+            gap3_bytes = 0
+        else:
+            interleave = IMD_INTERLEAVE_FM if encoding == "FM" else IMD_INTERLEAVE_MFM
+            iam_present = True
+            gap3_bytes = IMD_GAP3_FM if encoding == "FM" else IMD_GAP3_MFM
 
         tf = TrackFormat(
             track_start=start,
@@ -723,8 +747,9 @@ class IMDImageDriver(DiskIODriver):
             rate=rate,
             interleave=interleave,
             bytes_per_sector=bps,
+            sector_translation_table=sector_translation_table,
             id_start=1,
-            iam_present=True,
+            iam_present=iam_present,
             gap1_bytes=None,
             gap2_bytes=None,
             gap3_bytes=gap3_bytes,
@@ -738,6 +763,7 @@ class IMDImageDriver(DiskIODriver):
         Derives the PhysicalFormat from the parsed track data.
 
         Groups contiguous tracks with identical properties into TrackFormat definitions.
+        Preserves the sector_num_map from the IMD as sector_translation_table.
 
         Args:
             max_cyl_idx: The maximum cylinder index found in the image.
@@ -750,6 +776,7 @@ class IMDImageDriver(DiskIODriver):
         track_formats: list[TrackFormat] = []
         current_start_cyl = 0
         prev_props = None
+        prev_sector_map = None
 
         for cyl in range(max_cyl_idx + 1):
             key = (cyl, 0)
@@ -763,9 +790,11 @@ class IMDImageDriver(DiskIODriver):
                         cyl - 1,
                         prev_props,
                         max_head_idx,
+                        prev_sector_map,  # NEW: Pass sector map
                     )
                 current_start_cyl = cyl + 1
                 prev_props = None
+                prev_sector_map = None
                 continue
 
             rate, encoding, _ = IMD_MODE_MAP.get(track_info.mode, (250, "MFM", "DD"))
@@ -778,17 +807,32 @@ class IMDImageDriver(DiskIODriver):
             )
 
             current_props = (encoding, rate, spt, bps, track_info.mode)
-            if prev_props is not None and current_props != prev_props:
+            current_sector_map = track_info.sector_num_map  # NEW: Get sector map
+
+            if prev_props is not None and (
+                current_props != prev_props or current_sector_map != prev_sector_map
+            ):
                 self._add_track_format(
-                    track_formats, current_start_cyl, cyl - 1, prev_props, max_head_idx
+                    track_formats,
+                    current_start_cyl,
+                    cyl - 1,
+                    prev_props,
+                    max_head_idx,
+                    prev_sector_map,
                 )
                 current_start_cyl = cyl
 
             prev_props = current_props
+            prev_sector_map = current_sector_map
 
         if prev_props is not None:
             self._add_track_format(
-                track_formats, current_start_cyl, max_cyl_idx, prev_props, max_head_idx
+                track_formats,
+                current_start_cyl,
+                max_cyl_idx,
+                prev_props,
+                max_head_idx,
+                prev_sector_map,
             )
 
         ref_ti = self.tracks.get((0, 0)) or self.tracks[min(self.tracks.keys())]
@@ -804,6 +848,19 @@ class IMDImageDriver(DiskIODriver):
         all_bps = {tf.bytes_per_sector for tf in track_formats}
         disk_bps = list(all_bps)[0] if len(all_bps) == 1 else IMD_FALLBACK_BPS
 
+        # Determine image_in_sector_id_order based on sector translation table
+        # If any track has non-sequential sector ordering, the source format
+        # likely stored sectors in physical order (image_in_sector_id_order=False)
+        image_in_sector_id_order = True
+        for tf in track_formats:
+            if tf.sector_translation_table:
+                expected_sequential = list(
+                    range(tf.id_start, tf.id_start + tf.sectors_per_track)
+                )
+                if tf.sector_translation_table != expected_sequential:
+                    image_in_sector_id_order = False
+                    break
+
         self.physical_format = PhysicalFormat(
             cylinders=max_cyl_idx + 1,
             heads=max_head_idx + 1,
@@ -811,11 +868,13 @@ class IMDImageDriver(DiskIODriver):
             heads_inverted=False,
             bytes_per_sector=disk_bps,
             track_formats=track_formats,
+            image_in_sector_id_order=image_in_sector_id_order,
         )
         self.logger.info(
             f"Derived format: Cyls={self.physical_format.cylinders}, "
             f"Heads={self.physical_format.heads}, RPM={rpm}, "
-            f"Variable BPS={len(all_bps) > 1}"
+            f"Variable BPS={len(all_bps) > 1}, "
+            f"Sector ID order={image_in_sector_id_order}"
         )
 
     def _get_sector_size(

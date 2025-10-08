@@ -526,7 +526,6 @@ class CreateImageDialog(QDialog):
                 f"Could not extract driver type from combo data: {ext_data}, using IMG"
             )
 
-        # Ensure output_format is a string, not a tuple
         if not isinstance(output_format, str):
             logger.error(
                 f"output_format is not a string: {type(output_format)} - {output_format}"
@@ -717,13 +716,8 @@ class CreateImageDialog(QDialog):
         img_found = False
 
         for i, (ext, driver_type, description) in enumerate(all_options):
-            # Create display text showing both extension and driver description
             display_text = f"{ext} ({description})"
-
-            # Store tuple of (extension, driver_type) as data
             self.extension_combo.addItem(display_text, (ext, driver_type))
-
-            # Set default to first IMG driver extension (.img or .ima)
             if not img_found and driver_type == "IMG" and ext in [".img", ".ima"]:
                 default_index = i
                 img_found = True
@@ -805,3 +799,198 @@ class CreateImageDialog(QDialog):
             logger.error(f"Error loading format definitions: {e}")
 
         self._on_format_changed()
+
+
+class SaveAsDialog(QDialog):
+    """A dialog for saving the current disk image to a different format/location."""
+
+    def __init__(
+        self,
+        current_source: str,
+        current_driver_type: str,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        """
+        Initializes the SaveAsDialog.
+
+        Args:
+            current_source: Current file path or source identifier.
+            current_driver_type: Current driver type (IMG, IMD, etc.).
+            parent: The parent widget, if any.
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Save Disk Image As")
+        self.resize(500, 200)
+
+        self.current_source = current_source
+        self.current_driver_type = current_driver_type
+
+        self._init_ui()
+
+    def get_selection(self) -> tuple[str, str]:
+        """
+        Gets the user's selections for saving the disk image.
+
+        Returns:
+            A tuple containing (file_path, driver_type).
+
+        Raises:
+            ValueError: If the directory or file name is not provided.
+        """
+        directory = self.directory_input.text().strip()
+        file_name = self.file_name_input.text().strip()
+
+        if not directory or not file_name:
+            raise ValueError("Both directory and file name must be provided.")
+
+        file_path = Path(directory) / file_name
+
+        # Get driver type from combo box data
+        driver_data = self.driver_combo.currentData()
+        if not driver_data or not isinstance(driver_data, str):
+            raise ValueError("Invalid driver type selected.")
+
+        driver_type = driver_data
+
+        return str(file_path), driver_type
+
+    def _create_buttons(self, layout: QVBoxLayout) -> None:
+        """Creates the OK and Cancel buttons."""
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addStretch()
+        layout.addWidget(buttons)
+
+    def _create_driver_selection_widgets(self, layout: QVBoxLayout) -> None:
+        """Creates widgets for output format/driver selection."""
+        driver_layout = QHBoxLayout()
+        driver_layout.addWidget(QLabel("Output Format:"))
+
+        self.driver_combo = QComboBox()
+        self._populate_driver_combo()
+        self.driver_combo.currentIndexChanged.connect(self._on_driver_changed)
+
+        driver_layout.addWidget(self.driver_combo)
+        driver_layout.addStretch()
+        layout.addLayout(driver_layout)
+
+    def _create_file_path_widgets(self, layout: QVBoxLayout) -> None:
+        """Creates widgets for selecting the output directory and file name."""
+        directory_layout = QHBoxLayout()
+        directory_layout.addWidget(QLabel("Directory:"))
+        self.directory_input = QLineEdit()
+        self.directory_input.setPlaceholderText("Select or enter directory")
+
+        if Path(self.current_source).exists():
+            self.directory_input.setText(str(Path(self.current_source).parent))
+
+        directory_layout.addWidget(self.directory_input)
+
+        self.select_directory_button = QPushButton("...")
+        self.select_directory_button.clicked.connect(self._select_directory)
+        directory_layout.addWidget(self.select_directory_button)
+        layout.addLayout(directory_layout)
+
+        file_name_layout = QHBoxLayout()
+        file_name_layout.addWidget(QLabel("File Name:"))
+        self.file_name_input = QLineEdit()
+        self.file_name_input.setPlaceholderText("Enter file name")
+
+        if Path(self.current_source).exists():
+            current_stem = Path(self.current_source).stem
+            self.file_name_input.setText(current_stem)
+
+        file_name_layout.addWidget(self.file_name_input)
+        layout.addLayout(file_name_layout)
+
+    def _init_ui(self) -> None:
+        """Initializes and lays out the UI components."""
+        main_layout = QVBoxLayout()
+
+        self._create_driver_selection_widgets(main_layout)
+        self._create_file_path_widgets(main_layout)
+        self._create_buttons(main_layout)
+
+        self.setLayout(main_layout)
+
+        self._on_driver_changed()
+
+    def _on_driver_changed(self) -> None:
+        """Updates the file extension when driver selection changes."""
+        driver_type = self.driver_combo.currentData()
+        if not driver_type:
+            return
+
+        from ..core.driver_factory import DriverFactory
+
+        ext_to_drivers = DriverFactory.get_extension_to_drivers_map()
+
+        primary_ext = None
+        for ext, driver_list in ext_to_drivers.items():
+            for dt, _, _ in driver_list:
+                if dt == driver_type:
+                    primary_ext = ext
+                    break
+            if primary_ext:
+                break
+
+        if not primary_ext:
+            logger.warning(f"No extension found for driver type: {driver_type}")
+            return
+
+        current_text = self.file_name_input.text().strip()
+        if current_text:
+            path = Path(current_text)
+            base_name = path.stem
+            self.file_name_input.setText(f"{base_name}{primary_ext}")
+        else:
+            if Path(self.current_source).exists():
+                base_name = Path(self.current_source).stem
+                self.file_name_input.setText(f"{base_name}{primary_ext}")
+
+    def _populate_driver_combo(self) -> None:
+        """Populates the driver combo box with available image formats."""
+        from ..core.driver_factory import DriverFactory
+
+        self.driver_combo.clear()
+
+        ext_to_drivers = DriverFactory.get_extension_to_drivers_map()
+        driver_types_seen = set()
+        driver_options = []
+
+        for _ext, driver_list in ext_to_drivers.items():
+            for driver_type, description, _ in driver_list:
+                if driver_type not in driver_types_seen:
+                    driver_types_seen.add(driver_type)
+                    exts_for_driver = []
+                    for e, dlist in ext_to_drivers.items():
+                        for dt, _, _ in dlist:
+                            if dt == driver_type and e not in exts_for_driver:
+                                exts_for_driver.append(e)
+
+                    ext_display = ", ".join(sorted(exts_for_driver))
+                    driver_options.append(
+                        (driver_type, f"{description} ({ext_display})")
+                    )
+        driver_options.sort(key=lambda x: x[0])
+
+        current_index = 0
+        for i, (driver_type, display_text) in enumerate(driver_options):
+            self.driver_combo.addItem(display_text, driver_type)
+            if driver_type == self.current_driver_type:
+                current_index = i
+
+        if self.driver_combo.count() > 0:
+            self.driver_combo.setCurrentIndex(current_index)
+
+    def _select_directory(self) -> None:
+        """Opens a dialog to select a directory."""
+        start_dir = self.directory_input.text() or str(Path.home())
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Directory", start_dir
+        )
+        if directory:
+            self.directory_input.setText(directory)
