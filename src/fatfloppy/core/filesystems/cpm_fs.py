@@ -1240,37 +1240,6 @@ class CPMFilesystem(Filesystem):
             sectors_remaining -= spt_for_current_track
             current_track += 1
 
-    def _compute_geometry_hash(self) -> int:
-        """
-        Computes a hash of the current disk geometry for change detection.
-
-        Returns:
-            An integer hash value.
-        """
-        if not self.disk or not self.disk.physical_format:
-            self.logger.warning(
-                "Cannot compute geometry hash: No disk or physical format available."
-            )
-            return 0
-        pf = self.disk.physical_format
-        tf = pf.track_formats[0] if pf.track_formats else None
-        if not tf:
-            self.logger.warning(
-                "Cannot compute geometry hash: No track format available."
-            )
-            return 0
-        return hash(
-            (
-                pf.cylinders,
-                pf.heads,
-                pf.bytes_per_sector,
-                tuple(tf.sector_translation_table)
-                if tf.sector_translation_table
-                else (),
-                pf.track_formats[0].interleave,
-            )
-        )
-
     def _cpm_track_to_chs_coords(self, cpm_track: int) -> tuple[int, int]:
         """
         Converts a linear CP/M track number to physical CHS coordinates.
