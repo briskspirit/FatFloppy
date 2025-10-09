@@ -59,8 +59,6 @@ class MITSDSKDriver(DiskIODriver):
     driver_description: ClassVar[str] = "MITS Altair DSK format driver"
     driver_priority: ClassVar[int] = 100
 
-    uses_sector_metadata = True
-
     def __init__(self, file_path: str, image_data: Optional[bytes] = None):
         """
         Initializes the MITSDSKDriver.
@@ -194,9 +192,8 @@ class MITSDSKDriver(DiskIODriver):
             for sector_key, data in self.modified_sectors.items():
                 cylinder, head, sector = sector_key
 
-                physical_index = sector - 1
                 offset = (
-                    cylinder * MITS_SECTORS_PER_TRACK + physical_index
+                    cylinder * MITS_SECTORS_PER_TRACK + sector
                 ) * MITS_PHYSICAL_SECTOR_SIZE
 
                 old_sector = self.image_data[
@@ -204,7 +201,7 @@ class MITSDSKDriver(DiskIODriver):
                 ]
 
                 new_sector = self._reconstruct_physical_sector(
-                    old_sector, data, cylinder, physical_index
+                    old_sector, data, cylinder, sector
                 )
 
                 self.image_data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE] = (
@@ -256,9 +253,9 @@ class MITSDSKDriver(DiskIODriver):
         self.image_data = bytearray(total_size)
 
         for track in range(MITS_TRACKS):
-            for phys_sector in range(MITS_SECTORS_PER_TRACK):
+            for sector in range(MITS_SECTORS_PER_TRACK):
                 offset = (
-                    track * MITS_SECTORS_PER_TRACK + phys_sector
+                    track * MITS_SECTORS_PER_TRACK + sector
                 ) * MITS_PHYSICAL_SECTOR_SIZE
 
                 sector_data = bytearray(MITS_PHYSICAL_SECTOR_SIZE)
@@ -266,7 +263,7 @@ class MITSDSKDriver(DiskIODriver):
                 if track < MITS_SYSTEM_TRACK_COUNT:
                     sector_data[0] = 0x00
                     sector_data[1] = track
-                    sector_data[2] = phys_sector
+                    sector_data[2] = sector
                     sector_data[
                         MITS_SYSTEM_TRACK_CHECKSUM_START:MITS_SYSTEM_TRACK_CHECKSUM_END
                     ] = self._calculate_sector_checksums(
@@ -276,13 +273,13 @@ class MITSDSKDriver(DiskIODriver):
                             ]
                         ),
                         track,
-                        phys_sector,
+                        sector,
                     )
                 else:
                     sector_data[0:3] = b"\x00\x00\x00"
                     sector_data[3] = MITS_DATA_ADDRESS_MARK
                     sector_data[4] = track
-                    sector_data[5] = phys_sector
+                    sector_data[5] = sector
                     sector_data[6] = 0x00
                     sector_data[
                         MITS_DATA_TRACK_CHECKSUM_START:MITS_DATA_TRACK_CHECKSUM_END
@@ -293,7 +290,7 @@ class MITSDSKDriver(DiskIODriver):
                             ]
                         ),
                         track,
-                        phys_sector,
+                        sector,
                     )
 
                 self.image_data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE] = (
@@ -328,7 +325,7 @@ class MITSDSKDriver(DiskIODriver):
         Args:
             cylinder: The cylinder (track) number.
             head: The head number (always 0 for MITS).
-            sector: The physical sector number (1-32).
+            sector: The logical sector index (0-based, 0-31 for MITS).
 
         Returns:
             The 128-byte sector data.
@@ -343,9 +340,9 @@ class MITSDSKDriver(DiskIODriver):
         if head != 0:
             raise OSError(f"MITS DSK only supports head 0, got head {head}")
 
-        if not (1 <= sector <= MITS_SECTORS_PER_TRACK):
+        if not (0 <= sector < MITS_SECTORS_PER_TRACK):
             raise OSError(
-                f"Invalid sector number: {sector} (must be 1-{MITS_SECTORS_PER_TRACK})"
+                f"Invalid sector index: {sector} (must be 0-{MITS_SECTORS_PER_TRACK - 1})"
             )
 
         sector_key = (cylinder, head, sector)
@@ -359,9 +356,8 @@ class MITSDSKDriver(DiskIODriver):
         if sector_key in self.sector_cache:
             return self.sector_cache[sector_key]
 
-        physical_index = sector - 1
         offset = (
-            cylinder * MITS_SECTORS_PER_TRACK + physical_index
+            cylinder * MITS_SECTORS_PER_TRACK + sector
         ) * MITS_PHYSICAL_SECTOR_SIZE
 
         if offset + MITS_PHYSICAL_SECTOR_SIZE > len(self.image_data):
@@ -372,7 +368,7 @@ class MITSDSKDriver(DiskIODriver):
 
         self.sector_cache[sector_key] = data
         self.logger.debug(
-            f"Read sector C:{cylinder} H:{head} S:{sector} from physical position {physical_index}"
+            f"Read sector C:{cylinder} H:{head} S:{sector} from physical position {sector}"
         )
         return data
 
@@ -491,7 +487,7 @@ class MITSDSKDriver(DiskIODriver):
         Args:
             cylinder: The cylinder number.
             head: The head number (must be 0).
-            sector: The physical sector number (1-32).
+            sector: The logical sector index (0-based, 0-31 for MITS).
             data: The 128-byte sector data to write.
 
         Raises:
@@ -503,9 +499,9 @@ class MITSDSKDriver(DiskIODriver):
         if head != 0:
             raise ValueError(f"MITS DSK only supports head 0, got head {head}")
 
-        if not (1 <= sector <= MITS_SECTORS_PER_TRACK):
+        if not (0 <= sector < MITS_SECTORS_PER_TRACK):
             raise ValueError(
-                f"Invalid sector number: {sector} (must be 1-{MITS_SECTORS_PER_TRACK})"
+                f"Invalid sector index: {sector} (must be 0-{MITS_SECTORS_PER_TRACK - 1})"
             )
 
         if len(data) != MITS_LOGICAL_SECTOR_SIZE:
@@ -621,7 +617,7 @@ class MITSDSKDriver(DiskIODriver):
         )
 
     def _reconstruct_physical_sector(
-        self, old_sector: bytes, new_data: bytes, track: int, physical_index: int
+        self, old_sector: bytes, new_data: bytes, track: int, sector: int
     ) -> bytes:
         """
         Reconstructs a 137-byte physical sector with new data.
@@ -630,25 +626,27 @@ class MITSDSKDriver(DiskIODriver):
             old_sector: The original 137-byte sector (for metadata).
             new_data: The new 128-byte data to insert.
             track: The track number.
-            physical_index: The physical sector index (0-31).
+            sector: The sector index (0-31).
 
         Returns:
             The reconstructed 137-byte sector.
         """
-        sector = bytearray(old_sector)
+        sector_data = bytearray(old_sector)
 
         if track < MITS_SYSTEM_TRACK_COUNT:
-            sector[MITS_SYSTEM_TRACK_DATA_START:MITS_SYSTEM_TRACK_DATA_END] = new_data
-            sector[MITS_SYSTEM_TRACK_CHECKSUM_START:MITS_SYSTEM_TRACK_CHECKSUM_END] = (
-                self._calculate_sector_checksums(new_data, track, physical_index)
+            sector_data[MITS_SYSTEM_TRACK_DATA_START:MITS_SYSTEM_TRACK_DATA_END] = (
+                new_data
             )
+            sector_data[
+                MITS_SYSTEM_TRACK_CHECKSUM_START:MITS_SYSTEM_TRACK_CHECKSUM_END
+            ] = self._calculate_sector_checksums(new_data, track, sector)
         else:
-            sector[MITS_DATA_TRACK_DATA_START:MITS_DATA_TRACK_DATA_END] = new_data
-            sector[MITS_DATA_TRACK_CHECKSUM_START:MITS_DATA_TRACK_CHECKSUM_END] = (
-                self._calculate_sector_checksums(new_data, track, physical_index)
+            sector_data[MITS_DATA_TRACK_DATA_START:MITS_DATA_TRACK_DATA_END] = new_data
+            sector_data[MITS_DATA_TRACK_CHECKSUM_START:MITS_DATA_TRACK_CHECKSUM_END] = (
+                self._calculate_sector_checksums(new_data, track, sector)
             )
 
-        return bytes(sector)
+        return bytes(sector_data)
 
     def _validate_format(self) -> None:
         """

@@ -290,7 +290,7 @@ def test_init_corrupt_track_header_incomplete(tmp_path: Path) -> None:
 def test_read_sector_normal(simple_imd_driver: tuple[IMDImageDriver, Path]) -> None:
     """Tests reading a 'Normal' (uncompressed) data sector."""
     driver, _ = simple_imd_driver
-    data = driver.read_sector(0, 0, 1)
+    data = driver.read_sector(0, 0, 0)
     assert len(data) == SIMPLE_BPS
     assert data == bytes([1] * SIMPLE_BPS)
 
@@ -298,7 +298,7 @@ def test_read_sector_normal(simple_imd_driver: tuple[IMDImageDriver, Path]) -> N
 def test_read_sector_compressed(simple_imd_driver: tuple[IMDImageDriver, Path]) -> None:
     """Tests reading a 'Compressed' data sector."""
     driver, _ = simple_imd_driver
-    data = driver.read_sector(0, 0, 2)
+    data = driver.read_sector(0, 0, 1)
     assert len(data) == SIMPLE_BPS
     assert data == bytes([0xE5] * SIMPLE_BPS)
 
@@ -306,13 +306,12 @@ def test_read_sector_compressed(simple_imd_driver: tuple[IMDImageDriver, Path]) 
 def test_read_sector_out_of_bounds(
     simple_imd_driver: tuple[IMDImageDriver, Path],
 ) -> None:
-    """Tests that reading a non-existent sector returns a zeroed buffer."""
+    """Tests that reading a non-existent sector raises an error or returns zeros."""
     driver, _ = simple_imd_driver
-    expected_size = driver.physical_format.bytes_per_sector
-    data = driver.read_sector(0, 0, 99)
-    assert data == bytes(expected_size)
-    data = driver.read_sector(99, 0, 1)
-    assert data == bytes(expected_size)
+    with pytest.raises((IndexError, ValueError)):
+        driver.read_sector(0, 0, 99)
+    with pytest.raises((IndexError, ValueError, OSError)):
+        driver.read_sector(99, 0, 0)
 
 
 def test_set_physical_format_warning(
@@ -380,14 +379,16 @@ def test_write_normal_flush_rebuild(
     driver, path, fmt = formatted_imd_driver
     bps = fmt.physical_format.bytes_per_sector
     test_data = bytes([i % 256 for i in range(bps)])
-    cyl, head, sect = 0, 0, 1
+    cyl, head, sect = 0, 0, 0
 
     initial_read = driver.read_sector(cyl, head, sect)
     assert initial_read == bytes([0xF6] * bps)
 
     driver.write_sector(cyl, head, sect, test_data)
     assert driver.dirty is True
-    assert (cyl, head, sect) in driver.modified_sector_data
+    track_format = driver.physical_format.get_track_format(cyl, head)
+    phys_sect = track_format.logical_to_physical_sector(sect)
+    assert (cyl, head, phys_sect) in driver.modified_sector_data
     read_before_flush = driver.read_sector(cyl, head, sect)
     assert read_before_flush == test_data
 
@@ -399,7 +400,7 @@ def test_write_normal_flush_rebuild(
     read_after_flush = driver2.read_sector(cyl, head, sect)
     assert read_after_flush == test_data
     ti = driver2.tracks[(cyl, head)]
-    _, type_after, size_after = ti.sector_data_info[sect]
+    _, type_after, size_after = ti.sector_data_info[phys_sect]
     assert type_after == 1
     assert size_after == bps
 
@@ -411,14 +412,16 @@ def test_write_compressed_flush_rebuild(
     driver, path, fmt = formatted_imd_driver
     bps = fmt.physical_format.bytes_per_sector
     test_data = bytes([0xBB] * bps)
-    cyl, head, sect = 0, 1, 5
+    cyl, head, sect = 0, 1, 4
 
     initial_read = driver.read_sector(cyl, head, sect)
     assert initial_read == bytes([0xF6] * bps)
 
     driver.write_sector(cyl, head, sect, test_data)
     assert driver.dirty is True
-    assert (cyl, head, sect) in driver.modified_sector_data
+    track_format = driver.physical_format.get_track_format(cyl, head)
+    phys_sect = track_format.logical_to_physical_sector(sect)
+    assert (cyl, head, phys_sect) in driver.modified_sector_data
     read_before_flush = driver.read_sector(cyl, head, sect)
     assert read_before_flush == test_data
 
@@ -430,7 +433,7 @@ def test_write_compressed_flush_rebuild(
     read_after_flush = driver2.read_sector(cyl, head, sect)
     assert read_after_flush == test_data
     ti = driver2.tracks[(cyl, head)]
-    _, type_after, size_after = ti.sector_data_info[sect]
+    _, type_after, size_after = ti.sector_data_info[phys_sect]
     assert type_after == 2
     assert size_after == 1
 
@@ -442,13 +445,15 @@ def test_write_changes_type_flush_rebuild(
     driver, path, fmt = formatted_imd_driver
     bps = fmt.physical_format.bytes_per_sector
     normal_data = bytes([i % 256 for i in range(bps)])
-    cyl, head, sect = 1, 0, 2
+    cyl, head, sect = 1, 0, 1
     driver.write_sector(cyl, head, sect, normal_data)
     driver.flush()
 
     driver_reloaded1 = IMDImageDriver(str(path))
+    track_format = driver_reloaded1.physical_format.get_track_format(cyl, head)
+    phys_sect = track_format.logical_to_physical_sector(sect)
     ti1 = driver_reloaded1.tracks[(cyl, head)]
-    _, type1, size1 = ti1.sector_data_info[sect]
+    _, type1, size1 = ti1.sector_data_info[phys_sect]
     assert type1 == 1 and size1 == bps
     assert driver_reloaded1.read_sector(cyl, head, sect) == normal_data
 
@@ -462,7 +467,7 @@ def test_write_changes_type_flush_rebuild(
 
     driver_reloaded2 = IMDImageDriver(str(path))
     ti2 = driver_reloaded2.tracks[(cyl, head)]
-    _, type2, size2 = ti2.sector_data_info[sect]
+    _, type2, size2 = ti2.sector_data_info[phys_sect]
     assert type2 == 2
     assert size2 == 1
     read_data_final = driver_reloaded2.read_sector(cyl, head, sect)
@@ -513,7 +518,7 @@ def test_real_imd_read_boot_sector(
     """Tests reading the boot sector from a real 720k IMD file."""
     driver, path, fmt_720 = real_imd_driver
     bps = fmt_720.physical_format.bytes_per_sector
-    boot_sector_data = driver.read_sector(0, 0, 1)
+    boot_sector_data = driver.read_sector(0, 0, 0)
     assert len(boot_sector_data) == bps
     assert boot_sector_data.endswith(b"\x55\xaa")
 
@@ -522,8 +527,8 @@ def test_real_imd_read_known_sector(
     real_imd_driver: tuple[IMDImageDriver, Path, FormatProfile],
 ) -> None:
     """Tests reading an arbitrary, known-to-exist sector from a real IMD file."""
-    driver, path, fmt_720 = real_imd_driver
-    c, h, s = 0, 0, 2
+    driver, _path, fmt_720 = real_imd_driver
+    c, h, s = 0, 0, 1
     try:
         sector_data = driver.read_sector(c, h, s)
         assert len(sector_data) == fmt_720.physical_format.bytes_per_sector
@@ -539,7 +544,7 @@ def test_real_imd_read_last_sector(
     pf = fmt_720.physical_format
     last_c = pf.cylinders - 1
     last_h = pf.heads - 1
-    last_s = pf.track_formats[0].sectors_per_track
+    last_s = pf.track_formats[0].sectors_per_track - 1
 
     try:
         sector_data = driver.read_sector(last_c, last_h, last_s)
@@ -638,8 +643,8 @@ def test_imd_parse_size_map(tmp_path: Path) -> None:
     assert ti.sector_size_map is not None
     assert ti.get_sector_size(1) == 128
     assert ti.get_sector_size(2) == 256
-    assert len(driver.read_sector(0, 0, 1)) == 128
-    assert len(driver.read_sector(0, 0, 2)) == 256
+    assert len(driver.read_sector(0, 0, 0)) == 128
+    assert len(driver.read_sector(0, 0, 1)) == 256
 
 
 def test_imd_read_boot_sector_no_track00(tmp_path: Path) -> None:

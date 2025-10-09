@@ -199,8 +199,6 @@ class H17ImageDriver(DiskIODriver):
     driver_description: ClassVar[str] = "Heathkit H17 Disk Image Driver"
     driver_priority: ClassVar[int] = 50
 
-    uses_sector_metadata = True
-
     def __init__(self, file_path: str):
         """
         Initializes the H17ImageDriver.
@@ -335,16 +333,13 @@ class H17ImageDriver(DiskIODriver):
         try:
             for sector_key, data in self.modified_sectors.items():
                 cylinder, head, sector = sector_key
-                physical_sector = sector - 1
-                physical_key = (cylinder, head, physical_sector)
-                meta = self.sector_metadata.get(physical_key)
+                meta = self.sector_metadata.get(sector_key)
                 if meta:
                     offset = meta.offset_to_data
                     self.file_data[offset : offset + H17_BYTES_PER_SECTOR] = data
                 else:
                     self.logger.warning(
-                        f"No metadata for modified sector C:{cylinder} H:{head} S:{sector} "
-                        f"(physical {physical_sector})"
+                        f"No metadata for modified sector C:{cylinder} H:{head} S:{sector}"
                     )
 
             with Path(self.file_path).open("wb") as f:
@@ -450,7 +445,7 @@ class H17ImageDriver(DiskIODriver):
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number.
+            sector: The logical sector index (0-based, 0-9 for H17).
 
         Returns:
             The status flags, or None if metadata not available.
@@ -465,13 +460,12 @@ class H17ImageDriver(DiskIODriver):
         Args:
             cylinder: The cylinder (track) number.
             head: The head (side) number.
-            sector: The sector number (1-10 for API).
+            sector: The logical sector index (0-based, 0-9 for H17).
 
         Returns:
             The volume number, or None if metadata not available.
         """
-        physical_sector = sector - 1
-        meta = self.sector_metadata.get((cylinder, head, physical_sector))
+        meta = self.sector_metadata.get((cylinder, head, sector))
         return meta.volume if meta else None
 
     def get_track_volumes(self, cylinder: int, head: int) -> list[int]:
@@ -562,7 +556,7 @@ class H17ImageDriver(DiskIODriver):
         Args:
             cylinder: The cylinder (track) number.
             head: The head (side) number.
-            sector: The sector number (1-10 for API, translated to 0-9 for H17 file).
+            sector: The logical sector index (0-based, 0-9 for H17).
 
         Returns:
             The 256-byte sector data.
@@ -574,9 +568,7 @@ class H17ImageDriver(DiskIODriver):
         if not self.physical_format:
             raise ValueError("Physical format not set")
 
-        physical_sector = sector - 1
         sector_key = (cylinder, head, sector)
-        physical_key = (cylinder, head, physical_sector)
 
         if sector_key in self.modified_sectors:
             self.logger.debug(
@@ -588,11 +580,10 @@ class H17ImageDriver(DiskIODriver):
             self.logger.debug(f"Reading cached sector C:{cylinder} H:{head} S:{sector}")
             return self.sector_cache[sector_key]
 
-        meta = self.sector_metadata.get(physical_key)
+        meta = self.sector_metadata.get(sector_key)
         if not meta:
             self.logger.warning(
-                f"No metadata for sector C:{cylinder} H:{head} S:{sector} "
-                f"(physical {physical_sector}), returning zeros"
+                f"No metadata for sector C:{cylinder} H:{head} S:{sector}, returning zeros"
             )
             return bytes(H17_BYTES_PER_SECTOR)
 
@@ -609,8 +600,7 @@ class H17ImageDriver(DiskIODriver):
 
             self.sector_cache[sector_key] = data
             self.logger.debug(
-                f"Read sector C:{cylinder} H:{head} S:{sector} (physical {physical_sector}) "
-                f"from offset {meta.offset_to_data}"
+                f"Read sector C:{cylinder} H:{head} S:{sector} from offset {meta.offset_to_data}"
             )
             return data
 
@@ -671,7 +661,7 @@ class H17ImageDriver(DiskIODriver):
         Args:
             cylinder: The cylinder (track) number.
             head: The head (side) number.
-            sector: The sector number (1-10 for API).
+            sector: The logical sector index (0-based, 0-9 for H17).
             volume: The volume number (0-255).
 
         Raises:
@@ -680,8 +670,7 @@ class H17ImageDriver(DiskIODriver):
         if not (0 <= volume <= 255):
             raise ValueError(f"Volume must be 0-255, got {volume}")
 
-        physical_sector = sector - 1
-        sector_key = (cylinder, head, physical_sector)
+        sector_key = (cylinder, head, sector)
         meta = self.sector_metadata.get(sector_key)
         if not meta:
             raise ValueError(f"No metadata for sector C:{cylinder} H:{head} S:{sector}")
@@ -766,7 +755,7 @@ class H17ImageDriver(DiskIODriver):
         Args:
             cylinder: The cylinder (track) number.
             head: The head (side) number.
-            sector: The sector number (1-10 for API, translated to 0-9 for H17 file).
+            sector: The logical sector index (0-based, 0-9 for H17).
             data: The 256-byte sector data to write.
 
         Raises:
@@ -780,7 +769,6 @@ class H17ImageDriver(DiskIODriver):
                 f"Data size must be {H17_BYTES_PER_SECTOR} bytes, got {len(data)}"
             )
 
-        physical_sector = sector - 1
         sector_key = (cylinder, head, sector)
 
         self.modified_sectors[sector_key] = bytes(data)
@@ -789,10 +777,7 @@ class H17ImageDriver(DiskIODriver):
         if sector_key in self.sector_cache:
             del self.sector_cache[sector_key]
 
-        self.logger.debug(
-            f"Cached write for sector C:{cylinder} H:{head} S:{sector} "
-            f"(physical {physical_sector})"
-        )
+        self.logger.debug(f"Cached write for sector C:{cylinder} H:{head} S:{sector}")
 
     def _build_new_file(
         self, sides: int, tracks: int, scheme: str, hdos_volume: int

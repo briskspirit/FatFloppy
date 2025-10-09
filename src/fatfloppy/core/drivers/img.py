@@ -29,8 +29,6 @@ class IMGImageDriver(DiskIODriver):
     driver_description: ClassVar[str] = "Raw sector image driver"
     driver_priority: ClassVar[int] = 10
 
-    uses_sector_metadata = False
-
     def __init__(self, file_path: str, image_data: Optional[bytes] = None):
         """
         Initializes the IMGImageDriver.

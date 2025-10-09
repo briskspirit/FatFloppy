@@ -170,8 +170,6 @@ class IMDImageDriver(DiskIODriver):
     driver_description: ClassVar[str] = "ImageDisk format driver"
     driver_priority: ClassVar[int] = 50
 
-    uses_sector_metadata = True
-
     def __init__(self, file_path: str):
         """
         Initializes the IMDImageDriver.
@@ -574,25 +572,28 @@ class IMDImageDriver(DiskIODriver):
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number.
+            sector: The logical sector index (0-based, sequential within track).
 
         Returns:
             The sector data as a bytes object.
 
         Raises:
-            ValueError: If the physical format is not set.
+            ValueError: If the physical format is not set or sector is out of range.
         """
         if not self.physical_format:
             raise ValueError("No physical format available")
 
-        sector_key = (cylinder, head, sector)
+        track_format = self.physical_format.get_track_format(cylinder, head)
+        physical_sector = track_format.logical_to_physical_sector(sector)
+
+        sector_key = (cylinder, head, physical_sector)
         if sector_key in self.modified_sector_data:
             self.logger.debug(
-                f"Reading modified sector C:{cylinder} H:{head} S:{sector}"
+                f"Reading modified sector C:{cylinder} H:{head} LS:{sector} (PS:{physical_sector})"
             )
             return self.modified_sector_data[sector_key]
 
-        return self._read_original_sector(cylinder, head, sector)
+        return self._read_original_sector(cylinder, head, physical_sector)
 
     def set_physical_format(self, physical_format: PhysicalFormat) -> None:
         """
@@ -676,7 +677,7 @@ class IMDImageDriver(DiskIODriver):
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number.
+            sector: The logical sector index (0-based, sequential within track).
             data: The sector data to write.
 
         Raises:
@@ -686,20 +687,30 @@ class IMDImageDriver(DiskIODriver):
         if not self.physical_format:
             raise ValueError("No physical format set")
 
+        track_format = self.physical_format.get_track_format(cylinder, head)
+        physical_sector = track_format.logical_to_physical_sector(sector)
+
         track_info = self.tracks.get((cylinder, head))
-        target_size = self._get_sector_size(track_info, cylinder, head, sector)
+        target_size = self._get_sector_size(track_info, cylinder, head, physical_sector)
 
         if len(data) != target_size:
             raise ValueError(f"Data size mismatch: {len(data)} vs {target_size}")
 
-        if self.file_loaded and (
-            not track_info or sector not in track_info.sector_data_info
+        if (
+            self.file_loaded
+            and track_info
+            and physical_sector not in track_info.sector_data_info
         ):
-            raise OSError(f"Invalid sector C:{cylinder} H:{head} S:{sector}")
+            raise OSError(
+                f"Invalid physical sector C:{cylinder} H:{head} PS:{physical_sector} "
+                f"(LS:{sector})"
+            )
 
-        self.modified_sector_data[(cylinder, head, sector)] = bytes(data)
+        self.modified_sector_data[(cylinder, head, physical_sector)] = bytes(data)
         self.dirty = True
-        self.logger.debug(f"Cached write for sector C:{cylinder} H:{head} S:{sector}")
+        self.logger.debug(
+            f"Cached write for sector C:{cylinder} H:{head} LS:{sector} (PS:{physical_sector})"
+        )
 
     def _add_track_format(
         self,

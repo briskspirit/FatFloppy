@@ -75,17 +75,7 @@ class Disk:
                 else head
             )
 
-            uses_sector_metadata = getattr(self.driver, "uses_sector_metadata", False)
-
-            if uses_sector_metadata:
-                sector_param = track_format.logical_to_physical_sector(sector)
-                self.logger.debug(
-                    f"Metadata driver: translating LS:{sector} → PS:{sector_param}"
-                )
-            else:
-                sector_param = sector
-
-            data = self.driver.read_sector(cylinder, physical_head, sector_param)
+            data = self.driver.read_sector(cylinder, physical_head, sector)
 
             if len(data) < bytes_per_sector:
                 data += bytes(bytes_per_sector - len(data))
@@ -205,17 +195,7 @@ class Disk:
                 else head
             )
 
-            uses_sector_metadata = getattr(self.driver, "uses_sector_metadata", False)
-
-            if uses_sector_metadata:
-                sector_param = track_format.logical_to_physical_sector(sector)
-                self.logger.debug(
-                    f"Metadata driver: translating LS:{sector} → PS:{sector_param}"
-                )
-            else:
-                sector_param = sector
-
-            self.driver.write_sector(cylinder, physical_head, sector_param, data)
+            self.driver.write_sector(cylinder, physical_head, sector, data)
         except Exception as e:
             self.logger.error(
                 f"Failed to write sector C:{cylinder} H:{head} LS:{sector}: {e}",
