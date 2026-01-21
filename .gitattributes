@@ -1,0 +1,19 @@
+# Ensure binary files are not corrupted by line ending conversion
+
+# Disk image formats (binary)
+*.img binary
+*.ima binary
+*.dsk binary
+*.h8d binary
+*.h17 binary
+*.h17disk binary
+*.imd binary
+
+# Test resource files (binary)
+tests/resources/** binary
+
+# Ensure common binary extensions are handled correctly
+*.ACM binary
+*.acm binary
+*.SYS binary
+*.sys binary
