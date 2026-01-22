@@ -17,6 +17,8 @@ Functions:
 
 import inspect
 import logging
+import os
+import platform
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -35,8 +37,8 @@ def setup_logger() -> None:
 
     This function configures the basic logging settings, including the level
     (DEBUG), format, and handlers. It directs logs to both standard output
-    and a timestamped file in a 'logs' directory. It also sets the logging
-    level for noisy third-party libraries to WARNING.
+    and a timestamped file in a timestamped file in a 'logs' directory.
+    It also sets the logging level for noisy third-party libraries to WARNING.
     """
     logging.basicConfig(
         level=logging.DEBUG,
@@ -46,9 +48,20 @@ def setup_logger() -> None:
     )
     logging.getLogger("PyQt6").setLevel(logging.WARNING)
 
-    log_dir = Path("logs")
-    if not log_dir.exists():
-        log_dir.mkdir(parents=True)
+    app_name = "FatFloppy"
+
+    if platform.system() == "Darwin":
+        # macOS: ~/Library/Logs/[AppName]
+        log_dir = Path.home() / "Library" / "Logs" / app_name
+    elif platform.system() == "Windows":
+        # Windows: %LOCALAPPDATA%/FatFloppy/Logs
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.expanduser("~")))
+        log_dir = local_app_data / app_name / "Logs"
+    else:
+        # Linux: ~/.local/share/FatFloppy/Logs (Standard XDG location)
+        log_dir = Path.home() / ".local" / "share" / app_name / "Logs"
+
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_handler = logging.FileHandler(f"{log_dir}/fatfloppy_{timestamp}.log")
