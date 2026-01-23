@@ -8,6 +8,7 @@ import datetime
 import logging
 import os
 import posixpath
+import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -58,8 +59,18 @@ TREE_DOCK_MIN_WIDTH = 320
 TREE_DOCK_MAX_WIDTH = 400
 FILE_LIST_MIN_WIDTH = 400
 DISK_MAP_MIN_WIDTH = 300
-DEFAULT_FONT_SIZE = 12
 TAB_STOP_SPACES = 8
+
+
+def _get_platform_font_size() -> int:
+    """Returns appropriate font size for the current platform."""
+    if sys.platform == "darwin":
+        return 12  # macOS uses 72 PPI baseline
+    else:
+        return 10  # Windows/Linux use 96 PPI baseline
+
+
+DEFAULT_FONT_SIZE = _get_platform_font_size()
 
 
 class FileBrowserApp(QMainWindow):
