@@ -117,7 +117,7 @@ class HDOSLabelRecord:
 
 class HDOSFilesystem(Filesystem):
     """
-    Provides a read-only interface to an HDOS filesystem on a disk image.
+    Provides an interface to an HDOS filesystem on a disk image.
     """
 
     filesystem_type: ClassVar[str] = "HDOS"
