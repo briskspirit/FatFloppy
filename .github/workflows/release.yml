@@ -9,23 +9,29 @@ on:
 jobs:
   build-macos:
     name: Build macOS DMG
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-14
     strategy:
       matrix:
         include:
-          - os: macos-14
-            arch: arm64
-          - os: macos-12
-            arch: x86_64
+          - arch: arm64
+            python_arch: arm64
+          - arch: x86_64
+            python_arch: x64
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Rosetta (only needed for Intel build)
+        if: matrix.arch == 'x86_64'
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          architecture: ${{ matrix.python_arch }}   # x64 or arm64
+        # setup-python supports architecture = x86/x64/arm64  [oai_citation:2‡GitHub](https://github.com/actions/setup-python?utm_source=chatgpt.com)
 
       - name: Install dependencies
         run: |
@@ -36,7 +42,11 @@ jobs:
       - name: Build DMG
         run: |
           chmod +x packaging/macos/build_macos.sh
-          packaging/macos/build_macos.sh
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            arch -x86_64 packaging/macos/build_macos.sh
+          else
+            packaging/macos/build_macos.sh
+          fi
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
