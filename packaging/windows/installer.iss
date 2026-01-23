@@ -24,9 +24,7 @@ AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}/releases
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
-; Allow installing without admin rights (per-user installation)
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequired=admin
 ; Output settings
 OutputDir=..\..\dist
 OutputBaseFilename={#MyAppName}-{#MyAppVersion}-Windows-Setup
