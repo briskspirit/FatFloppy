@@ -38,8 +38,6 @@ def get_dark_theme() -> str:
         background-color: #1e1e1e;
         color: #ffffff;
         spacing: 5px;
-        min-height: 25px;
-        max-height: 30px;
     }
     QDockWidget {
         background-color: #2b2b2b;
@@ -82,8 +80,6 @@ def get_light_theme() -> str:
         background-color: #f0f0f0;
         color: #000000;
         spacing: 5px;
-        min-height: 25px;
-        max-height: 30px;
     }
     QDockWidget {
         background-color: #ffffff;

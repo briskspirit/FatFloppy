@@ -830,6 +830,8 @@ class FileBrowserApp(QMainWindow):
     def _create_toolbars(self) -> None:
         """Creates main toolbar."""
         self.toolbar = QToolBar("Main Toolbar", self)
+        self.toolbar.setMovable(False)
+        self.toolbar.setFloatable(False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
 
         create_image_action = QAction("Create Image", self)
