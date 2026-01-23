@@ -1,32 +1,44 @@
 # FatFloppy
 
-FatFloppy is a graphical utility for browsing and managing FAT12 floppy disks on modern systems, supporting both physical disks (via Greaseweazle hardware) and raw disk images (`.img`, `.ima`). It’s a unique tool for retro computing enthusiasts, offering live file browsing for old floppies—something rare in today’s OSes. This is an **alpha version**, with core features working but more to come (e.g., formatting, progress indicators).
+FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, and HDOS filesystems across multiple disk image formats (IMG, IMD, H17, MITS DSK). This is an **alpha version**, with core features working but more to come.
 
 [![License: Unlicense](https://img.shields.io/badge/License-Unlicense-yellow.svg)](https://unlicense.org)
 
 ## Key Features
 
-- **Browse Floppies**: View directories and files on FAT12 disks (physical or images).
-- **File Operations**: Read, write, delete files, and create directories.
-- **Drag and Drop**: Extract files to your OS or add files to the disk.
-- **Disk Map**: Visualize sector usage (boot, FAT, root, data) with head-switching for double-sided disks.
-- **Format Detection**: Auto-detects common floppy formats (e.g., 1.44MB, 720KB) or allows custom parameters.
-- **Retro Focus**: Built for 3.5", 5.25", and 8" disks, with Greaseweazle integration for physical access.
-
-## Requirements
-
-- **Python**: 3.6+
-- **Greaseweazle Hardware** (optional): For physical disks. See [Greaseweazle GitHub](https://github.com/keirf/Greaseweazle).
-- **Libraries**: `greaseweazle`, `PyQt6` (install via `pip install -r requirements.txt`).
+- **Multiple Filesystems**: FAT12, CP/M, and HDOS support
+- **Multiple Formats**: IMG, IMD, H17, and MITS DSK image formats
+- **Physical Disk Access**: Greaseweazle hardware integration
+- **File Operations**: Read, write, delete files, and create directories
+- **Drag and Drop**: Extract files to your OS or add files to the disk
+- **Disk Map**: Visualize sector usage with head-switching for double-sided disks
+- **Format Detection**: Auto-detects common floppy formats or allows custom parameters
 
 ## Installation
 
+### macOS (Recommended)
+
+Download the latest DMG from [Releases](https://github.com/your-username/FatFloppy/releases):
+
+**Installation**:
+1. Open the DMG and drag FatFloppy.app to Applications folder
+2. Right-click the app and select "Open" (first launch only)
+3. Click "Open" in the security dialog
+
+**Note**: The app is unsigned. macOS will show a security warning on first launch.
+
+### From Source
+
+**Requirements:**
+- Python 3.9+
+- PyQt6
+- Greaseweazle (for physical disk access)
+
+**Install:**
 ```bash
 git clone https://github.com/your-username/FatFloppy.git
 cd FatFloppy
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install .
+pip install -e ".[dev]"
 ```
 
 ## Usage
@@ -40,12 +52,21 @@ fatfloppy
 - **Manage Files**: Extract, add, delete, or create folders via toolbar buttons or drag-and-drop.
 - **View Disk Map**: See sector usage, toggle heads if double-sided.
 
+## Building from Source
+
+See [packaging/macos/](packaging/macos/) for macOS build instructions.
+
+```bash
+# Quick start
+pip install -e ".[dev]"
+make dmg  # Creates DMG installer
+```
+
 ## Known Limitations
 
-No disk formatting or new image creation yet.
-No progress indicators for long operations (may show “beach ball” on macOS).
-Limited testing on non-standard or corrupted disks.
-CLI is incomplete and not recommended for regular use.
+- No disk formatting or new image creation yet
+- No progress indicators for long operations
+- Limited testing on non-standard or corrupted disks
 
 ## Contributing
 

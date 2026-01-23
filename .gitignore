@@ -30,7 +30,7 @@ MANIFEST
 
 # PyInstaller
 *.manifest
-*.spec
+*.spec~
 
 # ============================================================================
 # Virtual Environments
@@ -120,6 +120,7 @@ dmypy.json
 .AppleDouble
 .LSOverride
 ._*
+*.dmg
 
 # Linux
 *~
