@@ -55,7 +55,7 @@ def setup_logger() -> None:
         log_dir = Path.home() / "Library" / "Logs" / app_name
     elif platform.system() == "Windows":
         # Windows: %LOCALAPPDATA%/FatFloppy/Logs
-        local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.expanduser("~")))
+        local_app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
         log_dir = local_app_data / app_name / "Logs"
     else:
         # Linux: ~/.local/share/FatFloppy/Logs (Standard XDG location)
