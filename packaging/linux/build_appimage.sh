@@ -23,14 +23,7 @@ if ! command -v linuxdeploy &> /dev/null; then
     exit 1
 fi
 
-if ! command -v linuxdeploy-plugin-qt &> /dev/null; then
-    echo "Warning: linuxdeploy-plugin-qt not found. Attempting to download..."
-    PLUGIN_PATH="$(pwd)/linuxdeploy-plugin-qt-${ARCH}.AppImage"
-    wget -q "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${ARCH}.AppImage" -O "$PLUGIN_PATH"
-    chmod +x "$PLUGIN_PATH"
-    export PATH="$(pwd):$PATH"
-    echo "Downloaded linuxdeploy-plugin-qt to $PLUGIN_PATH"
-fi
+# Qt plugin not needed - PyInstaller already bundles all Qt dependencies
 
 echo "Cleaning previous builds..."
 rm -rf build dist AppDir *.AppImage
@@ -60,13 +53,11 @@ echo "Copying Greaseweazle udev rule..."
 cp packaging/linux/49-greaseweazle.rules AppDir/usr/share/doc/fatfloppy/
 
 echo "Creating AppImage with linuxdeploy..."
-# Set Qt plugin to find qmake
-export QML_SOURCES_PATHS=.
-export QMAKE=$(which qmake6 2>/dev/null || which qmake-qt6 2>/dev/null || which qmake 2>/dev/null || echo "")
+# PyInstaller already bundled all Qt dependencies, so we don't need the Qt plugin
+# Just use linuxdeploy to create the AppImage structure
 
 linuxdeploy \
     --appdir AppDir \
-    --plugin qt \
     --executable AppDir/usr/bin/fatfloppy \
     --desktop-file packaging/linux/fatfloppy.desktop \
     --icon-file assets/icons/fatfloppy_icon.png \
