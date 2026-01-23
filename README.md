@@ -36,6 +36,37 @@ Download the latest DMG from [Releases](https://github.com/your-username/FatFlop
 
 **Note**: The app is unsigned. macOS will show a security warning on first launch.
 
+### Linux
+
+Download the latest AppImage from [Releases](https://github.com/your-username/FatFloppy/releases):
+
+1. Make the AppImage executable:
+   ```bash
+   chmod +x FatFloppy-{version}-x86_64.AppImage
+   ```
+2. Run it:
+   ```bash
+   ./FatFloppy-{version}-x86_64.AppImage
+   ```
+
+**FUSE requirement**: If you get a FUSE error, either install FUSE2 or run:
+```bash
+./FatFloppy-{version}-x86_64.AppImage --appimage-extract-and-run
+```
+
+**Greaseweazle USB access**: To use physical floppy drives with Greaseweazle, install the udev rule:
+```bash
+# Download the rule (or extract from AppImage at usr/share/doc/fatfloppy/)
+wget https://raw.githubusercontent.com/keirf/greaseweazle/master/scripts/49-greaseweazle.rules
+
+# Install it
+sudo cp 49-greaseweazle.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+
+# Physically unplug and reconnect your Greaseweazle
+```
+
 ### From Source
 
 **Requirements:**
@@ -63,17 +94,22 @@ fatfloppy
 
 ## Building from Source
 
-See [packaging/macos/](packaging/macos/) for macOS and [packaging/windows/](packaging/windows/) for Windows build instructions.
+See [packaging/macos/](packaging/macos/) for macOS, [packaging/windows/](packaging/windows/) for Windows, and [packaging/linux/](packaging/linux/) for Linux build instructions.
 
 ```bash
-# Quick start (macOS)
+# macOS
 pip install -e ".[dev]"
 make dmg  # Creates DMG installer
 
-# Quick start (Windows PowerShell)
+# Windows PowerShell
 pip install -e ".[dev]"
 pip install pyinstaller pillow
 .\packaging\windows\build_windows.ps1  # Creates installer
+
+# Linux
+pip install -e ".[dev]"
+pip install pyinstaller
+make appimage  # Creates AppImage (requires linuxdeploy and linuxdeploy-plugin-qt)
 ```
 
 ## Known Limitations

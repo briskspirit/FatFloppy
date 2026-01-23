@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=FatFloppy
+Comment=Browse and manage vintage floppy disk images
+Exec=fatfloppy
+Icon=fatfloppy
+Categories=Utility;System;
+Terminal=false
