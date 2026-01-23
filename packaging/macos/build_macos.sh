@@ -28,6 +28,11 @@ mkdir -p dist/dmg
 
 if [ "$DEREFERENCE_SYMLINKS" = "true" ]; then
     echo "Dereferencing symlinks to match installed size..."
+
+    # Remove broken symlinks first (from excluded Qt frameworks)
+    echo "Cleaning up broken symlinks..."
+    find "dist/${APP_NAME}.app" -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+
     # Copy and dereference symlinks so DMG size matches installed size
     rsync -aL "dist/${APP_NAME}.app/" "dist/dmg/${APP_NAME}.app/"
 else
