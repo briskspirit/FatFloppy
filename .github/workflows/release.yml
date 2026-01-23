@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows Installer
+    name: Build Windows app and installer
     runs-on: windows-latest
 
     steps:
@@ -65,7 +65,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: FatFloppy-Windows-Portable
-          path: dist/*-Portable.zip
+          path: dist/FatFloppy/
           retention-days: 30
 
       - name: Upload to Release
