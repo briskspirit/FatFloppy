@@ -16,7 +16,7 @@ echo "Cleaning previous builds..."
 rm -rf build dist
 
 echo "Running PyInstaller..."
-pyinstaller packaging/macos/FatFloppy.spec
+python -m PyInstaller packaging/macos/FatFloppy.spec
 
 if [ ! -d "dist/${APP_NAME}.app" ]; then
     echo "Error: ${APP_NAME}.app not found in dist/"
@@ -78,5 +78,5 @@ fi
 echo ""
 echo "For complete release, build both architectures:"
 echo "  - Build arm64 on Apple Silicon Mac or GitHub Actions (macos-14)"
-echo "  - Build x86_64 on Intel Mac or GitHub Actions (macos-13)"
+echo "  - Build x86_64 on Intel Mac or GitHub Actions (Rosetta on macos-14)"
 echo "=========================================="
