@@ -96,5 +96,6 @@ This is a hobby project, and contributions are welcome! Please:
 
 ## Acknowledgements
 
-This project heavily relies on the excellent [Greaseweazle](https://github.com/keirf/Greaseweazle) hardware and software by Keir Fraser.
-PyQt6 for the GUI framework.
+- [Greaseweazle](https://github.com/keirf/Greaseweazle) hardware and software by Keir Fraser
+- [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) for the GUI framework
+- [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) font by JetBrains
