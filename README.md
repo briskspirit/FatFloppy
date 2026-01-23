@@ -16,11 +16,20 @@ FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage f
 
 ## Installation
 
-### macOS (Recommended)
+### Windows
+
+Download the latest installer from [Releases](https://github.com/your-username/FatFloppy/releases):
+
+1. Run `FatFloppy-{version}-Windows-Setup.exe`
+2. Follow the installation wizard
+3. Launch from Start Menu or desktop shortcut
+
+**Requirements**: Windows 10 or later (64-bit)
+
+### macOS
 
 Download the latest DMG from [Releases](https://github.com/your-username/FatFloppy/releases):
 
-**Installation**:
 1. Open the DMG and drag FatFloppy.app to Applications folder
 2. Right-click the app and select "Open" (first launch only)
 3. Click "Open" in the security dialog
@@ -54,12 +63,17 @@ fatfloppy
 
 ## Building from Source
 
-See [packaging/macos/](packaging/macos/) for macOS build instructions.
+See [packaging/macos/](packaging/macos/) for macOS and [packaging/windows/](packaging/windows/) for Windows build instructions.
 
 ```bash
-# Quick start
+# Quick start (macOS)
 pip install -e ".[dev]"
 make dmg  # Creates DMG installer
+
+# Quick start (Windows PowerShell)
+pip install -e ".[dev]"
+pip install pyinstaller pillow
+.\packaging\windows\build_windows.ps1  # Creates installer
 ```
 
 ## Known Limitations

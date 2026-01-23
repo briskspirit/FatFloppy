@@ -10,6 +10,61 @@ permissions:
   contents: write
 
 jobs:
+  build-windows:
+    name: Build Windows Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pillow
+          pip install -e .
+
+      - name: Convert icon to ICO format
+        run: |
+          python -c "from PIL import Image; img = Image.open('assets/icons/fatfloppy_icon.png'); img.save('assets/icons/fatfloppy_icon.ico', sizes=[(16,16), (32,32), (48,48), (64,64), (128,128), (256,256)])"
+
+      - name: Build with PyInstaller
+        run: |
+          python -m PyInstaller packaging/windows/FatFloppy.spec
+
+      - name: Get version
+        id: version
+        run: |
+          $version = python -c "exec(open('src/fatfloppy/_version.py').read()); print(__version__)"
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Build installer with Inno Setup
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ steps.version.outputs.VERSION }} packaging\windows\installer.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FatFloppy-Windows
+          path: dist/*-Setup.exe
+          retention-days: 30
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*-Setup.exe
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build-macos:
     name: Build macOS DMG (${{ matrix.arch }})
     runs-on: macos-14
