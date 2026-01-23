@@ -7,6 +7,7 @@ Coordinates UI and delegates operations to specialized managers.
 import datetime
 import logging
 import os
+import posixpath
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -450,7 +451,7 @@ class FileBrowserApp(QMainWindow):
                 continue
 
             parts = dir_path.strip("/").split("/")
-            parent_path = os.path.normpath("/" + "/".join(parts[:-1]))
+            parent_path = posixpath.normpath("/" + "/".join(parts[:-1]))
             dir_name = parts[-1]
 
             parent_node = node_dict.get(parent_path)
@@ -524,7 +525,7 @@ class FileBrowserApp(QMainWindow):
         path = self.current_path
         if path != "/":
             path += "/"
-        return os.path.normpath(path + name)
+        return posixpath.normpath(path + name)
 
     def _build_path_from_node(self, node: FileSystemNode) -> str:
         """

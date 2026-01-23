@@ -5,6 +5,7 @@ Manages file operations including import, export, deletion, and editing.
 
 import logging
 import os
+import posixpath
 import re
 from pathlib import Path
 from typing import Callable
@@ -656,7 +657,7 @@ class FileManager(QObject):
         )
         file_data = Path(file_path).read_bytes()
 
-        full_path = os.path.normpath(f"{dest_path}/{dest_name}")
+        full_path = posixpath.normpath(f"{dest_path}/{dest_name}")
         success = self.parent.controller.write_file(full_path, file_data)
         if not success:
             raise Exception(f"Failed to write file {dest_name}")
@@ -693,9 +694,7 @@ class FileManager(QObject):
                         current_item, total_items, f"Extracting {item_name}..."
                     )
 
-                item_source_path = os.path.normpath(
-                    str(Path(source_dir_path) / item_name)
-                )
+                item_source_path = posixpath.normpath(f"{source_dir_path}/{item_name}")
                 item_local_path = str(Path(local_dir_path) / item_name)
                 if item["is_dir"]:
                     self._extract_directory(item_source_path, item_local_path)
