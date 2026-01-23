@@ -63,13 +63,22 @@ cp packaging/linux/49-greaseweazle.rules AppDir/usr/share/doc/fatfloppy/
 
 echo "Creating AppImage with linuxdeploy..."
 # PyInstaller already bundled all Qt dependencies, so we don't need the Qt plugin
-# Just use linuxdeploy to create the AppImage structure
+# We need to tell linuxdeploy about the Qt libraries so it can bundle xcb dependencies
+
+# Deploy Qt libraries explicitly so linuxdeploy can find xcb dependencies
+QT_LIBS=""
+for lib in AppDir/usr/bin/PyQt6/Qt6/lib/libQt6*.so.6; do
+    if [ -f "$lib" ]; then
+        QT_LIBS="$QT_LIBS --library $lib"
+    fi
+done
 
 linuxdeploy \
     --appdir AppDir \
     --executable AppDir/usr/bin/fatfloppy \
     --desktop-file packaging/linux/fatfloppy.desktop \
     --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/fatfloppy.png \
+    $QT_LIBS \
     --output appimage
 
 # Find the generated AppImage (linuxdeploy creates it with a default name)
