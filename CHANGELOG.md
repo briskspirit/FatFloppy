@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial release
 - FAT12 filesystem support with complete file operations
-- CP/M filesystem support (read-only)
-- HDOS filesystem support (read-only)
+- CP/M filesystem support with complete file operations
+- HDOS filesystem support with complete file operations
 - IMG (raw image) format support
 - IMD (ImageDisk) format support
 - H17 (Heath) format support
@@ -31,6 +31,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known Issues
 - No progress indicators for long operations
-- FAT12 write support only (CP/M and HDOS are read-only)
 
 [0.1.0]: https://github.com/your-username/FatFloppy/releases/tag/v0.1.0
