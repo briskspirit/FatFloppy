@@ -47,7 +47,16 @@ cp -r dist/fatfloppy/* AppDir/usr/bin/
 
 echo "Copying desktop file and icon..."
 cp packaging/linux/fatfloppy.desktop AppDir/usr/share/applications/
-cp assets/icons/fatfloppy_icon.png AppDir/usr/share/icons/hicolor/256x256/apps/fatfloppy.png
+
+# Resize icon to 256x256 (linuxdeploy only accepts standard icon sizes)
+if command -v convert &> /dev/null; then
+    convert assets/icons/fatfloppy_icon.png -resize 256x256 AppDir/usr/share/icons/hicolor/256x256/apps/fatfloppy.png
+elif command -v magick &> /dev/null; then
+    magick assets/icons/fatfloppy_icon.png -resize 256x256 AppDir/usr/share/icons/hicolor/256x256/apps/fatfloppy.png
+else
+    echo "Warning: ImageMagick not found, attempting to use original icon..."
+    cp assets/icons/fatfloppy_icon.png AppDir/usr/share/icons/hicolor/256x256/apps/fatfloppy.png
+fi
 
 echo "Copying Greaseweazle udev rule..."
 cp packaging/linux/49-greaseweazle.rules AppDir/usr/share/doc/fatfloppy/
@@ -60,7 +69,7 @@ linuxdeploy \
     --appdir AppDir \
     --executable AppDir/usr/bin/fatfloppy \
     --desktop-file packaging/linux/fatfloppy.desktop \
-    --icon-file assets/icons/fatfloppy_icon.png \
+    --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/fatfloppy.png \
     --output appimage
 
 # Find the generated AppImage (linuxdeploy creates it with a default name)
