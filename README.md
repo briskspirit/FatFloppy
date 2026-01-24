@@ -49,6 +49,10 @@ Download the latest AppImage from [Releases](https://github.com/your-username/Fa
    ./FatFloppy-{version}-x86_64.AppImage
    ```
 
+**Double-click to run**: On Ubuntu 24.04+, you may need to enable executable text files to run on double-click:
+- Open Files (Nautilus) → Preferences → Behavior
+- Under "Executable Text Files", select "Run them" or "Ask what to do"
+
 **FUSE requirement**: If you get a FUSE error, either install FUSE2 or run:
 ```bash
 ./FatFloppy-{version}-x86_64.AppImage --appimage-extract-and-run

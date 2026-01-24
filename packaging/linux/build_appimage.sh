@@ -61,6 +61,10 @@ fi
 echo "Copying Greaseweazle udev rule..."
 cp packaging/linux/49-greaseweazle.rules AppDir/usr/share/doc/fatfloppy/
 
+echo "Setting up AppImage icon..."
+# Copy icon to AppDir root as .DirIcon for file manager display
+cp AppDir/usr/share/icons/hicolor/256x256/apps/fatfloppy.png AppDir/.DirIcon
+
 echo "Creating AppImage with linuxdeploy..."
 # PyInstaller already bundled all Qt dependencies, so we don't need the Qt plugin
 # We need to tell linuxdeploy about the Qt libraries so it can bundle xcb dependencies
