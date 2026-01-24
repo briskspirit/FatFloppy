@@ -6,3 +6,5 @@ Exec=fatfloppy
 Icon=fatfloppy
 Categories=Utility;System;
 Terminal=false
+StartupWMClass=FatFloppy
+StartupNotify=true
