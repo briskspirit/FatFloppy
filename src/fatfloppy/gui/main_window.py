@@ -1383,13 +1383,21 @@ def run_gui() -> None:
         app.setDesktopFileName("FatFloppy")
     elif sys.platform == "linux":
         # Help GNOME/Wayland group the app and pick icon from desktop file
-        app.setDesktopFileName("fatfloppy.desktop")
+        # Use just the name without .desktop extension
+        app.setDesktopFileName("fatfloppy")
 
-    current_dir = Path(__file__).resolve().parent
-    root_dir = current_dir
-    while not (root_dir / "assets").exists() and root_dir != root_dir.parent:
-        root_dir = root_dir.parent
-    icon_path = root_dir / "assets" / "icons" / "fatfloppy_icon.png"
+    # Find icon path - works in both dev and PyInstaller frozen environments
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        # Running in PyInstaller bundle
+        base_path = Path(sys._MEIPASS)
+        icon_path = base_path / "assets" / "icons" / "fatfloppy_icon.png"
+    else:
+        # Running in development
+        current_dir = Path(__file__).resolve().parent
+        root_dir = current_dir
+        while not (root_dir / "assets").exists() and root_dir != root_dir.parent:
+            root_dir = root_dir.parent
+        icon_path = root_dir / "assets" / "icons" / "fatfloppy_icon.png"
 
     if icon_path.exists():
         app_icon = QIcon(str(icon_path))
