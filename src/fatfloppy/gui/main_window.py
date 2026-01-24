@@ -1381,6 +1381,9 @@ def run_gui() -> None:
 
     if sys.platform == "darwin":
         app.setDesktopFileName("FatFloppy")
+    elif sys.platform == "linux":
+        # Help GNOME/Wayland group the app and pick icon from desktop file
+        app.setDesktopFileName("fatfloppy.desktop")
 
     current_dir = Path(__file__).resolve().parent
     root_dir = current_dir

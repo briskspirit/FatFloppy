@@ -61,9 +61,13 @@ fi
 echo "Copying Greaseweazle udev rule..."
 cp packaging/linux/49-greaseweazle.rules AppDir/usr/share/doc/fatfloppy/
 
-echo "Setting up AppImage icon..."
+echo "Setting up AppImage icon and desktop file..."
 # Copy icon to AppDir root as .DirIcon for file manager display
 cp AppDir/usr/share/icons/hicolor/256x256/apps/fatfloppy.png AppDir/.DirIcon
+
+# Create symlinks in AppDir root for linuxdeploy/appimagetool
+ln -sf usr/share/applications/fatfloppy.desktop AppDir/fatfloppy.desktop
+ln -sf usr/share/icons/hicolor/256x256/apps/fatfloppy.png AppDir/fatfloppy.png
 
 echo "Creating AppImage with linuxdeploy..."
 # PyInstaller already bundled all Qt dependencies, so we don't need the Qt plugin
