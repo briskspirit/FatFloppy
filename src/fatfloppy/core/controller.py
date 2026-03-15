@@ -38,7 +38,6 @@ class DiskController:
         self.logger.debug(f"Format names: {list(self.known_formats.keys())}")
 
         self.driver: Optional[DiskIODriver] = None
-        self.explicit_format_set: bool = False
         self.physical_format: Optional[PhysicalFormat] = None
         self.active_filesystem_config: Optional[Any] = None
         self._detection_cached: bool = False
@@ -62,12 +61,17 @@ class DiskController:
             except Exception as e:
                 self.logger.error(f"Error flushing driver during close: {e}")
 
+        if self.driver and hasattr(self.driver, "close"):
+            try:
+                self.driver.close()
+            except Exception as e:
+                self.logger.error(f"Error closing driver: {e}")
+
         self.disk = None
         self.filesystem = None
         self.driver = None
         self.physical_format = None
         self.active_filesystem_config = None
-        self.explicit_format_set = False
         self._detection_cached = False
         self._cached_format_name = None
 
@@ -615,8 +619,6 @@ class DiskController:
         if self.disk:
             self.close_disk()
 
-        self.explicit_format_set = bool(format_info)
-
         try:
             self.driver = DriverFactory.create(
                 disk_type,
@@ -747,6 +749,8 @@ class DiskController:
             )
 
         self.physical_format = self.disk.physical_format
+        self._detection_cached = False
+        self._cached_format_name = None
 
     def set_geometry(self, geometry: PhysicalFormat) -> None:
         """
@@ -815,7 +819,6 @@ class DiskController:
         Raises:
             ValueError: If format cannot be resolved or applied.
         """
-        self.explicit_format_set = True
 
         physical_format = None
         filesystem_config = None
@@ -1110,6 +1113,8 @@ class DiskController:
             self.filesystem = filesystem_handler
             self.physical_format = self.disk.physical_format
             self.active_filesystem_config = profile.filesystem_config
+            self._detection_cached = False
+            self._cached_format_name = None
             self.flush()
             final_vol_label = self.filesystem.get_volume_label() or volume_label
             self.logger.info(

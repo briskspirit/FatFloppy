@@ -145,6 +145,11 @@ class EditorManager(QObject):
 
         self.logger.info(f"Saving changes to {self.current_file_path}")
 
+        if not self.parent.controller or not self.parent.controller.filesystem:
+            self.error_occurred.emit("Save Error", "No disk is open. Cannot save file.")
+            self.logger.error("Save requested but no filesystem is active.")
+            return False
+
         try:
             current_text = self.parent.text_viewer.toPlainText()
             normalized_text = current_text.replace("\n", "\r\n")
@@ -154,14 +159,26 @@ class EditorManager(QObject):
             )
 
             if fs_type == "CP/M":
-                content_bytes = bytes(
-                    [
-                        b & 0x7F
-                        for b in normalized_text.encode("ascii", errors="replace")
-                    ]
-                )
+                try:
+                    encoded = normalized_text.encode("ascii", errors="strict")
+                except UnicodeEncodeError as e:
+                    self.error_occurred.emit(
+                        "Encoding Warning",
+                        f"Some characters cannot be represented in ASCII and "
+                        f"will be replaced with '?': {e}",
+                    )
+                    encoded = normalized_text.encode("ascii", errors="replace")
+                content_bytes = bytes([b & 0x7F for b in encoded])
             else:
-                content_bytes = normalized_text.encode("cp437", errors="replace")
+                try:
+                    content_bytes = normalized_text.encode("cp437", errors="strict")
+                except UnicodeEncodeError as e:
+                    self.error_occurred.emit(
+                        "Encoding Warning",
+                        f"Some characters cannot be represented in CP437 and "
+                        f"will be replaced with '?': {e}",
+                    )
+                    content_bytes = normalized_text.encode("cp437", errors="replace")
 
             file_path = self.current_file_path
             current_path = self.parent.current_path
@@ -353,9 +370,11 @@ class EditorManager(QObject):
             content_bytes: File content as bytes.
         """
         try:
-            fs_type = self.parent.controller.filesystem.get_display_info().get(
-                "Filesystem Type", "Unknown"
-            )
+            fs_type = "Unknown"
+            if self.parent.controller and self.parent.controller.filesystem:
+                fs_type = self.parent.controller.filesystem.get_display_info().get(
+                    "Filesystem Type", "Unknown"
+                )
             if fs_type == "CP/M":
                 cleaned_bytes = bytes([b & 0x7F for b in content_bytes])
                 content_text = cleaned_bytes.decode("ascii", errors="replace")

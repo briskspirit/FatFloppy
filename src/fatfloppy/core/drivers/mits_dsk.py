@@ -261,37 +261,23 @@ class MITSDSKDriver(DiskIODriver):
                 sector_data = bytearray(MITS_PHYSICAL_SECTOR_SIZE)
 
                 if track < MITS_SYSTEM_TRACK_COUNT:
-                    sector_data[0] = 0x00
+                    sector_data[0] = track | MITS_TRACK_FLAG_MASK
                     sector_data[1] = track
                     sector_data[2] = sector
                     sector_data[
                         MITS_SYSTEM_TRACK_CHECKSUM_START:MITS_SYSTEM_TRACK_CHECKSUM_END
-                    ] = self._calculate_sector_checksums(
-                        bytes(
-                            sector_data[
-                                MITS_SYSTEM_TRACK_DATA_START:MITS_SYSTEM_TRACK_DATA_END
-                            ]
-                        ),
-                        track,
-                        sector,
-                    )
+                    ] = self._calculate_sector_checksums(sector_data, track)
                 else:
-                    sector_data[0:3] = b"\x00\x00\x00"
+                    sector_data[0] = track | MITS_TRACK_FLAG_MASK
+                    sector_data[1] = 0x00
+                    sector_data[2] = 0x00
                     sector_data[3] = MITS_DATA_ADDRESS_MARK
                     sector_data[4] = track
                     sector_data[5] = sector
                     sector_data[6] = 0x00
                     sector_data[
                         MITS_DATA_TRACK_CHECKSUM_START:MITS_DATA_TRACK_CHECKSUM_END
-                    ] = self._calculate_sector_checksums(
-                        bytes(
-                            sector_data[
-                                MITS_DATA_TRACK_DATA_START:MITS_DATA_TRACK_DATA_END
-                            ]
-                        ),
-                        track,
-                        sector,
-                    )
+                    ] = self._calculate_sector_checksums(sector_data, track)
 
                 self.image_data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE] = (
                     sector_data
@@ -518,30 +504,42 @@ class MITSDSKDriver(DiskIODriver):
 
         self.logger.debug(f"Cached write for sector C:{cylinder} H:{head} S:{sector}")
 
-    def _calculate_sector_checksums(
-        self, data: bytes, track: int, sector: int
-    ) -> bytes:
+    def _calculate_sector_checksums(self, sector_bytes: bytearray, track: int) -> bytes:
         """
-        Calculates MITS-style checksums for sector data.
+        Calculates MITS-style checksums from the full 137-byte sector.
+
+        Uses the same additive algorithm as _validate_sector_checksum so that
+        sectors written by FatFloppy pass its own validation on re-open.
 
         Args:
-            data: The 128-byte data.
+            sector_bytes: The full 137-byte sector with data already inserted
+                          but checksum area not yet set.
             track: Track number.
-            sector: Sector number.
 
         Returns:
-            Checksum bytes (varies by track type).
+            Checksum bytes to write at the checksum area.
         """
-        checksum = 0
-        for b in data:
-            checksum ^= b
-        checksum ^= track
-        checksum ^= sector
-
         if track < MITS_SYSTEM_TRACK_COUNT:
-            return bytes([checksum] * MITS_SYSTEM_TRACK_CHECKSUM_COUNT)
+            # System tracks: checksum byte at [132] makes the validate sum zero.
+            # Validate formula: SEED + sum([0:131]) - [0] - [1] - 2*[2] - [132] == 0
+            # So: [132] = (SEED + sum([0:131]) - [0] - [1] - 2*[2]) & 0xFF
+            partial = MITS_CHECKSUM_SEED
+            for i in range(MITS_SYSTEM_TRACK_DATA_END):  # 0-130
+                partial = (partial + sector_bytes[i]) & 0xFF
+            partial = (partial - sector_bytes[0]) & 0xFF
+            partial = (partial - sector_bytes[1]) & 0xFF
+            partial = (partial - sector_bytes[2]) & 0xFF
+            partial = (partial - sector_bytes[2]) & 0xFF
+            checksum = partial & 0xFF
+            # [131] = stop byte 0xFF, [132-136] = checksum copies
+            return bytes(
+                [MITS_STOP_BYTE] + [checksum] * (MITS_SYSTEM_TRACK_CHECKSUM_COUNT - 1)
+            )
         else:
-            return bytes([checksum] * MITS_DATA_TRACK_CHECKSUM_COUNT)
+            # Data tracks: no computable checksum byte — the additive sum
+            # depends on data content and may not be zero for arbitrary data.
+            # Return the required fixed markers: [135]=stop byte, [136]=end marker.
+            return bytes([MITS_STOP_BYTE, MITS_END_MARKER])
 
     def _create_physical_format(self) -> None:
         """
@@ -617,7 +615,7 @@ class MITSDSKDriver(DiskIODriver):
         )
 
     def _reconstruct_physical_sector(
-        self, old_sector: bytes, new_data: bytes, track: int, sector: int
+        self, old_sector: bytes, new_data: bytes, track: int, _sector: int
     ) -> bytes:
         """
         Reconstructs a 137-byte physical sector with new data.
@@ -639,11 +637,11 @@ class MITSDSKDriver(DiskIODriver):
             )
             sector_data[
                 MITS_SYSTEM_TRACK_CHECKSUM_START:MITS_SYSTEM_TRACK_CHECKSUM_END
-            ] = self._calculate_sector_checksums(new_data, track, sector)
+            ] = self._calculate_sector_checksums(sector_data, track)
         else:
             sector_data[MITS_DATA_TRACK_DATA_START:MITS_DATA_TRACK_DATA_END] = new_data
             sector_data[MITS_DATA_TRACK_CHECKSUM_START:MITS_DATA_TRACK_CHECKSUM_END] = (
-                self._calculate_sector_checksums(new_data, track, sector)
+                self._calculate_sector_checksums(sector_data, track)
             )
 
         return bytes(sector_data)

@@ -1252,7 +1252,7 @@ class HDOSFilesystem(Filesystem):
         entry_bytes[8:11] = ext_bytes
         entry_bytes[11] = 0
         entry_bytes[12] = 0
-        entry_bytes[13] = cluster_factor + 1
+        entry_bytes[13] = cluster_factor
         entry_bytes[14] = flags
         entry_bytes[15] = 0
         entry_bytes[16] = allocated_groups[0] if allocated_groups else 0
@@ -1285,7 +1285,14 @@ class HDOSFilesystem(Filesystem):
             for i in range(DIR_ENTRIES_PER_BLOCK):
                 offset = i * HDOS_DIR_ENTRY_SIZE
                 if dir_data[offset] in (0x00, 0xFF, 0xFE):
+                    was_end_marker = dir_data[offset] == 0xFE
                     dir_data[offset : offset + HDOS_DIR_ENTRY_SIZE] = entry_bytes
+
+                    # If we overwrote the end-of-directory marker, restore it
+                    # at the next slot so the scanner doesn't see stale data.
+                    if was_end_marker and i + 1 < DIR_ENTRIES_PER_BLOCK:
+                        next_offset = (i + 1) * HDOS_DIR_ENTRY_SIZE
+                        dir_data[next_offset] = 0xFE
 
                     self._write_lba(
                         current_dir_lba, bytes(dir_data[:HDOS_BYTES_PER_SECTOR])

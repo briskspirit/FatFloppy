@@ -103,12 +103,16 @@ def test_open_image_auto_detect_format(populated_controller: DiskController) -> 
     geom = populated_controller.disk.physical_format
     assert geom is not None
 
-    expected_spt = FMT_144.physical_format.get_sectors_per_track(0, 0)
-    actual_spt = geom.get_sectors_per_track(0, 0)
-    assert actual_spt == expected_spt
-    assert geom.cylinders == FMT_144.physical_format.cylinders
-    assert geom.heads == FMT_144.physical_format.heads
-    assert geom.bytes_per_sector == FMT_144.physical_format.bytes_per_sector
+    expected_pf = FMT_144.physical_format
+    assert geom.cylinders == expected_pf.cylinders
+    assert geom.heads == expected_pf.heads
+    assert geom.bytes_per_sector == expected_pf.bytes_per_sector
+    assert geom.get_sectors_per_track(0, 0) == expected_pf.get_sectors_per_track(0, 0)
+    assert geom.rpm == expected_pf.rpm
+    assert geom.total_sectors == expected_pf.total_sectors
+    assert geom.total_bytes == expected_pf.total_bytes
+    assert len(geom.track_formats) == len(expected_pf.track_formats)
+    assert geom.track_formats[0].encoding == expected_pf.track_formats[0].encoding
 
 
 def test_open_image_non_existent() -> None:

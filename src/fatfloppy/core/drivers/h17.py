@@ -1,3 +1,4 @@
+import copy
 import datetime
 import struct
 from dataclasses import dataclass
@@ -345,11 +346,10 @@ class H17ImageDriver(DiskIODriver):
             with Path(self.file_path).open("wb") as f:
                 f.write(self.file_data)
 
+            flushed_count = len(self.modified_sectors)
             self.modified_sectors.clear()
             self.dirty = False
-            self.logger.info(
-                f"Successfully flushed {len(self.modified_sectors)} sectors"
-            )
+            self.logger.info(f"Successfully flushed {flushed_count} sectors")
 
         except Exception as e:
             self.logger.error(f"Failed to flush H17 image: {e}")
@@ -645,7 +645,7 @@ class H17ImageDriver(DiskIODriver):
         if not isinstance(physical_format, PhysicalFormat):
             raise TypeError("Expected PhysicalFormat object")
 
-        self.physical_format = physical_format
+        self.physical_format = copy.deepcopy(physical_format)
         self.logger.info(
             f"Physical format set: {physical_format.cylinders}x{physical_format.heads}"
         )

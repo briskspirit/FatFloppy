@@ -77,7 +77,7 @@ def test_disk_image_read_and_verify(
 
     free_bytes, total_bytes = hdos_controller.get_free_space()
     assert total_bytes == 101888
-    assert free_bytes == pytest.approx(expected_free_space_bytes, rel=0.01)
+    assert free_bytes == expected_free_space_bytes
 
 
 @pytest.mark.parametrize(
@@ -109,7 +109,7 @@ def test_file_write_delete_and_verify(
     initial_filenames = {item["name"] for item in initial_dir}
     assert file_to_test in initial_filenames
     initial_free_bytes, _ = hdos_controller.get_free_space()
-    assert initial_free_bytes == pytest.approx(0, abs=100)
+    assert initial_free_bytes == 0
 
     delete_success = hdos_controller.delete_item_recursive(f"/{file_to_test}")
     assert delete_success
@@ -120,7 +120,7 @@ def test_file_write_delete_and_verify(
 
     space_freed_on_disk = 7 * 512
     free_bytes_after_delete, _ = hdos_controller.get_free_space()
-    assert free_bytes_after_delete == pytest.approx(space_freed_on_disk, rel=0.01)
+    assert free_bytes_after_delete == space_freed_on_disk
 
     write_success = hdos_controller.write_file(f"/{file_to_test}", ground_truth_content)
     assert write_success
@@ -134,7 +134,7 @@ def test_file_write_delete_and_verify(
     assert read_back_content == ground_truth_content
 
     final_free_bytes, _ = hdos_controller.get_free_space()
-    assert final_free_bytes == pytest.approx(initial_free_bytes, rel=0.01)
+    assert final_free_bytes == initial_free_bytes
 
     hdos_controller.close_disk()
 
@@ -164,7 +164,7 @@ def test_format_and_write(hdos_controller: DiskController, tmp_path: Path) -> No
     expected_free = 193 * 512
 
     assert total_data_bytes == expected_total_data
-    assert free_bytes == pytest.approx(expected_free, rel=0.01)
+    assert free_bytes == expected_free
 
     test_content = b"This is a test file after formatting an HDOS disk."
     write_success = hdos_controller.write_file("/TEST.TXT", test_content)

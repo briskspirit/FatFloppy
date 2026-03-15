@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import datetime
 import re
 import struct
@@ -146,13 +147,19 @@ class FATVolumeInfo:
         struct.pack_into("<H", boot_sector, 0x018, self.sectors_per_track)
         struct.pack_into("<H", boot_sector, 0x01A, self.num_heads)
         struct.pack_into("<I", boot_sector, 0x01C, self.hidden_sectors)
-        struct.pack_into("<B", boot_sector, 0x024, self.drive_number)
-        struct.pack_into("<B", boot_sector, 0x025, 0)
-        struct.pack_into("<B", boot_sector, 0x026, 0x29)
-        struct.pack_into("<I", boot_sector, 0x027, self.volume_serial)
-        boot_sector[0x02B:0x036] = self.volume_label.encode("cp437").ljust(11)
-        boot_sector[0x036:0x03E] = self.fs_type.encode("cp437").ljust(8)
-        struct.pack_into("<H", boot_sector, self.bytes_per_sector - 2, 0xAA55)
+        # Extended BPB (0x29 signature, volume serial/label, FS type) and the
+        # 0xAA55 boot signature were introduced with DOS 3.3+/4.0 for 512-byte
+        # sectors.  Early FAT formats (8" floppies, 128/256-byte sectors)
+        # predate these fields, so omit them for historical accuracy.
+        # The read side (from_bytes) already handles this via the 0x29 check.
+        if self.bytes_per_sector >= 512:
+            struct.pack_into("<B", boot_sector, 0x024, self.drive_number)
+            struct.pack_into("<B", boot_sector, 0x025, 0)
+            struct.pack_into("<B", boot_sector, 0x026, 0x29)
+            struct.pack_into("<I", boot_sector, 0x027, self.volume_serial)
+            boot_sector[0x02B:0x036] = self.volume_label.encode("cp437").ljust(11)
+            boot_sector[0x036:0x03E] = self.fs_type.encode("cp437").ljust(8)
+            struct.pack_into("<H", boot_sector, self.bytes_per_sector - 2, 0xAA55)
         return bytes(boot_sector)
 
 
@@ -189,7 +196,7 @@ class FATFilesystem(Filesystem):
 
     config_class: ClassVar[type] = FATVolumeInfo
 
-    _invalid_83_chars_pattern = re.compile(r'[\\/:*?"<>|\s+]')
+    _invalid_83_chars_pattern = re.compile(r'[\\/:*?"<>|\s]')
     _reserved_names = {
         "CON",
         "PRN",
@@ -256,7 +263,15 @@ class FATFilesystem(Filesystem):
             config2, FATVolumeInfo
         ):
             return False
-        return config1.total_sectors == config2.total_sectors
+        return (
+            config1.total_sectors == config2.total_sectors
+            and config1.bytes_per_sector == config2.bytes_per_sector
+            and config1.sectors_per_cluster == config2.sectors_per_cluster
+            and config1.sectors_per_fat == config2.sectors_per_fat
+            and config1.root_entries == config2.root_entries
+            and config1.num_heads == config2.num_heads
+            and config1.media_descriptor == config2.media_descriptor
+        )
 
     @staticmethod
     def create_config_from_params(
@@ -470,6 +485,7 @@ class FATFilesystem(Filesystem):
                 f"cluster: {parent_write_err}"
             )
             self._set_fat_entry_cached(new_cluster, 0)
+            self._commit_fat()
             raise OSError(
                 "Failed to write directory entry in parent"
             ) from parent_write_err
@@ -603,7 +619,7 @@ class FATFilesystem(Filesystem):
             )
         self.logger.info(f"Formatting disk with FAT12 profile: {profile.name}")
 
-        boot_sector_config = profile.filesystem_config
+        boot_sector_config = copy.deepcopy(profile.filesystem_config)
         if volume_label:
             boot_sector_config.volume_label = volume_label.ljust(11)[:11]
         elif (
@@ -1930,7 +1946,7 @@ class FATFilesystem(Filesystem):
         if not (0 <= cluster < self.num_clusters + 2):
             return FAT12_BAD_CLUSTER
 
-        byte_offset = int(cluster * 1.5)
+        byte_offset = (cluster * 3) // 2
         if byte_offset + 1 >= len(self.fat_cache):
             return FAT12_BAD_CLUSTER
 
@@ -1957,7 +1973,7 @@ class FATFilesystem(Filesystem):
         if not (2 <= cluster < self.num_clusters + 2):
             raise ValueError(f"Invalid cluster number: {cluster}")
 
-        byte_offset = int(cluster * 1.5)
+        byte_offset = (cluster * 3) // 2
         if byte_offset + 1 >= len(self.fat_cache):
             raise IndexError("FAT offset out of bounds")
 

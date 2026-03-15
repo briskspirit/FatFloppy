@@ -169,7 +169,6 @@ class DiskManager(QObject):
         )
 
         try:
-            self.disk_closed.emit()
             controller = DiskController()
             self.status_message.emit(
                 f"Opening {disk_type} disk: {Path(file_path).name}..."
@@ -179,23 +178,22 @@ class DiskManager(QObject):
                 self.logger.info(
                     f"Successfully opened disk image: {file_path} (Type: {disk_type})"
                 )
+                # Close previous disk only after new one is validated
+                self.disk_closed.emit()
                 self.parent.controller = controller
                 self._finalize_disk_open(file_path, is_image=True)
             else:
-                self.disk_closed.emit()
                 self.error_occurred.emit(
                     "Error",
                     f"Failed to open {disk_type} disk image. Check logs for details.",
                 )
                 self.logger.error(f"Failed to open disk image: {file_path}")
         except ValueError as e:
-            self.disk_closed.emit()
             self.error_occurred.emit(
                 "Error", f"Failed to parse or load image file: {str(e)}"
             )
             self.logger.error(f"ValueError opening disk image {file_path}: {e}")
         except Exception as e:
-            self.disk_closed.emit()
             self.error_occurred.emit("Error", f"Failed to open disk image: {str(e)}")
             self.logger.exception(f"Unexpected error opening disk image {file_path}.")
 

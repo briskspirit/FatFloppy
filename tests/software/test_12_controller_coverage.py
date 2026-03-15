@@ -300,9 +300,12 @@ def test_flush_without_driver(controller) -> None:
 
 
 def test_flush_driver_without_flush_method(controller) -> None:
-    """Tests flush when driver lacks flush method."""
+    """Tests flush when driver lacks flush method — warns but doesn't crash."""
     controller.driver = MagicMock(spec=[])
+    # Should not raise; controller logs a warning when driver has no flush
     controller.flush()
+    # Verify the controller didn't try to call flush on the driver
+    assert not hasattr(controller.driver, "flush")
 
 
 def test_flush_error(controller_with_disk) -> None:

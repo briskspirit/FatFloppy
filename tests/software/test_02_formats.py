@@ -39,9 +39,23 @@ def test_list_known_formats(disk_controller: DiskController) -> None:
     """Test that the controller can list all known floppy formats."""
     formats: list[tuple[str, str]] = disk_controller.list_formats()
     assert isinstance(formats, list)
-    assert len(formats) > 0
-    assert isinstance(formats[0], tuple)
-    assert len(formats[0]) == 2
+    assert len(formats) >= 20, f"Expected at least 20 formats, got {len(formats)}"
+
+    # Verify tuple structure
+    for name, description in formats:
+        assert isinstance(name, str) and name, "Format name must be a non-empty string"
+        assert isinstance(description, str) and description, (
+            "Format description must be a non-empty string"
+        )
+
+    format_names = {name for name, _ in formats}
+    # Core formats that must always be present
+    assert "ibm_3.5_1.44m" in format_names
+    assert "ibm_3.5_720k" in format_names
+    assert "ibm_5.25_360k" in format_names
+    assert "ibm_5.25_1.2m" in format_names
+    assert "cpm_8_sssd_250k" in format_names
+    assert "hdos_5.25_100k" in format_names
 
 
 def test_get_format_by_name(disk_controller: DiskController) -> None:

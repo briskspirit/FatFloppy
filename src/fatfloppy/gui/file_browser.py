@@ -3,7 +3,9 @@
 Custom QTreeWidget with drag-and-drop functionality for importing files.
 """
 
+import atexit
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -48,9 +50,16 @@ class DragDropTreeWidget(QTreeWidget):
         self.setDragDropMode(QTreeWidget.DragDropMode.DragDrop)
         self.parent_widget = parent
         self._temp_extraction_dir = None
+        atexit.register(self._cleanup_temp_dir)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _cleanup_temp_dir(self) -> None:
+        """Remove the temporary extraction directory if it exists."""
+        if self._temp_extraction_dir and Path(self._temp_extraction_dir).exists():
+            shutil.rmtree(self._temp_extraction_dir, ignore_errors=True)
+            self._temp_extraction_dir = None
 
     def process_dropped_files(self, file_paths: list[str]) -> None:
         """

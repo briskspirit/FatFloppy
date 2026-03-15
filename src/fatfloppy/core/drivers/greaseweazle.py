@@ -201,6 +201,19 @@ class GreaseweazleDriver(DiskIODriver):
         self.using_custom_diskdef: bool = False
         self.scan_track_object: Optional[Any] = None
 
+    def close(self) -> None:
+        """Closes the USB connection to the Greaseweazle device."""
+        if self.usb is not None:
+            try:
+                if hasattr(self.usb, "ser") and self.usb.ser:
+                    self.usb.ser.close()
+                    self.logger.debug("Closed Greaseweazle USB connection")
+            except Exception as e:
+                self.logger.warning(f"Error closing USB connection: {e}")
+            finally:
+                self.usb = None
+                self.initialized = False
+
     @property
     def allows_geometry_override(self) -> bool:
         """

@@ -1079,7 +1079,9 @@ class CPMFilesystem(Filesystem):
                 used_data = bytes(b & 0x7F for b in used_data)
             data.extend(used_data)
 
-        return bytes(data).rstrip(bytes([CPM_EOF_CHAR]))
+        if is_text:
+            return bytes(data).rstrip(bytes([CPM_EOF_CHAR]))
+        return bytes(data)
 
     def write_file(self, path: str, data: bytes) -> None:
         """
@@ -1511,8 +1513,11 @@ class CPMFilesystem(Filesystem):
         ext = name_parts[1][:3] if len(name_parts) > 1 else ""
         parsed_filename = f"{base}.{ext}" if ext else base
 
-        if not parsed_filename.strip():
-            raise ValueError(f"Empty filename derived from path '{path}'")
+        if not base.strip():
+            raise ValueError(
+                f"Empty base filename derived from path '{path}' "
+                f"(CP/M requires a non-empty filename before the extension)"
+            )
         if len(parsed_filename) > 12:
             self.logger.warning(
                 f"Parsed filename '{parsed_filename}' from '{path}' is longer than typical 8.3."
