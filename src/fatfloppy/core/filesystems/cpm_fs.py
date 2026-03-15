@@ -708,7 +708,7 @@ class CPMFilesystem(Filesystem):
             self.logger.warning(f"File '{path}' not found in directory.")
             return []
 
-        file_extents.sort(key=lambda e: (e.ex | (e.xh << 8)))
+        file_extents.sort(key=lambda e: e.ex | (e.xh << 8))
 
         all_blocks = []
         for extent in file_extents:
@@ -980,7 +980,7 @@ class CPMFilesystem(Filesystem):
         files = []
         for key, group in file_groups.items():
             _user, full_name = key
-            group.sort(key=lambda e: (e.ex | (e.xh << 8)))
+            group.sort(key=lambda e: e.ex | (e.xh << 8))
 
             total_rc = sum(e.rc for e in group)
             size = total_rc * CPM_SECTOR_SIZE
@@ -1370,7 +1370,7 @@ class CPMFilesystem(Filesystem):
             key = (entry.user, entry.get_filename().upper())
             files[key].append(entry)
         for key in files:
-            files[key].sort(key=lambda e: (e.ex | (e.xh << 8)))
+            files[key].sort(key=lambda e: e.ex | (e.xh << 8))
         return files
 
     def _initialize_parameters(self) -> None:
