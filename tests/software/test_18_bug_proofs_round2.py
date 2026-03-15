@@ -8,6 +8,7 @@ BUG-9:  H17 flush logs "0 sectors flushed"
 BUG-10: Controller detection cache not invalidated after format/set_format
 """
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -51,9 +52,7 @@ class TestBug6MitsDskChecksumMismatch:
         )
 
         expected_size = MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
-        driver = MITSDSKDriver(
-            file_path="/dev/null", image_data=b"\x00" * expected_size
-        )
+        driver = MITSDSKDriver(file_path=os.devnull, image_data=b"\x00" * expected_size)
         driver.initialize_new_image(PhysicalFormat.create_default())
 
         # Validate system track sectors (tracks 0-5)
@@ -87,9 +86,7 @@ class TestBug6MitsDskChecksumMismatch:
         )
 
         expected_size = MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
-        driver = MITSDSKDriver(
-            file_path="/dev/null", image_data=b"\x00" * expected_size
-        )
+        driver = MITSDSKDriver(file_path=os.devnull, image_data=b"\x00" * expected_size)
         driver.initialize_new_image(PhysicalFormat.create_default())
 
         for track in [0, 5, 6, 40, 76]:
@@ -112,9 +109,7 @@ class TestBug6MitsDskChecksumMismatch:
         )
 
         expected_size = MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
-        driver = MITSDSKDriver(
-            file_path="/dev/null", image_data=b"\x00" * expected_size
-        )
+        driver = MITSDSKDriver(file_path=os.devnull, image_data=b"\x00" * expected_size)
         driver.initialize_new_image(PhysicalFormat.create_default())
         driver._create_physical_format()
 

@@ -10,6 +10,7 @@ ISSUE-4: CP/M read_file strips trailing 0x1A from ALL files, corrupting binaries
 FMT-2: ibm_8_630k uses media_descriptor=0x00 which is the FAT "free cluster" value
 """
 
+import os
 import shutil
 import struct
 import sys
@@ -286,7 +287,7 @@ class TestBug3Fat12FormatMutatesSharedConfig:
         # Create a disk and format it with a custom label
         pf = profile.physical_format
         driver = IMGImageDriver(
-            file_path="/dev/null",
+            file_path=os.devnull,
             image_data=b"\x00" * pf.total_bytes,
         )
         disk = Disk(driver)
@@ -311,7 +312,7 @@ class TestBug3Fat12FormatMutatesSharedConfig:
 
         # Format disk 1 with label "DISK_ONE"
         driver1 = IMGImageDriver(
-            file_path="/dev/null", image_data=b"\x00" * pf.total_bytes
+            file_path=os.devnull, image_data=b"\x00" * pf.total_bytes
         )
         disk1 = Disk(driver1)
         disk1.set_geometry(pf)
@@ -320,7 +321,7 @@ class TestBug3Fat12FormatMutatesSharedConfig:
 
         # Format disk 2 with NO label — should get default, not "DISK_ONE"
         driver2 = IMGImageDriver(
-            file_path="/dev/null", image_data=b"\x00" * pf.total_bytes
+            file_path=os.devnull, image_data=b"\x00" * pf.total_bytes
         )
         disk2 = Disk(driver2)
         disk2.set_geometry(pf)
@@ -569,7 +570,7 @@ class TestBug5FatOffsetFloatArithmetic:
         profile = _ALL_FORMATS["ibm_5.25_160k"]
         pf = profile.physical_format
         driver = IMGImageDriver(
-            file_path="/dev/null",
+            file_path=os.devnull,
             image_data=b"\x00" * pf.total_bytes,
         )
         disk = Disk(driver)

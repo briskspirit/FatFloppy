@@ -6,6 +6,7 @@ and TEST-6 (critical edge cases: interleave, variable tracks, heads_inverted,
 FAT cluster chain boundaries).
 """
 
+import os
 import struct
 import sys
 from pathlib import Path
@@ -41,7 +42,7 @@ class TestFAT12Non512Sectors:
         profile = _ALL_FORMATS["ibm_8_250k"]
         pf = profile.physical_format
         total_bytes = pf.total_bytes  # 77 * 26 * 128 = 256256
-        driver = IMGImageDriver(file_path="/dev/null", image_data=b"\x00" * total_bytes)
+        driver = IMGImageDriver(file_path=os.devnull, image_data=b"\x00" * total_bytes)
         disk = Disk(driver)
         disk.set_geometry(pf)
         return disk, driver, pf
@@ -101,7 +102,7 @@ class TestFAT12Non512Sectors:
         profile = _ALL_FORMATS["ibm_8_298k"]
         pf = profile.physical_format
         total_bytes = pf.total_bytes
-        driver = IMGImageDriver(file_path="/dev/null", image_data=b"\x00" * total_bytes)
+        driver = IMGImageDriver(file_path=os.devnull, image_data=b"\x00" * total_bytes)
         disk = Disk(driver)
         disk.set_geometry(pf)
         return disk, driver, pf
@@ -209,7 +210,7 @@ class TestCPM16BitBlocks:
             ],
         )
         driver = IMGImageDriver(
-            file_path="/dev/null",
+            file_path=os.devnull,
             image_data=b"\x00" * pf.total_bytes,
         )
         disk = Disk(driver)
@@ -270,7 +271,7 @@ class TestCPM16BitBlocks:
             ],
         )
         driver = IMGImageDriver(
-            file_path="/dev/null",
+            file_path=os.devnull,
             image_data=b"\x00" * pf.total_bytes,
         )
         disk = Disk(driver)
@@ -327,7 +328,7 @@ class TestCPM16BitBlocks:
             ],
         )
         driver = IMGImageDriver(
-            file_path="/dev/null",
+            file_path=os.devnull,
             image_data=b"\x00" * pf.total_bytes,
         )
         disk = Disk(driver)
@@ -541,7 +542,7 @@ class TestHeadsInverted:
             image_data[i] = 0xAA  # Cyl 0, Head 0 (physical)
             image_data[4 * 128 + i] = 0xBB  # Cyl 0, Head 1 (physical)
 
-        driver = IMGImageDriver(file_path="/dev/null", image_data=bytes(image_data))
+        driver = IMGImageDriver(file_path=os.devnull, image_data=bytes(image_data))
         # IMG driver does NOT use physical heads (uses logical offsets)
         disk = Disk(driver)
         disk.set_geometry(pf)
@@ -563,7 +564,7 @@ class TestFATClusterChainEdgeCases:
         profile = _ALL_FORMATS["ibm_5.25_160k"]  # Small: 320 sectors, 1 spc
         pf = profile.physical_format
         total_bytes = pf.total_bytes  # 40 * 1 * 8 * 512 = 163840
-        driver = IMGImageDriver(file_path="/dev/null", image_data=b"\x00" * total_bytes)
+        driver = IMGImageDriver(file_path=os.devnull, image_data=b"\x00" * total_bytes)
         disk = Disk(driver)
         disk.set_geometry(pf)
         fs = FATFilesystem(disk)
