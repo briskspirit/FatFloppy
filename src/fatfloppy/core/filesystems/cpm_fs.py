@@ -21,6 +21,10 @@ CPM_ATTR_SYS = 0x40
 CPM_RECORDS_PER_EXTENT = 128
 CPM_EOF_CHAR = 0x1A
 CPM_DELETED_ENTRY_MARKER = 0xE5
+# Per-slot validity penalty for all-zero directory entries. Tolerated (a few are
+# benign empties) but scored down so the cleanest interpretation wins when a
+# wrong sector skew pulls empty data into the directory (see get_validity_score).
+CPM_ZERO_ENTRY_PENALTY = 3
 
 
 @dataclass
@@ -826,10 +830,24 @@ class CPMFilesystem(Filesystem):
             plausible_entries = 0
             active_entries_count = 0
             valid_filenames_count = 0
+            zero_entries = 0
 
             for i in range(total_entries):
                 entry_bytes = all_dir_bytes[i * 32 : (i + 1) * 32]
                 user_num = entry_bytes[0]
+
+                if not any(entry_bytes):
+                    # An all-zero 32-byte slot is an unused directory entry on
+                    # disks formatted with 0x00 fill (rather than the usual 0xE5).
+                    # It is benign - tolerate it instead of treating it as a
+                    # wrong-interleave failure (which the null-filename check
+                    # below would otherwise raise). But a *wrong* sector skew on
+                    # a sparse disk also pulls empty (all-zero) data sectors into
+                    # the directory region, so all-zero slots are counted and
+                    # penalized below: the correct interpretation is the cleanest
+                    # one, and this keeps skew/interleave disambiguation intact.
+                    zero_entries += 1
+                    continue
 
                 if user_num == CPM_DELETED_ENTRY_MARKER:
                     plausible_entries += 1
@@ -948,7 +966,12 @@ class CPMFilesystem(Filesystem):
                         return 0
                     score += int(30 * block_ratio)
 
-            final_score = min(100, int(score))
+            # Penalize all-zero directory slots: a few are benign empties, but a
+            # wrong skew/interleave on a sparse disk produces many (misread empty
+            # data), so a cleaner reading outscores a corrupt one (cpm_fs.py:834).
+            score -= zero_entries * CPM_ZERO_ENTRY_PENALTY
+
+            final_score = max(0, min(100, int(score)))
             self.logger.info(
                 f"CP/M validation score: {final_score} ({valid_filenames_count} valid files)"
             )
@@ -1698,6 +1721,12 @@ class CPMFilesystem(Filesystem):
             return None
         if not self.dpb:
             raise ValueError("DPB not available for parsing directory entry.")
+
+        if not any(entry_bytes):
+            # An all-zero slot is an unused directory entry (0x00-formatted
+            # disks), not a file. Skip it so it never appears as a phantom
+            # null-named entry in listings (matches get_validity_score).
+            return None
 
         user = entry_bytes[0]
         name_bytes = bytes(b & 0x7F for b in entry_bytes[1:9])
