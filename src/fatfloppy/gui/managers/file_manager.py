@@ -771,10 +771,11 @@ class FileManager(QObject):
                 )
                 self.logger.info(f"Successfully extracted file {source_path}.")
             else:
-                QMessageBox.warning(
-                    self.parent,
-                    "Warning",
-                    f"Failed to read file data for {source_path}",
+                # _extract_file runs on a worker thread for physical disks; touch
+                # the GUI only via a signal, never a direct QMessageBox (audit
+                # file_manager.py:731).
+                self.error_occurred.emit(
+                    "Warning", f"Failed to read file data for {source_path}"
                 )
                 self.logger.warning(
                     f"Failed to read file data for extraction of {source_path}."
@@ -797,13 +798,21 @@ class FileManager(QObject):
         """
         filename = re.sub(r'[<>:"/\\|?*]', "", filename).strip().upper()
 
-        if "." in filename:
-            parts = filename.split(".")
-            base = parts[0][:8]
-            ext = parts[-1][:3]
-            return f"{base}.{ext}"
+        # Split on the LAST dot so "my.file.tar.gz" -> base "my.file.tar", ext "gz".
+        stripped = filename.strip(".")
+        if "." in stripped:
+            base, _, ext = filename.rpartition(".")
         else:
-            return filename[:8]
+            base, ext = filename, ""
+
+        # Interior dots are illegal in an 8.3 base; replace them, and never emit an
+        # empty base (e.g. dotfiles like ".gitignore") (audit file_manager.py:788).
+        base = base.replace(".", "_").strip()[:8]
+        if not base:
+            base = "_FILE"
+        ext = ext[:3]
+
+        return f"{base}.{ext}" if ext else base
 
     def _generate_unique_83_name(
         self, original_name: str, target_path: str, is_dir: bool

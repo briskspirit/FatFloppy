@@ -443,8 +443,11 @@ class FileBrowserApp(QMainWindow):
                 directory_contents[current_dir_path] = items
                 for item in items:
                     if item["is_dir"] and item["name"] not in [".", ".."]:
-                        next_dir_path = str(
-                            (Path(current_dir_path) / item["name"]).resolve()
+                        # Virtual disk paths must be joined with posix semantics,
+                        # not resolved against the host filesystem (audit
+                        # main_window.py:446).
+                        next_dir_path = posixpath.normpath(
+                            posixpath.join(current_dir_path, item["name"])
                         )
                         if (
                             next_dir_path not in scanned_directories
@@ -456,7 +459,11 @@ class FileBrowserApp(QMainWindow):
                     f"Error listing directory {current_dir_path} during tree build: {e}"
                 )
 
-        sorted_dir_paths = sorted(node_dict.keys(), key=lambda p: p.count("/"))
+        # Build nodes for every discovered directory (shallowest first so each
+        # parent exists before its children). The previous code iterated
+        # node_dict, which only held the root, so subdirectories and their files
+        # were never added to the tree (audit main_window.py:459).
+        sorted_dir_paths = sorted(scanned_directories, key=lambda p: p.count("/"))
         for dir_path in sorted_dir_paths:
             if dir_path == "/":
                 continue

@@ -22,7 +22,10 @@ from PyQt6.QtWidgets import QMenu, QMessageBox, QTreeWidget, QWidget
 
 DRAG_TEMP_DIR_PREFIX = "fatfloppy_drag_"
 DRAG_HIGHLIGHT_STYLE = (
-    "QTreeWidget { background-color: #E8F4F8; border: 2px dashed #2196F3; }"
+    # Pin a dark text colour so rows stay readable against the light highlight
+    # background in dark themes (audit file_browser.py:24).
+    "QTreeWidget { background-color: #E8F4F8; color: #101010; "
+    "border: 2px dashed #2196F3; }"
 )
 
 

@@ -27,11 +27,14 @@ def main() -> None:
         run_gui()
     except ImportError as e:
         logger.critical(f"Failed to import and run the GUI module: {e}")
+        # Exit non-zero so callers/CI see the failure instead of a silent exit 0.
+        sys.exit(1)
     except Exception as e:
         logger.critical(
             f"An unexpected error occurred during application startup: {e}",
             exc_info=True,
         )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

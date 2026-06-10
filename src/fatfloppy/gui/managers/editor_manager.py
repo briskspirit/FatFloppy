@@ -152,7 +152,12 @@ class EditorManager(QObject):
 
         try:
             current_text = self.parent.text_viewer.toPlainText()
-            normalized_text = current_text.replace("\n", "\r\n")
+            # Restore the file's original line-ending style rather than always
+            # forcing CRLF (audit editor_manager.py:155).
+            if getattr(self, "_original_uses_crlf", True):
+                normalized_text = current_text.replace("\n", "\r\n")
+            else:
+                normalized_text = current_text
 
             fs_type = self.parent.controller.filesystem.get_display_info().get(
                 "Filesystem Type", "Unknown"
@@ -381,6 +386,12 @@ class EditorManager(QObject):
             else:
                 content_text = content_bytes.decode("cp437", errors="replace")
 
+            # Remember the file's dominant line-ending style so save restores it
+            # instead of forcing CRLF onto a file that used bare LF (audit
+            # editor_manager.py:155).
+            crlf_count = content_text.count("\r\n")
+            lone_lf_count = content_text.count("\n") - crlf_count
+            self._original_uses_crlf = crlf_count >= lone_lf_count
             content_text = content_text.replace("\r\n", "\n").replace("\r", "\n")
 
             self.parent.text_viewer.blockSignals(True)
