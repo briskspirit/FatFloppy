@@ -600,14 +600,14 @@ class IMDImageDriver(DiskIODriver):
             self.logger.warning("Cannot read boot sector: no format or track")
             return None
 
-        sector_map = track_info.sector_num_map
-        sector = 1 if 1 in sector_map else (sector_map[0] if sector_map else None)
-        if sector is None:
+        if not track_info.sector_num_map:
             self.logger.warning("No sectors in track C:0 H:0")
             return None
 
         try:
-            return self.read_sector(0, 0, sector)
+            # read_sector takes a 0-based logical index; the boot sector is the
+            # first logical sector (audit imd.py:554).
+            return self.read_sector(0, 0, 0)
         except Exception as e:
             self.logger.warning(f"Failed to read boot sector: {e}")
             return None
@@ -794,6 +794,13 @@ class IMDImageDriver(DiskIODriver):
         encoding, rate, spt, bps, _ = props
 
         if sector_translation_table:
+            # The IMD numbering map records the physical (rotational) order of
+            # sector IDs. The logical-to-ID mapping every filesystem expects is
+            # ascending sector ID, so logical index n -> the n-th smallest ID.
+            # Sorting here makes interleaved/skewed images read/write the correct
+            # sectors (audit imd.py:587/822). For sequential images this is a
+            # no-op.
+            sector_translation_table = sorted(sector_translation_table)
             expected_sequential = list(range(1, spt + 1))
             is_custom_ordering = sector_translation_table != expected_sequential
         else:
@@ -1054,6 +1061,14 @@ class IMDImageDriver(DiskIODriver):
             track_info.sector_num_map = list(
                 struct.unpack_from(f"<{num_sectors}B", self.image_data, offset)
             )
+            if len(set(track_info.sector_num_map)) != len(track_info.sector_num_map):
+                # Per-sector metadata is keyed by sector ID; duplicate IDs (seen
+                # on copy-protected/damaged disks) collapse silently (audit
+                # imd.py:1069). Warn so the lost sectors are at least visible.
+                self.logger.warning(
+                    f"Duplicate sector IDs in numbering map for "
+                    f"C:{cyl} H:{track_info.head}: {track_info.sector_num_map}"
+                )
             offset += num_sectors
 
             if track_info.has_cyl_map:

@@ -225,17 +225,26 @@ class IMGFormatDetector(FormatDetector):
                 parsed_config = fs.get_specific_config()
 
                 for name, profile in self.known_formats.items():
+                    pc = profile.filesystem_config
                     if (
-                        profile.filesystem_config
-                        and hasattr(profile.filesystem_config, "total_sectors")
-                        and hasattr(profile.filesystem_config, "num_heads")
-                        and hasattr(parsed_config, "total_sectors")
-                        and hasattr(parsed_config, "num_heads")
+                        pc
                         and profile.physical_format
-                        and profile.filesystem_config.total_sectors
-                        == parsed_config.total_sectors
-                        and profile.filesystem_config.num_heads
-                        == parsed_config.num_heads
+                        and all(
+                            hasattr(pc, a) and hasattr(parsed_config, a)
+                            for a in (
+                                "total_sectors",
+                                "num_heads",
+                                "bytes_per_sector",
+                                "sectors_per_track",
+                            )
+                        )
+                        and pc.total_sectors == parsed_config.total_sectors
+                        and pc.num_heads == parsed_config.num_heads
+                        # Compare sector size and sectors/track too: total_sectors
+                        # + num_heads alone collide between real 8-inch FAT12
+                        # profiles (audit img_detector.py:235).
+                        and pc.bytes_per_sector == parsed_config.bytes_per_sector
+                        and pc.sectors_per_track == parsed_config.sectors_per_track
                     ):
                         logger.info(f"Matched profile from BPB: {name}")
                         self.disk.set_geometry(profile.physical_format)

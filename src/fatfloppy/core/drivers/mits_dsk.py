@@ -485,6 +485,13 @@ class MITSDSKDriver(DiskIODriver):
         if head != 0:
             raise ValueError(f"MITS DSK only supports head 0, got head {head}")
 
+        if not (0 <= cylinder < MITS_TRACKS):
+            # Without this, flush() slice-assigns past the end of the image,
+            # silently appending a malformed blob (audit mits_dsk.py:488).
+            raise ValueError(
+                f"Invalid cylinder: {cylinder} (must be 0-{MITS_TRACKS - 1})"
+            )
+
         if not (0 <= sector < MITS_SECTORS_PER_TRACK):
             raise ValueError(
                 f"Invalid sector index: {sector} (must be 0-{MITS_SECTORS_PER_TRACK - 1})"
@@ -536,9 +543,24 @@ class MITSDSKDriver(DiskIODriver):
                 [MITS_STOP_BYTE] + [checksum] * (MITS_SYSTEM_TRACK_CHECKSUM_COUNT - 1)
             )
         else:
-            # Data tracks: no computable checksum byte — the additive sum
-            # depends on data content and may not be zero for arbitrary data.
-            # Return the required fixed markers: [135]=stop byte, [136]=end marker.
+            # Data tracks: byte [4] is the additive checksum byte. The validator
+            # accepts the sector iff (over payload = bytes[0:136], where byte
+            # [135] is the 0xFF stop byte):
+            #   SEED + sum(payload) - payload[0] - payload[1] - 2*payload[4] == 0
+            # Solving for payload[4]:
+            #   payload[4] = SEED + sum(bytes[0:136] except [4]) - byte[0] - byte[1]
+            # Compute over the final sector (byte[135] = stop), excluding byte [4],
+            # then set it in place on the mutable buffer (audit mits_dsk.py:538/541).
+            total = MITS_CHECKSUM_SEED
+            for i in range(MITS_DATA_TRACK_DATA_END):  # 0..134
+                if i == 4:
+                    continue
+                total = (total + sector_bytes[i]) & 0xFF
+            total = (total + MITS_STOP_BYTE) & 0xFF  # byte [135] in the final sector
+            total = (total - sector_bytes[0]) & 0xFF
+            total = (total - sector_bytes[1]) & 0xFF
+            sector_bytes[4] = total & 0xFF
+            # [135]=stop byte, [136]=end marker.
             return bytes([MITS_STOP_BYTE, MITS_END_MARKER])
 
     def _create_physical_format(self) -> None:
