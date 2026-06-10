@@ -60,20 +60,24 @@ class IMDFormatDetector(MetadataBasedDetector):
             matched_profile = self.known_formats[matched_profile_name]
             self.logger.info(f"Matched profile by geometry: {matched_profile_name}")
 
-            # Try re-parsing filesystem with the matched profile's geometry
+            # Confirm the matched profile's geometry yields a valid filesystem,
+            # then return the PROFILE's own config. The profile is authoritative
+            # for special no-BPB layouts (e.g. the DEC Rainbow's interleaved
+            # FAT12): a generic re-synthesis on the profile geometry can derive a
+            # plausible-but-wrong layout (e.g. too small a root directory), so we
+            # validate but do not adopt the re-derived config.
             if matched_profile.filesystem_config:
                 try:
                     self.disk.set_geometry(matched_profile.physical_format)
 
                     fs = create_filesystem(self.disk)
                     if fs and fs.get_validity_score() >= fs.validity_threshold:
-                        fs_config = fs.get_specific_config()
                         self.logger.info(
                             "Filesystem validated with matched profile's config"
                         )
                         return (
                             matched_profile_name,
-                            fs_config,
+                            matched_profile.filesystem_config,
                             matched_profile.physical_format,
                         )
                 except Exception as e:

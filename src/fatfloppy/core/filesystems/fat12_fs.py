@@ -1033,51 +1033,78 @@ class FATFilesystem(Filesystem):
         if total_sectors < 4:
             return None
 
-        reserved = 1
         num_fats = 2
-        try:
-            fat_start = self._read_lba(reserved)
-        except Exception:
-            return None
-        if len(fat_start) < 3:
-            return None
-        media = fat_start[0]
-        # On a FAT12 disk the first three FAT bytes are [media, 0xFF, 0xFF]
-        # (the reserved 12-bit entries 0 and 1).
-        if not (0xF0 <= media <= 0xFF) or fat_start[1] != 0xFF or fat_start[2] != 0xFF:
-            return None
+        # Reserved-sector candidates: 1 (standard DOS 1.x) and two whole tracks.
+        # 86-DOS / SCP reserve the first two tracks for the bootstrap, so the FAT
+        # begins at track 2 (e.g. LBA 52 on an 8" 26-sector disk). The structure
+        # verification below gates every candidate, so probing a second offset
+        # cannot create a false positive.
+        reserved_candidates = [1]
+        if spt and (2 * spt) not in reserved_candidates:
+            reserved_candidates.append(2 * spt)
 
-        for spc in (1, 2, 4, 8, 16):
-            for root_entries in (64, 112, 224, 512, 16, 32, 48, 96, 128, 192, 240, 256):
-                if (root_entries * 32) % bps != 0:
-                    continue
-                spf = self._solve_sectors_per_fat(
-                    total_sectors, reserved, num_fats, root_entries, spc, bps
-                )
-                if spf is None:
-                    continue
-                candidate = FATVolumeInfo()
-                candidate.oem_id = "FATFLNBP"
-                candidate.bytes_per_sector = bps
-                candidate.sectors_per_cluster = spc
-                candidate.reserved_sectors = reserved
-                candidate.num_fats = num_fats
-                candidate.root_entries = root_entries
-                candidate.total_sectors = total_sectors
-                candidate.media_descriptor = media
-                candidate.sectors_per_fat = spf
-                candidate.sectors_per_track = spt
-                candidate.num_heads = heads
-                candidate.volume_label = ""
-                candidate.fs_type = "FAT12"
-                if not candidate.is_valid():
-                    continue
-                if self._verify_nobpb_structure(candidate):
-                    self.logger.info(
-                        f"Recognised no-BPB FAT12: media=0x{media:02x} "
-                        f"spc={spc} spf={spf} root={root_entries} total={total_sectors}"
+        for reserved in reserved_candidates:
+            try:
+                fat_start = self._read_lba(reserved)
+            except Exception:
+                continue
+            if len(fat_start) < 3:
+                continue
+            media = fat_start[0]
+            # On a FAT12 disk the first three FAT bytes are [media, 0xFF, 0xFF]
+            # (the reserved 12-bit entries 0 and 1).
+            if (
+                not (0xF0 <= media <= 0xFF)
+                or fat_start[1] != 0xFF
+                or fat_start[2] != 0xFF
+            ):
+                continue
+
+            for spc in (1, 2, 4, 8, 16):
+                for root_entries in (
+                    64,
+                    112,
+                    224,
+                    512,
+                    16,
+                    32,
+                    48,
+                    96,
+                    128,
+                    192,
+                    240,
+                    256,
+                ):
+                    if (root_entries * 32) % bps != 0:
+                        continue
+                    spf = self._solve_sectors_per_fat(
+                        total_sectors, reserved, num_fats, root_entries, spc, bps
                     )
-                    return candidate
+                    if spf is None:
+                        continue
+                    candidate = FATVolumeInfo()
+                    candidate.oem_id = "FATFLNBP"
+                    candidate.bytes_per_sector = bps
+                    candidate.sectors_per_cluster = spc
+                    candidate.reserved_sectors = reserved
+                    candidate.num_fats = num_fats
+                    candidate.root_entries = root_entries
+                    candidate.total_sectors = total_sectors
+                    candidate.media_descriptor = media
+                    candidate.sectors_per_fat = spf
+                    candidate.sectors_per_track = spt
+                    candidate.num_heads = heads
+                    candidate.volume_label = ""
+                    candidate.fs_type = "FAT12"
+                    if not candidate.is_valid():
+                        continue
+                    if self._verify_nobpb_structure(candidate):
+                        self.logger.info(
+                            f"Recognised no-BPB FAT12: media=0x{media:02x} "
+                            f"reserved={reserved} spc={spc} spf={spf} "
+                            f"root={root_entries} total={total_sectors}"
+                        )
+                        return candidate
         return None
 
     @staticmethod
@@ -1156,6 +1183,9 @@ class FATFilesystem(Filesystem):
         except Exception:
             return False
 
+        cluster_bytes = bpb.sectors_per_cluster * bps
+        files_checked = 0
+        files_consistent = 0
         for i in range(0, len(root), 32):
             entry = root[i : i + 32]
             if len(entry) < 32 or entry[0] == ENTRY_UNUSED:
@@ -1164,7 +1194,48 @@ class FATFilesystem(Filesystem):
                 continue
             if not self._is_plausible_dir_entry(entry):
                 return False
-        return True
+            attr = entry[11]
+            if attr & ATTR_LONG_NAME == ATTR_LONG_NAME:
+                continue
+            if attr & (ATTR_VOLUME_ID | ATTR_DIRECTORY):
+                continue
+            size = int.from_bytes(entry[28:32], "little")
+            if size == 0 or cluster_bytes == 0:
+                continue
+            start = int.from_bytes(entry[26:28], "little")
+            expected = (size + cluster_bytes - 1) // cluster_bytes
+            files_checked += 1
+            if self._fat_chain_length(bytes(fat1), start, bpb) == expected:
+                files_consistent += 1
+
+        # FAT-chain consistency gate. A wrong sector order (e.g. an interleaved
+        # disk read in physical order, or a wrong reserved offset) can still
+        # present a valid-looking directory, because 32-byte entries are
+        # skew-invariant. But the FAT chains such a reading produces will not
+        # match the entries' file sizes. Requiring the chains to match rejects a
+        # mis-read layout - so the correct profile/geometry is used instead -
+        # while a genuinely sequential no-BPB disk passes unchanged.
+        return files_checked == 0 or files_consistent >= files_checked
+
+    @staticmethod
+    def _fat_chain_length(fat: bytes, start: int, bpb: "FATVolumeInfo") -> int:
+        """
+        Returns the FAT12 cluster-chain length from `start`, or -1 if broken.
+
+        A broken chain (a free/out-of-range link before an end-of-chain marker)
+        returns -1 so it never matches an expected length.
+        """
+        max_clusters = bpb.total_sectors // max(1, bpb.sectors_per_cluster) + 2
+        count = 0
+        cluster = start
+        while 2 <= cluster < 0xFF0 and count <= max_clusters:
+            count += 1
+            offset = (cluster * 3) // 2
+            if offset + 1 >= len(fat):
+                return -1
+            value = fat[offset] | (fat[offset + 1] << 8)
+            cluster = (value & 0x0FFF) if cluster % 2 == 0 else (value >> 4)
+        return count if cluster >= FAT12_EOC_MIN else -1
 
     @staticmethod
     def _is_plausible_dir_entry(entry: bytes) -> bool:
