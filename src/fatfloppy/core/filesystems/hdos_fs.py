@@ -436,7 +436,23 @@ class HDOSFilesystem(Filesystem):
 
         self.logger.info(f"Track 0 groups to lock out: {sorted(track0_groups)}")
 
-        reserved_groups = dir_reserved_groups | grt_reserved_groups | track0_groups
+        # Reserve the groups holding the on-disk metadata sectors (volume label
+        # and RGT) so the allocator's free chain can never hand them out. Without
+        # this, the RGT sector's group is free and the first file written after
+        # formatting overwrites the RGT (audit hdos_fs.py:439).
+        metadata_reserved_groups = set()
+        for meta_lba in (HDOS_LABEL_SECTOR_LBA, HDOS_RGT_SECTOR_LBA):
+            if meta_lba >= data_area_start_lba:
+                meta_group = ((meta_lba - data_area_start_lba) // spg) + 1
+                if 1 <= meta_group <= num_groups_on_disk:
+                    metadata_reserved_groups.add(meta_group)
+
+        reserved_groups = (
+            dir_reserved_groups
+            | grt_reserved_groups
+            | track0_groups
+            | metadata_reserved_groups
+        )
 
         grt_data = bytearray(HDOS_BYTES_PER_SECTOR)
         free_chain_head = 0
@@ -450,11 +466,12 @@ class HDOSFilesystem(Filesystem):
                 free_chain_head = i
         grt_data[0] = free_chain_head
 
+        locked_groups = track0_groups | metadata_reserved_groups
         rgt_data = bytearray(HDOS_BYTES_PER_SECTOR)
         for i in range(len(rgt_data)):
             if i == 0:
                 rgt_data[i] = 0x00
-            elif i in track0_groups:
+            elif i in locked_groups:
                 rgt_data[i] = 0xFF
             else:
                 rgt_data[i] = 0x01
@@ -1083,6 +1100,10 @@ class HDOSFilesystem(Filesystem):
         if self.get_validity_score() < self.validity_threshold:
             raise OSError("Filesystem not valid.")
 
+        # Validate the filename before any destructive step (delete/allocation),
+        # so an invalid name cannot leave the disk mid-modified (audit hdos_fs.py:1223).
+        self._validate_filename(path)
+
         with contextlib.suppress(FileNotFoundError):
             self.delete(path)
 
@@ -1104,10 +1125,20 @@ class HDOSFilesystem(Filesystem):
             return
 
         allocated_groups = []
+        visited = set()
         current_group = self._grt[0]
         for _ in range(num_groups_needed):
             if current_group == 0:
                 raise OSError("Not enough free space on disk.")
+            # Guard against a corrupt free chain (cycle or out-of-range group)
+            # before mutating the GRT or writing any sector (audit hdos_fs.py:1108).
+            if current_group in visited or not (
+                1 <= current_group <= self._num_groups_on_disk
+            ):
+                raise OSError(
+                    f"Corrupt GRT free chain detected (group {current_group})."
+                )
+            visited.add(current_group)
             allocated_groups.append(current_group)
             current_group = self._grt[current_group]
 
@@ -1141,6 +1172,28 @@ class HDOSFilesystem(Filesystem):
         self._init_completed = False
         self._data_base_lba_cache = None
         self.logger.info(f"Successfully wrote file '{path}' ({len(data)} bytes).")
+
+    def _validate_filename(self, path: str) -> None:
+        """
+        Validates an HDOS filename before any destructive write step.
+
+        Over-length names/extensions are accepted (they are truncated to the 8.3
+        on-disk fields), but an empty name or a non-ASCII name is rejected up
+        front so it cannot crash mid-write after the old file was deleted, or
+        create an invisible, undeletable directory entry (audit hdos_fs.py:1223).
+
+        Args:
+            path: The file path to validate (e.g. "/NAME.EXT").
+
+        Raises:
+            ValueError: If the name is empty or contains non-ASCII characters.
+        """
+        raw = path.strip("/")
+        name_part = raw.split(".", 1)[0]
+        if not name_part:
+            raise ValueError(f"HDOS filename must have a non-empty name: '{raw}'")
+        if not raw.isascii():
+            raise ValueError(f"HDOS filename must be ASCII: '{raw}'")
 
     def _calculate_file_size(self, entry: HDOSDirectoryEntry) -> int:
         """

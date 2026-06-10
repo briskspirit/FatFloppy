@@ -161,7 +161,9 @@ def test_format_and_write(hdos_controller: DiskController, tmp_path: Path) -> No
 
     free_bytes, total_data_bytes = hdos_controller.get_free_space()
     expected_total_data = 101888
-    expected_free = 193 * 512
+    # 192 (not 193) free groups: the group holding the RGT sector is now
+    # correctly reserved instead of being handed out to the first file written.
+    expected_free = 192 * 512
 
     assert total_data_bytes == expected_total_data
     assert free_bytes == expected_free

@@ -1105,9 +1105,6 @@ class CPMFilesystem(Filesystem):
         user, parsed_filename = self._parse_cpm_path(path)
         base_name, ext_name = (parsed_filename.split(".", 1) + [""])[:2]
 
-        with contextlib.suppress(FileNotFoundError):
-            self.delete(path)
-
         if not self.dpb:
             raise ValueError("DPB not set.")
         block_size = self.dpb.block_size
@@ -1129,25 +1126,49 @@ class CPMFilesystem(Filesystem):
             f"blocks, {num_dir_entries_needed} dir entries."
         )
 
+        # Verify the new file fits BEFORE deleting the old one, counting the
+        # blocks and directory entries the old file would release. This
+        # guarantees a failed overwrite never destroys the original
+        # (audit cpm_fs.py:1108).
+        self._cached_directory = self._read_directory_entries()
+        self._load_allocation_map()
+
+        old_entries = [
+            e
+            for e in self._cached_directory
+            if not e.is_deleted()
+            and e.user == user
+            and e.get_filename().upper() == parsed_filename.upper()
+        ]
+        old_block_count = sum(sum(1 for b in e.blks if b != 0) for e in old_entries)
+        old_entry_count = len(old_entries)
+
+        free_now = len(set(range(self.dpb.dsm + 1)) - self._cached_allocation_map)
+        if num_blocks_needed > free_now + old_block_count:
+            raise OSError(
+                f"Not enough free space. Required: {num_blocks_needed}, "
+                f"Available: {free_now + old_block_count}."
+            )
+        free_slots_now = sum(1 for e in self._cached_directory if e.is_deleted())
+        if num_dir_entries_needed > free_slots_now + old_entry_count:
+            raise OSError(
+                f"Directory is full. Required: {num_dir_entries_needed}, "
+                f"Available: {free_slots_now + old_entry_count}."
+            )
+
+        with contextlib.suppress(FileNotFoundError):
+            self.delete(path)
+
+        # Re-read state now that the old file's blocks/entries are reclaimed.
         self._cached_directory = self._read_directory_entries()
         self._load_allocation_map()
 
         free_blocks = sorted(set(range(self.dpb.dsm + 1)) - self._cached_allocation_map)
-        if len(free_blocks) < num_blocks_needed:
-            raise OSError(
-                f"Not enough free space. Required: {num_blocks_needed}, "
-                f"Available: {len(free_blocks)}."
-            )
         blocks_to_use = free_blocks[:num_blocks_needed]
 
         free_dir_slots = [
             i for i, e in enumerate(self._cached_directory) if e.is_deleted()
         ]
-        if len(free_dir_slots) < num_dir_entries_needed:
-            raise OSError(
-                f"Directory is full. Required: {num_dir_entries_needed}, "
-                f"Available: {len(free_dir_slots)}."
-            )
         dir_slots_to_use = free_dir_slots[:num_dir_entries_needed]
 
         records_rem = num_records_total
@@ -1191,9 +1212,9 @@ class CPMFilesystem(Filesystem):
                 )
             sectors_to_modify[key][offset : offset + 32] = entry_bytes
 
-        for (cpm_track, log_sec), mod_data in sectors_to_modify.items():
-            self._write_logical_sector(cpm_track, log_sec, bytes(mod_data))
-
+        # Write the data blocks first, then commit the directory entries, so a
+        # failure during block writes leaves the directory unchanged rather than
+        # leaving valid-looking entries pointing at stale data (audit cpm_fs.py:1108).
         data_to_write = bytearray(data)
         if len(data_to_write) > 0 and len(data_to_write) % CPM_SECTOR_SIZE != 0:
             padding_needed = CPM_SECTOR_SIZE - (len(data_to_write) % CPM_SECTOR_SIZE)
@@ -1202,6 +1223,9 @@ class CPMFilesystem(Filesystem):
         for i, block_num in enumerate(blocks_to_use):
             chunk = data_to_write[i * block_size : (i + 1) * block_size]
             self._write_block(block_num, bytes(chunk))
+
+        for (cpm_track, log_sec), mod_data in sectors_to_modify.items():
+            self._write_logical_sector(cpm_track, log_sec, bytes(mod_data))
 
         self.logger.info(f"Successfully wrote file '{path}'.")
         self._cached_directory = None

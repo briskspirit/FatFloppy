@@ -1067,34 +1067,59 @@ class FATFilesystem(Filesystem):
 
         parent_dir_cluster = self._get_directory_cluster(parent_path)
 
-        try:
-            existing_entry, _ = self._find_entry_in_directory(
-                parent_dir_cluster, file_name
-            )
-            if existing_entry:
-                if existing_entry.is_dir:
-                    raise IsADirectoryError(
-                        f"Cannot overwrite directory with a file: {path}"
-                    )
-                self.logger.debug(
-                    f"File '{file_name}' exists, deleting before overwrite."
-                )
-                self.delete(path)
-        except FileNotFoundError:
-            pass
-
         num_clusters_needed = (
             (len(data) + self.allocation_unit_size - 1) // self.allocation_unit_size
             if data
             else 0
         )
+
+        existing_entry = None
+        try:
+            existing_entry, _ = self._find_entry_in_directory(
+                parent_dir_cluster, file_name
+            )
+            if existing_entry and existing_entry.is_dir:
+                raise IsADirectoryError(
+                    f"Cannot overwrite directory with a file: {path}"
+                )
+        except FileNotFoundError:
+            existing_entry = None
+
+        # Verify the new data fits BEFORE destroying the old file, counting the
+        # clusters the old file would release. This guarantees a failed overwrite
+        # can never lose the original (audit fat12_fs.py:1082).
+        existing_cluster_count = 0
+        if (
+            existing_entry
+            and not existing_entry.is_dir
+            and existing_entry.starting_cluster >= 2
+        ):
+            existing_cluster_count = len(
+                self._get_cluster_chain(existing_entry.starting_cluster)
+            )
+        free_bytes, _ = self.get_free_space()
+        free_clusters = free_bytes // self.allocation_unit_size
+        if num_clusters_needed > free_clusters + existing_cluster_count:
+            raise OSError("Not enough free space to write file")
+
+        if existing_entry and not existing_entry.is_dir:
+            self.logger.debug(f"File '{file_name}' exists, deleting before overwrite.")
+            self.delete(path)
+
         start_cluster = 0
         if num_clusters_needed > 0:
             clusters = self._allocate_cluster_chain(num_clusters_needed)
             if not clusters:
                 raise OSError("Not enough free space to write file")
             start_cluster = clusters[0]
-            self._write_cluster_chain_data(clusters, data)
+            # Roll back the allocation if the data write fails, so a partial
+            # write does not leave lost clusters behind (audit fat12_fs.py:1097).
+            try:
+                self._write_cluster_chain_data(clusters, data)
+            except Exception:
+                self._free_cluster_chain(start_cluster)
+                self._commit_fat()
+                raise
 
         entry_location = self._find_free_directory_entry(parent_dir_cluster)
         if entry_location is None:
@@ -1114,7 +1139,15 @@ class FATFilesystem(Filesystem):
             size=len(data),
             dt=datetime.datetime.now(),
         )
-        self._write_bytes(entry_disk_offset, entry_bytes)
+        # Roll back the allocation if the directory-entry write fails, so the
+        # clusters are not leaked as lost (audit fat12_fs.py:1117).
+        try:
+            self._write_bytes(entry_disk_offset, entry_bytes)
+        except Exception:
+            if start_cluster > 0:
+                self._free_cluster_chain(start_cluster)
+                self._commit_fat()
+            raise
 
         self._commit_fat()
         self.disk.flush()
