@@ -104,6 +104,7 @@ def create_mock_track_data(
     mock_dat = MagicMock()
     mock_dat.sectors = mock_sectors
     mock_dat.track = MagicMock()
+    mock_dat.track.sectors = mock_sectors
     mock_dat.track.mode = "IBM MFM"
     mock_dat.track.clock = 1.0 / (500 * 2000)
     return mock_dat
@@ -438,6 +439,7 @@ def test_physical_write_sector_and_flush_success(
     mock_read_with_retry = mocks_bundle["mock_read_with_retry"]
     test_format = FMT_144
     open_disk_for_rw_tests(controller, mocks_bundle, test_format=test_format)
+    controller.driver.verify_writes = False
     bps = test_format.physical_format.bytes_per_sector
     data = bytearray(bps)
     mock_track_data = create_mock_track_data(
@@ -445,7 +447,9 @@ def test_physical_write_sector_and_flush_success(
     )
     mock_read_with_retry.return_value = (create_mock_flux(), mock_track_data)
 
-    controller.disk.write_sector(0, 0, 1, data)
+    # Logical sector 0 plus the pre-read of the remaining sectors (2..18 = ids
+    # 2..18) covers the whole track, so the write proceeds with real data.
+    controller.disk.write_sector(0, 0, 0, data)
     controller.driver.flush()
 
     mock_usb.write_track.assert_called()
@@ -454,7 +458,12 @@ def test_physical_write_sector_and_flush_success(
 def test_physical_flush_write_error(
     mocked_controller: tuple[DiskController, dict[str, MagicMock]],
 ) -> None:
-    """Tests that a USBError during a flush is caught and handled gracefully."""
+    """A write failure during flush must propagate as an error (not be swallowed).
+
+    Reporting success when a physical-disk track write fails leaves the floppy
+    with corrupt/inconsistent contents while the caller believes the write
+    succeeded (audit greaseweazle.py:322).
+    """
     controller, mocks_bundle = mocked_controller
     mock_usb = mocks_bundle["mock_usb"]
     mock_read_with_retry = mocks_bundle["mock_read_with_retry"]
@@ -467,10 +476,42 @@ def test_physical_flush_write_error(
     mock_read_with_retry.return_value = (create_mock_flux(), mock_track_data)
     mock_usb.write_track.side_effect = USBError("Simulated Write error")
 
-    controller.disk.write_sector(0, 0, 1, bytearray(bps))
-    controller.driver.flush()
+    controller.disk.write_sector(0, 0, 0, bytearray(bps))
+    with pytest.raises(OSError):
+        controller.driver.flush()
 
     mock_usb.write_track.assert_called_once()
+    # The failed track stays dirty so it can be retried, never silently dropped.
+    assert controller.driver.dirty
+
+
+def test_physical_flush_aborts_track_on_failed_preread(
+    mocked_controller: tuple[DiskController, dict[str, MagicMock]],
+) -> None:
+    """A failed pre-flush read of a partial track must abort that track's write.
+
+    Otherwise flush rebuilds the track from codec filler bytes and writing it
+    wipes every non-dirty sector on the track (audit greaseweazle.py:295).
+    """
+    controller, mocks_bundle = mocked_controller
+    mock_usb = mocks_bundle["mock_usb"]
+    mock_read_with_retry = mocks_bundle["mock_read_with_retry"]
+    test_format = FMT_144
+    open_disk_for_rw_tests(controller, mocks_bundle, test_format=test_format)
+    bps = test_format.physical_format.bytes_per_sector
+
+    # Write a single sector of an 18-sector track, then make the pre-read fail.
+    controller.disk.write_sector(0, 0, 0, bytearray([0x11] * bps))
+    mock_read_with_retry.reset_mock()
+    mock_read_with_retry.side_effect = USBError("pre-read failed")
+
+    with pytest.raises(OSError):
+        controller.driver.flush()
+
+    # The track must NOT have been written with filler for the missing sectors.
+    mock_usb.write_track.assert_not_called()
+    # And it stays dirty for a retry.
+    assert (0, 0) in controller.driver.dirty_tracks
 
 
 def test_physical_flush_partial_track_reads_first(
@@ -482,6 +523,7 @@ def test_physical_flush_partial_track_reads_first(
     test_format = FMT_144
     spt = test_format.physical_format.get_sectors_per_track(0, 0)
     open_disk_for_rw_tests(controller, mocks_bundle, test_format=test_format)
+    controller.driver.verify_writes = False
     bps = test_format.physical_format.bytes_per_sector
 
     mock_track_data_partial = create_mock_track_data(
@@ -489,7 +531,7 @@ def test_physical_flush_partial_track_reads_first(
     )
     mock_read_with_retry.return_value = (create_mock_flux(), mock_track_data_partial)
 
-    controller.disk.write_sector(0, 0, 1, bytearray(bps))
+    controller.disk.write_sector(0, 0, 0, bytearray(bps))
     mock_read_with_retry.reset_mock()
     mock_read_with_retry.return_value = (create_mock_flux(), mock_track_data_partial)
     controller.driver.flush()
@@ -553,7 +595,7 @@ def test_cache_invalidation(
     mock_read_with_retry.side_effect = flush_read_side_effect
 
     test_data = bytearray([0xAA] * bps)
-    controller.disk.write_sector(0, 0, 1, test_data)
+    controller.disk.write_sector(0, 0, 0, test_data)
     controller.driver.flush()
 
     mock_usb.write_track.assert_called()
@@ -632,7 +674,7 @@ def test_write_verify_success(
 
     mock_read_with_retry.side_effect = flush_read_side_effect
 
-    controller.disk.write_sector(0, 0, 1, data)
+    controller.disk.write_sector(0, 0, 0, data)
     controller.driver.flush()
 
     expected_calls = 1 if spt == 1 else 2

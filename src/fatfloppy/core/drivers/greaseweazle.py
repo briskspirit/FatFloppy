@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import logging
 import types
@@ -109,7 +110,7 @@ def create_greaseweazle_diskdef(
 
             track_def = ibm.IBMTrack_FixedDef(format_name)
             track_def.add_param("secs", str(tf.sectors_per_track))
-            track_def.add_param("bps", str(physical_format.bytes_per_sector))
+            track_def.add_param("bps", str(tf.bytes_per_sector))
             track_def.add_param("rate", str(tf.rate))
             track_def.add_param("interleave", str(tf.interleave))
             track_def.add_param("id", str(tf.id_start))
@@ -277,6 +278,16 @@ class GreaseweazleDriver(DiskIODriver):
     def flush(self) -> None:
         """
         Writes all buffered (dirty) sectors to the physical disk.
+
+        Each dirty track is written as a whole. A track is only written once
+        every one of its sectors is either freshly supplied by the caller or
+        successfully read back from the media, so a transient read failure can
+        never cause non-dirty sectors to be overwritten with codec filler.
+
+        Raises:
+            IOError: If any track could not be safely written (failed pre-read,
+                failed write, or, when verify_writes is set, a read-back
+                mismatch). Failed tracks are left dirty so they can be retried.
         """
         if not self.initialized or not self.dirty_tracks:
             self.logger.debug("Nothing to flush: not initialized or no dirty tracks")
@@ -286,53 +297,111 @@ class GreaseweazleDriver(DiskIODriver):
         if not self.fmt_cls and self.physical_format:
             self._create_and_set_custom_diskdef()
 
-        tracks_to_read = [
-            tid
-            for tid in self.dirty_tracks
-            if len(self.dirty_sectors.get(tid, {}))
-            < self.physical_format.get_sectors_per_track(tid[0], tid[1])
-        ]
-        for cylinder, head in tracks_to_read:
-            try:
-                self._read_track(cylinder, head)
-            except Exception as e:
-                self.logger.error(
-                    f"Pre-flush read failed for track C:{cylinder} H:{head}: {e}"
-                )
-
+        failures: list[str] = []
         for cylinder, head in sorted(self.dirty_tracks):
-            result = [False]
-
-            def write_track_wrapper(cyl=cylinder, hd=head, res=result):
-                try:
-                    flux_list = self._convert_to_flux(cyl, hd)
-                    self.usb.seek(cyl, hd)
-                    self.usb.write_track(
-                        flux_list=flux_list, cue_at_index=True, terminate_at_index=True
-                    )
-                    res[0] = True
-                except Exception as e:
-                    self.logger.error(
-                        f"Write failed for track C:{cyl} H:{hd}: {e}", exc_info=True
-                    )
-
             try:
-                util.with_drive_selected(
-                    write_track_wrapper, self.usb, self.drive_obj, motor=True
-                )
-                if not result[0]:
-                    self.logger.warning(f"Track write incomplete C:{cylinder} H:{head}")
-                    if (cylinder, head) in self.track_data:
-                        del self.track_data[(cylinder, head)]
-                else:
-                    self._update_after_write(cylinder, head)
+                self._flush_track(cylinder, head)
             except Exception as e:
                 self.logger.error(
-                    f"Drive selection error during flush C:{cylinder} H:{head}: {e}",
+                    f"Flush failed for track C:{cylinder} H:{head}: {e}",
                     exc_info=True,
                 )
+                failures.append(f"C:{cylinder} H:{head} ({e})")
+
+        if failures:
+            raise OSError("Failed to flush track(s): " + "; ".join(failures))
 
         self.logger.info("Flush operation completed")
+
+    def _flush_track(self, cylinder: int, head: int) -> None:
+        """
+        Safely writes a single dirty track to the physical disk.
+
+        Args:
+            cylinder: The cylinder number to flush.
+            head: The head number to flush.
+
+        Raises:
+            IOError: If the track cannot be safely or completely written.
+        """
+        track_id = (cylinder, head)
+        spt = self.physical_format.get_sectors_per_track(cylinder, head)
+        track_format = self.physical_format.get_track_format(cylinder, head)
+        expected_ids = {track_format.id_start + i for i in range(spt)}
+
+        dirty = dict(self.dirty_sectors.get(track_id, {}))
+
+        # Preserve untouched sectors: read the track back first unless every
+        # sector is being rewritten. Refuse to write filler for missing ones.
+        if not expected_ids.issubset(dirty):
+            self._read_track(cylinder, head)
+            existing = self.track_data.get(track_id, {})
+        else:
+            existing = {}
+
+        intended = dict(existing)
+        intended.update(dirty)
+
+        missing = sorted(expected_ids - set(intended))
+        if missing:
+            raise OSError(
+                f"refusing to write track with unrecovered sector(s) {missing}; "
+                "pre-flush read incomplete"
+            )
+
+        # Stage the full intended image so _convert_to_flux encodes real data.
+        self.track_data[track_id] = intended
+
+        result = [False]
+
+        def write_track_wrapper(cyl=cylinder, hd=head, res=result):
+            flux_list = self._convert_to_flux(cyl, hd)
+            self.usb.seek(cyl, hd)
+            self.usb.write_track(
+                flux_list=flux_list, cue_at_index=True, terminate_at_index=True
+            )
+            res[0] = True
+
+        util.with_drive_selected(
+            write_track_wrapper, self.usb, self.drive_obj, motor=True
+        )
+        if not result[0]:
+            raise OSError("track write did not complete")
+
+        if self.verify_writes:
+            self._verify_track(cylinder, head, intended)
+
+        # Commit: the on-disk track now matches the intended image.
+        self.track_data[track_id] = intended
+        self.dirty_sectors.pop(track_id, None)
+        self.dirty_tracks.discard(track_id)
+        for sector in range(spt):
+            self.sector_cache.pop((cylinder, head, sector), None)
+
+    def _verify_track(
+        self, cylinder: int, head: int, intended: dict[int, bytes]
+    ) -> None:
+        """
+        Reads a freshly written track back and compares it to the intended data.
+
+        Args:
+            cylinder: The cylinder number to verify.
+            head: The head number to verify.
+            intended: Mapping of physical sector id to the bytes that were written.
+
+        Raises:
+            IOError: If the track cannot be re-read or any sector differs.
+        """
+        track_id = (cylinder, head)
+        if not self._read_track(cylinder, head):
+            raise OSError("verify failed: could not read track back")
+        readback = self.track_data.get(track_id, {})
+        for sector_id, data in intended.items():
+            actual = readback.get(sector_id)
+            if actual is None or bytes(actual) != bytes(data):
+                raise OSError(
+                    f"verify mismatch on sector id {sector_id} (C:{cylinder} H:{head})"
+                )
 
     def get_format_requirements(self) -> dict:
         """
@@ -464,6 +533,31 @@ class GreaseweazleDriver(DiskIODriver):
 
         return True, None
 
+    def _physical_sector_id(self, cylinder: int, head: int, logical_sector: int) -> int:
+        """
+        Maps a 0-based logical sector index to its on-disk IDAM id.
+
+        The project contract delivers 0-based logical sector indices to drivers
+        (see Disk.read_sector). The Greaseweazle codec stamps sector ids
+        sequentially from id_start and handles interleave as a physical
+        placement concern, so the logical->id map is the linear id_start + index.
+
+        Args:
+            cylinder: The cylinder number.
+            head: The head number.
+            logical_sector: The 0-based logical sector index.
+
+        Returns:
+            The physical sector id (IDAM 'r') for that logical sector.
+        """
+        id_start = 1
+        if self.physical_format:
+            with contextlib.suppress(ValueError):
+                id_start = self.physical_format.get_track_format(
+                    cylinder, head
+                ).id_start
+        return id_start + logical_sector
+
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
         """
         Reads a single sector from the physical disk.
@@ -471,19 +565,28 @@ class GreaseweazleDriver(DiskIODriver):
         Args:
             cylinder: The cylinder number.
             head: The head number.
-            sector: The sector number.
+            sector: The 0-based logical sector index.
 
         Returns:
             The sector data as a bytes object. Returns a zero-filled buffer on failure.
         """
-        self.logger.debug(f"Reading sector C:{cylinder} H:{head} S:{sector}")
+        self.logger.debug(f"Reading sector C:{cylinder} H:{head} LS:{sector}")
         self.initialize()
+        physical_id = self._physical_sector_id(cylinder, head, sector)
+        track_id = (cylinder, head)
+
+        # Read-your-writes: a buffered (not-yet-flushed) write wins over the
+        # stale on-disk contents.
+        pending = self.dirty_sectors.get(track_id)
+        if pending is not None and physical_id in pending:
+            self.logger.debug(f"Sector LS:{sector} served from pending write")
+            return pending[physical_id]
+
         sector_key = (cylinder, head, sector)
         if sector_key in self.sector_cache:
             self.logger.debug(f"Sector {sector_key} found in cache")
             return self.sector_cache[sector_key]
 
-        track_id = (cylinder, head)
         if track_id not in self.track_data:
             try:
                 self._read_track(cylinder, head)
@@ -491,14 +594,14 @@ class GreaseweazleDriver(DiskIODriver):
                 self.logger.error(f"Failed to read track C:{cylinder} H:{head}: {e}")
                 self.track_data[track_id] = {}
 
-        if track_id in self.track_data and sector in self.track_data[track_id]:
-            data = self.track_data[track_id][sector]
+        if track_id in self.track_data and physical_id in self.track_data[track_id]:
+            data = self.track_data[track_id][physical_id]
             self.sector_cache[sector_key] = data
             self.logger.debug(f"Sector {sector_key} cached")
             return data
 
         bytes_per_sector = (
-            self.physical_format.bytes_per_sector
+            self.physical_format.get_bytes_per_sector(cylinder, head)
             if self.physical_format
             else DEFAULT_BPS
         )
@@ -526,6 +629,19 @@ class GreaseweazleDriver(DiskIODriver):
         self.fmt_cls = None
         self.using_custom_diskdef = False
         self.last_successful_format = None
+
+        # Decoded sector data and pending writes were interpreted under the
+        # previous geometry; discard them so they are not served or flushed
+        # under the new format.
+        if self.dirty_tracks:
+            self.logger.warning(
+                "Discarding %d dirty track(s) on physical format change",
+                len(self.dirty_tracks),
+            )
+        self.track_data.clear()
+        self.sector_cache.clear()
+        self.dirty_sectors.clear()
+        self.dirty_tracks.clear()
 
         self._create_and_set_custom_diskdef()
 
@@ -595,11 +711,12 @@ class GreaseweazleDriver(DiskIODriver):
             data: The sector data as a bytes object.
         """
         self.logger.debug(
-            f"Writing sector C:{cylinder} H:{head} S:{sector}, {len(data)} bytes"
+            f"Writing sector C:{cylinder} H:{head} LS:{sector}, {len(data)} bytes"
         )
         self.initialize()
+        physical_id = self._physical_sector_id(cylinder, head, sector)
         track_id = (cylinder, head)
-        self.dirty_sectors.setdefault(track_id, {})[sector] = data
+        self.dirty_sectors.setdefault(track_id, {})[physical_id] = data
         self.dirty_tracks.add(track_id)
         sector_key = (cylinder, head, sector)
         if sector_key in self.sector_cache:
@@ -819,30 +936,14 @@ class GreaseweazleDriver(DiskIODriver):
             return self.track_data.get((cylinder, head))
         return None
 
-    def _update_after_write(self, cylinder: int, head: int) -> None:
-        """
-        Updates internal caches and dirty flags after a successful write.
-
-        Args:
-            cylinder: The cylinder number that was written.
-            head: The head number that was written.
-        """
-        track_id = (cylinder, head)
-        if track_id in self.dirty_sectors:
-            sectors_per_track = self.physical_format.get_sectors_per_track(
-                cylinder, head
-            )
-            if len(self.dirty_sectors[track_id]) == sectors_per_track:
-                self.track_data[track_id] = self.dirty_sectors[track_id].copy()
-            elif track_id in self.track_data:
-                self.track_data[track_id].update(self.dirty_sectors[track_id])
-            del self.dirty_sectors[track_id]
-        self.dirty_tracks.discard(track_id)
-        self.logger.debug(f"Track C:{cylinder} H:{head} updated post-write")
-
     def _update_physical_format(self, dat: Any, num_sectors: int) -> None:
         """
         Updates the driver's physical_format based on a successful 'ibm.scan'.
+
+        Only the track-level fields the scan actually measured (encoding, rate,
+        sector count) are updated; the overall disk geometry (cylinders, heads,
+        rpm, sector size) is preserved from the existing format or the drive-size
+        defaults so a single-track scan cannot inflate the geometry.
 
         Args:
             dat: The data object returned from a successful Greaseweazle read.
@@ -869,11 +970,18 @@ class GreaseweazleDriver(DiskIODriver):
             f"Updating format: encoding={encoding}, rate={rate}, sectors={num_sectors}"
         )
 
+        existing = self.physical_format
+        cylinders = existing.cylinders if existing else DEFAULT_CYLINDERS
+        heads = existing.heads if existing else DEFAULT_HEADS
+        rpm = existing.rpm if existing else DEFAULT_RPM
+        heads_inverted = existing.heads_inverted if existing else False
+        bytes_per_sector = existing.bytes_per_sector if existing else DEFAULT_BPS
+
         track_format = TrackFormat(
             track_start=0,
-            track_end=DEFAULT_CYLINDERS - 1,
+            track_end=cylinders - 1,
             head_start=0,
-            head_end=DEFAULT_HEADS - 1,
+            head_end=heads - 1,
             sectors_per_track=num_sectors,
             encoding=encoding,
             rate=rate,
@@ -881,10 +989,10 @@ class GreaseweazleDriver(DiskIODriver):
             interleave=DEFAULT_INTERLEAVE,
         )
         self.physical_format = PhysicalFormat(
-            cylinders=DEFAULT_CYLINDERS,
-            heads=DEFAULT_HEADS,
-            rpm=DEFAULT_RPM,
-            heads_inverted=False,
-            bytes_per_sector=DEFAULT_BPS,
+            cylinders=cylinders,
+            heads=heads,
+            rpm=rpm,
+            heads_inverted=heads_inverted,
+            bytes_per_sector=bytes_per_sector,
             track_formats=[track_format],
         )

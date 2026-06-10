@@ -239,40 +239,23 @@ class DriveSelectionDialog(QDialog):
         self.format_widgets: dict[str, QWidget]
         self._init_ui()
 
-    def get_selection(self) -> tuple[str, dict[str, Any], str, str]:
+    def get_selection(self) -> tuple[str, str, dict[str, Any]]:
         """
-        Gets the user's selections for creating a new disk image.
+        Gets the user's drive and format selections for opening a physical drive.
 
         Returns:
-            A tuple containing the full file path, format information dictionary,
-            volume label, and output format type (driver type).
-
-        Raises:
-            ValueError: If the directory or file name is not provided, or if
-                        the specified path is a directory.
+            A tuple of (drive_letter, drive_size, format_info). format_info is
+            empty for auto-detection, holds custom geometry parameters when the
+            "Custom..." option is selected, or {"format_name": <name>} for a
+            predefined profile.
         """
-        directory = self.directory_input.text().strip()
-        file_name = self.file_name_input.text().strip()
-        if not directory or not file_name:
-            raise ValueError("Both directory and file name must be provided.")
-
-        file_path = Path(directory) / file_name
-        if file_path.is_dir():
-            raise ValueError(
-                f"The path '{file_path}' is a directory. Please specify a "
-                f"valid file name."
-            )
-
-        volume_label = self.volume_label_input.text().strip().upper() or "NO NAME"
-
-        ext_data = self.extension_combo.currentData()
-        output_format = (
-            ext_data[1] if ext_data and isinstance(ext_data, tuple) else "IMG"
-        )
+        drive_letter = self.drive_combo.currentData()
+        drive_size = self.size_combo.currentData()
+        format_key = self.format_combo.currentData()
 
         format_info: dict[str, Any] = {}
 
-        if self.advanced_checkbox.isChecked():
+        if format_key == "custom":
             format_info = {
                 "cylinders": self.format_widgets["cylinders_spin"].value(),
                 "heads": self.format_widgets["heads_spin"].value(),
@@ -290,15 +273,11 @@ class DriveSelectionDialog(QDialog):
             for key in ["gap1_bytes", "gap2_bytes", "gap3_bytes", "cskew", "hskew"]:
                 value = self.format_widgets[f"{key}_spin"].value()
                 format_info[key] = value if value != 0 else None
-        else:
-            profile_name = self.format_combo.currentData()
-            if not profile_name:
-                raise ValueError(
-                    "A format profile must be selected if not using advanced settings."
-                )
-            format_info = {"profile_name": profile_name}
+        elif format_key is not None:
+            # A predefined profile was selected (Auto-detect stores None).
+            format_info = {"format_name": format_key}
 
-        return str(file_path), format_info, volume_label, output_format
+        return drive_letter, drive_size, format_info
 
     def _create_buttons(self, layout: QVBoxLayout) -> None:
         """Creates the OK and Cancel buttons."""

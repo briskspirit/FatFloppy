@@ -92,9 +92,11 @@ class DiskManager(QObject):
                 )
                 return
 
-            # For predefined profiles, use the profile name
-            # For custom profiles, temporarily register it so controller can find it
-            controller = self.parent.controller or DiskController()
+            # Always create the new image on a fresh controller. Reusing the
+            # live controller would make format_disk_media() in-place reformat
+            # the currently open disk (or physical floppy) instead of creating
+            # a new file. The live controller is only swapped in on success.
+            controller = DiskController()
             format_name = profile.name
 
             # If this is a custom profile, add it to the controller's known formats
@@ -616,7 +618,7 @@ class DiskManager(QObject):
         if is_image:
             self.status_message.emit(f"Loaded: {Path(source_identifier).name}")
         else:
-            format_name, _ = self.parent.controller.detect_format()
+            format_name, _, _ = self.parent.controller.detect_format()
             format_text = f" using {format_name}" if format_name else ""
             if format_info and not format_info.get("profile_name"):
                 format_text += (
