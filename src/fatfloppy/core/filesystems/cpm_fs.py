@@ -42,6 +42,10 @@ class CPMDiskParameterBlock:
         al1: ALlocation bitmap byte 1.
         cks: ChecKSUM vector size (0 means directory is not checksummed).
         off: OFFset, number of reserved tracks.
+        skew: Software sector interleave factor applied per track (1 = none).
+            Some controllers (e.g. the Heath/Zenith H17) store hard-sectored
+            CP/M disks with a soft skew that is not reflected in the physical
+            sector order, so the filesystem must de-skew when reading.
     """
 
     spt: int = 0
@@ -54,6 +58,7 @@ class CPMDiskParameterBlock:
     al1: int = 0
     cks: int = 0
     off: int = 0
+    skew: int = 1
 
     @property
     def block_size(self) -> int:
@@ -185,6 +190,7 @@ class CPMFilesystem(Filesystem):
         self._cached_directory: Optional[list[CPMDirectoryEntry]] = None
         self._cached_allocation_map: Optional[set[int]] = None
         self._cached_validity_score: Optional[int] = None
+        self._skew_table_cache: dict[int, list[int]] = {}
 
         if self.disk and self.disk.physical_format:
             if self.dpb:
@@ -265,6 +271,7 @@ class CPMFilesystem(Filesystem):
             and config1.bsh == config2.bsh
             and config1.dsm == config2.dsm
             and config1.off == config2.off
+            and config1.skew == config2.skew
         )
 
     @staticmethod
@@ -285,29 +292,32 @@ class CPMFilesystem(Filesystem):
 
         try:
             bsh = format_info.get("bsh", 3)
+            log_per_phys = physical_format.bytes_per_sector // 128
+            spt = format_info.get(
+                "spt",
+                physical_format.track_formats[0].sectors_per_track * log_per_phys,
+            )
+            off = format_info.get("off", 2)
+            # The reserved (system) tracks are excluded from the data area; the
+            # directory lives inside the data area and still counts toward dsm.
+            # Accounting for `off` here (rather than a fixed fudge) makes the
+            # inferred geometry exact, which lets the no-DPB scan lock onto the
+            # right layout instead of a plausible-but-partial alternative.
+            total_logical = physical_format.total_sectors * log_per_phys
+            data_logical = max(0, total_logical - off * spt)
+            default_dsm = data_logical // (2**bsh) - 1
             return CPMDiskParameterBlock(
-                spt=format_info.get(
-                    "spt",
-                    physical_format.track_formats[0].sectors_per_track
-                    * (physical_format.bytes_per_sector // 128),
-                ),
+                spt=spt,
                 bsh=bsh,
                 blm=format_info.get("blm", (2**bsh) - 1),
                 exm=format_info.get("exm", 0),
-                dsm=format_info.get(
-                    "dsm",
-                    (
-                        physical_format.total_sectors
-                        * (physical_format.bytes_per_sector // 128)
-                    )
-                    // (2**bsh)
-                    - 10,
-                ),
+                dsm=format_info.get("dsm", default_dsm),
                 drm=format_info.get("drm", 63),
                 al0=format_info.get("al0", 0xC0),
                 al1=format_info.get("al1", 0x00),
                 cks=format_info.get("cks", 0),
-                off=format_info.get("off", 2),
+                off=off,
+                skew=format_info.get("skew", 1),
             )
         except Exception as e:
             logger.error(f"Error creating CP/M config: {e}", exc_info=True)
@@ -956,11 +966,15 @@ class CPMFilesystem(Filesystem):
 
         CP/M carries no on-disk geometry, so for disks with no matching profile
         this tries plausible combinations of reserved tracks (off), block size
-        (bsh) and directory size (drm), scores each with the normal CP/M
-        validator (which rejects any garbage directory entry), and keeps the
-        best layout that also lists at least one real file. Requiring a real
-        listed file prevents an all-deleted/empty region on a non-CP/M disk from
-        registering as CP/M.
+        (bsh), directory size (drm) and software sector skew, scores each with
+        the normal CP/M validator (which rejects any garbage directory entry),
+        and keeps the best layout that also lists at least one real file.
+        Requiring a real listed file prevents an all-deleted/empty region on a
+        non-CP/M disk from registering as CP/M.
+
+        The skew sweep lets hard-sectored disks (e.g. the Heath/Zenith H17,
+        whose driver exposes raw physical order) be read: an interleave of 1 is
+        tried first, so disks that need no skew behave exactly as before.
 
         Returns:
             The inferred DPB, or None if the disk does not look like CP/M.
@@ -972,29 +986,31 @@ class CPMFilesystem(Filesystem):
         best_score = 0
         best_dpb: Optional[CPMDiskParameterBlock] = None
         # off: reserved system tracks; bsh: block shift (1K/2K/4K/8K);
-        # drm: directory entries - 1 (64/128/256/32).
+        # drm: directory entries - 1 (64/128/256/32); skew: soft interleave
+        # (1 = none, tried first; 4 = Heath/Zenith H17).
         for off in (2, 1, 3, 0, 4):
             for bsh in (3, 4, 5, 6):
                 for drm in (63, 127, 255, 31):
-                    dpb = self.create_config_from_params(
-                        {"off": off, "bsh": bsh, "drm": drm}, pf
-                    )
-                    if dpb is None or dpb.dsm < 1 or dpb.spt < 1:
-                        continue
-                    probe = CPMFilesystem(self.disk, config=dpb)
-                    try:
-                        s = probe.get_validity_score()
-                        files = (
-                            len(probe.list_directory("/"))
-                            if s >= self.validity_threshold
-                            else 0
+                    for skew in (1, 4, 2, 3, 5, 6):
+                        dpb = self.create_config_from_params(
+                            {"off": off, "bsh": bsh, "drm": drm, "skew": skew}, pf
                         )
-                    except Exception:
-                        s, files = 0, 0
-                    if files >= 1 and s > best_score:
-                        best_score, best_dpb = s, dpb
-                        if best_score >= 95:
-                            return best_dpb
+                        if dpb is None or dpb.dsm < 1 or dpb.spt < 1:
+                            continue
+                        probe = CPMFilesystem(self.disk, config=dpb)
+                        try:
+                            s = probe.get_validity_score()
+                            files = (
+                                len(probe.list_directory("/"))
+                                if s >= self.validity_threshold
+                                else 0
+                            )
+                        except Exception:
+                            s, files = 0, 0
+                        if files >= 1 and s > best_score:
+                            best_score, best_dpb = s, dpb
+                            if best_score >= 95:
+                                return best_dpb
         return best_dpb
 
     def get_volume_label(self) -> Optional[str]:
@@ -1561,7 +1577,59 @@ class CPMFilesystem(Filesystem):
                 f"sectors per track {tf.sectors_per_track}."
             )
 
+        # Apply the CP/M soft sector skew (a per-track permutation). The driver
+        # exposes sectors in physical order; a DPB skew > 1 de-interleaves the
+        # logical CP/M order onto that physical order (e.g. Heath/Zenith H17).
+        skew = self.dpb.skew if self.dpb else 1
+        if skew and skew > 1:
+            table = self._skew_table(tf.sectors_per_track, skew)
+            logical_sector_index = table[logical_sector_index]
+
         return phys_cyl, phys_head, logical_sector_index, offset_in_sector
+
+    @staticmethod
+    def _build_skew_table(num_sectors: int, skew: int) -> list[int]:
+        """
+        Builds a CP/M soft-skew translation table for one track.
+
+        Maps each CP/M logical sector position to a physical sector index using
+        the classic CP/M sector-translation algorithm: start at sector 0 and
+        step by ``skew``, wrapping and skipping already-assigned slots.
+
+        Args:
+            num_sectors: Number of physical sectors per track.
+            skew: The interleave step (1 yields the identity ordering).
+
+        Returns:
+            A list of length ``num_sectors`` mapping logical -> physical index.
+        """
+        order: list[int] = []
+        seen: set[int] = set()
+        pos = 0
+        for _ in range(num_sectors):
+            while pos in seen:
+                pos = (pos + 1) % num_sectors
+            seen.add(pos)
+            order.append(pos)
+            pos = (pos + skew) % num_sectors
+        return order
+
+    def _skew_table(self, num_sectors: int, skew: int) -> list[int]:
+        """
+        Returns a cached CP/M soft-skew table for the given track geometry.
+
+        Args:
+            num_sectors: Number of physical sectors per track.
+            skew: The interleave step.
+
+        Returns:
+            The logical -> physical sector translation table.
+        """
+        table = self._skew_table_cache.get(num_sectors)
+        if table is None:
+            table = self._build_skew_table(num_sectors, skew)
+            self._skew_table_cache[num_sectors] = table
+        return table
 
     def _parse_cpm_path(self, path: str) -> tuple[int, str]:
         """
