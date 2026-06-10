@@ -949,6 +949,16 @@ class FATFilesystem(Filesystem):
                 if self.boot_sector is None:
                     self.boot_sector = parsed_bpb
                 self._try_initialize()
+            elif self.boot_sector is None or not self.boot_sector.is_valid():
+                # No valid BPB (None, or a garbage on-disk BPB): try to recognise
+                # a pre-BPB FAT12 disk (DOS 1.x and early OEM formats) from the
+                # disk geometry and the FAT structure itself.
+                synthesized = self._try_synthesize_nobpb_bpb()
+                if synthesized is not None:
+                    self.boot_sector = synthesized
+                    score += 50
+                    self._init_completed = False
+                    self._try_initialize()
 
             if self._init_completed and self.boot_sector:
                 if (
@@ -986,6 +996,187 @@ class FATFilesystem(Filesystem):
         self.logger.info(f"FAT validation score: {final_score}")
         self._cached_validity_score = final_score
         return final_score
+
+    def _read_lba(self, lba: int) -> bytes:
+        """Reads one logical block (sector) by LBA using the disk geometry."""
+        c, h, s = self.disk.physical_format.lba_to_chs(lba)
+        return self.disk.read_sector(c, h, s)
+
+    def _try_synthesize_nobpb_bpb(self) -> Optional["FATVolumeInfo"]:
+        """
+        Recognises a FAT12 disk that has no BIOS Parameter Block.
+
+        Early DOS (1.x) and some OEM disks carry no BPB - the format was implied
+        by the FAT media-descriptor byte and a fixed layout. Using the disk's
+        known geometry, this synthesises a candidate BPB and accepts it only if
+        the on-disk structure is unmistakably FAT12: a valid media byte, two
+        byte-identical FAT copies, and a root directory of only valid 8.3 entries.
+        That gate makes false positives on CP/M, HDOS or random data effectively
+        impossible, and it runs only when the on-disk BPB is invalid, so genuine
+        BPB disks are never affected.
+
+        Returns:
+            A synthesised FATVolumeInfo, or None if this is not a no-BPB FAT12 disk.
+        """
+        pf = self.disk.physical_format
+        if not pf or pf.has_variable_bps:
+            return None
+        bps = pf.bytes_per_sector
+        if bps not in (128, 256, 512, 1024):
+            return None
+        try:
+            total_sectors = pf.total_sectors
+            spt = pf.get_sectors_per_track(0, 0)
+            heads = pf.heads
+        except (ValueError, AttributeError):
+            return None
+        if total_sectors < 4:
+            return None
+
+        reserved = 1
+        num_fats = 2
+        try:
+            fat_start = self._read_lba(reserved)
+        except Exception:
+            return None
+        if len(fat_start) < 3:
+            return None
+        media = fat_start[0]
+        # On a FAT12 disk the first three FAT bytes are [media, 0xFF, 0xFF]
+        # (the reserved 12-bit entries 0 and 1).
+        if not (0xF0 <= media <= 0xFF) or fat_start[1] != 0xFF or fat_start[2] != 0xFF:
+            return None
+
+        for spc in (1, 2, 4, 8, 16):
+            for root_entries in (64, 112, 224, 512, 16, 32, 48, 96, 128, 192, 240, 256):
+                if (root_entries * 32) % bps != 0:
+                    continue
+                spf = self._solve_sectors_per_fat(
+                    total_sectors, reserved, num_fats, root_entries, spc, bps
+                )
+                if spf is None:
+                    continue
+                candidate = FATVolumeInfo()
+                candidate.oem_id = "FATFLNBP"
+                candidate.bytes_per_sector = bps
+                candidate.sectors_per_cluster = spc
+                candidate.reserved_sectors = reserved
+                candidate.num_fats = num_fats
+                candidate.root_entries = root_entries
+                candidate.total_sectors = total_sectors
+                candidate.media_descriptor = media
+                candidate.sectors_per_fat = spf
+                candidate.sectors_per_track = spt
+                candidate.num_heads = heads
+                candidate.volume_label = ""
+                candidate.fs_type = "FAT12"
+                if not candidate.is_valid():
+                    continue
+                if self._verify_nobpb_structure(candidate):
+                    self.logger.info(
+                        f"Recognised no-BPB FAT12: media=0x{media:02x} "
+                        f"spc={spc} spf={spf} root={root_entries} total={total_sectors}"
+                    )
+                    return candidate
+        return None
+
+    @staticmethod
+    def _solve_sectors_per_fat(
+        total_sectors: int,
+        reserved: int,
+        num_fats: int,
+        root_entries: int,
+        spc: int,
+        bps: int,
+    ) -> Optional[int]:
+        """
+        Solves the 12-bit FAT size for a no-BPB layout from the geometry.
+
+        Iterates the self-referential FAT-size equation to a fixed point. Returns
+        the sectors-per-FAT, or None if no consistent 12-bit solution exists.
+        """
+        root_sectors = (root_entries * 32 + bps - 1) // bps
+        spf = 1
+        for _ in range(16):
+            data_sectors = total_sectors - reserved - num_fats * spf - root_sectors
+            if data_sectors <= 0:
+                return None
+            num_clusters = data_sectors // spc
+            n = num_clusters + 2
+            fat_bytes = (n * 3 + 1) // 2  # ceil(n * 1.5) for 12-bit entries
+            needed = (fat_bytes + bps - 1) // bps
+            if needed == spf:
+                # FAT12 only addresses fewer than 4085 clusters.
+                return spf if num_clusters < 4085 else None
+            if needed < spf:
+                return None
+            spf = needed
+        return None
+
+    def _verify_nobpb_structure(self, bpb: "FATVolumeInfo") -> bool:
+        """
+        Confirms the on-disk structure matches a no-BPB FAT12 candidate.
+
+        Requires the two FAT copies to be byte-identical and the root directory
+        to contain only well-formed 8.3 entries (or be empty). This is the gate
+        that prevents false positives.
+        """
+        reserved = bpb.reserved_sectors
+        spf = bpb.sectors_per_fat
+        bps = bpb.bytes_per_sector
+
+        # The geometry must actually cover the claimed volume: the last sector
+        # must be addressable. This rejects an over-large geometry (e.g. a 1.44M
+        # generic geometry applied to a 160K image) whose FAT/root sectors happen
+        # to alias the real ones (audit/no-BPB false-positive guard).
+        try:
+            last = self._read_lba(bpb.total_sectors - 1)
+            if len(last) < bps:
+                return False
+        except Exception:
+            return False
+
+        try:
+            fat1 = bytearray()
+            fat2 = bytearray()
+            for i in range(spf):
+                fat1 += self._read_lba(reserved + i)
+                fat2 += self._read_lba(reserved + spf + i)
+        except Exception:
+            return False
+        if bytes(fat1) != bytes(fat2):
+            return False
+
+        root_start_lba = reserved + bpb.num_fats * spf
+        root_sectors = (bpb.root_entries * 32 + bps - 1) // bps
+        try:
+            root = bytearray()
+            for i in range(root_sectors):
+                root += self._read_lba(root_start_lba + i)
+        except Exception:
+            return False
+
+        for i in range(0, len(root), 32):
+            entry = root[i : i + 32]
+            if len(entry) < 32 or entry[0] == ENTRY_UNUSED:
+                break
+            if entry[0] == ENTRY_DELETED:
+                continue
+            if not self._is_plausible_dir_entry(entry):
+                return False
+        return True
+
+    @staticmethod
+    def _is_plausible_dir_entry(entry: bytes) -> bool:
+        """Checks a 32-byte directory entry looks like a real 8.3 record."""
+        attr = entry[11]
+        if attr & ATTR_LONG_NAME == ATTR_LONG_NAME:
+            return True
+        if attr & 0xC0:  # undefined high attribute bits -> garbage
+            return False
+        # 8.3 name bytes must be printable (early DOS used uppercase ASCII);
+        # 0x05 is the legal kanji-escape first byte.
+        return all(b == 0x05 or (0x20 <= b < 0x7F) for b in entry[0:11])
 
     def get_volume_label(self) -> Optional[str]:
         """
@@ -1752,6 +1943,11 @@ class FATFilesystem(Filesystem):
 
     def _load_boot_sector(self) -> None:
         """Reads sector 0 and attempts to parse it as a FAT boot sector."""
+        # Respect an already-set config (caller-supplied, or a synthesized no-BPB
+        # boot sector) instead of clobbering it with the on-disk bytes, which may
+        # be garbage on a pre-BPB disk (audit fat12_fs.py:2017).
+        if self.boot_sector is not None and self.boot_sector.is_valid():
+            return
         try:
             boot_sector_data = self.disk.read_sector(0, 0, 0)
             if not boot_sector_data:
