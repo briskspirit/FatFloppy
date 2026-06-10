@@ -614,7 +614,7 @@ class DiskController:
     def open_disk(
         self,
         source: str,
-        disk_type: str = "IMG",
+        disk_type: str = "auto",
         drive_letter: str = "A",
         drive_size: str = "3.5",
         format_info: Optional[dict[str, Any]] = None,
@@ -624,7 +624,8 @@ class DiskController:
 
         Args:
             source: Path to disk image file or physical drive identifier.
-            disk_type: Type of disk (IMG, IMD, H17, PHYSICAL, etc.).
+            disk_type: Type of disk (IMG, IMD, H17, PHYSICAL, etc.); "auto"
+                (the default) content-detects the right driver.
             drive_letter: Drive letter for physical drives.
             drive_size: Physical drive size hint (3.5 or 5.25).
             format_info: Optional format parameters to apply.

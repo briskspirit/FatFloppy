@@ -260,19 +260,36 @@ class DriverFactory:
 
         ext = Path(source).suffix.lower() if source else ""
 
-        candidates = cls._extension_map.get(ext, [])
+        # Content-based detection: try every file-backed driver in priority order
+        # (highest first) and pick the first whose validate_for_opening accepts the
+        # file. Specific formats (MITS/IMD/H17, which check magic or checksums) win;
+        # the raw IMG fallback has the lowest priority and is tried last. The file
+        # extension is only a hint here, so a correctly-formatted image opens even
+        # when its extension is wrong or ambiguous.
+        candidates: list[type[DiskIODriver]] = []
+        seen: set[type[DiskIODriver]] = set()
+        for driver_class in sorted(
+            cls._registry.values(),
+            key=lambda d: getattr(d, "driver_priority", 50),
+            reverse=True,
+        ):
+            if driver_class in seen:
+                continue
+            if not getattr(driver_class, "driver_file_extensions", None):
+                continue  # skip non-file (e.g. physical) drivers
+            seen.add(driver_class)
+            candidates.append(driver_class)
 
         if not candidates:
             if "PHYSICAL" in cls._registry:
                 candidates = [cls._registry["PHYSICAL"]]
             else:
                 raise ValueError(
-                    f"No drivers registered for extension '{ext}' "
-                    f"and no physical driver available"
+                    "No file drivers registered and no physical driver available"
                 )
 
         logger.debug(
-            f"Found {len(candidates)} candidate drivers for extension {ext}: "
+            f"Trying {len(candidates)} drivers (priority order) for {ext}: "
             f"{[d.driver_type for d in candidates]}"
         )
 
@@ -301,14 +318,11 @@ class DriverFactory:
                 last_error = str(e)
                 continue
 
-        if candidates:
-            tried = ", ".join(d.driver_type for d in candidates)
-            raise ValueError(
-                f"No suitable driver found for {source}. "
-                f"Tried: {tried}. Last error: {last_error}"
-            )
-        else:
-            raise ValueError(f"No drivers available for extension '{ext}'")
+        tried = ", ".join(d.driver_type for d in candidates)
+        raise ValueError(
+            f"No suitable driver found for {source}. "
+            f"Tried: {tried}. Last error: {last_error}"
+        )
 
     @classmethod
     def _create_explicit_driver(

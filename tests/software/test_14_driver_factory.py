@@ -823,7 +823,12 @@ def test_factory_create_auto_driver_no_candidates_has_physical(tmp_path: Path) -
 
 
 def test_factory_create_auto_driver_no_candidates_no_physical() -> None:
-    """Tests auto driver raises ValueError when no candidates and no physical driver."""
+    """Auto driver raises ValueError when no file driver validates the source.
+
+    Detection is content-based (every file driver is tried regardless of
+    extension), so the failure is "no suitable driver found" rather than a
+    per-extension lookup miss.
+    """
     mock_plugins = [MockValidDriver]
 
     with (
@@ -831,7 +836,7 @@ def test_factory_create_auto_driver_no_candidates_no_physical() -> None:
             "fatfloppy.core.driver_factory.PluginScanner.discover_plugins",
             return_value=mock_plugins,
         ),
-        pytest.raises(ValueError, match="No drivers registered for extension"),
+        pytest.raises(ValueError, match="No suitable driver found"),
     ):
         DriverFactory.create("AUTO", "unknown.ext")
 

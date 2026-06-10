@@ -162,19 +162,15 @@ class DiskManager(QObject):
             self.logger.warning(f"File path does not exist: {file_path}")
             return
 
-        ext = Path(file_path).suffix
-        ext_lower = ext.lower()
-
-        disk_type = self.parent.extension_to_driver_map.get(ext_lower, "IMG")
-        self.logger.info(
-            f"File extension '{ext_lower}' mapped to driver type '{disk_type}'."
-        )
+        # Content-detect the driver rather than trusting the extension, so an
+        # image with a wrong/ambiguous extension (e.g. a MITS .dsk saved as .img)
+        # still opens. The factory tries specific formats first, raw IMG last.
+        disk_type = "auto"
+        self.logger.info(f"Auto-detecting driver for '{Path(file_path).name}'.")
 
         try:
             controller = DiskController()
-            self.status_message.emit(
-                f"Opening {disk_type} disk: {Path(file_path).name}..."
-            )
+            self.status_message.emit(f"Opening disk: {Path(file_path).name}...")
 
             if controller.open_disk(file_path, disk_type):
                 self.logger.info(

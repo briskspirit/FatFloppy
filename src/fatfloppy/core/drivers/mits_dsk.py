@@ -426,10 +426,8 @@ class MITSDSKDriver(DiskIODriver):
             return False, f"File not found: {source}"
 
         try:
-            with Path(source).open("rb") as f:
-                data = f.read()
-
-            geom = self._geometry_for_size(len(data))
+            size = Path(source).stat().st_size
+            geom = self._geometry_for_size(size)
             if geom is None:
                 min_size = (
                     MITS_MINI_TRACKS
@@ -438,9 +436,20 @@ class MITSDSKDriver(DiskIODriver):
                 )
                 return (
                     False,
-                    f"File too small for MITS DSK format: {len(data)} < {min_size}",
+                    f"File too small for MITS DSK format: {size} < {min_size}",
                 )
             _tracks, spt, _system_tracks = geom
+
+            # Read only the prefix the checksum sample needs - not the whole file -
+            # since auto-detection calls this on every candidate file.
+            if spt == MITS_SECTORS_PER_TRACK:
+                need = (
+                    max(MITS_VALIDATION_TRACKS) * spt + max(MITS_VALIDATION_SECTORS) + 1
+                ) * MITS_PHYSICAL_SECTOR_SIZE
+            else:
+                need = spt * MITS_PHYSICAL_SECTOR_SIZE
+            with Path(source).open("rb") as f:
+                data = f.read(min(size, need))
 
             if spt == MITS_SECTORS_PER_TRACK:
                 # 8": sample the standard validation tracks/sectors (unchanged).
