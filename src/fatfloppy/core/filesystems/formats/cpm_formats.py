@@ -52,7 +52,10 @@ DPB_525_SSSD = CPMDiskParameterBlock(
     bsh=3,
     blm=7,
     exm=0,
-    dsm=92,
+    # 37 data tracks x 20 logical sectors / 8 sectors-per-block = 92 blocks
+    # (0..91), so the highest block number is 91. dsm=92 let the allocator hand
+    # out a block that runs past the end of the disk (audit cpm_formats.py:55).
+    dsm=91,
     drm=63,
     al0=0xC0,
     al1=0x00,
@@ -303,6 +306,9 @@ pf_525.track_formats = [
     replace(
         pf_525.track_formats[0],
         interleave=4,
+        # Drop the inherited (interleave=1) translation table so __post_init__
+        # rebuilds it from interleave=4 (audit cpm_formats.py:302).
+        sector_translation_table=None,
         gap1_bytes=45,
         gap2_bytes=12,
         gap3_bytes=30,

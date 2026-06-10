@@ -51,12 +51,15 @@ class Filesystem(ABC):
     config_class: ClassVar[Optional[type]] = None
     min_fatfloppy_version: ClassVar[Optional[str]] = None
 
-    def __init__(self, disk: Disk):
+    def __init__(self, disk: Disk, config: Optional[Any] = None):
         """
         Initializes the Filesystem base class.
 
         Args:
             disk: The Disk object that this filesystem will operate on.
+            config: Optional filesystem-specific configuration object. The
+                controller constructs filesystems as ``fs_class(disk, config=...)``,
+                so the base contract accepts it; subclasses may interpret it.
 
         Raises:
             ValueError: If the subclass does not define filesystem_type.
@@ -65,6 +68,7 @@ class Filesystem(ABC):
             raise ValueError(f"{self.__class__.__name__} must define filesystem_type")
         self.logger = get_logger(self.__class__.__name__)
         self.disk = disk
+        self.config = config
 
     @classmethod
     def get_format_definitions(cls) -> dict[str, "FormatProfile"]:

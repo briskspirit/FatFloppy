@@ -499,6 +499,9 @@ class CPMFilesystem(Filesystem):
         self.logger.info("Data area not explicitly cleared (standard for CP/M format).")
         self._cached_directory = []
         self._cached_allocation_map = set(range(self.dpb.directory_blocks))
+        # Invalidate the cached validity score so the freshly formatted disk is
+        # re-scored instead of returning a stale pre-format result. [cpm_fs.py:500]
+        self._cached_validity_score = None
         self.disk.flush()
         self.logger.info(
             "CP/M formatting complete (system tracks and directory cleared)."
@@ -1114,10 +1117,11 @@ class CPMFilesystem(Filesystem):
         num_records_total = (
             (len(data) + CPM_SECTOR_SIZE - 1) // CPM_SECTOR_SIZE if data else 0
         )
-        num_dir_entries_needed = (
-            (num_records_total + CPM_RECORDS_PER_EXTENT - 1) // CPM_RECORDS_PER_EXTENT
-            if data
-            else 0
+        # A zero-length file still needs one directory entry (rc=0, no blocks),
+        # otherwise an empty write silently creates nothing (audit cpm_fs.py:1120).
+        num_dir_entries_needed = max(
+            1,
+            (num_records_total + CPM_RECORDS_PER_EXTENT - 1) // CPM_RECORDS_PER_EXTENT,
         )
         num_blocks_needed = (len(data) + block_size - 1) // block_size if data else 0
 
@@ -1541,6 +1545,12 @@ class CPMFilesystem(Filesystem):
             raise ValueError(
                 f"Empty base filename derived from path '{path}' "
                 f"(CP/M requires a non-empty filename before the extension)"
+            )
+        if not parsed_filename.isascii():
+            # CP/M directory names are ASCII; reject up front so write_file does
+            # not crash with UnicodeEncodeError mid-operation (audit cpm_fs.py:1289).
+            raise ValueError(
+                f"CP/M filename must be ASCII: '{parsed_filename}' (from '{path}')"
             )
         if len(parsed_filename) > 12:
             self.logger.warning(

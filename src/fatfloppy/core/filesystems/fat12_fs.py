@@ -159,7 +159,12 @@ class FATVolumeInfo:
             struct.pack_into("<I", boot_sector, 0x027, self.volume_serial)
             boot_sector[0x02B:0x036] = self.volume_label.encode("cp437").ljust(11)
             boot_sector[0x036:0x03E] = self.fs_type.encode("cp437").ljust(8)
-            struct.pack_into("<H", boot_sector, self.bytes_per_sector - 2, 0xAA55)
+            # The boot signature lives at the fixed offset 510 regardless of
+            # sector size; also mirror it at sector-end for tools that look
+            # there on non-512-byte sectors.
+            struct.pack_into("<H", boot_sector, 510, 0xAA55)
+            if self.bytes_per_sector != 512:
+                struct.pack_into("<H", boot_sector, self.bytes_per_sector - 2, 0xAA55)
         return bytes(boot_sector)
 
 
@@ -642,6 +647,14 @@ class FATFilesystem(Filesystem):
         ):
             boot_sector_config.volume_label = "NO NAME".ljust(11)
 
+        # Validate the config BEFORE writing anything, so an invalid profile does
+        # not leave a half-formatted disk (audit fat12_fs.py:632).
+        if not boot_sector_config.is_valid():
+            raise ValueError(
+                f"Invalid FAT configuration in profile '{profile.name}'; "
+                "refusing to format."
+            )
+
         boot_sector_bytes = boot_sector_config.to_bytes()
         self.disk.write_sector(0, 0, 0, boot_sector_bytes)
         self.logger.info("Wrote boot sector")
@@ -931,7 +944,10 @@ class FATFilesystem(Filesystem):
 
             if parsed_bpb and parsed_bpb.is_valid():
                 score += 50
-                self.boot_sector = parsed_bpb
+                # Respect a caller-supplied config; only derive the boot sector
+                # from disk when none was provided (audit fat12_fs.py:2017).
+                if self.boot_sector is None:
+                    self.boot_sector = parsed_bpb
                 self._try_initialize()
 
             if self._init_completed and self.boot_sector:

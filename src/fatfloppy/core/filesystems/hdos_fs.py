@@ -246,8 +246,15 @@ class HDOSFilesystem(Filesystem):
                 )
                 break
 
+            end_of_dir = False
             for i in range(DIR_ENTRIES_PER_BLOCK):
                 offset = i * HDOS_DIR_ENTRY_SIZE
+                # Honour the 0xFE end-of-directory marker so delete() sees exactly
+                # the same entries as the reader and never matches stale entries
+                # past the marker (audit hdos_fs.py:249).
+                if dir_data[offset] == 0xFE:
+                    end_of_dir = True
+                    break
                 entry = self._parse_single_dir_entry(
                     dir_data[offset : offset + HDOS_DIR_ENTRY_SIZE]
                 )
@@ -256,7 +263,7 @@ class HDOSFilesystem(Filesystem):
                     entry_dir_lba = current_dir_lba
                     entry_offset_in_block = offset
                     break
-            if found_entry:
+            if found_entry or end_of_dir:
                 break
             try:
                 current_dir_lba = struct.unpack_from(
