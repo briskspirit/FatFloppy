@@ -15,6 +15,11 @@ MITS_ENCODING = "FM"
 MITS_RATE = 250
 MITS_RPM = 360
 
+# Altair 5.25" minifloppy: same 137-byte hard-sector framing, smaller geometry.
+MITS_MINI_TRACKS = 35
+MITS_MINI_SECTORS_PER_TRACK = 16
+MITS_MINI_SYSTEM_TRACK_COUNT = 2
+
 MITS_SYSTEM_TRACK_COUNT = 6
 MITS_SYSTEM_TRACK_DATA_START = 3
 MITS_SYSTEM_TRACK_DATA_END = 131
@@ -38,6 +43,10 @@ MITS_CHECKSUM_SEED = 0x01
 MITS_VALIDATION_TRACKS = [0, 1, 5, 6, 20, 40]
 MITS_VALIDATION_SECTORS = [0, 10, 20]
 MITS_VALIDATION_MIN_COUNT = 8
+# Mini disks are small and often sparse, so the multi-track sample mostly hits
+# blank tracks; validate the system (boot) track instead - a properly formatted
+# Altair signature a non-MITS file of the same size will not have.
+MITS_MINI_VALIDATION_MIN_COUNT = 8
 
 MITS_GAP3_BYTES = 26
 
@@ -79,6 +88,13 @@ class MITSDSKDriver(DiskIODriver):
         self.dirty: bool = False
         self.image_data: bytearray
         self.uses_physical_heads: bool = False
+
+        # Intrinsic on-disk geometry (8" by default; the mini is derived from
+        # the file size once the image is loaded). These drive sector addressing
+        # and de-framing, independent of any logical geometry set later.
+        self._tracks: int = MITS_TRACKS
+        self._sectors_per_track: int = MITS_SECTORS_PER_TRACK
+        self._system_tracks: int = MITS_SYSTEM_TRACK_COUNT
 
         self.sector_cache: dict[tuple[int, int, int], bytes] = {}
         self.modified_sectors: dict[tuple[int, int, int], bytes] = {}
@@ -194,7 +210,7 @@ class MITSDSKDriver(DiskIODriver):
                 cylinder, head, sector = sector_key
 
                 offset = (
-                    cylinder * MITS_SECTORS_PER_TRACK + sector
+                    cylinder * self._sectors_per_track + sector
                 ) * MITS_PHYSICAL_SECTOR_SIZE
 
                 old_sector = self.image_data[
@@ -326,9 +342,9 @@ class MITSDSKDriver(DiskIODriver):
         if head != 0:
             raise OSError(f"MITS DSK only supports head 0, got head {head}")
 
-        if not (0 <= sector < MITS_SECTORS_PER_TRACK):
+        if not (0 <= sector < self._sectors_per_track):
             raise OSError(
-                f"Invalid sector index: {sector} (must be 0-{MITS_SECTORS_PER_TRACK - 1})"
+                f"Invalid sector index: {sector} (must be 0-{self._sectors_per_track - 1})"
             )
 
         sector_key = (cylinder, head, sector)
@@ -343,7 +359,7 @@ class MITSDSKDriver(DiskIODriver):
             return self.sector_cache[sector_key]
 
         offset = (
-            cylinder * MITS_SECTORS_PER_TRACK + sector
+            cylinder * self._sectors_per_track + sector
         ) * MITS_PHYSICAL_SECTOR_SIZE
 
         if offset + MITS_PHYSICAL_SECTOR_SIZE > len(self.image_data):
@@ -413,27 +429,54 @@ class MITSDSKDriver(DiskIODriver):
             with Path(source).open("rb") as f:
                 data = f.read()
 
-            expected_size = (
-                MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
-            )
-            if len(data) < expected_size:
+            geom = self._geometry_for_size(len(data))
+            if geom is None:
+                min_size = (
+                    MITS_MINI_TRACKS
+                    * MITS_MINI_SECTORS_PER_TRACK
+                    * MITS_PHYSICAL_SECTOR_SIZE
+                )
                 return (
                     False,
-                    f"File too small for MITS DSK format: {len(data)} < {expected_size}",
+                    f"File too small for MITS DSK format: {len(data)} < {min_size}",
                 )
+            _tracks, spt, _system_tracks = geom
 
-            validation_count = 0
-            for track in MITS_VALIDATION_TRACKS:
-                for phys_sector in MITS_VALIDATION_SECTORS:
-                    offset = (
-                        track * MITS_SECTORS_PER_TRACK + phys_sector
-                    ) * MITS_PHYSICAL_SECTOR_SIZE
-                    if offset + MITS_PHYSICAL_SECTOR_SIZE <= len(data):
-                        sector_bytes = data[offset : offset + MITS_PHYSICAL_SECTOR_SIZE]
-                        if self._validate_sector_checksum(sector_bytes, track):
-                            validation_count += 1
+            if spt == MITS_SECTORS_PER_TRACK:
+                # 8": sample the standard validation tracks/sectors (unchanged).
+                validation_count = sum(
+                    1
+                    for track in MITS_VALIDATION_TRACKS
+                    for phys_sector in MITS_VALIDATION_SECTORS
+                    if (track * spt + phys_sector + 1) * MITS_PHYSICAL_SECTOR_SIZE
+                    <= len(data)
+                    and self._validate_sector_checksum(
+                        data[
+                            (track * spt + phys_sector) * MITS_PHYSICAL_SECTOR_SIZE : (
+                                track * spt + phys_sector + 1
+                            )
+                            * MITS_PHYSICAL_SECTOR_SIZE
+                        ],
+                        track,
+                    )
+                )
+                min_count = MITS_VALIDATION_MIN_COUNT
+            else:
+                # Mini: validate the whole system (boot) track.
+                validation_count = sum(
+                    1
+                    for phys_sector in range(spt)
+                    if self._validate_sector_checksum(
+                        data[
+                            phys_sector * MITS_PHYSICAL_SECTOR_SIZE : (phys_sector + 1)
+                            * MITS_PHYSICAL_SECTOR_SIZE
+                        ],
+                        0,
+                    )
+                )
+                min_count = MITS_MINI_VALIDATION_MIN_COUNT
 
-            if validation_count < MITS_VALIDATION_MIN_COUNT:
+            if validation_count < min_count:
                 return (
                     False,
                     f"MITS DSK checksum validation failed: only {validation_count} valid sectors found",
@@ -457,11 +500,15 @@ class MITSDSKDriver(DiskIODriver):
         if not hasattr(self, "image_data") or not self.image_data:
             return False, "MITS DSK driver has no image data"
 
-        expected_size = MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
-        if len(self.image_data) < expected_size:
+        if self._geometry_for_size(len(self.image_data)) is None:
+            min_size = (
+                MITS_MINI_TRACKS
+                * MITS_MINI_SECTORS_PER_TRACK
+                * MITS_PHYSICAL_SECTOR_SIZE
+            )
             return (
                 False,
-                f"MITS DSK file too small: {len(self.image_data)} < {expected_size}",
+                f"MITS DSK file too small: {len(self.image_data)} < {min_size}",
             )
 
         return True, None
@@ -485,16 +532,16 @@ class MITSDSKDriver(DiskIODriver):
         if head != 0:
             raise ValueError(f"MITS DSK only supports head 0, got head {head}")
 
-        if not (0 <= cylinder < MITS_TRACKS):
+        if not (0 <= cylinder < self._tracks):
             # Without this, flush() slice-assigns past the end of the image,
             # silently appending a malformed blob (audit mits_dsk.py:488).
             raise ValueError(
-                f"Invalid cylinder: {cylinder} (must be 0-{MITS_TRACKS - 1})"
+                f"Invalid cylinder: {cylinder} (must be 0-{self._tracks - 1})"
             )
 
-        if not (0 <= sector < MITS_SECTORS_PER_TRACK):
+        if not (0 <= sector < self._sectors_per_track):
             raise ValueError(
-                f"Invalid sector index: {sector} (must be 0-{MITS_SECTORS_PER_TRACK - 1})"
+                f"Invalid sector index: {sector} (must be 0-{self._sectors_per_track - 1})"
             )
 
         if len(data) != MITS_LOGICAL_SECTOR_SIZE:
@@ -569,10 +616,10 @@ class MITSDSKDriver(DiskIODriver):
         """
         track_format = TrackFormat(
             track_start=0,
-            track_end=MITS_TRACKS - 1,
+            track_end=self._tracks - 1,
             head_start=0,
             head_end=0,
-            sectors_per_track=MITS_SECTORS_PER_TRACK,
+            sectors_per_track=self._sectors_per_track,
             encoding=MITS_ENCODING,
             rate=MITS_RATE,
             interleave=1,
@@ -582,7 +629,7 @@ class MITSDSKDriver(DiskIODriver):
         )
 
         self.physical_format = PhysicalFormat(
-            cylinders=MITS_TRACKS,
+            cylinders=self._tracks,
             heads=1,
             rpm=MITS_RPM,
             heads_inverted=False,
@@ -591,7 +638,8 @@ class MITSDSKDriver(DiskIODriver):
         )
 
         self.logger.debug(
-            f"Created MITS DSK physical format: {MITS_TRACKS}C x 1H x {MITS_SECTORS_PER_TRACK}S"
+            f"Created MITS DSK physical format: {self._tracks}C x 1H "
+            f"x {self._sectors_per_track}S"
         )
 
     def _extract_sector_data(self, sector_bytes: bytes, track: int) -> bytes:
@@ -609,7 +657,7 @@ class MITSDSKDriver(DiskIODriver):
             self.logger.warning(f"Short sector on track {track}, padding")
             sector_bytes = sector_bytes.ljust(MITS_PHYSICAL_SECTOR_SIZE, b"\x00")
 
-        if track < MITS_SYSTEM_TRACK_COUNT:
+        if track < self._system_tracks:
             return bytes(
                 sector_bytes[MITS_SYSTEM_TRACK_DATA_START:MITS_SYSTEM_TRACK_DATA_END]
             )
@@ -668,20 +716,50 @@ class MITSDSKDriver(DiskIODriver):
 
         return bytes(sector_data)
 
+    @staticmethod
+    def _geometry_for_size(size: int) -> Optional[tuple[int, int, int]]:
+        """
+        Maps a MITS .DSK file size to its on-disk geometry.
+
+        Args:
+            size: The file size in bytes.
+
+        Returns:
+            (tracks, sectors_per_track, system_tracks) for the 8" or 5.25" mini
+            Altair geometry, or None if the file is too small to be either.
+        """
+        num_sectors = size // MITS_PHYSICAL_SECTOR_SIZE
+        if num_sectors >= MITS_TRACKS * MITS_SECTORS_PER_TRACK:
+            return MITS_TRACKS, MITS_SECTORS_PER_TRACK, MITS_SYSTEM_TRACK_COUNT
+        if num_sectors >= MITS_MINI_TRACKS * MITS_MINI_SECTORS_PER_TRACK:
+            return (
+                MITS_MINI_TRACKS,
+                MITS_MINI_SECTORS_PER_TRACK,
+                MITS_MINI_SYSTEM_TRACK_COUNT,
+            )
+        return None
+
     def _validate_format(self) -> None:
         """
-        Validates that the image data is in MITS DSK format.
+        Validates that the image data is in MITS DSK format and sets geometry.
 
         Raises:
             ValueError: If format validation fails.
         """
-        expected_size = MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
         actual_size = len(self.image_data)
-
-        if actual_size < expected_size:
-            raise ValueError(
-                f"File too small for MITS DSK: {actual_size} < {expected_size}"
+        geom = self._geometry_for_size(actual_size)
+        if geom is None:
+            min_size = (
+                MITS_MINI_TRACKS
+                * MITS_MINI_SECTORS_PER_TRACK
+                * MITS_PHYSICAL_SECTOR_SIZE
             )
+            raise ValueError(f"File too small for MITS DSK: {actual_size} < {min_size}")
+
+        self._tracks, self._sectors_per_track, self._system_tracks = geom
+        expected_size = (
+            self._tracks * self._sectors_per_track * MITS_PHYSICAL_SECTOR_SIZE
+        )
 
         if actual_size > expected_size:
             self.logger.warning(

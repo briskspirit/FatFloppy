@@ -47,6 +47,23 @@ DPB_8INCH_MITS = CPMDiskParameterBlock(
     off=2,
 )
 
+# Altair 5.25" minifloppy CP/M (35 tracks x 16 sectors x 137-byte hard sectors).
+# The disk stores 128-byte logical data behind the MITS 137-byte framing; the
+# 2:1 Altair interleave is recovered as skew=2 at the CP/M layer.
+DPB_525_MITS_MINI = CPMDiskParameterBlock(
+    spt=16,
+    bsh=3,
+    blm=7,
+    exm=0,
+    dsm=61,
+    drm=31,
+    al0=0xC0,
+    al1=0x00,
+    cks=0,
+    off=4,
+    skew=2,
+)
+
 DPB_525_SSSD = CPMDiskParameterBlock(
     spt=20,
     bsh=3,
@@ -300,6 +317,38 @@ for variant_name, physical_format in _create_mits_altair_variants():
     )
 
 CPM_FORMATS["cpm_8_mits_dsk_308k"] = CPM_FORMATS["cpm_8_mits_altair_308k_mits_split"]
+
+# Altair 5.25" minifloppy: 35 tracks, 1 head, 16 logical 128-byte sectors. The
+# MITS driver de-frames the 137-byte hard sectors and exposes them in physical
+# order; the CP/M layer recovers the 2:1 interleave (skew=2 in the DPB).
+pf_mits_mini = PhysicalFormat(
+    cylinders=35,
+    heads=1,
+    rpm=360,
+    heads_inverted=False,
+    bytes_per_sector=128,
+    track_formats=[
+        TrackFormat(
+            track_start=0,
+            track_end=34,
+            head_start=0,
+            head_end=0,
+            sectors_per_track=16,
+            bytes_per_sector=128,
+            encoding="FM",
+            rate=250,
+            interleave=1,
+            iam_present=False,
+            gap3_bytes=0,
+        )
+    ],
+)
+CPM_FORMATS["cpm_5.25_mits_mini_70k"] = FormatProfile(
+    name="cpm_5.25_mits_mini_70k",
+    description='MITS Altair 5.25" minifloppy CP/M (35t/1h/16s, 137-byte sectors)',
+    physical_format=pf_mits_mini,
+    filesystem_config=DPB_525_MITS_MINI,
+)
 
 pf_525 = create_525_sssd_base(sectors_per_track=10, bytes_per_sector=256)
 pf_525.track_formats = [

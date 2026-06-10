@@ -37,6 +37,10 @@ _MITS_SIZES = {337568, 337664}
 def _candidate_driver_types(path: Path) -> list[str]:
     size = path.stat().st_size
     suffix = path.suffix.lower()
+    # .dsk covers MITS Altair 8" and 5.25" mini hard-sectored images; the MITS
+    # driver's checksum validation rejects non-Altair .dsk, which then fall to IMG.
+    if suffix == ".dsk":
+        return ["MITS_DSK", "IMG", "IMD"]
     if size in _MITS_SIZES:
         return ["MITS_DSK", "IMG"]
     if suffix == ".imd":
