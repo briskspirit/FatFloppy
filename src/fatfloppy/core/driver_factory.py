@@ -191,6 +191,55 @@ class DriverFactory:
         return sorted(drivers_info, key=lambda d: d["type"])
 
     @classmethod
+    def register_external(cls, driver_class: type[DiskIODriver]) -> None:
+        """
+        Registers an externally-provided driver plugin at runtime.
+
+        Mirrors FilesystemRegistry.register_external / DetectorRegistry so that
+        third-party packages can add a driver without living inside the
+        fatfloppy.core.drivers package (audit PLUGIN_DEVELOPMENT.md:177).
+
+        Args:
+            driver_class: A DiskIODriver subclass to register.
+
+        Raises:
+            PluginValidationError: If the class fails driver validation.
+        """
+        if not cls._initialized:
+            cls._discover_and_register()
+
+        cls._validate_driver(driver_class)
+
+        driver_type_upper = driver_class.driver_type.upper()
+        cls._registry[driver_type_upper] = driver_class
+
+        for ext in driver_class.driver_file_extensions:
+            ext_lower = ext.lower()
+            cls._extension_map.setdefault(ext_lower, [])
+            if driver_class not in cls._extension_map[ext_lower]:
+                cls._extension_map[ext_lower].append(driver_class)
+            cls._extension_map[ext_lower].sort(
+                key=lambda d: getattr(d, "driver_priority", 50), reverse=True
+            )
+
+        logger.info(
+            f"Registered external driver: {driver_class.__name__} "
+            f"(type={driver_type_upper})"
+        )
+
+    @classmethod
+    def list_registered_types(cls) -> list[str]:
+        """
+        Returns the registered driver type names.
+
+        Returns:
+            A list of upper-case driver type strings.
+        """
+        if not cls._initialized:
+            cls._discover_and_register()
+        return list(cls._registry.keys())
+
+    @classmethod
     def _create_auto_driver(cls, source: str, **kwargs) -> DiskIODriver:
         """
         Automatically detects and creates the appropriate driver.

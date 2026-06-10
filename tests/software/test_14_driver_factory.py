@@ -992,3 +992,16 @@ def test_factory_create_physical_driver_parameters() -> None:
     assert driver.device_name == "device_name_test"
     assert driver.drive == "C"
     assert driver.drive_size == "8"
+
+
+def test_driver_factory_register_external() -> None:
+    """register_external adds a driver and list_registered_types exposes it."""
+    with patch(
+        "fatfloppy.core.driver_factory.PluginScanner.discover_plugins",
+        return_value=[MockValidDriver],
+    ):
+        DriverFactory.register_external(MockHighPriorityDriver)
+
+    types = DriverFactory.list_registered_types()
+    assert "HIGH_PRIORITY" in types
+    assert DriverFactory.get_driver_class("HIGH_PRIORITY") is MockHighPriorityDriver

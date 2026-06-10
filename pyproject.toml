@@ -58,6 +58,8 @@ version = {attr = "fatfloppy._version.__version__"}
 [tool.ruff]
 line-length = 88
 target-version = "py39"  # Match your minimum Python version
+# Honour `exclude` even when pre-commit passes file paths explicitly.
+force-exclude = true
 
 # Exclude common directories
 exclude = [
@@ -68,6 +70,7 @@ exclude = [
     "build",
     "dist",
     "*.egg-info",
+    "examples",
 ]
 
 [tool.ruff.lint]

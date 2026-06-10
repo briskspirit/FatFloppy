@@ -171,7 +171,9 @@ from .my_driver import ExternalDriver, ExternalDetector
 from .my_fs import ExternalFilesystem
 
 # 1. Register your filesystem
-FilesystemRegistry.register_external(fs_class=ExternalFilesystem)
+FilesystemRegistry.register_external(
+    fs_type="MYFS", fs_class=ExternalFilesystem
+)
 
 # 2. Register your driver
 DriverFactory.register_external(driver_class=ExternalDriver)
