@@ -1724,9 +1724,13 @@ class CPMFilesystem(Filesystem):
 
         if not any(entry_bytes):
             # An all-zero slot is an unused directory entry (0x00-formatted
-            # disks), not a file. Skip it so it never appears as a phantom
-            # null-named entry in listings (matches get_validity_score).
-            return None
+            # disks). Represent it as a deleted entry so it keeps its position
+            # in the directory (the write path maps entry index -> on-disk slot)
+            # and is reused as free space, while staying hidden from listings -
+            # rather than dropping it, which would misalign every later index.
+            return CPMDirectoryEntry(
+                CPM_DELETED_ENTRY_MARKER, "", "", 0, 0, 0, 0, [], {}
+            )
 
         user = entry_bytes[0]
         name_bytes = bytes(b & 0x7F for b in entry_bytes[1:9])
