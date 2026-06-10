@@ -1039,7 +1039,14 @@ class HDOSFilesystem(Filesystem):
 
             sectors_to_read = sectors_per_group
             if current_group == target_entry.last_group:
-                sectors_to_read = target_entry.last_sector_index
+                # Clamp the untrusted last-sector index so a corrupt entry cannot
+                # read past the group into other files' data (audit hdos_fs.py:1025).
+                sectors_to_read = min(target_entry.last_sector_index, sectors_per_group)
+                if target_entry.last_sector_index > sectors_per_group:
+                    self.logger.warning(
+                        f"Clamped last_sector_index {target_entry.last_sector_index} "
+                        f"to {sectors_per_group} for file '{path}'."
+                    )
 
             for i in range(sectors_to_read):
                 try:
@@ -1244,7 +1251,9 @@ class HDOSFilesystem(Filesystem):
         else:
             full_groups_sectors = 0
 
-        last_group_sectors = entry.last_sector_index
+        # Clamp the untrusted last-sector index so a corrupt entry cannot inflate
+        # the reported file size (audit hdos_fs.py:1025).
+        last_group_sectors = min(entry.last_sector_index, sectors_per_group)
 
         total_sectors = full_groups_sectors + last_group_sectors
         return total_sectors * HDOS_BYTES_PER_SECTOR
@@ -1620,10 +1629,21 @@ class HDOSFilesystem(Filesystem):
         """
         entries: list[HDOSDirectoryEntry] = []
         current_block_lba = self.label.dir_start_block
+        visited: set[int] = set()
 
         for _ in range(20):
             if current_block_lba == 0:
                 break
+
+            # Break self-referential / cyclic next-block pointers from a crafted
+            # image so entries are not duplicated (audit hdos_fs.py:1605).
+            if current_block_lba in visited:
+                self.logger.warning(
+                    f"Cyclic directory next-block pointer at LBA "
+                    f"{current_block_lba}; stopping."
+                )
+                break
+            visited.add(current_block_lba)
 
             try:
                 sector1 = self._read_lba(current_block_lba)

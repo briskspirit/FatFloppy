@@ -688,8 +688,14 @@ class IMDImageDriver(DiskIODriver):
             return False, f"IMD file not found: {source}"
 
         try:
+            # The IMD comment is variable-length, so the 0x1A terminator can sit
+            # far past the first 128 bytes. Read a generous window so valid files
+            # with long comments are not rejected (audit imd.py:639).
             with Path(source).open("rb") as f:
-                header = f.read(128)
+                header = f.read(65536)
+
+            if not header.lstrip().upper().startswith(b"IMD"):
+                return False, "Does not appear to be a valid IMD file"
 
             if IMD_HEADER_TERMINATOR not in header:
                 return False, "Missing IMD header terminator (0x1A)"

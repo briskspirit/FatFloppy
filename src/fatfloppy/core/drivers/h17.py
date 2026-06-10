@@ -16,6 +16,11 @@ H17_MAGIC = b"H17D"
 H17_VERSION_2_0 = b"2.0"
 H17_8BIT_CHECK = 0xFF
 
+# Sentinel offset for a sector whose on-disk data location could not be located
+# (e.g. a damaged draft sector with no sync bytes). Such sectors read as zeros
+# and reject writes rather than aliasing onto file offset 0 (the header).
+H17_NO_DATA_OFFSET = -1
+
 H17_SECTORS_PER_TRACK = 10
 H17_BYTES_PER_SECTOR = 256
 H17_RPM = 300
@@ -338,13 +343,21 @@ class H17ImageDriver(DiskIODriver):
             for sector_key, data in self.modified_sectors.items():
                 cylinder, head, sector = sector_key
                 meta = self.sector_metadata.get(sector_key)
-                if meta:
-                    offset = meta.offset_to_data
-                    self.file_data[offset : offset + H17_BYTES_PER_SECTOR] = data
-                else:
+                if not meta:
                     self.logger.warning(
                         f"No metadata for modified sector C:{cylinder} H:{head} S:{sector}"
                     )
+                    continue
+                offset = meta.offset_to_data
+                # Refuse out-of-range offsets: a negative sentinel or an offset
+                # past EOF would silently overwrite the header or append garbage
+                # via slice assignment (audit h17.py:1265/1406).
+                if offset < 0 or offset + H17_BYTES_PER_SECTOR > len(self.file_data):
+                    raise OSError(
+                        f"Refusing to write sector C:{cylinder} H:{head} S:{sector}: "
+                        f"data offset {offset} is out of range"
+                    )
+                self.file_data[offset : offset + H17_BYTES_PER_SECTOR] = data
 
             atomic_write(self.file_path, bytes(self.file_data))
 
@@ -589,6 +602,14 @@ class H17ImageDriver(DiskIODriver):
             )
             return bytes(H17_BYTES_PER_SECTOR)
 
+        if meta.offset_to_data < 0:
+            # Damaged sector with no locatable data; never return header bytes.
+            self.logger.debug(
+                f"Sector C:{cylinder} H:{head} S:{sector} has no data location, "
+                "returning zeros"
+            )
+            return bytes(H17_BYTES_PER_SECTOR)
+
         try:
             data = self.file_data[
                 meta.offset_to_data : meta.offset_to_data + H17_BYTES_PER_SECTOR
@@ -772,6 +793,16 @@ class H17ImageDriver(DiskIODriver):
             )
 
         sector_key = (cylinder, head, sector)
+
+        # Refuse to write a sector whose on-disk data location is unknown/invalid;
+        # patching such a sector at flush time would corrupt the file header or
+        # other structures (audit h17.py:1265/1406).
+        meta = self.sector_metadata.get(sector_key)
+        if meta is not None and meta.offset_to_data < 0:
+            raise OSError(
+                f"Cannot write sector C:{cylinder} H:{head} S:{sector}: "
+                "no valid data location (damaged/unrecoverable sector)"
+            )
 
         self.modified_sectors[sector_key] = bytes(data)
         self.dirty = True
@@ -1195,6 +1226,16 @@ class H17ImageDriver(DiskIODriver):
                     bytes_per_sector = track_length // H17_SECTORS_PER_TRACK
                     sector_length = bytes_per_sector - 6  # Subtract header bytes
 
+                    # A crafted track_length of 1..9 yields a non-positive
+                    # sector_length; without this guard the loop makes no forward
+                    # progress and hangs (audit h17.py:1188/1311).
+                    if sector_length <= 0:
+                        self.logger.error(
+                            f"Invalid track_length {track_length} (sector_length="
+                            f"{sector_length}); aborting track parse"
+                        )
+                        break
+
                     self.logger.debug(
                         f"Sector sub-block: file_position={file_position} status=0x{error_status:08X} "
                         f"data_length={sector_length} at offset {offset}"
@@ -1264,21 +1305,23 @@ class H17ImageDriver(DiskIODriver):
                                     f"user_data@{user_data_offset}, file_offset={user_data_file_offset}, vol={volume}"
                                 )
                         else:
-                            # No data sync found - malformed sector
+                            # No data sync found - malformed sector. Mark it as
+                            # having no locatable data instead of aliasing onto
+                            # file offset 0 (the header) (audit h17.py:1265/1284).
                             self.logger.warning(
                                 f"No data sync found for T:{track} H:{head} S:{logical_sector_num} "
-                                f"(file_pos:{file_position}), header_sync@{header_sync_pos} - sector will be read-only"
+                                f"(file_pos:{file_position}), header_sync@{header_sync_pos} - sector unreadable"
                             )
-                            user_data_file_offset = 0
+                            user_data_file_offset = H17_NO_DATA_OFFSET
                             data_sync = H17_DATA_SYNC
                             data_checksum = 0
                     else:
                         # No header sync found - severely malformed sector
                         self.logger.warning(
                             f"No header sync found for file_position {file_position} on T:{track} H:{head} "
-                            f"- sector will be read-only"
+                            f"- sector unreadable"
                         )
-                        user_data_file_offset = 0
+                        user_data_file_offset = H17_NO_DATA_OFFSET
                         header_sync = H17_HEADER_SYNC
                         volume = 0
                         track_in_header = track
@@ -1298,7 +1341,9 @@ class H17ImageDriver(DiskIODriver):
                         header_checksum=header_checksum,
                         data_sync=data_sync,
                         data_checksum=data_checksum,
-                        valid_bytes=H17_BYTES_PER_SECTOR,
+                        valid_bytes=(
+                            H17_BYTES_PER_SECTOR if user_data_file_offset >= 0 else 0
+                        ),
                     )
 
                     # KEY FIX: Use the logical sector number from the header, not the file position

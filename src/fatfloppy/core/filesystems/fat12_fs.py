@@ -563,26 +563,40 @@ class FATFilesystem(Filesystem):
         self._cached_allocated_clusters = None
         self.logger.info(f"Successfully deleted '{path}'")
 
-    def delete_recursive(self, path: str) -> bool:
+    def delete_recursive(self, path: str, _visited: Optional[set[int]] = None) -> bool:
         """
         Recursively deletes a directory and all its contents.
 
         Args:
             path: The full path of the directory to delete.
+            _visited: Internal set of directory start clusters already entered,
+                used to break cyclic/self-referential directory structures from
+                a crafted image (audit fat12_fs.py:579).
 
         Returns:
             True if successful, False otherwise.
         """
+        if _visited is None:
+            _visited = set()
         try:
             entry_info = self._find_path(path)
             if entry_info.is_dir:
+                start = getattr(entry_info, "starting_cluster", 0)
+                if start and start in _visited:
+                    self.logger.error(
+                        f"Cyclic directory detected at {path} "
+                        f"(cluster {start}); aborting recursion."
+                    )
+                    return False
+                if start:
+                    _visited.add(start)
                 contents = self.list_directory(path)
                 for item in contents:
                     if item.name not in [".", ".."]:
                         item_path = (
                             f"{path}/{item.name}" if path != "/" else f"/{item.name}"
                         )
-                        if not self.delete_recursive(item_path):
+                        if not self.delete_recursive(item_path, _visited):
                             return False
                 self.delete(path)
             else:
@@ -1554,6 +1568,15 @@ class FATFilesystem(Filesystem):
                 self.logger.error(
                     f"Chain terminated unexpectedly at cluster {current} with "
                     f"value {next_cluster:03X}."
+                )
+                break
+            # Reject unaddressable cluster numbers (reserved cluster 1, or values
+            # past the disk) before they enter the chain, so consumers never call
+            # _cluster_to_offset on an invalid cluster (audit fat12_fs.py:1516).
+            if not (2 <= next_cluster < self.num_clusters + 2):
+                self.logger.error(
+                    f"Invalid next cluster {next_cluster:03X} in chain from "
+                    f"{start_cluster}; truncating chain."
                 )
                 break
             current = next_cluster

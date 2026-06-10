@@ -14,6 +14,49 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMainWindow, QMessageBox
 
 
+def _sanitize_local_name(name: str) -> str:
+    """
+    Reduces an untrusted on-disk filename to a single safe path component.
+
+    Disk-image filenames are untrusted (CP/M and HDOS names are not validated on
+    read, so they can contain '/', '\\' or '..'). Stripping the path and rejecting
+    traversal segments prevents an extracted file from escaping the chosen
+    directory (audit file_manager.py:698).
+
+    Args:
+        name: The raw filename from the disk image.
+
+    Returns:
+        A safe, non-empty single path component.
+    """
+    candidate = name.replace("\\", "/").split("/")[-1].strip()
+    if not candidate or candidate in (".", ".."):
+        return "_unnamed_"
+    return candidate
+
+
+def _safe_local_join(base_dir: str, name: str) -> str:
+    """
+    Joins an untrusted on-disk name onto a base directory, safely.
+
+    Args:
+        base_dir: The trusted local destination directory.
+        name: The untrusted on-disk name.
+
+    Returns:
+        The local path string for the sanitized name.
+
+    Raises:
+        ValueError: If the resolved path would escape base_dir.
+    """
+    safe = _sanitize_local_name(name)
+    base = Path(base_dir).resolve()
+    target = (base / safe).resolve()
+    if target != base and base not in target.parents:
+        raise ValueError(f"Unsafe extraction path for on-disk name '{name}'")
+    return str(Path(base_dir) / safe)
+
+
 class FileManager(QObject):
     """Handles all file-related operations for the GUI application."""
 
@@ -286,7 +329,7 @@ class FileManager(QObject):
                 )
                 if not base_dir:
                     return
-                local_dir_path = str(Path(base_dir) / node.name)
+                local_dir_path = _safe_local_join(base_dir, node.name)
 
                 if is_physical:
 
@@ -353,10 +396,10 @@ class FileManager(QObject):
 
                         source_path = self.parent._build_full_path(node.name)
                         if node.is_dir:
-                            local_dir_path = str(Path(base_dir) / node.name)
+                            local_dir_path = _safe_local_join(base_dir, node.name)
                             self._extract_directory(source_path, local_dir_path)
                         else:
-                            local_file_path = str(Path(base_dir) / node.name)
+                            local_file_path = _safe_local_join(base_dir, node.name)
                             self._extract_file(source_path, local_file_path)
 
                     if progress_callback:
@@ -376,10 +419,10 @@ class FileManager(QObject):
                     node = item.node
                     source_path = self.parent._build_full_path(node.name)
                     if node.is_dir:
-                        local_dir_path = str(Path(base_dir) / node.name)
+                        local_dir_path = _safe_local_join(base_dir, node.name)
                         self._extract_directory(source_path, local_dir_path)
                     else:
-                        local_file_path = str(Path(base_dir) / node.name)
+                        local_file_path = _safe_local_join(base_dir, node.name)
                         self._extract_file(source_path, local_file_path)
                 self.operation_complete.emit("Extraction complete.")
 
@@ -695,7 +738,7 @@ class FileManager(QObject):
                     )
 
                 item_source_path = posixpath.normpath(f"{source_dir_path}/{item_name}")
-                item_local_path = str(Path(local_dir_path) / item_name)
+                item_local_path = _safe_local_join(local_dir_path, item_name)
                 if item["is_dir"]:
                     self._extract_directory(item_source_path, item_local_path)
                 else:
