@@ -62,11 +62,22 @@ class TrackFormat:
 
     def __post_init__(self):
         """
-        Ensures sector_translation_table is always populated.
+        Ensures sector_translation_table is always populated and well-formed.
 
-        If not explicitly provided, builds it automatically from interleave.
+        If not explicitly provided, builds it automatically from interleave. An
+        explicit table whose length does not match sectors_per_track would cause
+        out-of-track byte offsets or IndexError downstream, so it is rebuilt from
+        interleave with a warning instead (audit physical_format.py:290).
         """
         if self.sector_translation_table is None:
+            self.sector_translation_table = self._build_translation_table()
+        elif len(self.sector_translation_table) != self.sectors_per_track:
+            logging.warning(
+                "sector_translation_table length %d != sectors_per_track %d; "
+                "rebuilding from interleave",
+                len(self.sector_translation_table),
+                self.sectors_per_track,
+            )
             self.sector_translation_table = self._build_translation_table()
 
     def logical_to_physical_sector(self, logical_index: int) -> int:
@@ -213,6 +224,10 @@ class PhysicalFormat:
                         track_format.sectors_per_track * track_format.bytes_per_sector
                     )
             return total
+        # Uniform sector size: use the track formats' actual bps, which may
+        # differ from the disk-level default (audit physical_format.py:216).
+        if self.track_formats:
+            return self.total_sectors * self.track_formats[0].bytes_per_sector
         return self.total_sectors * self.bytes_per_sector
 
     @property

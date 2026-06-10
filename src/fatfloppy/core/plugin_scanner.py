@@ -60,32 +60,41 @@ class PluginScanner:
 
                     for _item_name, item in inspect.getmembers(module, inspect.isclass):
                         if (
-                            issubclass(item, base_class)
-                            and item is not base_class
-                            and not inspect.isabstract(item)
-                            and item.__module__ == module_name
+                            not issubclass(item, base_class)
+                            or item is base_class
+                            or item.__module__ != module_name
                         ):
-                            if validator:
-                                try:
-                                    validator(item)
-                                except Exception as e:
-                                    logger.error(
-                                        f"Plugin validation failed for "
-                                        f"{item.__name__} in {module_name}: {e}"
-                                    )
-                                    raise PluginValidationError(
-                                        f"{item.__name__} failed validation: {e}"
-                                    ) from e
+                            continue
 
-                            discovered_plugins.append(item)
-                            logger.debug(
-                                f"Discovered plugin: {item.__name__} from {module_name}"
+                        # An incomplete subclass is abstract; warn (and skip)
+                        # instead of silently dropping it (audit plugin_scanner:65).
+                        if inspect.isabstract(item):
+                            logger.warning(
+                                f"Skipping incomplete plugin {item.__name__} in "
+                                f"{module_name}: unimplemented methods "
+                                f"{sorted(getattr(item, '__abstractmethods__', ()))}"
                             )
+                            continue
+
+                        if validator:
+                            try:
+                                validator(item)
+                            except Exception as e:
+                                # One bad plugin only excludes itself; it must not
+                                # abort discovery of the others (audit:76).
+                                logger.error(
+                                    f"Plugin validation failed for "
+                                    f"{item.__name__} in {module_name}: {e}"
+                                )
+                                continue
+
+                        discovered_plugins.append(item)
+                        logger.debug(
+                            f"Discovered plugin: {item.__name__} from {module_name}"
+                        )
 
                 except ImportError as e:
                     logger.warning(f"Failed to import module {module_name}: {e}")
-                except PluginValidationError:
-                    raise
                 except Exception as e:
                     logger.error(f"Error processing module {module_name}: {e}")
 
@@ -122,28 +131,23 @@ class PluginScanner:
             )
 
     @staticmethod
-    def validate_implements_methods(cls: type, base_class: type) -> None:
+    def validate_implements_methods(cls: type, _base_class: type) -> None:
         """
         Validates that a class implements all abstract methods from base.
 
         Args:
             cls: The class to validate
-            base_class: The base class with abstract methods
+            _base_class: The base class (unused; ``cls.__abstractmethods__`` is
+                authoritative for which abstract methods remain unimplemented).
 
         Raises:
             PluginValidationError: If any abstract method is not implemented
         """
-        abstract_methods = set()
-
-        for base in inspect.getmro(base_class):
-            if hasattr(base, "__abstractmethods__"):
-                abstract_methods.update(base.__abstractmethods__)
-
-        unimplemented = []
-        for method_name in abstract_methods:
-            if not hasattr(cls, method_name) or getattr(cls, method_name) is None:
-                unimplemented.append(method_name)
-
+        # Python populates a concrete class's __abstractmethods__ with exactly the
+        # abstract methods it has NOT overridden. Inheriting an abstract method
+        # leaves the attribute present, so the old hasattr/None check never fired
+        # (audit plugin_scanner.py:144).
+        unimplemented = sorted(getattr(cls, "__abstractmethods__", frozenset()))
         if unimplemented:
             raise PluginValidationError(
                 f"Plugin {cls.__name__} does not implement: {unimplemented}"

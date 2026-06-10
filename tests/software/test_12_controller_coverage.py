@@ -309,10 +309,13 @@ def test_flush_driver_without_flush_method(controller) -> None:
 
 
 def test_flush_error(controller_with_disk) -> None:
-    """Tests flush when driver.flush raises error."""
+    """A driver flush failure must propagate, not be swallowed as success."""
     controller = controller_with_disk
 
-    with patch.object(controller.driver, "flush", side_effect=OSError("Flush error")):
+    with (
+        patch.object(controller.driver, "flush", side_effect=OSError("Flush error")),
+        pytest.raises(OSError),
+    ):
         controller.flush()
 
 

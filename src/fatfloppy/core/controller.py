@@ -346,7 +346,15 @@ class DiskController:
         if source_type == target_disk_type and source_path:
             return self._export_same_format(source_path, target_path, target_disk_type)
 
-        if Path(target_path).exists():
+        # Refuse to export onto the file we are reading from: the cross-format
+        # path truncates/recreates the target while still reading the source.
+        if source_path and Path(target_path).resolve() == Path(source_path).resolve():
+            raise ValueError("Export target must differ from the source file")
+
+        # Remember whether the target already existed, so the failure cleanup
+        # only deletes a file this export created (audit controller.py:414).
+        target_pre_existed = Path(target_path).exists()
+        if target_pre_existed:
             self.logger.warning(f"Target file '{target_path}' will be overwritten")
 
         self.logger.info(
@@ -411,7 +419,9 @@ class DiskController:
 
         except Exception as e:
             self.logger.exception(f"Export failed: {e}")
-            if Path(target_path).exists():
+            # Only remove a file this export created; never delete a target the
+            # user already had on disk (audit controller.py:414).
+            if not target_pre_existed and Path(target_path).exists():
                 try:
                     Path(target_path).unlink()
                     self.logger.info(f"Cleaned up partial file: {target_path}")
@@ -424,6 +434,11 @@ class DiskController:
     def flush(self) -> None:
         """
         Writes any buffered data to the disk image or physical disk.
+
+        Raises:
+            IOError: If the underlying driver fails to flush. Callers (format,
+                close) must not report success when the data never reached the
+                image (audit controller.py:432).
         """
         if self.driver and hasattr(self.driver, "flush"):
             try:
@@ -431,6 +446,7 @@ class DiskController:
                 self.logger.debug("Driver flushed successfully")
             except Exception as e:
                 self.logger.error(f"Error flushing driver: {e}")
+                raise OSError(f"Failed to flush disk: {e}") from e
         else:
             self.logger.warning(
                 "Flush called but no active driver or driver lacks flush method."
@@ -1095,6 +1111,11 @@ class DiskController:
         self.logger.info(
             f"Formatting with profile: {profile.name} (filesystem: {fs_type})"
         )
+        # Invalidate the detection cache up front: once formatting starts writing,
+        # any previously cached detection no longer describes the disk even if the
+        # format later fails partway (audit controller.py:1116).
+        self._detection_cached = False
+        self._cached_format_name = None
         try:
             if self.disk.physical_format != profile.physical_format or (
                 hasattr(self.driver, "physical_format")
@@ -1113,8 +1134,6 @@ class DiskController:
             self.filesystem = filesystem_handler
             self.physical_format = self.disk.physical_format
             self.active_filesystem_config = profile.filesystem_config
-            self._detection_cached = False
-            self._cached_format_name = None
             self.flush()
             final_vol_label = self.filesystem.get_volume_label() or volume_label
             self.logger.info(

@@ -77,10 +77,20 @@ class Disk:
 
             data = self.driver.read_sector(cylinder, physical_head, sector)
 
-            if len(data) < bytes_per_sector:
-                data += bytes(bytes_per_sector - len(data))
-            elif len(data) > bytes_per_sector:
-                data = data[:bytes_per_sector]
+            if len(data) != bytes_per_sector:
+                self.logger.warning(
+                    "Driver returned %d bytes for C:%d H:%d LS:%d, expected %d; "
+                    "padding/truncating",
+                    len(data),
+                    cylinder,
+                    head,
+                    sector,
+                    bytes_per_sector,
+                )
+                if len(data) < bytes_per_sector:
+                    data += bytes(bytes_per_sector - len(data))
+                else:
+                    data = data[:bytes_per_sector]
             return data
         except Exception as e:
             self.logger.error(
