@@ -135,8 +135,57 @@ class MITSDSKDetector(FormatDetector):
             logger.info(f"Best match: {best_match[0]} (score={best_score})")
             return best_match
 
+        # No shipped DPB matched. Try a config-less filesystem (the no-DPB CP/M
+        # scan) on each size-matched geometry. This reads Altair CP/M disks whose
+        # layout differs from every profiled DPB (e.g. Lifeboat CP/M, off=2 with a
+        # non-standard block/skew config), while leaving disks that a profiled DPB
+        # already detects completely unchanged.
+        nodpb_match = self._detect_without_profile_dpb(geometry_groups, logical_size)
+        if nodpb_match:
+            logger.info(f"Config-less CP/M match: {nodpb_match[0]}")
+            return nodpb_match
+
         logger.warning(f"No match found after checking (best score: {best_score})")
         return None, None, None
+
+    def _detect_without_profile_dpb(
+        self, geometry_groups: dict[tuple, list[FormatProfile]], logical_size: int
+    ) -> Optional[tuple[Optional[str], Optional[Any], Optional[PhysicalFormat]]]:
+        """
+        Detects a filesystem without using any profile's fixed config.
+
+        For each size-matched geometry, sets it and runs config-less filesystem
+        auto-detection (which triggers the CP/M no-DPB scan). Returns the best
+        validating match, or None.
+
+        Args:
+            geometry_groups: Geometry-keyed profile groups.
+            logical_size: The disk's logical (de-framed) size in bytes.
+
+        Returns:
+            (format_name, filesystem_config, physical_format), or None.
+        """
+        from ...filesystem_factory import create_filesystem
+
+        best_score = 0
+        best_match = None
+        for geometry_key, profiles in geometry_groups.items():
+            cyls, heads, spt, bps, _encoding, _rate = geometry_key
+            if abs(logical_size - cyls * heads * spt * bps) > SIZE_TOLERANCE_BYTES:
+                continue
+            pf = copy.deepcopy(profiles[0].physical_format)
+            try:
+                self.disk.set_geometry(pf)
+                fs = create_filesystem(self.disk)
+                if not fs:
+                    continue
+                score = fs.get_validity_score()
+                if score >= fs.validity_threshold and score > best_score:
+                    best_score = score
+                    best_match = (profiles[0].name, fs.get_specific_config(), pf)
+            except Exception as e:
+                logger.debug(f"Config-less detection failed for {geometry_key}: {e}")
+        return best_match
 
     def _group_formats_by_base_geometry(self) -> dict[tuple, list[FormatProfile]]:
         """
