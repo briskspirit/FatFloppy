@@ -760,11 +760,18 @@ class CPMFilesystem(Filesystem):
             return self._cached_validity_score
 
         score = 0
-        if not self.disk or not self.disk.physical_format or not self.dpb:
-            self.logger.debug(
-                "Score: 0 (No disk, physical format, or DPB for validation.)"
-            )
+        if not self.disk or not self.disk.physical_format:
+            self.logger.debug("Score: 0 (No disk or physical format for validation.)")
             return 0
+
+        if not self.dpb:
+            # No DPB supplied (e.g. a CP/M disk whose geometry matches no shipped
+            # profile): infer one from the disk by scanning candidate layouts.
+            inferred = self._scan_for_cpm_dpb()
+            if inferred is None:
+                self._cached_validity_score = 0
+                return 0
+            self.dpb = inferred
 
         try:
             self._initialize_parameters()
@@ -942,6 +949,53 @@ class CPMFilesystem(Filesystem):
             self.logger.debug(f"get_validity_score check failed with exception: {e}")
             self._cached_validity_score = 0
             return 0
+
+    def _scan_for_cpm_dpb(self) -> Optional[CPMDiskParameterBlock]:
+        """
+        Infers a CP/M Disk Parameter Block by scanning candidate layouts.
+
+        CP/M carries no on-disk geometry, so for disks with no matching profile
+        this tries plausible combinations of reserved tracks (off), block size
+        (bsh) and directory size (drm), scores each with the normal CP/M
+        validator (which rejects any garbage directory entry), and keeps the
+        best layout that also lists at least one real file. Requiring a real
+        listed file prevents an all-deleted/empty region on a non-CP/M disk from
+        registering as CP/M.
+
+        Returns:
+            The inferred DPB, or None if the disk does not look like CP/M.
+        """
+        pf = self.disk.physical_format
+        if pf.has_variable_bps or pf.bytes_per_sector % CPM_SECTOR_SIZE != 0:
+            return None
+
+        best_score = 0
+        best_dpb: Optional[CPMDiskParameterBlock] = None
+        # off: reserved system tracks; bsh: block shift (1K/2K/4K/8K);
+        # drm: directory entries - 1 (64/128/256/32).
+        for off in (2, 1, 3, 0, 4):
+            for bsh in (3, 4, 5, 6):
+                for drm in (63, 127, 255, 31):
+                    dpb = self.create_config_from_params(
+                        {"off": off, "bsh": bsh, "drm": drm}, pf
+                    )
+                    if dpb is None or dpb.dsm < 1 or dpb.spt < 1:
+                        continue
+                    probe = CPMFilesystem(self.disk, config=dpb)
+                    try:
+                        s = probe.get_validity_score()
+                        files = (
+                            len(probe.list_directory("/"))
+                            if s >= self.validity_threshold
+                            else 0
+                        )
+                    except Exception:
+                        s, files = 0, 0
+                    if files >= 1 and s > best_score:
+                        best_score, best_dpb = s, dpb
+                        if best_score >= 95:
+                            return best_dpb
+        return best_dpb
 
     def get_volume_label(self) -> Optional[str]:
         """
