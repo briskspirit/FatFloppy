@@ -6,13 +6,18 @@ FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage f
 
 ## Key Features
 
-- **Multiple Filesystems**: FAT12, CP/M, and HDOS support
+- **Multiple Filesystems**: FAT12, CP/M, and HDOS support, including many
+  non-standard vintage layouts (no-BPB DOS, DEC Rainbow, 86-DOS, hard-sectored
+  Heath H17 / MITS Altair CP/M, and more)
 - **Multiple Formats**: IMG, IMD, H17, and MITS DSK image formats
 - **Physical Disk Access**: Greaseweazle hardware integration
 - **File Operations**: Read, write, delete files, and create directories
+- **Create & Format**: Make new blank images and format them to a chosen profile
 - **Drag and Drop**: Extract files to your OS or add files to the disk
 - **Disk Map**: Visualize sector usage with head-switching for double-sided disks
-- **Format Detection**: Auto-detects common floppy formats or allows custom parameters
+- **Format Detection**: Content-based auto-detection picks the right driver and
+  format from the file's contents (not just its extension), or allows custom
+  parameters
 
 ## Installation
 
@@ -118,9 +123,8 @@ make appimage  # Creates AppImage (requires linuxdeploy and linuxdeploy-plugin-q
 
 ## Known Limitations
 
-- No disk formatting or new image creation yet
 - No progress indicators for long operations
-- Limited testing on non-standard or corrupted disks
+- Some rare/proprietary disk-image containers are not yet recognized
 
 ## Contributing
 
