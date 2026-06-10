@@ -254,29 +254,50 @@ class MITSDSKDriver(DiskIODriver):
         }
 
     def initialize_new_image(
-        self, _physical_format: PhysicalFormat, _profile: Optional[Any] = None
+        self, physical_format: Optional[PhysicalFormat] = None, _profile: Any = None
     ) -> None:
         """
         Creates a new blank MITS DSK image.
 
-        Args:
-            _physical_format: Ignored (MITS format is fixed).
-            _profile: Ignored.
-        """
-        self.logger.info("Creating new blank MITS DSK image")
+        The geometry is taken from the requested physical format so both the 8"
+        (77x32) and 5.25" minifloppy (35x16) Altair layouts can be created; it
+        defaults to 8" when no format is given.
 
-        total_size = MITS_TRACKS * MITS_SECTORS_PER_TRACK * MITS_PHYSICAL_SECTOR_SIZE
+        Args:
+            physical_format: The requested geometry (selects 8" vs mini).
+            _profile: Unused.
+        """
+        spt_requested = (
+            physical_format.track_formats[0].sectors_per_track
+            if physical_format and physical_format.track_formats
+            else MITS_SECTORS_PER_TRACK
+        )
+        if spt_requested == MITS_MINI_SECTORS_PER_TRACK:
+            self._tracks = MITS_MINI_TRACKS
+            self._sectors_per_track = MITS_MINI_SECTORS_PER_TRACK
+            self._system_tracks = MITS_MINI_SYSTEM_TRACK_COUNT
+        else:
+            self._tracks = MITS_TRACKS
+            self._sectors_per_track = MITS_SECTORS_PER_TRACK
+            self._system_tracks = MITS_SYSTEM_TRACK_COUNT
+
+        self.logger.info(
+            f"Creating new blank MITS DSK image "
+            f"({self._tracks}x{self._sectors_per_track})"
+        )
+
+        total_size = self._tracks * self._sectors_per_track * MITS_PHYSICAL_SECTOR_SIZE
         self.image_data = bytearray(total_size)
 
-        for track in range(MITS_TRACKS):
-            for sector in range(MITS_SECTORS_PER_TRACK):
+        for track in range(self._tracks):
+            for sector in range(self._sectors_per_track):
                 offset = (
-                    track * MITS_SECTORS_PER_TRACK + sector
+                    track * self._sectors_per_track + sector
                 ) * MITS_PHYSICAL_SECTOR_SIZE
 
                 sector_data = bytearray(MITS_PHYSICAL_SECTOR_SIZE)
 
-                if track < MITS_SYSTEM_TRACK_COUNT:
+                if track < self._system_tracks:
                     sector_data[0] = track | MITS_TRACK_FLAG_MASK
                     sector_data[1] = track
                     sector_data[2] = sector
@@ -582,7 +603,7 @@ class MITSDSKDriver(DiskIODriver):
         Returns:
             Checksum bytes to write at the checksum area.
         """
-        if track < MITS_SYSTEM_TRACK_COUNT:
+        if track < self._system_tracks:
             # System tracks: checksum byte at [132] makes the validate sum zero.
             # Validate formula: SEED + sum([0:131]) - [0] - [1] - 2*[2] - [132] == 0
             # So: [132] = (SEED + sum([0:131]) - [0] - [1] - 2*[2]) & 0xFF
@@ -710,7 +731,7 @@ class MITSDSKDriver(DiskIODriver):
         """
         sector_data = bytearray(old_sector)
 
-        if track < MITS_SYSTEM_TRACK_COUNT:
+        if track < self._system_tracks:
             sector_data[MITS_SYSTEM_TRACK_DATA_START:MITS_SYSTEM_TRACK_DATA_END] = (
                 new_data
             )
