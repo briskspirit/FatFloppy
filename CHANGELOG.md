@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-10
+
 ### Added
 - Windows installer and portable ZIP builds
 - Linux AppImage builds (x86_64)
@@ -37,4 +39,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Known Issues
 - No progress indicators for long operations
 
-[0.1.0]: https://github.com/your-username/FatFloppy/releases/tag/v0.1.0
+[0.1.1]: https://github.com/briskspirit/FatFloppy/releases/tag/v0.1.1
+[0.1.0]: https://github.com/briskspirit/FatFloppy/releases/tag/v0.1.0

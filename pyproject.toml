@@ -18,7 +18,7 @@ dependencies = [
 # Optional, but keeps your trove classifiers
 classifiers = [
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
+  "License :: Public Domain",
   "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.9",

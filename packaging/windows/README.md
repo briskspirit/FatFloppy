@@ -47,7 +47,7 @@ magick assets\icons\fatfloppy_icon.png -define icon:auto-resize=256,128,64,48,32
 ## Installer Features
 
 - Modern wizard UI
-- Per-user installation (no admin required by default)
+- System-wide installation (administrator privileges required)
 - Optional desktop shortcut
 - Optional file associations (.img, .ima, .imd)
 - Start menu shortcuts

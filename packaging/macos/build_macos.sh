@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")/../.."
 
 ARCH=$(uname -m)
-VERSION=$(python -c "exec(open('src/fatfloppy/_version.py').read()); print(__version__)")
+VERSION=$(python3 -c "exec(open('src/fatfloppy/_version.py').read()); print(__version__)")
 APP_NAME="FatFloppy"
 DMG_NAME="${APP_NAME}-${VERSION}-macOS-${ARCH}"
 DEREFERENCE_SYMLINKS=${DEREFERENCE_SYMLINKS:-true}
@@ -16,7 +16,7 @@ echo "Cleaning previous builds..."
 rm -rf build dist
 
 echo "Running PyInstaller..."
-python -m PyInstaller packaging/macos/FatFloppy.spec
+python3 -m PyInstaller packaging/macos/FatFloppy.spec
 
 if [ ! -d "dist/${APP_NAME}.app" ]; then
     echo "Error: ${APP_NAME}.app not found in dist/"

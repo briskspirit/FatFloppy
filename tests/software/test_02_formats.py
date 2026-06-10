@@ -92,7 +92,9 @@ def test_detect_format_144mb(disk_controller: DiskController) -> None:
     disk_controller.close_disk()
 
 
-def test_detect_format_no_match(disk_controller: DiskController) -> None:
+def test_detect_format_no_match(
+    disk_controller: DiskController, tmp_path: Path
+) -> None:
     """
     Test format detection with a custom BPB that doesn't match known profiles.
 
@@ -117,7 +119,8 @@ def test_detect_format_no_match(disk_controller: DiskController) -> None:
     struct.pack_into("<H", dummy_boot, 0x1FE, 0xAA55)
 
     driver = IMGImageDriver(
-        "dummy", image_data=bytes(dummy_boot) + b"\x00" * 1024 * 100
+        str(tmp_path / "dummy.img"),
+        image_data=bytes(dummy_boot) + b"\x00" * 1024 * 100,
     )
     disk_controller.driver = driver
     disk_controller.disk = Disk(driver)
@@ -155,9 +158,10 @@ def test_detect_format_no_match(disk_controller: DiskController) -> None:
 
     format_name, fs_config, physical_format = detected_format_result
 
-    assert format_name is None or isinstance(format_name, str)
-    if fs_config is not None:
-        assert isinstance(fs_config, FATVolumeInfo)
+    # No predefined profile matches this custom 1000-sector geometry, but the
+    # BPB must still be parsed into a FATVolumeInfo.
+    assert format_name is None
+    assert isinstance(fs_config, FATVolumeInfo)
 
     disk_controller.close_disk()
     disk_controller.driver = None

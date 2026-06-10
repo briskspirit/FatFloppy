@@ -457,8 +457,8 @@ def test_detector_registry_get_detector_known_driver() -> None:
 
     detector_class = DetectorRegistry.get_detector(mock_driver)
 
-    if detector_class:
-        assert issubclass(detector_class, FormatDetector)
+    assert detector_class is not None
+    assert issubclass(detector_class, FormatDetector)
 
 
 def test_detector_registry_get_detector_unknown_driver() -> None:

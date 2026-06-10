@@ -188,12 +188,15 @@ def pytest_configure(config: Config) -> None:
     config.addinivalue_line("markers", "hardware: mark test as requiring hardware")
 
 
-def pytest_collection_modifyitems(_config: Config, items: list[Item]) -> None:
+def pytest_collection_modifyitems(items: list[Item]) -> None:
     """
-    Skips tests marked with 'hardware' if TEST_HW is not set to 'true'.
+    Skips hardware-marked tests unless TEST_HW='true'.
+
+    Prerequisite checks (Greaseweazle tooling and master images) only run when
+    hardware testing is explicitly requested, so a normal `pytest tests` run is
+    never aborted by a missing 'gw' executable.
 
     Args:
-        _config: The pytest configuration object (unused).
         items: List of collected test items.
     """
     if os.getenv("TEST_HW", "false").lower() != "true":
@@ -201,6 +204,10 @@ def pytest_collection_modifyitems(_config: Config, items: list[Item]) -> None:
         for item in items:
             if "hardware" in item.keywords:
                 item.add_marker(skip_hw)
+        return
+
+    # Hardware tests were explicitly requested; verify the host prerequisites.
+    _check_prerequisites()
 
 
 @pytest.fixture(scope="session")
@@ -223,6 +230,3 @@ def expected_file_content() -> dict[str, bytes]:
     except FileNotFoundError as e:
         print(f"\nWARN: Could not load resource file for verification: {e}")
     return content
-
-
-_check_prerequisites()

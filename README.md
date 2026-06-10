@@ -18,7 +18,7 @@ FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage f
 
 ### Windows
 
-Download the latest installer from [Releases](https://github.com/your-username/FatFloppy/releases):
+Download the latest installer from [Releases](https://github.com/briskspirit/FatFloppy/releases):
 
 1. Run `FatFloppy-{version}-Windows-Setup.exe`
 2. Follow the installation wizard
@@ -28,7 +28,7 @@ Download the latest installer from [Releases](https://github.com/your-username/F
 
 ### macOS
 
-Download the latest DMG from [Releases](https://github.com/your-username/FatFloppy/releases):
+Download the latest DMG from [Releases](https://github.com/briskspirit/FatFloppy/releases):
 
 1. Open the DMG and drag FatFloppy.app to Applications folder
 2. Right-click the app and select "Open" (first launch only)
@@ -38,7 +38,7 @@ Download the latest DMG from [Releases](https://github.com/your-username/FatFlop
 
 ### Linux
 
-Download the latest AppImage from [Releases](https://github.com/your-username/FatFloppy/releases):
+Download the latest AppImage from [Releases](https://github.com/briskspirit/FatFloppy/releases):
 
 1. Make the AppImage executable:
    ```bash
@@ -80,7 +80,7 @@ sudo udevadm trigger
 
 **Install:**
 ```bash
-git clone https://github.com/your-username/FatFloppy.git
+git clone https://github.com/briskspirit/FatFloppy.git
 cd FatFloppy
 pip install -e ".[dev]"
 ```

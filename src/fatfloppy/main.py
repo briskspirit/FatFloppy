@@ -11,13 +11,14 @@ if sys.platform == "darwin":
 
 from logging import Logger
 
-from fatfloppy.core.utils.logging_config import get_logger
+from fatfloppy.core.utils.logging_config import get_logger, setup_logger
 
 logger: Logger = get_logger()
 
 
 def main() -> None:
     """Initializes and starts the FatFloppy application."""
+    setup_logger()
     logger.info("Starting FatFloppy application")
     try:
         from fatfloppy.gui import run_gui

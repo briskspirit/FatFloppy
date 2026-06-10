@@ -7,7 +7,7 @@
 
 #define MyAppName "FatFloppy"
 #define MyAppPublisher "FatFloppy"
-#define MyAppURL "https://github.com/axelson/FatFloppy"
+#define MyAppURL "https://github.com/briskspirit/FatFloppy"
 #define MyAppExeName "FatFloppy.exe"
 #define MyAppAssocName "Floppy Disk Image"
 #define MyAppAssocKey StringChange(MyAppAssocName, " ", "") + ".img"

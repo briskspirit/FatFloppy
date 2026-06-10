@@ -7,6 +7,8 @@ Uses onedir mode with proper code signing for macOS compatibility.
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 # Get project root (spec is in packaging/macos/, project root is ../..)
 project_root = Path(SPECPATH).parent.parent
 version_file = project_root / "src" / "fatfloppy" / "_version.py"
@@ -40,36 +42,17 @@ a = Analysis(
         # FatFloppy core modules
         'fatfloppy.core',
         'fatfloppy.gui',
-        # Filesystem plugins (dynamically discovered)
-        'fatfloppy.core.filesystems.fat12_fs',
-        'fatfloppy.core.filesystems.cpm_fs',
-        'fatfloppy.core.filesystems.hdos_fs',
-        'fatfloppy.core.filesystems.fs_base',
-        # Filesystem format definitions
-        'fatfloppy.core.filesystems.formats',
-        'fatfloppy.core.filesystems.formats.fat12_formats',
-        'fatfloppy.core.filesystems.formats.cpm_formats',
-        'fatfloppy.core.filesystems.formats.hdos_formats',
-        # Driver plugins (dynamically discovered)
-        'fatfloppy.core.drivers.img',
-        'fatfloppy.core.drivers.imd',
-        'fatfloppy.core.drivers.h17',
-        'fatfloppy.core.drivers.mits_dsk',
-        'fatfloppy.core.drivers.greaseweazle',
-        'fatfloppy.core.drivers.base_driver',
-        # Detector plugins (dynamically discovered)
-        'fatfloppy.core.drivers.detectors',
-        'fatfloppy.core.drivers.detectors.img_detector',
-        'fatfloppy.core.drivers.detectors.imd_detector',
-        'fatfloppy.core.drivers.detectors.h17_detector',
-        'fatfloppy.core.drivers.detectors.mits_dsk_detector',
-        'fatfloppy.core.drivers.detectors.greaseweazle_detector',
         # Plugin discovery system
         'fatfloppy.core.plugin_scanner',
         'fatfloppy.core.driver_factory',
         'fatfloppy.core.filesystem_registry',
         'fatfloppy.core.detector_registry',
         'fatfloppy.core.format_detection',
+        # Dynamically-discovered plugins: collect every submodule so adding a new
+        # filesystem/driver/detector can never silently drop it from the frozen
+        # app (previously a hand-maintained list that drifted out of sync).
+        *collect_submodules('fatfloppy.core.filesystems'),
+        *collect_submodules('fatfloppy.core.drivers'),
     ],
     hookspath=[str(Path(SPECPATH) / "hooks")],
     hooksconfig={},
@@ -216,9 +199,11 @@ app = BUNDLE(
         'CFBundlePackageType': 'APPL',
         'CFBundleSignature': '????',
         'NSHighResolutionCapable': True,
-        'LSMinimumSystemVersion': '10.13.0',
+        # Bundled Qt 6 frameworks require macOS 12; advertising 10.13 makes the
+        # app dyld-crash on older systems instead of showing the OS dialog.
+        'LSMinimumSystemVersion': '12.0.0',
         'NSPrincipalClass': 'NSApplication',
-        'NSHumanReadableCopyright': 'Copyright © 2025. Licensed under MIT.',
+        'NSHumanReadableCopyright': 'Released into the public domain (Unlicense).',
         'LSApplicationCategoryType': 'public.app-category.utilities',
         'NSRequiresAquaSystemAppearance': False,
         'LSUIElement': False,

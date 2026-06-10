@@ -5,7 +5,6 @@ This module tests the DriverFactory's plugin discovery, driver selection,
 validation logic, the base DiskIODriver abstract class, and the PluginScanner.
 """
 
-import contextlib
 import sys
 from pathlib import Path
 from typing import ClassVar, Optional
@@ -394,22 +393,37 @@ def test_plugin_scanner_discover_plugins_module_import_error() -> None:
 
 def test_plugin_scanner_discover_plugins_skips_underscore_modules() -> None:
     """Tests discover_plugins skips modules starting with underscore."""
+    import importlib
+    import types
+
+    real_import = importlib.import_module
+
     mock_package = MagicMock()
     mock_package.__file__ = "/fake/path/__init__.py"
 
+    imported: list[str] = []
+
+    def fake_import(name, *args, **kwargs):
+        imported.append(name)
+        if name == "test.package":
+            return mock_package
+        if name.startswith("test.package."):
+            return types.ModuleType(name)
+        return real_import(name, *args, **kwargs)
+
     with (
-        patch("importlib.import_module", return_value=mock_package),
+        patch("importlib.import_module", side_effect=fake_import),
         patch(
             "pkgutil.iter_modules",
             return_value=[("", "_private", False), ("", "public", False)],
         ),
         patch("pathlib.Path.parent", Path("/fake/path")),
-        contextlib.suppress(Exception),
     ):
-        # This will fail on the "public" module, but that's okay for this test
         PluginScanner.discover_plugins("test.package", DiskIODriver)
 
-    # The important part is that _private was skipped
+    # The underscore-prefixed module must be skipped; the public one imported.
+    assert "test.package._private" not in imported
+    assert "test.package.public" in imported
 
 
 def test_plugin_scanner_discover_plugins_skips_abstract() -> None:
