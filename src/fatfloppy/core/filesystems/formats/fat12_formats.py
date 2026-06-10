@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 from ...format_profile import FormatProfile
+from ...physical_format import PhysicalFormat, TrackFormat
 from ...physical_formats_library import (
     create_8inch_dsdd_base,
     create_8inch_dssd_base,
@@ -450,5 +451,53 @@ FAT12_FORMATS["ibm_8_1260k"] = FormatProfile(
         root_entries=192,
         sectors_per_fat=2,
         sectors_per_cluster=1,
+    ),
+)
+
+# DEC Rainbow (RX50): 400KB, 80 tracks, 1 side, 10 sectors, 512 bytes. No BPB
+# (8085 boot code, media descriptor 0xFA); MS-DOS lays the volume out with a 2:1
+# software sector interleave and the first two tracks reserved. The interleave
+# lives in the sector translation table so the IMD driver de-interleaves reads;
+# the synthesized BPB supplies the no-BPB geometry (reserved=20, spc=1).
+MEDIA_DESCRIPTOR_DEC_RAINBOW = 0xFA
+pf_rainbow = PhysicalFormat(
+    cylinders=CYLINDERS_525_HD,
+    heads=1,
+    rpm=300,
+    heads_inverted=False,
+    bytes_per_sector=BYTES_PER_SECTOR_512,
+    track_formats=[
+        TrackFormat(
+            track_start=0,
+            track_end=79,
+            head_start=0,
+            head_end=0,
+            sectors_per_track=10,
+            bytes_per_sector=BYTES_PER_SECTOR_512,
+            encoding="MFM",
+            rate=300,
+            interleave=INTERLEAVE_2,
+            sector_translation_table=[1, 3, 5, 7, 9, 2, 4, 6, 8, 10],
+            iam_present=True,
+            gap3_bytes=0,
+        )
+    ],
+)
+FAT12_FORMATS["dec_rainbow_400k"] = FormatProfile(
+    name="dec_rainbow_400k",
+    description="DEC Rainbow RX50 400KB MS-DOS (80t/1h/10s/512b, 2:1 interleave)",
+    physical_format=pf_rainbow,
+    filesystem_config=FATVolumeInfo(
+        oem_id="MSDOS2.0",
+        bytes_per_sector=BYTES_PER_SECTOR_512,
+        sectors_per_cluster=1,
+        reserved_sectors=20,
+        num_fats=2,
+        root_entries=96,
+        total_sectors=800,
+        media_descriptor=MEDIA_DESCRIPTOR_DEC_RAINBOW,
+        sectors_per_fat=3,
+        sectors_per_track=10,
+        num_heads=1,
     ),
 )
