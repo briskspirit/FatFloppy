@@ -252,6 +252,7 @@ class FileBrowserApp(QMainWindow):
             self.update_file_list()
 
         self.disk_manager.update_space_info()
+        self.disk_manager.update_detected_format_info()
         self.disk_manager.update_geometry_info()
         self.disk_manager.update_filesystem_info()
         self.draw_disk_map()
@@ -279,6 +280,7 @@ class FileBrowserApp(QMainWindow):
 
         self.tree_widget.clear()
         self.file_list.clear()
+        self.detected_format_info.setText("No disk image loaded")
         self.physical_format_info.setText("No disk image loaded")
         self.filesystem_info.setText("No filesystem detected")
         self.disk_map.scene.clear()
@@ -615,6 +617,19 @@ class FileBrowserApp(QMainWindow):
         disk_info_layout.setContentsMargins(5, 5, 5, 5)
         disk_info_layout.setSpacing(6)
 
+        self.detected_format_group = QGroupBox("Detected Format")
+        self.detected_format_info = QLabel("No disk image loaded")
+        self.detected_format_info.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.detected_format_info.setWordWrap(True)
+        self.detected_format_info.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
+        detected_format_layout = QVBoxLayout(self.detected_format_group)
+        detected_format_layout.addWidget(self.detected_format_info)
+        self.detected_format_group.setLayout(detected_format_layout)
+
         self.physical_format_group = QGroupBox("Physical Geometry")
         self.physical_format_info = QLabel("No disk image loaded")
         self.physical_format_info.setTextInteractionFlags(
@@ -643,6 +658,7 @@ class FileBrowserApp(QMainWindow):
         filesystem_layout.addWidget(self.filesystem_info)
         self.filesystem_group.setLayout(filesystem_layout)
 
+        disk_info_layout.addWidget(self.detected_format_group)
         disk_info_layout.addWidget(self.physical_format_group)
         disk_info_layout.addWidget(self.filesystem_group)
         disk_info_layout.addStretch(1)

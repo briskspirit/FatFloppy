@@ -418,6 +418,36 @@ class DiskManager(QObject):
 
         self.map_update_needed.emit()
 
+    def update_detected_format_info(self) -> None:
+        """Updates the detected container/driver and format-profile display."""
+        controller = self.parent.controller
+        if not controller or not controller.driver:
+            self.parent.detected_format_info.setText("No disk loaded")
+            return
+
+        driver = controller.driver
+        driver_type = getattr(driver, "driver_type", "?")
+        driver_desc = getattr(driver, "driver_description", "")
+        lines = [
+            f"Container: {driver_type}" + (f" — {driver_desc}" if driver_desc else "")
+        ]
+
+        format_name = getattr(controller, "_cached_format_name", None)
+        if format_name:
+            lines.append(f"Profile: {format_name}")
+            profile = controller.get_format_by_name(format_name)
+            description = getattr(profile, "description", None) if profile else None
+            if description:
+                lines.append(f"    {description}")
+        elif controller.filesystem:
+            # No shipped profile matched - the layout was inferred (no-BPB FAT,
+            # no-DPB CP/M, etc.). Name the filesystem so the source is still clear.
+            fs_name = type(controller.filesystem).__name__.replace("Filesystem", "")
+            lines.append(f"Profile: auto-inferred ({fs_name})")
+
+        self.parent.detected_format_info.setText("\n".join(lines))
+        self.logger.debug("Detected format info updated.")
+
     def update_geometry_info(self) -> None:
         """Updates the physical geometry information display."""
         if not self.parent.controller or not self.parent.controller.physical_format:
