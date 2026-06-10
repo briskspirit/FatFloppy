@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Optional
 
 from ..physical_format import PhysicalFormat
+from ..utils.atomic_io import atomic_write
 from ..utils.logging_config import get_logger
 from .base_driver import DiskIODriver
 
@@ -172,8 +173,7 @@ class IMGImageDriver(DiskIODriver):
             return
 
         try:
-            with Path(self.file_path).open("wb") as f:
-                f.write(self.image_data)
+            atomic_write(self.file_path, bytes(self.image_data))
             self.logger.info(
                 f"Flushed {len(self.image_data)} bytes to {self.file_path}"
             )

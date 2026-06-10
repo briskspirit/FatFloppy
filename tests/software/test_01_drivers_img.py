@@ -204,10 +204,14 @@ def test_flush_io_error(driver_setup: DriverSetupFixture) -> None:
     driver.write_sector(0, 0, 0, b"\xaa" * bytes_per_sector)
     assert driver.dirty
 
-    with patch("pathlib.Path.open", mock_open()) as mocked_file:
-        mocked_file.side_effect = OSError("Permission denied")
-        with pytest.raises(OSError, match="Flush failed: Permission denied"):
-            driver.flush()
+    with (
+        patch(
+            "fatfloppy.core.drivers.img.atomic_write",
+            side_effect=OSError("Permission denied"),
+        ),
+        pytest.raises(OSError, match="Flush failed: Permission denied"),
+    ):
+        driver.flush()
 
     assert driver.dirty
 

@@ -6,11 +6,14 @@ from pathlib import Path
 from typing import Any, ClassVar, Optional
 
 from ..physical_format import PhysicalFormat, TrackFormat
+from ..utils.atomic_io import atomic_write
 from ..utils.logging_config import get_logger
 from .base_driver import DiskIODriver
 
+# 3-byte version field: the spec/parser expects the 0xFF check byte at offset 7
+# (magic[0:4] + version[4:7] + 0xFF[7] + blocks[8:]).
 H17_MAGIC = b"H17D"
-H17_VERSION_2_0 = b"2.0.0"
+H17_VERSION_2_0 = b"2.0"
 H17_8BIT_CHECK = 0xFF
 
 H17_SECTORS_PER_TRACK = 10
@@ -343,8 +346,7 @@ class H17ImageDriver(DiskIODriver):
                         f"No metadata for modified sector C:{cylinder} H:{head} S:{sector}"
                     )
 
-            with Path(self.file_path).open("wb") as f:
-                f.write(self.file_data)
+            atomic_write(self.file_path, bytes(self.file_data))
 
             flushed_count = len(self.modified_sectors)
             self.modified_sectors.clear()
@@ -825,8 +827,13 @@ class H17ImageDriver(DiskIODriver):
 
         num_sectors = tracks * sides * H17_SECTORS_PER_TRACK
         h8d_data = bytes(num_sectors * H17_BYTES_PER_SECTOR)
+        h8d_block_start = len(self.file_data)
         self._write_block_v2(BLOCK_H8D_DATA, h8d_data)
-        self.h8d_block_offset = H8D_BLOCK_OFFSET
+        # Sector data starts right after this block's 8-byte header. Compute the
+        # real offset from the file position instead of assuming a fixed value;
+        # the previous hard-coded 256 was off by the padding block's own header,
+        # so the first sector write clobbered the H8DB block header.
+        self.h8d_block_offset = h8d_block_start + 8
 
         secm_data = self._build_sector_metadata(sides, tracks, scheme, hdos_volume)
         self._write_block_v2(BLOCK_SECTOR_META, secm_data)
