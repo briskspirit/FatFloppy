@@ -407,11 +407,12 @@ class CBMFilesystem(Filesystem):
 
     def delete(self, path: str) -> None:
         """Scratches a file: zeroes the slot's type byte FIRST, then frees its
-        chain in the BAM.
+        blocks in the BAM. A REL file's blocks include its side sectors (and
+        the D81 super side sector).
 
-        The whole chain is validated BEFORE any mutation: a corrupt chain
-        (cycle, off-disk link, block on a track without a BAM entry, or a
-        block already free, e.g. cross-linked) raises ValueError and leaves
+        The whole block list is validated BEFORE any mutation: a corrupt
+        chain (cycle, off-disk link, block on a track without a BAM entry, or
+        a block already free, e.g. cross-linked) raises ValueError and leaves
         both the BAM and the directory entry intact so the situation stays
         visible.
 
@@ -425,11 +426,13 @@ class CBMFilesystem(Filesystem):
         ftype = entry[2] & 0x0F
         if ftype == 5:
             raise NotImplementedError("Partition delete lands in a later phase")
+        blocks = self._follow_chain(entry[3], entry[4])
         if ftype == 4 and entry[0x15] != 0:
-            raise NotImplementedError("REL delete lands in a later phase")
-        chain = self._follow_chain(entry[3], entry[4])
+            # REL: the side-sector structure is part of the file and is
+            # validated and freed together with the data chain.
+            blocks += list(self._iter_side_sectors(entry[0x15], entry[0x16]))
         seen: set[tuple[int, int]] = set()
-        for ct, cs in chain:
+        for ct, cs in blocks:
             if ct not in self._bam.mapped_tracks():
                 raise ValueError(
                     f"Chain block {ct}/{cs} lies on a track with no BAM entry"
@@ -443,7 +446,7 @@ class CBMFilesystem(Filesystem):
         sec[0x20 * k + 2] = 0x00
         self._write_ts(t, s, bytes(sec))
         try:
-            for ct, cs in chain:
+            for ct, cs in blocks:
                 self._bam.set_free(ct, cs)
         finally:
             # Flush even on a mid-free failure: the scratched entry and any
@@ -470,7 +473,8 @@ class CBMFilesystem(Filesystem):
         Verdict rule (probe-driven, see test_44):
         - FAILURE: a live block marked free in the BAM (data-loss risk: the
           allocator could overwrite it), BAM free counts inconsistent with the
-          bitmaps, or an unwalkable directory/live-file structure.
+          bitmaps, an unwalkable directory/live-file structure, or a REL
+          side-sector structure that contradicts the entry or data chain.
         - WARNING only: allocated-but-unowned (orphaned) blocks. A real DOS
           VALIDATE frees those silently; vintage disks legitimately carry them
           (e.g. 1571_demo has two orphaned all-zero blocks).
@@ -520,6 +524,8 @@ class CBMFilesystem(Filesystem):
                 expected.update(self._follow_chain(entry[3], entry[4]))
                 if ftype == 4 and entry[0x15] != 0:
                     expected.update(self._iter_side_sectors(entry[0x15], entry[0x16]))
+                    if not self._verify_rel_side_sectors(entry):
+                        ok = False
         except (OSError, ValueError) as exc:
             self.logger.warning(f"check(): unwalkable structure: {exc}")
             return False
@@ -921,6 +927,40 @@ class CBMFilesystem(Filesystem):
         else:
             yield from self._follow_chain(t, s)
 
+    def _verify_rel_side_sectors(self, entry: bytes) -> bool:
+        """Cross-checks a REL entry's side-sector structure: every side
+        sector's record length must match the entry's (+0x17), and the
+        data-block T/S pairs listed across the side sectors must equal the
+        data chain in order. Returns False (check() failure) on mismatch."""
+        reclen = entry[0x17]
+        chain = self._follow_chain(entry[3], entry[4])
+        listed: list[tuple[int, int]] = []
+        for t, s in self._iter_side_sectors(entry[0x15], entry[0x16]):
+            sec = self._read_ts(t, s)
+            if sec[2] == self.SSS_MARKER:
+                continue  # D81 super side sector: group pointers, no data T/S
+            if sec[3] != reclen:
+                self.logger.warning(
+                    f"check(): REL side sector {t}/{s} record length {sec[3]} "
+                    f"!= directory entry's {reclen}"
+                )
+                return False
+            # Non-last side sectors carry a full table; the last one's byte 1
+            # is the index of its last valid byte (bytes beyond may be stale
+            # on real disks, so never read past it).
+            end = 0x10 + 2 * self.SS_POINTERS if sec[0] != 0 else sec[1] + 1
+            for off in range(0x10, min(end, 255), 2):
+                if sec[off] == 0:
+                    break
+                listed.append((sec[off], sec[off + 1]))
+        if listed != chain:
+            self.logger.warning(
+                "check(): REL side-sector data-block list does not match the "
+                f"data chain ({len(listed)} listed vs {len(chain)} chained)"
+            )
+            return False
+        return True
+
     # -- allocation --------------------------------------------------------------
 
     def _track_search_order(self) -> list[int]:
@@ -978,14 +1018,17 @@ class CBMFilesystem(Filesystem):
     # -- write path --------------------------------------------------------------
 
     _TYPE_SUFFIXES: ClassVar[dict[str, int]] = {"p": 2, "s": 1, "u": 3, "r": 4}
+    SS_POINTERS = 120  # data-block T/S pairs per side sector
+    MAX_SIDE_SECTORS = 6  # per group: 6 * 120 = 720 data blocks
+    SSS_MARKER = 0xFE  # byte 2 of a D81 super side sector
 
     @staticmethod
     def _split_type_suffix(name: str) -> tuple[str, int, int]:
         """Splits a c1541-style type suffix: 'NAME,s' -> (NAME, 1, 0);
         'NAME,r:100' -> (NAME, 4, 100). Defaults to PRG when there is no
         recognizable suffix; a comma that does not parse as a type code stays
-        part of the filename (e.g. 'A,B'). REL record length is validated here
-        (1-254) even though REL writing itself is deferred."""
+        part of the filename (e.g. 'A,B'). REL record length is validated
+        here (1-254)."""
         base, sep, suffix = name.rpartition(",")
         if sep and suffix:
             code, _colon, arg = suffix.partition(":")
@@ -1044,6 +1087,124 @@ class CBMFilesystem(Filesystem):
                 self._bam.set_free(t, s)
             except ValueError:
                 self.logger.warning(f"Rollback: {t}/{s} was already free")
+
+    def _build_side_sector_group(
+        self, blocks: list[tuple[int, int]], reclen: int
+    ) -> list[tuple[int, int]]:
+        """Allocates and writes one side-sector group (max 6 side sectors
+        covering max 720 data blocks); returns the side-sector T/S list.
+        Frees its own partial allocations on failure, so the caller only
+        rolls back what it actually received."""
+        n_ss = -(-len(blocks) // self.SS_POINTERS)  # ceil; blocks never empty
+        if n_ss > self.MAX_SIDE_SECTORS:
+            raise OSError("REL file too large for one side-sector group")
+        ss_ts: list[tuple[int, int]] = []
+        try:
+            for _ in range(n_ss):
+                ss_ts.append(
+                    self._allocate_first_sector()
+                    if not ss_ts
+                    else self._allocate_next_sector(*ss_ts[-1])
+                )
+            # Bytes 4..15 of EVERY side sector list ALL side sectors of the
+            # group (unused pairs stay 0,0).
+            table = bytearray(2 * self.MAX_SIDE_SECTORS)
+            for i, (t, s) in enumerate(ss_ts):
+                table[2 * i], table[2 * i + 1] = t, s
+            for i, (t, s) in enumerate(ss_ts):
+                covered = blocks[i * self.SS_POINTERS : (i + 1) * self.SS_POINTERS]
+                sec = bytearray(256)
+                if i + 1 < n_ss:
+                    sec[0], sec[1] = ss_ts[i + 1]
+                else:
+                    sec[0], sec[1] = 0, 0x10 + 2 * len(covered) - 1
+                sec[2], sec[3] = i, reclen
+                sec[4:16] = table
+                for j, (bt, bs) in enumerate(covered):
+                    sec[0x10 + 2 * j], sec[0x11 + 2 * j] = bt, bs
+                self._write_ts(t, s, bytes(sec))
+        except OSError:
+            self._rollback(ss_ts)
+            raise
+        return ss_ts
+
+    def _write_rel_file(
+        self, base: str, raw_name: bytes, data: bytes, reclen: int
+    ) -> None:
+        """Writes a REL file: a normal data chain plus side sectors (D64/D71)
+        or a super side sector with per-group side-sector chains (D81).
+
+        Records of length reclen pack contiguously across 254-byte payloads
+        (records span sector boundaries); a partial final record is padded
+        with 0x00 to the record boundary. Empty data writes exactly one
+        record of zeros, mirroring CBM DOS initializing record 1 on a fresh
+        REL file. The directory block count includes data blocks, all side
+        sectors, and (on D81) the super side sector."""
+        with contextlib.suppress(FileNotFoundError):
+            self.delete("/" + base)
+        if not data:
+            data = bytes(reclen)  # new REL: one blank record
+        if len(data) % reclen:
+            data += bytes(reclen - len(data) % reclen)
+        chunks = [data[i : i + PAYLOAD] for i in range(0, len(data), PAYLOAD)]
+        allocated: list[tuple[int, int]] = []
+        try:
+            chain = self._write_chain(chunks)
+            allocated += chain
+            if self.layout.variant == "1581":
+                group_size = self.MAX_SIDE_SECTORS * self.SS_POINTERS
+                groups = [
+                    chain[i : i + group_size] for i in range(0, len(chain), group_size)
+                ]
+                if len(groups) > 126:  # SSS holds 126 group pointers
+                    raise OSError("REL file too large")
+                group_ss: list[list[tuple[int, int]]] = []
+                for g in groups:
+                    ss = self._build_side_sector_group(g, reclen)
+                    group_ss.append(ss)
+                    allocated += ss
+                sss_ts = self._allocate_next_sector(*group_ss[-1][-1])
+                allocated.append(sss_ts)
+                sss = bytearray(256)
+                # Group 0's pointer appears BOTH at bytes 0/1 and 3/4.
+                sss[0], sss[1] = group_ss[0][0]
+                sss[2] = self.SSS_MARKER
+                for g, ss in enumerate(group_ss):
+                    sss[3 + 2 * g], sss[4 + 2 * g] = ss[0]
+                self._write_ts(*sss_ts, bytes(sss))
+                anchor = sss_ts
+                n_extra = sum(len(ss) for ss in group_ss) + 1
+            else:
+                if len(chain) > self.MAX_SIDE_SECTORS * self.SS_POINTERS:
+                    raise OSError("REL file too large for 1541/1571 (720 blocks max)")
+                ss = self._build_side_sector_group(chain, reclen)
+                allocated += ss
+                anchor = ss[0]
+                n_extra = len(ss)
+            # _claim_dir_slot last: if it raises (directory full) it has
+            # allocated nothing itself, so rolling back `allocated` is
+            # complete; if it extends the directory it returns successfully
+            # and the extension is a valid dir sector regardless.
+            t, s, k = self._claim_dir_slot()
+        except OSError:
+            self._rollback(allocated)
+            self._bam.flush()
+            self.disk.flush()
+            raise
+        sec = bytearray(self._read_ts(t, s))
+        off = 0x20 * k
+        total = len(chain) + n_extra
+        sec[off + 2] = 0x84  # closed REL
+        sec[off + 3], sec[off + 4] = chain[0]
+        sec[off + 5 : off + 0x15] = raw_name.ljust(16, bytes([PETSCII_PAD]))
+        sec[off + 0x15], sec[off + 0x16] = anchor
+        sec[off + 0x17] = reclen
+        sec[off + 0x18 : off + 0x1E] = bytes(6)  # no @-replacement tracking
+        sec[off + 0x1E] = total & 0xFF
+        sec[off + 0x1F] = total >> 8
+        self._write_ts(t, s, bytes(sec))
+        self._bam.flush()
+        self.disk.flush()
 
     def _claim_dir_slot(self) -> tuple[int, int, int]:
         """Returns (track, sector, slot) of a free directory slot, reusing a
@@ -1125,7 +1286,7 @@ class CBMFilesystem(Filesystem):
 
     def write_file(self, path: str, data: bytes) -> None:
         """Writes a file, with c1541-style type suffixes (',p' PRG default,
-        ',s' SEQ, ',u' USR; ',r:<reclen>' REL is validated but deferred).
+        ',s' SEQ, ',u' USR, ',r:<reclen>' REL).
 
         Scratch-and-replace semantics, scratch FIRST like real CBM DOS ('@0:'):
         an existing file of the same name is deleted before the new chain is
@@ -1134,7 +1295,7 @@ class CBMFilesystem(Filesystem):
         still frees the new partial chain, so the BAM stays consistent.
         """
         self._initialize()
-        base, ftype, _reclen = self._split_type_suffix(path.removeprefix("/"))
+        base, ftype, reclen = self._split_type_suffix(path.removeprefix("/"))
         raw_name = unicode_to_petscii(base)
         if not raw_name or len(raw_name) > 16:
             raise ValueError(f"Invalid CBM filename {base!r} (1-16 PETSCII chars)")
@@ -1147,7 +1308,7 @@ class CBMFilesystem(Filesystem):
                 f"(canonical form is {petscii_to_unicode(raw_name)!r})"
             )
         if ftype == 4:
-            raise NotImplementedError("REL writing lands in a later phase")
+            return self._write_rel_file(base, raw_name, data, reclen)
         with contextlib.suppress(FileNotFoundError):
             self.delete("/" + base)
         chunks = [data[i : i + PAYLOAD] for i in range(0, len(data), PAYLOAD)] or [b""]

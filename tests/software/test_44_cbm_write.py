@@ -196,14 +196,13 @@ class TestWriteFile:
         types = {e.name: e.attributes for e in fs.list_directory("/")}
         assert types == {"NOTES": "SEQ", "RAW": "USR", "CODE": "PRG"}
 
-    def test_rel_suffix_validates_then_defers(self):
+    def test_rel_suffix_validates_record_length(self):
+        # REL writing itself is covered in test_45_cbm_rel.
         fs = open_fs(formatted_d64_bytes())
         with pytest.raises(ValueError):
             fs.write_file("/R,r:0", b"")
         with pytest.raises(ValueError):
             fs.write_file("/R,r:255", b"")
-        with pytest.raises(NotImplementedError):
-            fs.write_file("/R,r:100", b"x" * 100)
 
     def test_comma_in_name_not_a_type_suffix(self):
         fs = open_fs(formatted_d64_bytes())
