@@ -427,6 +427,35 @@ class TestCBMValidity:
         fs = CBMFilesystem(disk)
         assert fs.get_validity_score() >= CBMFilesystem.validity_threshold
 
+    def test_closed_del_entries_score_full_marks(self):
+        # 1571_demo.d71 carries closed-DEL directory entries (type byte 0x80,
+        # ftype nibble 0): benign placeholders, invisible to listings, that
+        # must not forfeit the +25 directory-entry points.
+        path = RESOURCES / "1571_demo.d71"
+        if not path.exists():
+            pytest.skip("resource not present")
+        drv = CBMImageDriver(str(path))
+        disk = Disk(drv)
+        disk.set_geometry(drv.physical_format)
+        fs = CBMFilesystem(disk)
+        assert fs.get_validity_score() == 80
+
+    def test_dir_walk_oserror_caps_score(self):
+        # An unreadable directory sector means CBM DOS cannot operate on the
+        # disk: the score must be capped below the threshold, same as for a
+        # structurally invalid chain (ValueError).
+        fs = open_fs(d64_with_file())
+        fs._initialize()
+        real_read = fs._read_ts
+
+        def failing_read(t, s):
+            if (t, s) == (18, 1):
+                raise OSError("simulated unreadable directory sector")
+            return real_read(t, s)
+
+        fs._read_ts = failing_read
+        assert fs.get_validity_score() < CBMFilesystem.validity_threshold
+
     def test_cpm_plus_d64_scores_below_threshold(self):
         # Real CP/M-on-CBM disk: no CBM directory; CBM must not claim it loudly.
         path = RESOURCES / "cpm_plus_30.d64"

@@ -8,16 +8,16 @@ from fatfloppy.core.controller import DiskController
 
 RESOURCES = Path(__file__).parent.parent / "resources" / "CBM"
 CASES = [
-    ("vic1541_bam.d64", "1541"),
-    ("c128_tutorial.d64", "1541"),
-    ("endless_forms.d64", "1541"),
-    ("1571_demo.d71", "1571"),
-    ("1581_demo.d81", "1581"),
+    ("vic1541_bam.d64", "1541", "cbm_1541_d64"),
+    ("c128_tutorial.d64", "1541", "cbm_1541_d64"),
+    ("endless_forms.d64", "1541", "cbm_1541_d64"),
+    ("1571_demo.d71", "1571", "cbm_1571_d71"),
+    ("1581_demo.d81", "1581", "cbm_1581_d81"),
 ]
 
 
-@pytest.mark.parametrize("image,variant", CASES)
-def test_controller_detects_cbm(image, variant):
+@pytest.mark.parametrize("image,variant,profile", CASES)
+def test_controller_detects_cbm(image, variant, profile):
     path = RESOURCES / image
     if not path.exists():
         pytest.skip(f"resource {image} not present")
@@ -27,6 +27,8 @@ def test_controller_detects_cbm(image, variant):
     assert fs is not None, "expected a filesystem to be detected"
     config = fs.get_specific_config()
     assert config.variant == variant
+    format_name, _fs_config, _physical_format = controller.detect_format()
+    assert format_name == profile
     files = controller.list_directory("/")
     assert files
     controller.close_disk()

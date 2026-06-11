@@ -361,15 +361,18 @@ class CBMFilesystem(Filesystem):
                 # directory link still raises (and caps the score below).
                 for _t, _s, _k, entry in self._iter_entries():
                     tb = entry[2]
-                    if tb == 0x00:
-                        continue  # scratched slots never count against
+                    if tb == 0x00 or tb & 0x0F == 0:
+                        # Scratched slots and DEL placeholders (e.g. closed-DEL
+                        # 0x80) never count against: same visibility rule as
+                        # _entry_to_fileinfo.
+                        continue
                     ftype = tb & 0x0F
                     first_t = entry[3]
                     if ftype not in (1, 2, 3, 4, 5) or not (
                         1 <= first_t <= self.layout.tracks
                     ):
                         entries_ok = False
-            except ValueError as exc:
+            except (OSError, ValueError) as exc:
                 dir_walk_ok = False
                 self.logger.debug(f"Directory walk failed during scoring: {exc}")
             if dir_walk_ok and entries_ok:
