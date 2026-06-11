@@ -23,6 +23,11 @@ H37_GAP1_BYTES = 45
 H37_GAP2_BYTES = 12
 H37_GAP3_BYTES = 30
 H37_CLUSTER_FACTOR = 4
+# 96tpi (80-track) double-sided: group numbers are single bytes chained
+# through one 256-byte GRT sector, so the cluster factor doubles with each
+# capacity doubling to hold the group count at 200 (100K cf=2, 200K cf=4,
+# 400K cf=8 -> 1600 sectors / 8 = 200 groups).
+H37_96TPI_CLUSTER_FACTOR = 8
 
 H47_SECTORS_PER_TRACK = 26
 H47_BYTES_PER_SECTOR = 256
@@ -34,6 +39,7 @@ HDOS_DEFAULT_DIR_START_BLOCK = 130
 HDOS_DEFAULT_GRT_START_BLOCK = 148
 
 CYLINDERS_525 = 40
+CYLINDERS_525_96TPI = 80
 CYLINDERS_8INCH = 77
 
 
@@ -95,6 +101,38 @@ HDOS_FORMATS["hdos_5.25_200k_dssd"] = FormatProfile(
         grt_start_block=HDOS_DEFAULT_GRT_START_BLOCK,
     ),
     notes="H37 double-sided hard-sectored controller.",
+)
+
+pf_h37_96tpi = create_525_dssd_base(
+    sectors_per_track=H37_SECTORS_PER_TRACK, bytes_per_sector=H37_BYTES_PER_SECTOR
+)
+pf_h37_96tpi.cylinders = CYLINDERS_525_96TPI
+pf_h37_96tpi.track_formats = [
+    replace(
+        pf_h37_96tpi.track_formats[0],
+        track_end=CYLINDERS_525_96TPI - 1,
+        interleave=H37_INTERLEAVE,
+        gap1_bytes=H37_GAP1_BYTES,
+        gap2_bytes=H37_GAP2_BYTES,
+        gap3_bytes=H37_GAP3_BYTES,
+    )
+]
+
+HDOS_FORMATS["hdos_5.25_400k_dssd"] = FormatProfile(
+    name="hdos_5.25_400k_dssd",
+    description=(
+        '5.25" DSSD 400KB HDOS 3.0 '
+        "(H37 96tpi format: 80 tracks, 2 heads, 10 sectors/track)"
+    ),
+    physical_format=pf_h37_96tpi,
+    filesystem_config=HDOSLabelRecord(
+        title="HDOS 3.0 DISK",
+        volume_number=HDOS_DEFAULT_VOLUME_NUMBER,
+        cluster_factor=H37_96TPI_CLUSTER_FACTOR,
+        dir_start_block=HDOS_DEFAULT_DIR_START_BLOCK,
+        grt_start_block=HDOS_DEFAULT_GRT_START_BLOCK,
+    ),
+    notes="H37 double-sided 96tpi (80-track) controller.",
 )
 
 pf_h47 = create_8inch_dsdd_base(

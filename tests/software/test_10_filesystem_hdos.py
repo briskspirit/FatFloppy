@@ -667,3 +667,48 @@ def test_read_only_operations_no_modification(
     assert final_content == content_1
 
     hdos_controller.close_disk()
+
+
+def test_80_track_dssd_format_and_autodetect(
+    hdos_controller: DiskController, tmp_path: Path
+) -> None:
+    """An 80-track H37 disk formats, and its raw dump auto-detects end-to-end.
+
+    The HDOS geometry gate accepts the (80, 10) shape, but without a shipped
+    80-track profile nothing put that geometry in play for a raw 409600-byte
+    IMG: such dumps detected as nothing.
+    """
+    profile_name = "hdos_5.25_400k_dssd"
+    profile = hdos_controller.get_format_by_name(profile_name)
+    assert profile is not None, "80-track HDOS profile missing"
+    assert profile.physical_format.cylinders == 80
+    assert profile.physical_format.heads == 2
+    assert profile.physical_format.total_bytes == 409600
+    # cluster_factor 8 keeps the group count at 200 (1600 sectors / 8), the
+    # same count as the 100K (cf=2) and 200K (cf=4) profiles: HDOS group
+    # numbers are single bytes chained through one 256-byte GRT sector, so
+    # the factor must double whenever capacity does.
+    assert profile.filesystem_config.cluster_factor == 8
+
+    img_path = tmp_path / "hdos80.img"
+    img_path.write_bytes(b"\x00" * profile.physical_format.total_bytes)
+    assert hdos_controller.open_disk(
+        str(img_path), disk_type="IMG", format_info={"format_name": profile_name}
+    )
+    assert hdos_controller.format_disk_media(profile_name)
+    assert hdos_controller.write_file("/HELLO.TXT", b"HELLO FROM 80 TRACKS")
+    hdos_controller.close_disk()
+
+    auto_controller = DiskController()
+    try:
+        assert auto_controller.open_disk(str(img_path), disk_type="auto")
+        detected_name, _, detected_pf = auto_controller.detect_format()
+        assert detected_name == profile_name
+        assert isinstance(auto_controller.filesystem, HDOSFilesystem)
+        assert detected_pf.cylinders == 80
+        assert detected_pf.bytes_per_sector == 256
+        listing = {item["name"] for item in auto_controller.list_directory("/")}
+        assert "HELLO.TXT" in listing
+        assert auto_controller.read_file("/HELLO.TXT") == b"HELLO FROM 80 TRACKS"
+    finally:
+        auto_controller.close_disk()
