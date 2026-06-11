@@ -117,6 +117,17 @@ fatfloppy
   defaults to 120 sectors; the size must be at least 120 sectors and a
   multiple of 40, i.e. whole tracks).
 
+### Filenames on Import/Export
+
+Importing a host file auto-generates a name valid for the target filesystem:
+FAT, CP/M, and HDOS get 8.3 names with `~NN` de-duplication; CBM keeps up to
+16 PETSCII characters with `-NN` de-duplication, and commas are neutralized
+so type suffixes like `,s` stay deliberate rather than accidental. Names you
+type yourself are validated by the filesystem and rejected with a clear error
+instead of being silently truncated. On export, characters illegal on the
+host are sanitized (e.g. CBM `COPY/ALL` becomes `COPY_ALL`) and collisions
+within the same batch are uniquified.
+
 ## Building from Source
 
 See [packaging/macos/](packaging/macos/) for macOS, [packaging/windows/](packaging/windows/) for Windows, and [packaging/linux/](packaging/linux/) for Linux build instructions.

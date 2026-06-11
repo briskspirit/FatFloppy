@@ -54,9 +54,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plausible directory filenames before accepting an inferred layout.
 - Space/usage display showing every sector free on CBM disks (the filesystem
   did not expose its allocation unit size to the GUI).
+- GUI applying FAT 8.3 name mangling to every filesystem on import, so CBM
+  names were truncated and `,s`-style type suffixes destroyed.
+- Exports of names containing path separators losing everything before the
+  separator (CBM `COPY/ALL` exported as `ALL`); host-illegal characters are
+  now sanitized instead.
+- CP/M extension-less files being undeletable and duplicating directory
+  entries on overwrite (the listed name and the path parser disagreed).
+- Root-level import paths with special characters being mis-normalized.
 
 ### Changed
 - `open_disk` now defaults to content-based `auto` driver detection.
+- CP/M and HDOS reject invalid or over-length filenames on write instead of
+  silently truncating, and CP/M user numbers are bounded to 0-15 on write
+  (lookups stay lenient so existing on-disk oddities remain addressable).
+- Import and export naming is delegated to per-filesystem policies: each
+  filesystem suggests valid, de-duplicated import names (FAT/CP/M/HDOS 8.3
+  with `~NN`; CBM 16-character PETSCII with `-NN`) and sanitizes export
+  names for the host.
 
 ## [0.1.1] - 2026-06-10
 
