@@ -276,3 +276,45 @@ class TestCBMImageDriver:
         p.write_bytes(bytes(100000))
         with pytest.raises(ValueError):
             CBMImageDriver(str(p))
+
+    @pytest.mark.parametrize("size", sorted(CBM_SIZE_TABLE))
+    def test_open_every_size_table_entry(self, size):
+        family, tracks, has_errors = CBM_SIZE_TABLE[size]
+        drv = CBMImageDriver("mem.img", image_data=bytes(size))
+        assert drv.physical_format.cylinders == tracks
+        assert drv.has_error_block == has_errors
+        layout = layout_for_variant(family, tracks)
+        # Last sector addressable; error block excluded from data.
+        last_track = tracks
+        last_sector = layout.spt(last_track) - 1
+        assert len(drv.read_sector(last_track - 1, 0, last_sector)) == 256
+
+    def test_initialize_new_image_rejects_non_cbm_geometry(self):
+        from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
+
+        fat_pf = PhysicalFormat(
+            cylinders=40,
+            heads=2,
+            rpm=300,
+            heads_inverted=False,
+            bytes_per_sector=512,
+            track_formats=[
+                TrackFormat(
+                    track_start=0,
+                    track_end=39,
+                    head_start=0,
+                    head_end=1,
+                    sectors_per_track=9,
+                    encoding="MFM",
+                    rate=250,
+                )
+            ],
+        )
+        drv = CBMImageDriver("mem.img", image_data=bytes(174848))
+        with pytest.raises(ValueError):
+            drv.initialize_new_image(fat_pf)
+
+    def test_initialize_new_image_rejects_42_track(self):
+        drv = CBMImageDriver("mem.img", image_data=bytes(174848))
+        with pytest.raises(ValueError):
+            drv.initialize_new_image(build_physical_format("D64", 42))

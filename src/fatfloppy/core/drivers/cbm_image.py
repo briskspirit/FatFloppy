@@ -7,6 +7,7 @@ from typing import ClassVar, Optional
 from ..cbm_layout import (
     CBM_BYTES_PER_SECTOR,
     CBM_SIZE_TABLE,
+    CBMDiskLayout,
     build_physical_format,
     layout_for_variant,
 )
@@ -43,7 +44,7 @@ class CBMImageDriver(DiskIODriver):
         self.read_only = False
         self.image_data = bytearray()
         self.error_codes: Optional[bytearray] = None
-        self._layout = None
+        self._layout: Optional[CBMDiskLayout] = None
 
         if image_data is not None:
             self.image_data = bytearray(image_data)
@@ -106,10 +107,36 @@ class CBMImageDriver(DiskIODriver):
         return self._layout.linear_index(track, sector) * CBM_BYTES_PER_SECTOR
 
     def read_sector(self, cylinder: int, head: int, sector: int) -> bytes:
+        """Read one 256-byte CBM sector.
+
+        Args:
+            cylinder: 0-based cylinder (CBM track - 1).
+            head: Must be 0 (CBM images are single-head).
+            sector: 0-based sector index within the track.
+
+        Returns:
+            256 bytes of sector data.
+
+        Raises:
+            OSError: If the driver is not configured, head != 0, or the
+                cylinder/sector is out of range for this image.
+        """
         off = self._sector_offset(cylinder, head, sector)
         return bytes(self.image_data[off : off + CBM_BYTES_PER_SECTOR])
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
+        """Write one 256-byte CBM sector.
+
+        Args:
+            cylinder: 0-based cylinder (CBM track - 1).
+            head: Must be 0 (CBM images are single-head).
+            sector: 0-based sector index within the track.
+            data: Exactly 256 bytes to write.
+
+        Raises:
+            OSError: If the image is read-only or addressing is out of range.
+            ValueError: If ``data`` is not exactly 256 bytes.
+        """
         if self.read_only:
             raise OSError("42-track D64 images are read-only")
         if len(data) != CBM_BYTES_PER_SECTOR:
@@ -126,10 +153,15 @@ class CBMImageDriver(DiskIODriver):
         ]
 
     def flush(self) -> None:
+        """Persist the image (and optional error block) to disk atomically.
+
+        Raises:
+            OSError: If the atomic write fails.
+        """
         if not self.dirty:
             return
         blob = bytes(self.image_data) + (
-            bytes(self.error_codes) if self.error_codes else b""
+            bytes(self.error_codes) if self.error_codes is not None else b""
         )
         atomic_write(self.file_path, blob)
         self.dirty = False
@@ -144,16 +176,31 @@ class CBMImageDriver(DiskIODriver):
         self, physical_format: Optional[PhysicalFormat] = None, _profile=None
     ) -> None:
         pf = physical_format or build_physical_format("D64", 35)
+        if pf.bytes_per_sector != CBM_BYTES_PER_SECTOR:
+            raise ValueError(
+                f"CBM images require 256-byte sectors, got {pf.bytes_per_sector}"
+            )
+        if pf.heads != 1:
+            raise ValueError(f"CBM images are single-head, got {pf.heads} heads")
         spt0 = pf.get_sectors_per_track(0, 0)
+        if spt0 not in (21, 40):
+            raise ValueError(
+                f"CBM geometry requires 21 or 40 sectors/track on track 0, got {spt0}"
+            )
         family = {21: "D64", 40: "D81"}.get(spt0, "D64")
         if pf.cylinders == 70:
             family = "D71"
-        layout = layout_for_variant(family, pf.cylinders)
+        tracks = pf.cylinders
+        if tracks in CBM_READONLY_TRACK_COUNTS:
+            raise ValueError(
+                f"Creating {tracks}-track CBM images is not supported (read-only variant)"
+            )
+        layout = layout_for_variant(family, tracks)
         self.image_data = bytearray(layout.total_sectors * CBM_BYTES_PER_SECTOR)
         self.error_codes = None
         self._layout = layout
         self.read_only = False
-        self.physical_format = build_physical_format(family, pf.cylinders)
+        self.physical_format = build_physical_format(family, tracks)
         self.dirty = True
 
     def validate_for_opening(
