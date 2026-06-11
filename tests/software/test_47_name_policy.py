@@ -404,3 +404,80 @@ class TestHdosNames:
         fs._validate_filename("/VERYLONGNAME.TXT")
         with pytest.raises(ValueError, match="8.3"):
             fs._validate_filename("/VERYLONGNAME.TXT", strict=True)
+
+
+class TestCbmNames:
+    def _fs(self):
+        from .test_44_cbm_write import fresh_formatted
+
+        return fresh_formatted("cbm_1541_d64", label="NAMES")
+
+    def test_full_16_chars_kept(self):
+        fs = self._fs()
+        assert fs.suggest_import_name("notes file.txt", set()) == "NOTES FILE.TXT"
+
+    def test_comma_becomes_dot_and_is_suffix_neutral(self):
+        fs = self._fs()
+        n = fs.suggest_import_name("notes file,s", set())
+        assert n == "NOTES FILE.S"
+        base, ftype, _rl = fs._split_type_suffix(n)
+        assert (base, ftype) == (n, 2)  # parses as plain PRG, name unchanged
+
+    def test_truncates_to_16(self):
+        fs = self._fs()
+        n = fs.suggest_import_name("a-very-long-host-filename.data", set())
+        assert len(n) == 16
+
+    def test_unmappable_replaced_with_dash(self):
+        fs = self._fs()
+        assert fs.suggest_import_name("naïve中.prg", set()) == "NA-VE-.PRG"
+
+    def test_tilde_never_emitted(self):
+        fs = self._fs()
+        n = fs.suggest_import_name("file~name.txt", set())
+        assert "~" not in n
+
+    def test_petscii_glyphs_kept(self):
+        fs = self._fs()
+        assert fs.suggest_import_name("£up↑.bin", set()) == "£UP↑.BIN"
+
+    def test_uniqueness_dash_suffix(self):
+        fs = self._fs()
+        n = fs.suggest_import_name("game.prg", {"GAME.PRG"})
+        assert n != "GAME.PRG" and len(n) <= 16 and "-" in n
+
+    def test_uniqueness_at_16_char_boundary(self):
+        fs = self._fs()
+        first = fs.suggest_import_name("exactly-16-chars", set())
+        assert len(first) == 16
+        second = fs.suggest_import_name("exactly-16-chars", {first})
+        assert second != first and len(second) <= 16
+
+    def test_spaces_only_becomes_placeholder(self):
+        fs = self._fs()
+        n = fs.suggest_import_name("   ", set())
+        assert n.strip() and len(n) <= 16
+
+    def test_canonical_and_writable(self):
+        fs = self._fs()
+        existing = set()
+        for hostile in [
+            "my file,s",
+            "x" * 50,
+            ".hidden",
+            "£up↑.bin",
+            "a,b,c",
+            "中中中",
+            "file~01.txt",
+            "🙂",
+        ]:
+            n = fs.suggest_import_name(hostile, existing)
+            fs.write_file("/" + n, b"d")
+            assert fs.read_file("/" + n) == b"d"
+            assert any(e.name == n for e in fs.list_directory("/"))
+            existing.add(n)
+
+    def test_name_hint_mentions_suffixes_and_length(self):
+        fs = self._fs()
+        hint = fs.name_hint()
+        assert ",p" in hint and "16" in hint

@@ -1777,3 +1777,39 @@ class CBMFilesystem(Filesystem):
         self._write_ts(t, s, bytes(sec))
         self._bam.flush()
         self.disk.flush()
+
+    # -- name policy -------------------------------------------------------------
+
+    def suggest_import_name(
+        self,
+        host_name: str,
+        existing_names,
+        is_dir: bool = False,  # noqa: ARG002
+    ) -> str:
+        """
+        CBM names: up to 16 PETSCII characters, no extension concept. ',' becomes
+        '.' so the result can never parse as a ,p/,s/,u/,r: type suffix; '~' is
+        the codec's escape introducer and is never emitted; characters without a
+        PETSCII mapping become '-'. Uniqueness uses a '-NN' suffix.
+        """
+        existing = {n.upper() for n in existing_names}
+        out = []
+        for ch in host_name.upper():
+            if ch == ",":
+                out.append(".")
+            elif ch == "~" or ch not in _U2P:
+                out.append("-")
+            else:
+                out.append(ch)
+        name = "".join(out).strip()[:16] or "-FILE"
+        if name.upper() not in existing:
+            return name
+        for counter in range(1, 100):
+            suffix = f"-{counter:02d}"
+            candidate = name[: 16 - len(suffix)] + suffix
+            if candidate.upper() not in existing:
+                return candidate
+        raise ValueError(f"Cannot generate unique CBM name for {host_name!r}")
+
+    def name_hint(self) -> str:
+        return "up to 16 chars; optional ,p ,s ,u ,r:<len> type suffix"
