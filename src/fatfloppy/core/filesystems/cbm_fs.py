@@ -443,6 +443,15 @@ class CBMFilesystem(Filesystem):
         if self.layout.variant != "1581":
             raise NotImplementedError("Partitions are only supported on D81")
         name = path.removeprefix("/")
+        # Reject any path that contains a slash: either a nested-partition
+        # attempt or an ambiguous slash-in-name.  Partition names with '/'
+        # are not supported (they break path routing).
+        if "/" in name:
+            comp0, _slash, _rest = name.partition("/")
+            entry = self._find_root_type5(comp0)
+            if entry is not None:
+                raise NotImplementedError("Nested partitions are not supported")
+            raise ValueError(f"Partition names cannot contain '/': {name!r}")
         base, sep, suffix = name.rpartition(",")
         if sep and suffix.isdigit():
             sectors = int(suffix)
@@ -485,9 +494,16 @@ class CBMFilesystem(Filesystem):
                 break
         if start is None:
             raise OSError("No contiguous free region for partition")
-        for t in range(start, start + n_tracks):
-            for s in range(self.layout.spt(t)):
-                self._bam.set_allocated(t, s)
+        allocated_ts: list[tuple[int, int]] = []
+        try:
+            for t in range(start, start + n_tracks):
+                for s in range(self.layout.spt(t)):
+                    self._bam.set_allocated(t, s)
+                    allocated_ts.append((t, s))
+        except ValueError:
+            for t, s in allocated_ts:
+                self._bam.set_free(t, s)
+            raise
         raw_name = raw_name.ljust(16, bytes([PETSCII_PAD]))
         self._format_partition_subdir(start, n_tracks, raw_name)
         try:
@@ -888,8 +904,9 @@ class CBMFilesystem(Filesystem):
         tracks start_t..start_t+n_tracks-1: header at (start,0), BAMs at
         (start,1)/(start,2) covering the same global 1-40/41-80 split with
         every out-of-partition track marked fully allocated, directory at
-        (start,3). Reuses the root disk's ID (matches real 1581 partitions,
-        e.g. 1581_demo's PIC.DIR)."""
+        (start,3). The root disk's ID is reused for simplicity; real 1581
+        sub-directories carry their own independent disk ID (e.g. PIC.DIR in
+        1581_demo has ID "HR" while the root disk has "GB")."""
         root_hdr = self._read_ts(*self._bam.header_ts())
         raw_id = bytes(root_hdr[0x16:0x18])
         inside = range(start_t, start_t + n_tracks)

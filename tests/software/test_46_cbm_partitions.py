@@ -214,6 +214,64 @@ class TestPartitionDelete:
         assert fs.list_directory("/")[0].is_dir  # partition survived intact
 
 
+class TestCreateDirectoryGuards:
+    """Fix 1: create_directory must reject nested / slash paths."""
+
+    def test_nested_create_raises_not_implemented(self):
+        # create /SUB first, then try to create /SUB/NEW — must raise
+        fs = fresh_formatted("cbm_1581_d81")
+        fs.create_directory("/SUB")
+        with pytest.raises(NotImplementedError, match="[Nn]ested"):
+            fs.create_directory("/SUB/NEW")
+
+    def test_slash_in_path_with_no_matching_partition_raises_value_error(self):
+        # /A/B where A is not an existing partition — must raise ValueError
+        fs = fresh_formatted("cbm_1581_d81")
+        with pytest.raises(ValueError, match="/"):
+            fs.create_directory("/A/B")
+
+    def test_plain_root_create_still_works(self):
+        # sanity: plain create with no slash still succeeds
+        fs = fresh_formatted("cbm_1581_d81")
+        fs.create_directory("/OK")
+        assert fs.list_directory("/")[0].name == "OK"
+
+
+class TestCreateDirectoryRollback:
+    """Fix 3: create_directory BAM allocation loop must roll back on ValueError."""
+
+    def test_bam_inconsistency_mid_loop_leaves_state_unchanged(self):
+        fs = fresh_formatted("cbm_1581_d81")
+        fs._initialize()
+        # Find the track range that would be used (first-fit: tracks 1..3)
+        # Corrupt mid-range: manually clear sector 5's bit in track 2's BAM entry
+        # while leaving the count at 40 (says free but bitmap disagrees).
+        # Strategy: set_allocated track 2 / sector 5 via the low-level cache
+        # to create the inconsistency, then call create_directory — it must
+        # roll back and leave free_blocks unchanged.
+        start_track = 2
+        bam_sector = bytearray(fs._read_ts(40, 1))  # 1581 BAM sector 1 covers 1-40
+        e = 0x10 + 6 * ((start_track - 1) % 40)
+        # Count byte stays 40 (says fully free) but clear bit 5 in bitmap byte 0
+        bam_sector[e + 1] &= ~(1 << 5)  # clear bit 5 of sector 5's byte
+        fs._write_ts(40, 1, bytes(bam_sector))
+        # Make the BAM strategy re-read by clearing its cache
+        fs._bam.invalidate()
+
+        # Capture BAM sector bytes BEFORE create attempt
+        bam_before = bytes(fs._read_ts(40, 1))
+        free_before = fs._bam.free_blocks()
+
+        with pytest.raises(ValueError):
+            fs.create_directory("/SUB")
+
+        # BAM must be exactly as before (no tracks left allocated)
+        fs._bam.invalidate()
+        bam_after = bytes(fs._read_ts(40, 1))
+        assert bam_after == bam_before, "BAM was mutated and not rolled back"
+        assert fs._bam.free_blocks() == free_before
+
+
 class TestPartitionCheckAndReal:
     def test_check_with_partitions_and_files(self):
         fs = fresh_formatted("cbm_1581_d81")
