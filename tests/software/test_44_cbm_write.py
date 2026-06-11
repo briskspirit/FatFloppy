@@ -1,5 +1,7 @@
 """CBM write-path tests."""
 
+import logging
+
 import pytest
 
 from fatfloppy.core.cbm_layout import layout_for_variant
@@ -307,3 +309,120 @@ class TestDelete:
         fs.disk.flush()
         fs2 = CBMFilesystem(fs.disk)
         assert fs2.list_directory("/") == []
+
+
+class TestDeletePreValidation:
+    """delete() must validate the whole chain BEFORE any BAM mutation."""
+
+    @staticmethod
+    def _fs_with_chain_into_track36():
+        """40-track D64 with a file whose chain links into unmapped track 36."""
+        layout40 = layout_for_variant("D64", 40)
+        img = bytearray(layout40.total_sectors * 256)
+        base = formatted_d64_bytes()
+        img[: len(base)] = base
+        fs = open_fs(bytes(img))
+        fs._initialize()
+        fs._bam.set_allocated(17, 0)
+        fs._bam.flush()
+        sec = bytearray(256)
+        sec[0], sec[1] = 36, 0  # link into the BAM-less extension area
+        fs._write_ts(17, 0, bytes(sec))
+        end = bytearray(256)
+        end[1] = 0xFF
+        fs._write_ts(36, 0, bytes(end))
+        d = bytearray(fs._read_ts(18, 1))
+        d[2] = 0x82  # closed PRG
+        d[3], d[4] = 17, 0
+        d[5:0x15] = b"BAD".ljust(16, b"\xa0")
+        d[0x1E] = 2
+        fs._write_ts(18, 1, bytes(d))
+        fs.disk.flush()
+        return fs
+
+    def test_chain_into_unmapped_track_leaves_bam_untouched(self):
+        fs = self._fs_with_chain_into_track36()
+        pre_disk = bytes(fs.disk.driver.read_sector(17, 0, 0))
+        pre_cache = bytes(fs._bam._sector(18, 0))
+        with pytest.raises(ValueError, match="36"):
+            fs.delete("/BAD")
+        assert bytes(fs._bam._sector(18, 0)) == pre_cache
+        fs._bam.flush()
+        fs.disk.flush()
+        assert bytes(fs.disk.driver.read_sector(17, 0, 0)) == pre_disk
+        assert [e.name for e in fs.list_directory("/")] == ["BAD"]
+
+    def test_chain_with_already_free_block_leaves_bam_untouched(self):
+        fs = open_fs(formatted_d64_bytes())
+        fs.write_file("/X", bytes(254 * 3))  # chain 17/0 -> 17/10 -> 17/20
+        fs._initialize()
+        fs._bam.set_free(17, 10)  # simulate a cross-linked/corrupt BAM
+        fs._bam.flush()
+        fs.disk.flush()
+        pre_disk = bytes(fs.disk.driver.read_sector(17, 0, 0))
+        pre_cache = bytes(fs._bam._sector(18, 0))
+        with pytest.raises(ValueError, match="already free"):
+            fs.delete("/X")
+        assert bytes(fs._bam._sector(18, 0)) == pre_cache
+        fs._bam.flush()
+        fs.disk.flush()
+        assert bytes(fs.disk.driver.read_sector(17, 0, 0)) == pre_disk
+        assert len(fs.list_directory("/")) == 1
+
+
+class TestReviewHardening:
+    def test_non_canonical_escape_rejected(self):
+        fs = open_fs(formatted_d64_bytes())
+        with pytest.raises(ValueError, match="canonical"):
+            fs.write_file("/~41", b"x")  # ~41 is an alias of "A"
+        with pytest.raises(ValueError, match="canonical"):
+            fs.write_file("/AB~a0", b"x")  # $A0 pad byte inside a name
+
+    def test_canonical_name_still_replaces(self):
+        fs = open_fs(formatted_d64_bytes())
+        fs.write_file("/A", b"1")
+        fs.write_file("/A", b"22")
+        assert len(fs.list_directory("/")) == 1
+        assert fs.read_file("/A") == b"22"
+
+    def test_empty_file_read_emits_no_warning(self, caplog):
+        fs = open_fs(formatted_d64_bytes())
+        fs.write_file("/EMPTY", b"")
+        with caplog.at_level(logging.WARNING):
+            assert fs.read_file("/EMPTY") == b""
+        assert not caplog.records
+
+    def test_zero_last_byte_pointer_still_warns(self, caplog):
+        fs = open_fs(formatted_d64_bytes())
+        fs.write_file("/Z", b"")  # single sector at 17/0, last-byte ptr 1
+        sec = bytearray(fs._read_ts(17, 0))
+        sec[1] = 0  # impossible pointer: never written by CBM DOS
+        fs._write_ts(17, 0, bytes(sec))
+        with caplog.at_level(logging.WARNING):
+            assert fs.read_file("/Z") == b""
+        assert any("valid bytes" in r.message for r in caplog.records)
+
+    def test_rel_reclen_must_be_numeric(self):
+        fs = open_fs(formatted_d64_bytes())
+        with pytest.raises(ValueError, match="must be a number"):
+            fs.write_file("/R,r:abc", b"")
+
+    def test_data_write_failure_rolls_back_allocation(self):
+        fs = open_fs(formatted_d64_bytes())
+        fs._initialize()
+        orig = fs.disk.write_sector
+
+        def failing(cylinder, head, sector, data):
+            if cylinder == 16:  # any data write on track 17
+                raise OSError("simulated write failure")
+            return orig(cylinder, head, sector, data)
+
+        fs.disk.write_sector = failing
+        try:
+            with pytest.raises(OSError, match="simulated"):
+                fs.write_file("/X", bytes(254 * 3))
+        finally:
+            fs.disk.write_sector = orig
+        assert fs._bam.free_blocks() == 664
+        assert fs._bam.verify_counts()
+        assert fs.list_directory("/") == []

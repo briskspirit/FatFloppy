@@ -395,9 +395,11 @@ class CBMFilesystem(Filesystem):
         """Scratches a file: frees its data chain in the BAM, then zeroes the
         slot's type byte.
 
-        A corrupt chain (cycle / off-disk link) raises ValueError BEFORE any
-        BAM mutation -- the entry of a file whose blocks could not be freed is
-        deliberately left intact so the situation stays visible.
+        The whole chain is validated BEFORE any BAM mutation: a corrupt chain
+        (cycle, off-disk link, block on a track without a BAM entry, or a
+        block already free, e.g. cross-linked) raises ValueError and leaves
+        both the BAM and the directory entry intact so the situation stays
+        visible.
         """
         self._initialize()
         t, s, k, entry = self._find_entry(path)
@@ -406,7 +408,19 @@ class CBMFilesystem(Filesystem):
             raise NotImplementedError("Partition delete lands in a later phase")
         if ftype == 4 and entry[0x15] != 0:
             raise NotImplementedError("REL delete lands in a later phase")
-        for ct, cs in self._follow_chain(entry[3], entry[4]):
+        chain = self._follow_chain(entry[3], entry[4])
+        seen: set[tuple[int, int]] = set()
+        for ct, cs in chain:
+            if ct not in self._bam.mapped_tracks():
+                raise ValueError(
+                    f"Chain block {ct}/{cs} lies on a track with no BAM entry"
+                )
+            if self._bam.is_free(ct, cs):
+                raise ValueError(f"Chain block {ct}/{cs} is already free in the BAM")
+            if (ct, cs) in seen:
+                raise ValueError(f"Chain block {ct}/{cs} appears twice in the chain")
+            seen.add((ct, cs))
+        for ct, cs in chain:
             self._bam.set_free(ct, cs)
         sec = bytearray(self._read_ts(t, s))
         sec[0x20 * k + 2] = 0x00
@@ -603,12 +617,13 @@ class CBMFilesystem(Filesystem):
             data = self._read_ts(t, s)
             if data[0] == 0:
                 last = data[1]
-                if last < 2:
+                if last == 0:
                     self.logger.warning(
-                        f"Last sector {t}/{s} claims {last} valid bytes; "
-                        "treating as empty"
+                        f"Last sector {t}/{s} claims 0 valid bytes; treating as empty"
                     )
                     continue
+                if last == 1:
+                    continue  # canonical empty encoding: pointer 1, no payload
                 out += data[2 : last + 1]
             else:
                 out += data[2:256]
@@ -717,7 +732,12 @@ class CBMFilesystem(Filesystem):
                 if ftype == 4:
                     if not arg:
                         raise ValueError("REL files need ',r:<record-length>'")
-                    reclen = int(arg)
+                    try:
+                        reclen = int(arg)
+                    except ValueError:
+                        raise ValueError(
+                            f"REL record length must be a number, got {arg!r}"
+                        ) from None
                     if not 1 <= reclen <= 254:
                         raise ValueError("REL record length must be 1-254")
                 return base, ftype, reclen
@@ -738,15 +758,19 @@ class CBMFilesystem(Filesystem):
         except OSError:
             self._rollback(chain)
             raise
-        for i, (t, s) in enumerate(chain):
-            sec = bytearray(256)
-            if i + 1 < len(chain):
-                sec[0], sec[1] = chain[i + 1]
-                sec[2:256] = chunks[i].ljust(PAYLOAD, b"\x00")
-            else:
-                sec[0], sec[1] = 0, len(chunks[i]) + 1
-                sec[2 : 2 + len(chunks[i])] = chunks[i]
-            self._write_ts(t, s, bytes(sec))
+        try:
+            for i, (t, s) in enumerate(chain):
+                sec = bytearray(256)
+                if i + 1 < len(chain):
+                    sec[0], sec[1] = chain[i + 1]
+                    sec[2:256] = chunks[i].ljust(PAYLOAD, b"\x00")
+                else:
+                    sec[0], sec[1] = 0, len(chunks[i]) + 1
+                    sec[2 : 2 + len(chunks[i])] = chunks[i]
+                self._write_ts(t, s, bytes(sec))
+        except OSError:
+            self._rollback(chain)
+            raise
         return chain
 
     def _rollback(self, chain: list[tuple[int, int]]) -> None:
@@ -851,6 +875,14 @@ class CBMFilesystem(Filesystem):
         raw_name = unicode_to_petscii(base)
         if not raw_name or len(raw_name) > 16:
             raise ValueError(f"Invalid CBM filename {base!r} (1-16 PETSCII chars)")
+        if petscii_to_unicode(raw_name) != base:
+            # Reject ~hh aliases of mappable chars and $A0 pad bytes in names:
+            # scratch-and-replace matches on the decoded form, so an alias
+            # would silently coexist with its canonical twin.
+            raise ValueError(
+                f"Filename is not canonical PETSCII: {base!r} "
+                f"(canonical form is {petscii_to_unicode(raw_name)!r})"
+            )
         if ftype == 4:
             raise NotImplementedError("REL writing lands in a later phase")
         with contextlib.suppress(FileNotFoundError):
