@@ -297,23 +297,50 @@ class TestCBMRead:
         fs = open_fs(img)
         assert fs.list_directory("/")[0].attributes == "PRG<"
 
-    def test_chain_cycle_detected(self):
+    # Real-world corpus findings (1541 Test/Demo disk's "CBM" USR file, crack
+    # intros with garbage links): reads must salvage the valid prefix instead
+    # of raising, while write-side chain walking stays strict.
+
+    def test_chain_cycle_read_truncates(self):
         img = d64_with_file()
         layout = layout_for_variant("D64", 35)
         off = (layout.sectors_before(17) + 0) * 256
         img[off], img[off + 1] = 17, 0  # sector links to itself
         fs = open_fs(img)
-        with pytest.raises(ValueError, match="[Cc]ycle"):
-            fs.read_file("/HELLO")
+        # One valid block before the cycle: its full 254-byte payload.
+        assert fs.read_file("/HELLO") == b"\x01\x08" + bytes(252)
 
-    def test_chain_out_of_range_detected(self):
+    def test_chain_out_of_range_read_truncates(self):
+        # Same shape as the 1541 Test/Demo disk's famous "CBM" USR file: a
+        # raw data block whose first two bytes are content, not a link.
+        img = d64_with_file()
+        layout = layout_for_variant("D64", 35)
+        off = (layout.sectors_before(17) + 0) * 256
+        img[off], img[off + 1] = 99, 0  # invalid track
+        fs = open_fs(img)
+        assert fs.read_file("/HELLO") == b"\x01\x08" + bytes(252)
+
+    def test_corrupt_start_pointer_reads_empty(self):
+        # Crack-era entries can point straight off the disk; nothing is
+        # recoverable, but read must not raise (the entry still lists).
+        img = d64_with_file()
+        layout = layout_for_variant("D64", 35)
+        off = (layout.sectors_before(18) + 1) * 256
+        img[off + 3], img[off + 4] = 75, 1  # entry start track 75: off-disk
+        fs = open_fs(img)
+        assert fs.list_directory("/")[0].name == "HELLO"
+        assert fs.read_file("/HELLO") == b""
+
+    def test_delete_stays_strict_on_corrupt_chain(self):
+        # Only the reader is tolerant: scratching a broken chain must still
+        # refuse rather than corrupt the BAM.
         img = d64_with_file()
         layout = layout_for_variant("D64", 35)
         off = (layout.sectors_before(17) + 0) * 256
         img[off], img[off + 1] = 99, 0  # invalid track
         fs = open_fs(img)
         with pytest.raises(ValueError):
-            fs.read_file("/HELLO")
+            fs.delete("/HELLO")
 
     def test_file_allocation_units(self):
         fs = open_fs(d64_with_file())

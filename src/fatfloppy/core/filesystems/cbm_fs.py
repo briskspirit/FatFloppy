@@ -1113,14 +1113,38 @@ class CBMFilesystem(Filesystem):
 
     # -- chains ------------------------------------------------------------------
 
-    def _follow_chain(self, track: int, sector: int) -> list[tuple[int, int]]:
+    def _follow_chain(
+        self, track: int, sector: int, tolerant: bool = False
+    ) -> list[tuple[int, int]]:
+        """Walks a T/S chain, returning the visited blocks in order.
+
+        Strict mode (default) raises ValueError on an out-of-range link or a
+        cycle - required wherever the chain feeds the BAM (delete, check,
+        REL verification). Tolerant mode truncates at the first bad link
+        instead: real disks in the corpus carry such chains legitimately
+        (the 1541 Test/Demo disk's "CBM" USR file points at a raw data block
+        whose first two bytes are content, crack intros leave garbage links),
+        and reads must salvage what is recoverable.
+        """
         self._initialize()
         chain, seen = [], set()
         t, s = track, sector
         while t != 0:
             if not (1 <= t <= self.layout.tracks) or not (0 <= s < self.layout.spt(t)):
+                if tolerant:
+                    self.logger.warning(
+                        f"Chain points outside disk at {t}/{s}; "
+                        f"truncating after {len(chain)} block(s)"
+                    )
+                    break
                 raise ValueError(f"Chain points outside disk at {t}/{s}")
             if (t, s) in seen:
+                if tolerant:
+                    self.logger.warning(
+                        f"Chain cycle at {t}/{s}; "
+                        f"truncating after {len(chain)} block(s)"
+                    )
+                    break
                 raise ValueError(f"Chain cycle at {t}/{s}")
             seen.add((t, s))
             chain.append((t, s))
@@ -1129,8 +1153,10 @@ class CBMFilesystem(Filesystem):
         return chain
 
     def _read_chain(self, track: int, sector: int) -> bytes:
+        # Tolerant: a broken link ends the chain at the last valid block,
+        # whose full 254-byte payload is kept (its link bytes are data).
         out = bytearray()
-        for t, s in self._follow_chain(track, sector):
+        for t, s in self._follow_chain(track, sector, tolerant=True):
             data = self._read_ts(t, s)
             if data[0] == 0:
                 last = data[1]
