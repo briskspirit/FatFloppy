@@ -405,6 +405,35 @@ def test_real_image_lists_and_reads(image):
         assert len(data) == e.size
 
 
+class TestAllocationUnitSize:
+    # The GUI's space panel divides get_free_space() bytes by
+    # allocation_unit_size; every other filesystem exposes it, and its absence
+    # made update_space_info throw, zeroing busy units and the space display
+    # for CBM disks.
+    @pytest.mark.parametrize(
+        "image,capacity_blocks",
+        [
+            ("c128_tutorial.d64", 664),
+            ("1571_demo.d71", 1328),
+            ("1581_demo.d81", 3160),
+        ],
+    )
+    def test_matches_native_blocks_free_accounting(self, image, capacity_blocks):
+        path = RESOURCES / image
+        if not path.exists():
+            pytest.skip(f"resource {image} not present")
+        drv = CBMImageDriver(str(path))
+        disk = Disk(drv)
+        disk.set_geometry(drv.physical_format)
+        fs = CBMFilesystem(disk)
+        assert fs.allocation_unit_size == 254  # block payload, matches PAYLOAD
+        free_bytes, total_bytes = fs.get_free_space()
+        # Dividing by allocation_unit_size must reproduce the native
+        # blocks-free / capacity counts a real drive reports.
+        assert total_bytes // fs.allocation_unit_size == capacity_blocks
+        assert free_bytes // fs.allocation_unit_size == fs._bam.free_blocks()
+
+
 class TestCBMValidity:
     def test_formatted_disk_scores_above_threshold(self):
         fs = open_fs(d64_with_file())

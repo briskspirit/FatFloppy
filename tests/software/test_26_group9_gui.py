@@ -4,19 +4,26 @@ Regression tests for Group 9: GUI correctness fixes.
 Covers:
   * main_window.py:459 - filesystem tree never built subdirectory nodes
   * file_manager.py:788 - multi-dot/dotfile host names -> invalid 8.3 names
+  * disk_manager.py:558 - update_space_info threw on CBM disks (filesystem
+    lacked allocation_unit_size), zeroing busy units and the space display
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
+import pytest  # noqa: E402
+
 from fatfloppy.core.controller import DiskController  # noqa: E402
 from fatfloppy.gui.main_window import FileBrowserApp  # noqa: E402
+from fatfloppy.gui.managers.disk_manager import DiskManager  # noqa: E402
 from fatfloppy.gui.managers.file_manager import FileManager  # noqa: E402
 
 
@@ -50,6 +57,34 @@ def test_fs_tree_includes_subdirectories_and_their_files(tmp_path):
     inner = [c.name for c in sub.children]
     assert any("INNER" in n for n in inner), "subdirectory's file missing from the tree"
     ctrl.close_disk()
+
+
+def test_space_info_populates_for_cbm_disk():
+    """update_space_info must not zero out busy units/space on a CBM disk.
+
+    CBMFilesystem initially lacked the allocation_unit_size attribute the
+    space panel divides by, so the AttributeError handler reset busy_units to
+    [] and free/total to 0: the disk map showed everything free.
+    """
+    path = Path(__file__).parent.parent / "resources" / "CBM" / "1581_demo.d81"
+    if not path.exists():
+        pytest.skip(f"resource missing: {path}")
+
+    ctrl = DiskController()
+    assert ctrl.open_disk(str(path), disk_type="auto")
+
+    manager = DiskManager.__new__(DiskManager)
+    manager.logger = logging.getLogger("test")
+    manager.parent = SimpleNamespace(controller=ctrl)
+    manager.busy_units = []
+    manager.free_space = 0
+    manager.total_space = 0
+    manager.update_space_info()
+    ctrl.close_disk()
+
+    assert manager.busy_units, "allocated blocks missing from the disk map data"
+    assert manager.total_space == 3160, "1581 capacity should be 3160 blocks"
+    assert 0 < manager.free_space < manager.total_space
 
 
 def test_83_name_generation_handles_dotfiles_and_multidot():

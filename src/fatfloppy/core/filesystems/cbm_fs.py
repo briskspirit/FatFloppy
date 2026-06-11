@@ -350,6 +350,26 @@ class CBMFilesystem(Filesystem):
         name_off = 0x04 if self.layout.variant == "1581" else 0x90
         return petscii_to_unicode(hdr[name_off : name_off + 16])
 
+    @property
+    def allocation_unit_size(self) -> int:
+        """
+        Returns the size of a single allocation unit (block) in bytes.
+
+        A CBM block occupies a 256-byte sector but carries PAYLOAD (254) data
+        bytes; get_free_space() accounts in payload bytes, so the GUI's
+        bytes // allocation_unit_size division reproduces the native
+        "blocks free" counts a real drive reports.
+
+        Returns:
+            The block payload size in bytes, or 0 if the geometry is not a
+            known CBM layout.
+        """
+        try:
+            self._initialize()
+        except (ValueError, OSError):
+            return 0
+        return PAYLOAD
+
     def get_free_space(self) -> tuple[int, int]:
         self._initialize()
         free = self._bam.free_blocks() * PAYLOAD
