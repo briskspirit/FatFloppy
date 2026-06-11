@@ -6,7 +6,7 @@ from typing import Any, ClassVar, Optional
 
 from ..cbm_layout import CBMDiskLayout
 from ..disk import Disk
-from .fs_base import Filesystem
+from .fs_base import FileInfo, Filesystem
 
 PETSCII_PAD = 0xA0
 
@@ -49,10 +49,11 @@ def unicode_to_petscii(name: str) -> bytes:
         if ch == "~":
             if len(name) - i < 3:
                 raise ValueError(f"Truncated ~hh escape in {name!r}")
-            try:
-                out.append(int(name[i + 1 : i + 3], 16))
-            except ValueError as exc:
-                raise ValueError(f"Bad ~hh escape in {name!r}") from exc
+            hh = name[i + 1 : i + 3]
+            # Strict: exactly two lowercase hex digits (the codec only emits those).
+            if any(c not in "0123456789abcdef" for c in hh):
+                raise ValueError(f"Bad ~hh escape in {name!r}")
+            out.append(int(hh, 16))
             i += 3
             continue
         if ch not in _U2P:
@@ -80,6 +81,10 @@ class _BamStrategy(ABC):
         if (t, s) not in self._cache:
             self._cache[(t, s)] = bytearray(self.fs._read_ts(t, s))
         return self._cache[(t, s)]
+
+    def invalidate(self) -> None:
+        """Drop cached BAM sector buffers (re-read from disk on next access)."""
+        self._cache.clear()
 
     @abstractmethod
     def header_ts(self) -> tuple[int, int]:
@@ -113,6 +118,8 @@ class _BamStrategy(ABC):
 
 
 class _Bam1541(_BamStrategy):
+    """Single BAM sector at 18/0: four bytes per track (count + 3-byte bitmap)."""
+
     def header_ts(self):
         return (18, 0)
 
@@ -123,6 +130,9 @@ class _Bam1541(_BamStrategy):
 
 
 class _Bam1571(_BamStrategy):
+    """Composite BAM: 18/0 holds tracks 1-35 (plus side-2 free counts at 0xDD);
+    53/0 holds the side-2 bitmaps, three bytes per track."""
+
     def header_ts(self):
         return (18, 0)
 
@@ -131,7 +141,7 @@ class _Bam1571(_BamStrategy):
             buf = self._sector(18, 0)
             e = 0x04 + 4 * (track - 1)
             return buf, e, e + 1
-        raise AssertionError("composite path handles tracks > 35")
+        raise NotImplementedError("composite path handles tracks > 35")
 
     def is_free(self, t, s):
         if t <= 35:
@@ -147,6 +157,9 @@ class _Bam1571(_BamStrategy):
 
 
 class _Bam1581(_BamStrategy):
+    """Two BAM sectors: 40/1 covers tracks 1-40, 40/2 covers 41-80;
+    six bytes per track (count + 5-byte bitmap) starting at 0x10."""
+
     def header_ts(self):
         return (40, 0)
 
@@ -164,7 +177,7 @@ class CBMFilesystem(Filesystem):
     """Commodore DOS filesystem over D64/D71/D81 logical geometry."""
 
     filesystem_type: ClassVar[str] = "CBMDOS"
-    filesystem_aliases: ClassVar[list[str]] = ["CBM", "D64", "1541"]
+    filesystem_aliases: ClassVar[list[str]] = ["CBM"]
     validity_threshold: ClassVar[int] = 40
     config_class: ClassVar[Optional[type]] = CBMDiskLayout
 
@@ -191,6 +204,9 @@ class CBMFilesystem(Filesystem):
 
     def _write_ts(self, track: int, sector: int, data: bytes) -> None:
         self.disk.write_sector(track - 1, 0, sector, data)
+        # Phase 3 BAM mutation goes through the strategy cache + flush instead.
+        if self._bam is not None:
+            self._bam.invalidate()
 
     @staticmethod
     def configs_match(config1: Any, config2: Any) -> bool:
@@ -254,14 +270,188 @@ class CBMFilesystem(Filesystem):
     def get_display_info(self) -> dict[str, str]:
         raise NotImplementedError("CBM display info arrives with the read path")
 
-    def get_file_allocation_units(self, path: str) -> list[int]:
-        raise NotImplementedError("CBM file chains arrive with the read path")
+    # -- directory ---------------------------------------------------------------
 
-    def list_directory(self, path: str) -> list:
-        raise NotImplementedError("CBM directory listing arrives with the read path")
+    def _iter_dir_sectors(self):
+        """Yields (track, sector, data) for each directory sector, cycle-safe."""
+        self._initialize()
+        t, s = self.layout.dir_track, self.layout.dir_sector
+        seen = set()
+        while t != 0:
+            if (t, s) in seen:
+                raise ValueError(f"Directory chain cycle at {t}/{s}")
+            seen.add((t, s))
+            if not (1 <= t <= self.layout.tracks) or not (0 <= s < self.layout.spt(t)):
+                raise ValueError(f"Directory chain points outside disk at {t}/{s}")
+            data = self._read_ts(t, s)
+            yield t, s, data
+            t, s = data[0], data[1]
+
+    def _iter_entries(self):
+        """Yields (track, sector, slot, 32-byte entry) for every directory slot."""
+        for t, s, data in self._iter_dir_sectors():
+            for k in range(8):
+                yield t, s, k, data[0x20 * k : 0x20 * k + 0x20]
+
+    def _entry_to_fileinfo(self, entry: bytes) -> Optional[FileInfo]:
+        type_byte = entry[2]
+        ftype = type_byte & 0x0F
+        if type_byte == 0x00 or ftype == 0:
+            return None  # scratched / DEL placeholder
+        if ftype not in FILE_TYPES:
+            self.logger.warning(f"Skipping entry with invalid type byte {type_byte:#x}")
+            return None
+        name = petscii_to_unicode(entry[5:0x15])
+        attrs = FILE_TYPES[ftype]
+        if ftype == 4:
+            attrs += f":{entry[0x17]}"
+        if type_byte & 0x40:
+            attrs += "<"
+        if not type_byte & 0x80:
+            attrs = "*" + attrs
+        sectors = entry[0x1E] | (entry[0x1F] << 8)
+        first_t, first_s = entry[3], entry[4]
+        try:
+            start = self.layout.linear_index(first_t, first_s)
+        except ValueError:
+            start = 0
+        # CBM partitions (D81) are contiguous raw blocks with no T/S links:
+        # all 256 bytes of every block are data.
+        size = sectors * (256 if ftype == 5 else PAYLOAD)
+        return FileInfo(
+            name=name,
+            size=size,  # chained types refined to exact bytes in list_directory
+            is_dir=False,
+            datetime=CBM_EPOCH,
+            attributes=attrs,
+            starting_cluster=start,
+            extra_data={
+                "raw_name": bytes(entry[5:0x15]),
+                "type_byte": type_byte,
+                "first_ts": (first_t, first_s),
+                "rel_record_len": entry[0x17],
+                "side_sector_ts": (entry[0x15], entry[0x16]),
+                "sectors": sectors,
+            },
+        )
+
+    def list_directory(self, path: str) -> list[FileInfo]:
+        self._initialize()
+        if path not in ("", "/"):
+            raise FileNotFoundError(f"No such directory: {path}")
+        out = []
+        for _t, _s, _k, entry in self._iter_entries():
+            info = self._entry_to_fileinfo(entry)
+            if info is None:
+                continue
+            base_type = FILE_TYPES.get(info.extra_data["type_byte"] & 0x0F)
+            if base_type in ("SEQ", "PRG", "USR", "REL"):
+                try:
+                    info.size = self._chain_length_bytes(*info.extra_data["first_ts"])
+                except ValueError as exc:
+                    self.logger.warning(
+                        f"Corrupt chain for {info.name!r}: {exc}; using sector estimate"
+                    )
+            out.append(info)
+        return out
+
+    # -- chains ------------------------------------------------------------------
+
+    def _follow_chain(self, track: int, sector: int) -> list[tuple[int, int]]:
+        self._initialize()
+        chain, seen = [], set()
+        t, s = track, sector
+        while t != 0:
+            if not (1 <= t <= self.layout.tracks) or not (0 <= s < self.layout.spt(t)):
+                raise ValueError(f"Chain points outside disk at {t}/{s}")
+            if (t, s) in seen:
+                raise ValueError(f"Chain cycle at {t}/{s}")
+            seen.add((t, s))
+            chain.append((t, s))
+            data = self._read_ts(t, s)
+            t, s = data[0], data[1]
+        return chain
+
+    def _read_chain(self, track: int, sector: int) -> bytes:
+        out = bytearray()
+        for t, s in self._follow_chain(track, sector):
+            data = self._read_ts(t, s)
+            if data[0] == 0:
+                last = data[1]
+                if last < 2:
+                    self.logger.warning(
+                        f"Last sector {t}/{s} claims {last} valid bytes; "
+                        "treating as empty"
+                    )
+                    continue
+                out += data[2 : last + 1]
+            else:
+                out += data[2:256]
+        return bytes(out)
+
+    def _chain_length_bytes(self, track: int, sector: int) -> int:
+        chain = self._follow_chain(track, sector)
+        if not chain:
+            return 0
+        last = self._read_ts(*chain[-1])
+        # max(last[1], 1) - 1 keeps byte1 < 2 meaning "empty", matching
+        # _read_chain's last-sector rule; KEEP THEM CONSISTENT.
+        return (len(chain) - 1) * PAYLOAD + max(last[1], 1) - 1
+
+    def _partition_ts_list(self, entry: bytes) -> list[tuple[int, int]]:
+        """Block list of a CBM partition (D81): contiguous, no T/S chain links."""
+        sectors = entry[0x1E] | (entry[0x1F] << 8)
+        t, s = entry[3], entry[4]
+        self.layout.linear_index(t, s)  # validates the starting block
+        out = []
+        for _ in range(sectors):
+            if t > self.layout.tracks:
+                raise ValueError(
+                    f"Partition at {entry[3]}/{entry[4]} ({sectors} blocks) "
+                    "runs off the disk"
+                )
+            out.append((t, s))
+            s += 1
+            if s >= self.layout.spt(t):
+                t, s = t + 1, 0
+        return out
+
+    # -- lookup ------------------------------------------------------------------
+
+    def _find_entry(self, path: str):
+        """Returns (dir_t, dir_s, slot, entry) or raises FileNotFoundError.
+
+        Entry-based lookup (no path splitting): CBM names may contain '/'.
+        """
+        self._initialize()
+        name = path.lstrip("/")
+        for t, s, k, entry in self._iter_entries():
+            if entry[2] == 0x00:
+                continue
+            if petscii_to_unicode(entry[5:0x15]) == name:
+                return t, s, k, entry
+        raise FileNotFoundError(f"No such file: {path}")
 
     def read_file(self, path: str) -> bytes:
-        raise NotImplementedError("CBM file reading arrives with the read path")
+        _t, _s, _k, entry = self._find_entry(path)
+        if not entry[2] & 0x80:
+            self.logger.warning(f"Reading splat (unclosed) file {path!r}")
+        if entry[2] & 0x0F == 5:  # CBM partition: raw contiguous blocks
+            return b"".join(
+                self._read_ts(t, s) for t, s in self._partition_ts_list(entry)
+            )
+        return self._read_chain(entry[3], entry[4])
+
+    def get_file_allocation_units(self, path: str) -> list[int]:
+        try:
+            _t, _s, _k, entry = self._find_entry(path)
+            if entry[2] & 0x0F == 5:
+                blocks = self._partition_ts_list(entry)
+            else:
+                blocks = self._follow_chain(entry[3], entry[4])
+            return [self.layout.linear_index(t, s) for t, s in blocks]
+        except (FileNotFoundError, ValueError):
+            return []
 
     def write_file(self, path: str, data: bytes) -> None:
         raise NotImplementedError("CBM write arrives with the write path")

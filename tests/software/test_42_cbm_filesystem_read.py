@@ -1,5 +1,7 @@
 """CBM filesystem read-path tests."""
 
+from pathlib import Path
+
 import pytest
 
 from fatfloppy.core.cbm_layout import layout_for_variant
@@ -41,6 +43,14 @@ class TestPetscii:
     def test_truncated_escape_rejected(self):
         with pytest.raises(ValueError):
             unicode_to_petscii("NAME~1")
+
+    def test_escape_rejects_non_hex_digit(self):
+        with pytest.raises(ValueError):
+            unicode_to_petscii("X~1G")
+
+    def test_escape_rejects_uppercase_hex(self):
+        with pytest.raises(ValueError):
+            unicode_to_petscii("X~1A")
 
     def test_every_byte_round_trips(self):
         for b in range(256):
@@ -206,3 +216,151 @@ class TestCBMSkeleton:
         free, total = fs.get_free_space()
         assert free == 3160 * 254
         assert total == 3160 * 254
+
+
+def d64_with_file(data: bytes = b"\x01\x08" + bytes(300)) -> bytearray:
+    img = formatted_d64_bytes()
+    layout = layout_for_variant("D64", 35)
+    # Data chain: 17/0 -> 17/10 (interleave 10), authentic 1541 placement.
+    # A zero-byte file still occupies one sector (byte1 = 1, no payload).
+    chunks = [data[i : i + 254] for i in range(0, len(data), 254)] or [b""]
+    chain = [(17, 0), (17, 10)][: len(chunks)]
+    for i, (t, s) in enumerate(chain):
+        sec = bytearray(256)
+        if i + 1 < len(chain):
+            sec[0], sec[1] = chain[i + 1]
+            sec[2:256] = chunks[i].ljust(254, b"\x00")
+        else:
+            sec[0], sec[1] = 0, len(chunks[i]) + 1
+            sec[2 : 2 + len(chunks[i])] = chunks[i]
+        off = (layout.sectors_before(t) + s) * 256
+        img[off : off + 256] = sec
+    # Directory entry, slot 0 of 18/1.
+    off = (layout.sectors_before(18) + 1) * 256
+    img[off + 2] = 0x82  # closed PRG
+    img[off + 3], img[off + 4] = 17, 0
+    img[off + 5 : off + 0x15] = b"HELLO".ljust(16, b"\xa0")
+    img[off + 0x1E] = len(chain)
+    # Mark chain allocated so BAM stays consistent.
+    bam_off = layout.sectors_before(18) * 256
+    e = bam_off + 0x04 + 4 * 16  # track 17
+    img[e] = 21 - len(chain)
+    bits = (2**21 - 1) & ~sum(1 << s for _t, s in chain)
+    img[e + 1], img[e + 2], img[e + 3] = (
+        bits & 0xFF,
+        (bits >> 8) & 0xFF,
+        (bits >> 16) & 0xFF,
+    )
+    return img
+
+
+class TestCBMRead:
+    def test_list_directory(self):
+        fs = open_fs(d64_with_file())
+        entries = fs.list_directory("/")
+        assert len(entries) == 1
+        e = entries[0]
+        assert e.name == "HELLO"
+        assert e.attributes == "PRG"
+        assert not e.is_dir
+        assert e.size == 300 + 2
+
+    def test_read_file_exact_bytes(self):
+        payload = b"\x01\x08" + bytes(range(256)) + b"END"
+        fs = open_fs(d64_with_file(payload))
+        assert fs.read_file("/HELLO") == payload
+
+    def test_read_missing_file_raises(self):
+        fs = open_fs(d64_with_file())
+        with pytest.raises(FileNotFoundError):
+            fs.read_file("/NOPE")
+
+    def test_scratched_entries_hidden(self):
+        img = d64_with_file()
+        layout = layout_for_variant("D64", 35)
+        img[(layout.sectors_before(18) + 1) * 256 + 2] = 0x00  # scratch
+        fs = open_fs(img)
+        assert fs.list_directory("/") == []
+
+    def test_splat_file_listed_with_star(self):
+        img = d64_with_file()
+        layout = layout_for_variant("D64", 35)
+        img[(layout.sectors_before(18) + 1) * 256 + 2] = 0x02  # PRG, not closed
+        fs = open_fs(img)
+        assert fs.list_directory("/")[0].attributes == "*PRG"
+
+    def test_locked_file_attribute(self):
+        img = d64_with_file()
+        layout = layout_for_variant("D64", 35)
+        img[(layout.sectors_before(18) + 1) * 256 + 2] = 0xC2  # closed+locked PRG
+        fs = open_fs(img)
+        assert fs.list_directory("/")[0].attributes == "PRG<"
+
+    def test_chain_cycle_detected(self):
+        img = d64_with_file()
+        layout = layout_for_variant("D64", 35)
+        off = (layout.sectors_before(17) + 0) * 256
+        img[off], img[off + 1] = 17, 0  # sector links to itself
+        fs = open_fs(img)
+        with pytest.raises(ValueError, match="[Cc]ycle"):
+            fs.read_file("/HELLO")
+
+    def test_chain_out_of_range_detected(self):
+        img = d64_with_file()
+        layout = layout_for_variant("D64", 35)
+        off = (layout.sectors_before(17) + 0) * 256
+        img[off], img[off + 1] = 99, 0  # invalid track
+        fs = open_fs(img)
+        with pytest.raises(ValueError):
+            fs.read_file("/HELLO")
+
+    def test_file_allocation_units(self):
+        fs = open_fs(d64_with_file())
+        layout = layout_for_variant("D64", 35)
+        assert fs.get_file_allocation_units("/HELLO") == [
+            layout.linear_index(17, 0),
+            layout.linear_index(17, 10),
+        ]
+
+    def test_empty_payload_last_sector(self):
+        fs = open_fs(d64_with_file(b""))  # zero-byte file: one sector, byte1=1
+        assert fs.read_file("/HELLO") == b""
+
+
+RESOURCES = Path(__file__).parent.parent / "resources" / "CBM"
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "vic1541_bam.d64",
+        "c128_tutorial.d64",
+        "endless_forms.d64",
+        "cpm_plus_30.d64",
+        "1571_demo.d71",
+        "1581_demo.d81",
+    ],
+)
+def test_real_image_lists_and_reads(image):
+    path = RESOURCES / image
+    if not path.exists():
+        pytest.skip(f"resource {image} not present")
+    drv = CBMImageDriver(str(path))
+    disk = Disk(drv)
+    disk.set_geometry(drv.physical_format)
+    fs = CBMFilesystem(disk)
+    if image == "cpm_plus_30.d64":
+        # CP/M Plus disk in a D64 container: track 18 holds CP/M data (LINK-80
+        # help text), not a CBM directory -- the dir "chain" bytes 111/114 are
+        # the ASCII letters 'o'/'r'. A real 1541 errors out here too, so the
+        # reader must refuse; format detection will route this disk to CP/M.
+        with pytest.raises(ValueError, match="outside disk"):
+            fs.list_directory("/")
+        return
+    entries = fs.list_directory("/")
+    assert entries, "expected at least one directory entry"
+    for e in entries:
+        if e.is_dir or e.attributes.startswith("*"):
+            continue
+        data = fs.read_file("/" + e.name)
+        assert len(data) == e.size
