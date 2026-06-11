@@ -180,7 +180,11 @@ def build_physical_format(family: str, tracks: int) -> PhysicalFormat:
     """Logical CBM geometry: cylinders = CBM tracks, 1 head, 256-byte sectors.
 
     CBM sector IDs are 0-based (sectors 0..N-1 on each track), so id_start=0.
+
+    Raises ValueError for unknown (family, tracks) pairs.
     """
+    if (family, tracks) not in _ZONE_MAP:
+        raise ValueError(f"Unknown CBM variant {family}/{tracks}")
     zones = _ZONE_MAP[(family, tracks)]
     encoding = "MFM" if family == "D81" else "GCR"
     track_formats = [

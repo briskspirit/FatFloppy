@@ -196,6 +196,10 @@ class TestCBMLayout:
         with pytest.raises(ValueError):
             layout_for_variant("D64", 36)
 
+    def test_build_physical_format_unknown_raises_value_error(self):
+        with pytest.raises(ValueError):
+            build_physical_format("D64", 36)
+
     def test_layout_for_variant_extended_track_counts(self):
         assert layout_for_variant("D64", 40).total_sectors == 768
         assert layout_for_variant("D64", 42).total_sectors == 802
@@ -415,3 +419,13 @@ class TestCBMAutoDetection:
         p.write_bytes(bytes(368640))
         drv = DriverFactory.create("auto", source=str(p))
         assert drv.driver_type != "CBM"
+
+    def test_magic_checking_drivers_win_at_cbm_sizes(self, tmp_path):
+        # A genuine IMD file whose size coincides with a CBM size must route
+        # to IMD: magic-checking drivers are consulted before CBM's size gate.
+        header = b"IMD 1.18: 01/01/2020 00:00:00\r\n\x1a"
+        body = bytes(174848 - len(header))
+        p = tmp_path / "coincidence.imd"
+        p.write_bytes(header + body)
+        drv = DriverFactory.create("auto", source=str(p))
+        assert drv.driver_type == "IMD"

@@ -35,7 +35,7 @@ class CBMImageDriver(DiskIODriver):
     driver_file_extensions: ClassVar[list[str]] = [".d64", ".d71", ".d81"]
     driver_category: ClassVar[str] = "metadata_based"
     driver_description: ClassVar[str] = "Commodore D64/D71/D81 image driver"
-    driver_priority: ClassVar[int] = 50
+    driver_priority: ClassVar[int] = 40
 
     def __init__(self, file_path: str, image_data: Optional[bytes] = None):
         super().__init__()
