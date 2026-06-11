@@ -223,6 +223,31 @@ class TestFat12Names:
         assert n.upper() != "CON_.TXT"
         assert fs._is_valid_83_filename(n)
 
+    def test_write_rejects_dos_illegal_punctuation(self, tmp_path):
+        # Real MS-DOS forbids , ; = [ ] + (besides \ / : * ? " < > | and
+        # space) in 8.3 short names; accepting them writes disks real DOS
+        # chokes on.
+        fs = self._fs(tmp_path)
+        for bad in ["A,B.TXT", "A;B.TXT", "A=B.TXT", "A[B.TXT", "A]B.TXT", "A+B.TXT"]:
+            with pytest.raises(ValueError, match="Invalid 8.3 filename"):
+                fs.write_file("/" + bad, b"x")
+
+    def test_suggestion_replaces_dos_illegal_punctuation(self, tmp_path):
+        fs = self._fs(tmp_path)
+        for host in ["a,b;c=d.txt", "x[y]+z.txt"]:
+            n = fs.suggest_import_name(host, set())
+            assert not set(n) & set(",;=[]+"), (host, n)
+            assert fs._is_valid_83_filename(n), (host, n)
+
+    def test_all_punctuation_name_yields_writable_suggestion(self, tmp_path):
+        fs = self._fs(tmp_path)
+        n = fs.suggest_import_name(",,,", set())
+        assert not set(n) & set(",;=[]+"), n
+        assert fs._is_valid_83_filename(n), n
+        fs.write_file("/" + n, b"x")
+        assert fs.read_file("/" + n) == b"x"
+        assert n in {fi.name for fi in fs.list_directory("/")}
+
     def test_every_suggestion_is_valid_and_writable(self, tmp_path):
         # Every suggestion must survive the FULL round trip: the writer encodes
         # names cp437 errors="replace", so a non-cp437 suggestion silently

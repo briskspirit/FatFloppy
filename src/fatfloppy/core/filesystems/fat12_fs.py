@@ -185,6 +185,11 @@ ATTR_LONG_NAME = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID
 ENTRY_DELETED = 0xE5
 ENTRY_UNUSED = 0x00
 
+# Punctuation MS-DOS forbids in 8.3 short names beyond the Windows-illegal
+# set (\ / : * ? " < > | and whitespace). These encode fine in cp437, but
+# real DOS rejects them, so accepting them writes disks DOS chokes on.
+FAT_ILLEGAL_83_PUNCTUATION = ",;=[]+"
+
 # Device names reserved by DOS; never valid as 8.3 file base names.
 FAT_RESERVED_NAMES = frozenset(
     {
@@ -247,7 +252,9 @@ class FATFilesystem(Filesystem):
 
     config_class: ClassVar[type] = FATVolumeInfo
 
-    _invalid_83_chars_pattern = re.compile(r'[\\/:*?"<>|\s]')
+    _invalid_83_chars_pattern = re.compile(
+        r'[\\/:*?"<>|\s' + re.escape(FAT_ILLEGAL_83_PUNCTUATION) + "]"
+    )
     _reserved_names = FAT_RESERVED_NAMES
 
     def __init__(self, disk: Disk, config: Optional[FATVolumeInfo] = None):
@@ -1372,10 +1379,12 @@ class FATFilesystem(Filesystem):
 
         Extends the base 8.3 policy two ways. Characters that do not survive
         the cp437 round trip (the writer encodes names cp437 errors="replace",
-        which would store an invisible '????' entry) are replaced with '_'
-        before the base policy runs. Then, if the sanitized base name collides
-        with a reserved device name (CON, PRN, ...), a '_' is appended so the
-        result always passes _is_valid_83_filename().
+        which would store an invisible '????' entry), as well as the
+        DOS-illegal punctuation in FAT_ILLEGAL_83_PUNCTUATION (',;=[]+'),
+        are replaced with '_' before the base policy runs. Then, if the
+        sanitized base name collides with a reserved device name (CON, PRN,
+        ...), a '_' is appended so the result always passes
+        _is_valid_83_filename().
 
         Args:
             host_name: The filename from the host filesystem.
@@ -1388,7 +1397,10 @@ class FATFilesystem(Filesystem):
         # Materialize once: existing_names may be a one-shot generator, and it
         # is consulted again below for the reserved-name collision re-check.
         existing = {n.upper() for n in existing_names}
-        cleaned = "".join(ch if _is_cp437_safe(ch) else "_" for ch in host_name)
+        cleaned = "".join(
+            "_" if not _is_cp437_safe(ch) or ch in FAT_ILLEGAL_83_PUNCTUATION else ch
+            for ch in host_name
+        )
         name = super().suggest_import_name(cleaned, existing, is_dir)
         base, dot, ext = name.partition(".")
         if base in FAT_RESERVED_NAMES:
