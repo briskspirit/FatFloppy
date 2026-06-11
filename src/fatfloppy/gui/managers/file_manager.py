@@ -859,6 +859,98 @@ class FileManager(QObject):
             )
             self.logger.exception(f"Error extracting directory {source_dir_path}.")
 
+    def _maybe_attach_volumes_for(self, source_path: str) -> None:
+        """
+        Offers to stitch the next volume(s) of a backup set before extraction.
+
+        For filesystems advertising ``supports_volume_attach`` (Apollo wbak),
+        an entry cut at end-of-volume gets an "insert next volume" prompt:
+        Yes opens a file dialog and feeds the chosen image to
+        ``filesystem.attach_volume``; a ``ValueError`` (wrong volume) is shown
+        and the prompt loops.  No/Cancel extracts the available prefix
+        exactly as before.
+
+        The loop keys on the entry being PARTIAL **and** its tree having a
+        matching pending continuation -- never on the PARTIAL flag alone:
+        a stitched tree can complete while the file stays short (bytes were
+        never written to the set), and prompting must stop then.  Every
+        filesystem without the capability flag returns immediately, which
+        also keeps the physical-disk worker threads dialog-free (only the
+        image-backed Apollo filesystem sets the flag).
+
+        Args:
+            source_path: The full on-disk path of the entry about to be read.
+        """
+        fs = _active_filesystem(self)
+        if not getattr(fs, "supports_volume_attach", False):
+            return
+        parent_path, _, name = source_path.rstrip("/").rpartition("/")
+        key = name.lower()
+        while True:
+            try:
+                entry = next(
+                    (
+                        info
+                        for info in fs.list_directory(parent_path or "/")
+                        if info.name.lower() == key
+                    ),
+                    None,
+                )
+            except OSError:
+                return  # unresolvable path: let the read itself report it
+            if entry is None or entry.is_dir:
+                return
+            extra = entry.extra_data or {}
+            if not extra.get("partial"):
+                return
+            spec = next(
+                (
+                    s
+                    for s in fs.pending_continuations()
+                    if s.file_id == extra.get("tree_id")
+                    and s.sequence == extra.get("sequence")
+                    and s.next_section == extra.get("section", -1) + 1
+                ),
+                None,
+            )
+            if spec is None:
+                return  # tree complete: the short prefix is all the set holds
+            reply = QMessageBox.question(
+                self.parent,
+                "Insert Next Volume",
+                f"'{entry.name}' continues on the next volume of backup set "
+                f"{spec.volume_id} (section {spec.next_section} of "
+                f"'{spec.file_id}'). Open the next volume image?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self.logger.info(
+                    f"Next-volume prompt declined for {source_path}; "
+                    "extracting the available prefix"
+                )
+                return
+            volume_path, _ = QFileDialog.getOpenFileName(
+                self.parent,
+                "Open Next Volume Image",
+                "",
+                "Volume images (*.img *.afd)",
+            )
+            if not volume_path:
+                self.logger.info(
+                    f"Next-volume dialog cancelled for {source_path}; "
+                    "extracting the available prefix"
+                )
+                return
+            try:
+                fs.attach_volume(Path(volume_path).read_bytes())
+            except (OSError, ValueError) as e:
+                self.logger.warning(f"Volume attach rejected: {e}")
+                QMessageBox.warning(self.parent, "Wrong Volume", str(e))
+                continue  # re-prompt: the user can pick another image
+            self.logger.info(f"Attached volume image '{volume_path}'")
+            # Loop: the entry is usually complete now; a 3+ volume chain
+            # still has a pending continuation and prompts for the next one.
+
     def _extract_file(self, source_path: str, local_path: str) -> None:
         """
         Extracts a single file from the disk image to the local filesystem.
@@ -869,6 +961,7 @@ class FileManager(QObject):
         """
         try:
             self.logger.info(f"Extracting file '{source_path}' to '{local_path}'.")
+            self._maybe_attach_volumes_for(source_path)
             file_data = self.parent.controller.read_file(source_path)
             if file_data is not None:
                 Path(local_path).write_bytes(file_data)

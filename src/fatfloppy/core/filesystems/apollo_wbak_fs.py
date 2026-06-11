@@ -289,7 +289,13 @@ class ApolloWbakFilesystem(Filesystem):
                 "damage_notes": list(entry.damage_notes),
                 "partial": entry.partial,
                 "atime": entry.atime,
+                # Tree identity for the GUI's insert-next-volume matching:
+                # (tree_id, sequence) name the tree within the backup set
+                # and section is its CURRENT section (advances on stitch),
+                # so a pending ContinuationSpec matches iff its file_id,
+                # sequence and next_section == section + 1 all line up.
                 "tree_id": tree.file_id,
+                "sequence": tree.sequence,
                 "section": tree.section,
             },
         )
