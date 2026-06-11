@@ -27,6 +27,10 @@ DIR_NEXT_BLOCK_PTR_OFFSET = 510
 
 HDOS_LABEL_SECTOR_LBA = 9
 HDOS_RGT_SECTOR_LBA = 10
+# (cylinders, sectors_per_track) shapes an HDOS controller can produce:
+# H17/H37 (40 or 80 tracks x 10 sectors) and H47 (77 tracks x 26 sectors),
+# single- or double-sided, always 256-byte sectors.
+HDOS_PLAUSIBLE_SHAPES = frozenset({(40, 10), (80, 10), (77, 26)})
 HDOS_SYSTEM_FILES = {"RGT.SYS", "GRT.SYS", "HDOS.SYS"}
 HDOS_DIRECT_SYS = {"DIRECT.SYS"}
 
@@ -906,6 +910,20 @@ class HDOSFilesystem(Filesystem):
             return 0
         original_pf = self.disk.physical_format
 
+        # Scoring force-swaps to the canonical H17 geometry below, so without
+        # a gate any disk whose bytes at canonical LBA 9 happen to parse as a
+        # plausible label record gets claimed (e.g. file data on a Commodore
+        # D64). HDOS only ever lives on geometries its controllers support,
+        # so refuse disks whose known geometry is not an HDOS shape.
+        if original_pf is not None and not self._geometry_plausible_for_hdos(
+            original_pf
+        ):
+            self.logger.debug(
+                "HDOS validation skipped: disk geometry is not an HDOS shape"
+            )
+            self._cached_validity_score = 0
+            return 0
+
         try:
             canonical_pf = FormatProfile(
                 name="hdos_canonical",
@@ -947,6 +965,33 @@ class HDOSFilesystem(Filesystem):
                 self._data_base_lba_cache = None
 
         return self._cached_validity_score
+
+    @staticmethod
+    def _geometry_plausible_for_hdos(pf: PhysicalFormat) -> bool:
+        """
+        Checks whether a disk geometry is one an HDOS controller can produce.
+
+        HDOS disks always have uniform 256-byte sectors and a uniform
+        sectors-per-track count in one of the H17/H37/H47 shapes (40 or 80
+        tracks x 10 sectors, or 77 tracks x 26 sectors), single- or
+        double-sided. A variable-zone geometry (e.g. a Commodore D64's
+        21/19/18/17 sectors per track) is never HDOS.
+
+        Args:
+            pf: The physical format to check.
+
+        Returns:
+            True if the geometry is plausible for HDOS, False otherwise.
+        """
+        if pf.heads not in (1, 2):
+            return False
+        if not pf.track_formats:
+            return pf.bytes_per_sector == HDOS_BYTES_PER_SECTOR
+        spt_values = {tf.sectors_per_track for tf in pf.track_formats}
+        bps_values = {tf.bytes_per_sector for tf in pf.track_formats}
+        if len(spt_values) != 1 or bps_values != {HDOS_BYTES_PER_SECTOR}:
+            return False
+        return (pf.cylinders, next(iter(spt_values))) in HDOS_PLAUSIBLE_SHAPES
 
     def get_volume_label(self) -> Optional[str]:
         """

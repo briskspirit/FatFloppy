@@ -217,6 +217,28 @@ def test_validity_score(hdos_controller: DiskController, tmp_path: Path) -> None
     assert hdos_fs_on_garbage.get_validity_score() == 0
 
 
+def test_validity_score_rejects_cbm_geometry_disk() -> None:
+    """HDOS must not over-claim a Commodore disk.
+
+    A D64's variable 21/19/18/17 sectors-per-track zone layout is not a
+    geometry any HDOS controller (H17/H37/H47) supports, so the score must
+    stay below the HDOS threshold even when arbitrary file data at
+    canonical-geometry LBA 9 happens to parse as a plausible label record.
+    """
+    d64_path = RESOURCE_DIR / "CBM" / "vic1541_bam.d64"
+    if not d64_path.exists():
+        pytest.skip(f"CBM test resource not found: {d64_path}")
+
+    from fatfloppy.core.drivers.cbm_image import CBMImageDriver
+
+    driver = CBMImageDriver(str(d64_path))
+    disk = Disk(driver)
+    disk.set_geometry(driver.physical_format)
+
+    hdos_fs_on_cbm_disk = HDOSFilesystem(disk)
+    assert hdos_fs_on_cbm_disk.get_validity_score() < HDOSFilesystem.VALIDITY_THRESHOLD
+
+
 @pytest.mark.parametrize(
     "image_file,disk_type",
     [
