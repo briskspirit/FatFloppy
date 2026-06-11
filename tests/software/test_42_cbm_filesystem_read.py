@@ -1,5 +1,7 @@
 """CBM filesystem read-path tests."""
 
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -157,7 +159,10 @@ def formatted_d81_bytes(name=b"EIGHTY TRACKS") -> bytearray:
 
 
 def open_fs(img_bytes) -> CBMFilesystem:
-    drv = CBMImageDriver("mem.d64", image_data=bytes(img_bytes))
+    # Temp-dir path: write tests flush via the driver, which persists to
+    # file_path -- a relative name would litter the repo root with mem.d64.
+    mem_path = Path(tempfile.gettempdir()) / f"fatfloppy-mem-{os.getpid()}.d64"
+    drv = CBMImageDriver(str(mem_path), image_data=bytes(img_bytes))
     disk = Disk(drv)
     disk.set_geometry(drv.physical_format)
     return CBMFilesystem(disk)

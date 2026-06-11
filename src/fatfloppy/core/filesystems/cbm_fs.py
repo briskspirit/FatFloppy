@@ -1,5 +1,6 @@
 """Commodore CBM DOS filesystem (1541/1571/1581)."""
 
+import contextlib
 import datetime
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar, Optional
@@ -391,10 +392,34 @@ class CBMFilesystem(Filesystem):
         raise NotImplementedError("CBM DOS has no subdirectories")
 
     def delete(self, path: str) -> None:
-        raise NotImplementedError("CBM delete arrives with the write path")
+        """Scratches a file: frees its data chain in the BAM, then zeroes the
+        slot's type byte.
+
+        A corrupt chain (cycle / off-disk link) raises ValueError BEFORE any
+        BAM mutation -- the entry of a file whose blocks could not be freed is
+        deliberately left intact so the situation stays visible.
+        """
+        self._initialize()
+        t, s, k, entry = self._find_entry(path)
+        ftype = entry[2] & 0x0F
+        if ftype == 5:
+            raise NotImplementedError("Partition delete lands in a later phase")
+        if ftype == 4 and entry[0x15] != 0:
+            raise NotImplementedError("REL delete lands in a later phase")
+        for ct, cs in self._follow_chain(entry[3], entry[4]):
+            self._bam.set_free(ct, cs)
+        sec = bytearray(self._read_ts(t, s))
+        sec[0x20 * k + 2] = 0x00
+        self._write_ts(t, s, bytes(sec))
+        self._bam.flush()
+        self.disk.flush()
 
     def delete_recursive(self, path: str) -> bool:
-        raise NotImplementedError("CBM delete arrives with the write path")
+        try:
+            self.delete(path)
+            return True
+        except FileNotFoundError:
+            return False
 
     def format_fs(self, profile, volume_label=None) -> None:
         raise NotImplementedError("CBM format arrives with the write path")
@@ -672,6 +697,106 @@ class CBMFilesystem(Filesystem):
                     return got
         raise OSError("Disk full")
 
+    # -- write path --------------------------------------------------------------
+
+    _TYPE_SUFFIXES: ClassVar[dict[str, int]] = {"p": 2, "s": 1, "u": 3, "r": 4}
+
+    @staticmethod
+    def _split_type_suffix(name: str) -> tuple[str, int, int]:
+        """Splits a c1541-style type suffix: 'NAME,s' -> (NAME, 1, 0);
+        'NAME,r:100' -> (NAME, 4, 100). Defaults to PRG when there is no
+        recognizable suffix; a comma that does not parse as a type code stays
+        part of the filename (e.g. 'A,B'). REL record length is validated here
+        (1-254) even though REL writing itself is deferred."""
+        base, sep, suffix = name.rpartition(",")
+        if sep and suffix:
+            code, _colon, arg = suffix.partition(":")
+            ftype = CBMFilesystem._TYPE_SUFFIXES.get(code.lower())
+            if ftype is not None and (not arg or code.lower() == "r"):
+                reclen = 0
+                if ftype == 4:
+                    if not arg:
+                        raise ValueError("REL files need ',r:<record-length>'")
+                    reclen = int(arg)
+                    if not 1 <= reclen <= 254:
+                        raise ValueError("REL record length must be 1-254")
+                return base, ftype, reclen
+        return name, 2, 0
+
+    def _write_chain(self, chunks: list[bytes]) -> list[tuple[int, int]]:
+        """Allocates and writes a linked sector chain; frees everything
+        allocated so far if the disk fills up mid-allocation."""
+        chain: list[tuple[int, int]] = []
+        try:
+            for _ in chunks:
+                ts = (
+                    self._allocate_first_sector()
+                    if not chain
+                    else self._allocate_next_sector(*chain[-1])
+                )
+                chain.append(ts)
+        except OSError:
+            self._rollback(chain)
+            raise
+        for i, (t, s) in enumerate(chain):
+            sec = bytearray(256)
+            if i + 1 < len(chain):
+                sec[0], sec[1] = chain[i + 1]
+                sec[2:256] = chunks[i].ljust(PAYLOAD, b"\x00")
+            else:
+                sec[0], sec[1] = 0, len(chunks[i]) + 1
+                sec[2 : 2 + len(chunks[i])] = chunks[i]
+            self._write_ts(t, s, bytes(sec))
+        return chain
+
+    def _rollback(self, chain: list[tuple[int, int]]) -> None:
+        """Frees a partially-allocated chain so the BAM returns to its
+        pre-write state (counts and bitmaps both)."""
+        for t, s in chain:
+            try:
+                self._bam.set_free(t, s)
+            except ValueError:
+                self.logger.warning(f"Rollback: {t}/{s} was already free")
+
+    def _claim_dir_slot(self) -> tuple[int, int, int]:
+        """Returns (track, sector, slot) of a free directory slot, reusing a
+        scratched slot anywhere in the chain or extending the chain within the
+        directory track (dir_interleave) when every slot is taken.
+
+        The extension's set_allocated lives in the BAM strategy buffer keyed
+        by the BAM sector (e.g. (18,0) on a 1541), while the subsequent
+        _write_ts of the new directory sector pops only its own (track,
+        sector) key -- the pending allocation is never discarded.
+        """
+        self._initialize()
+        count = 0
+        last = None
+        for t, s, data in self._iter_dir_sectors():
+            for k in range(8):
+                count += 1
+                if count > self.layout.max_dir_entries:
+                    raise OSError("Directory full")
+                if data[0x20 * k + 2] == 0x00:
+                    return t, s, k
+            last = (t, s)
+        if count + 1 > self.layout.max_dir_entries:
+            raise OSError("Directory full")
+        lt, ls = last
+        spt = self.layout.spt(lt)
+        s = (ls + self.layout.dir_interleave) % spt
+        for _ in range(spt):
+            if self._bam.is_free(lt, s):
+                self._bam.set_allocated(lt, s)
+                new = bytearray(256)
+                new[1] = 0xFF  # chain end: 8 fresh slots
+                self._write_ts(lt, s, bytes(new))
+                old = bytearray(self._read_ts(lt, ls))
+                old[0], old[1] = lt, s
+                self._write_ts(lt, ls, bytes(old))
+                return lt, s, 0
+            s = (s + 1) % spt
+        raise OSError("Directory full (track exhausted)")
+
     # -- lookup ------------------------------------------------------------------
 
     def _find_entry(self, path: str):
@@ -712,4 +837,41 @@ class CBMFilesystem(Filesystem):
             return []
 
     def write_file(self, path: str, data: bytes) -> None:
-        raise NotImplementedError("CBM write arrives with the write path")
+        """Writes a file, with c1541-style type suffixes (',p' PRG default,
+        ',s' SEQ, ',u' USR; ',r:<reclen>' REL is validated but deferred).
+
+        Scratch-and-replace semantics, scratch FIRST like real CBM DOS ('@0:'):
+        an existing file of the same name is deleted before the new chain is
+        allocated, so large rewrites fit in the freed space. The trade-off: a
+        mid-write disk-full leaves the old file deleted -- but the rollback
+        still frees the new partial chain, so the BAM stays consistent.
+        """
+        self._initialize()
+        base, ftype, _reclen = self._split_type_suffix(path.removeprefix("/"))
+        raw_name = unicode_to_petscii(base)
+        if not raw_name or len(raw_name) > 16:
+            raise ValueError(f"Invalid CBM filename {base!r} (1-16 PETSCII chars)")
+        if ftype == 4:
+            raise NotImplementedError("REL writing lands in a later phase")
+        with contextlib.suppress(FileNotFoundError):
+            self.delete("/" + base)
+        chunks = [data[i : i + PAYLOAD] for i in range(0, len(data), PAYLOAD)] or [b""]
+        chain = self._write_chain(chunks)
+        try:
+            t, s, k = self._claim_dir_slot()
+        except OSError:
+            self._rollback(chain)
+            self._bam.flush()
+            self.disk.flush()
+            raise
+        sec = bytearray(self._read_ts(t, s))
+        off = 0x20 * k
+        sec[off + 2] = 0x80 | ftype  # closed file
+        sec[off + 3], sec[off + 4] = chain[0]
+        sec[off + 5 : off + 0x15] = raw_name.ljust(16, bytes([PETSCII_PAD]))
+        sec[off + 0x15 : off + 0x1E] = bytes(9)  # side-sector/reclen/unused
+        sec[off + 0x1E] = len(chain) & 0xFF
+        sec[off + 0x1F] = len(chain) >> 8
+        self._write_ts(t, s, bytes(sec))
+        self._bam.flush()
+        self.disk.flush()
