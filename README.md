@@ -129,6 +129,14 @@ fatfloppy
 - **Damage handling**: files damaged on the medium are flagged `DMG` and read
   back with their holes zero-filled; a file cut by the end of the volume is
   flagged `PARTIAL` and reads back as the available prefix.
+- **Split backup sets**: extracting a file cut at end-of-volume prompts to
+  open the next volume image of the backup set and stitches the pieces
+  together; picking an image from the wrong set (or the wrong volume of the
+  right set) is detected and re-prompted, and chains of any length are
+  followed volume by volume (N-volume sets prompt once per missing volume).
+  Declining extracts the available prefix as before, and drag-out to the host
+  always extracts the available prefix without prompting (a modal dialog
+  cannot interrupt a drag).
 - **AEGIS disks**: AEGIS-filesystem (native) Apollo floppies are recognized
   as Apollo containers but their filesystem cannot be browsed yet.
 

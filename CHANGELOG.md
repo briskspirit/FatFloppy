@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     flagged partial
   - read-only filesystem presenting each backup tree as a directory hierarchy
     with the genuine Apollo timestamps
+  - cross-volume reassembly of split backup sets: extracting a file cut at
+    end-of-volume prompts to open the next volume image and stitches the
+    pieces together (wrong-volume picks are detected and re-prompted;
+    N-volume chains prompt once per missing volume; declining -- or dragging
+    the file out to the host -- extracts the available prefix)
 - Commodore CBM DOS support:
   - D64/D71/D81 image driver (1541/1571/1581 variable-zone geometry derived
     from the exact file size), including the trailing error-byte D64/D71
