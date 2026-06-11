@@ -57,6 +57,16 @@ FTN_STITCHED_SHA256 = "6b19bd9fd46f13baa879eb7c6e37adf056b7284043e3f54fc138c48e2
 #   SYS5_BIN.seq1.32A33654/SYS5/BIN/CC -- 29,708 raw bytes (15,664 on disk4
 #   + disk3's 14,044-byte tail); 30,500 declared -> stays PARTIAL too.
 CC_STITCHED_SHA256 = "e4da40612da40d6350ecfe23a1397c3fb669ef79a8df574479c8e5ad6af386f7"
+#   COM.seq3.356E4C29/COM/FTN_SR9.2 (the FT0006 set's own ftn_sr9.2) --
+#   424,944 content bytes (40,822 on disk9 + disk10's 384,122-byte tail);
+#   439,244 were declared, so 14,300 were never written to the set and the
+#   stitched file stays PARTIAL even though the tree is complete.
+FT0006_FTN_SR92_SHA256 = (
+    "06f89b10029cfb4de3619871a8cf6c8cb207c452ff32684cc78826513b6fd3ce"
+)
+#   COM.seq3.356E4C29/COM/FTN -- 549,306 content bytes, entirely on disk9
+#   (damaged: 586,994 declared); the stitch must leave it untouched.
+FT0006_FTN_SHA256 = "544b1164a9e73fd72638fffbcba8546b41102ca64b98c18bf3d36b20a51d4c20"
 
 
 def real_volume_bytes(name: str) -> bytes:
@@ -703,6 +713,51 @@ class TestAttachVolume:
             # disk3's follow-on entries joined the tree's namespace
             names = {i.name for i in fs.list_directory("/sys5/bin")}
             assert {"touch", "who", "csh"} <= names
+        finally:
+            controller.close_disk()
+
+    def test_real_disk9_plus_disk10(self):
+        # Third real set: FT0006 COM seq 3, disk9 (section 1, EOV) ->
+        # disk10 (section 2, EOF).  'ftn_sr9.2' is the EOV-cut file (FT0006
+        # carries its OWN ftn_sr9.2, distinct from FT0003's); 'ftn' lives
+        # entirely on disk9 and must survive the stitch untouched.  Both
+        # pin against the reference stitched extraction.
+        disk10 = real_volume_bytes("disk10.img")
+        real_volume_bytes("disk9.img")  # skip guard
+        controller = DiskController()
+        assert controller.open_disk(str(REAL_VOLUMES / "disk9.img"), disk_type="auto")
+        try:
+            fs = controller.filesystem
+            pending = fs.pending_continuations()
+            assert [(s.file_id, s.sequence, s.next_section) for s in pending] == [
+                ("COM", 3, 2)
+            ]
+            assert pending[0].volume_id == "FT0006"
+            prefix = fs.read_file("/com/ftn_sr9.2")
+            assert len(prefix) == 40854 - 32  # disk9's available prefix
+
+            result = fs.attach_volume(disk10)
+            assert result.volume_id == "FT0006"
+            assert result.stitched_tree_ids == ("COM",)
+            assert result.still_incomplete == []
+            assert fs.pending_continuations() == []
+
+            ftn_sr = fs.read_file("/com/ftn_sr9.2")
+            assert len(ftn_sr) == 424944
+            assert hashlib.sha256(ftn_sr).hexdigest() == FT0006_FTN_SR92_SHA256
+            ftn = fs.read_file("/com/ftn")
+            assert len(ftn) == 549306
+            assert hashlib.sha256(ftn).hexdigest() == FT0006_FTN_SHA256
+
+            # the stitched COM namespace matches the reference directory
+            infos = fs.list_directory("/com")
+            assert {i.name for i in infos} == {"ftn", "ftn_sr9.2"}
+            # 14,300 declared bytes were never written to the set: the
+            # stitched file stays PARTIAL although nothing is pending
+            ftn_sr_info = next(i for i in infos if i.name == "ftn_sr9.2")
+            assert "PARTIAL" in ftn_sr_info.attributes
+            assert "DMG" in ftn_sr_info.attributes
+            assert fs.get_display_info()["Attached Volumes"] == "FT0006"
         finally:
             controller.close_disk()
 
