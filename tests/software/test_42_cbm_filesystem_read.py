@@ -188,11 +188,6 @@ class TestCBMSkeleton:
         base = 357  # linear index of 18/0
         assert units == [base, base + 1]
 
-    def test_validity_score_is_quiet_zero_for_now(self):
-        # Real scoring arrives later; for now CBM must never claim a disk.
-        fs = open_fs(formatted_d64_bytes())
-        assert fs.get_validity_score() == 0
-
     def test_configs_match_delegates(self):
         a = layout_for_variant("D64", 35)
         b = layout_for_variant("D64", 35)
@@ -219,6 +214,7 @@ class TestCBMSkeleton:
 
 
 def d64_with_file(data: bytes = b"\x01\x08" + bytes(300)) -> bytearray:
+    assert len(data) <= 508, "d64_with_file only supports 2-sector chains"
     img = formatted_d64_bytes()
     layout = layout_for_variant("D64", 35)
     # Data chain: 17/0 -> 17/10 (interleave 10), authentic 1541 placement.
@@ -325,6 +321,17 @@ class TestCBMRead:
     def test_empty_payload_last_sector(self):
         fs = open_fs(d64_with_file(b""))  # zero-byte file: one sector, byte1=1
         assert fs.read_file("/HELLO") == b""
+        assert fs.list_directory("/")[0].size == 0
+
+    def test_filename_starting_with_slash(self):
+        # CBM names may legally start with '/': only the leading path slash
+        # is stripped, so "//X" must resolve to the entry named "/X".
+        img = d64_with_file()
+        layout = layout_for_variant("D64", 35)
+        off = (layout.sectors_before(18) + 1) * 256
+        img[off + 5 : off + 0x15] = b"/X".ljust(16, b"\xa0")
+        fs = open_fs(img)
+        assert fs.read_file("//X") == b"\x01\x08" + bytes(300)
 
 
 RESOURCES = Path(__file__).parent.parent / "resources" / "CBM"
@@ -364,3 +371,126 @@ def test_real_image_lists_and_reads(image):
             continue
         data = fs.read_file("/" + e.name)
         assert len(data) == e.size
+
+
+class TestCBMValidity:
+    def test_formatted_disk_scores_above_threshold(self):
+        fs = open_fs(d64_with_file())
+        assert fs.get_validity_score() >= CBMFilesystem.validity_threshold
+
+    def test_zero_disk_scores_zero(self):
+        layout = layout_for_variant("D64", 35)
+        fs = open_fs(bytearray(layout.total_sectors * 256))
+        assert fs.get_validity_score() == 0
+
+    def test_random_disk_scores_below_threshold(self):
+        import random
+
+        rng = random.Random(42)
+        layout = layout_for_variant("D64", 35)
+        img = bytearray(rng.randbytes(layout.total_sectors * 256))
+        fs = open_fs(img)
+        assert fs.get_validity_score() < CBMFilesystem.validity_threshold
+
+    def test_non_cbm_geometry_scores_zero(self):
+        from fatfloppy.core.drivers import IMGImageDriver
+        from fatfloppy.core.filesystem_registry import FilesystemRegistry
+
+        res = Path(__file__).parent.parent / "resources" / "empty_formatted_360k.img"
+        if not res.exists():
+            pytest.skip("empty_formatted_360k.img not present")
+        fmt_360 = FilesystemRegistry.get_all_formats()["ibm_5.25_360k"]
+        drv = IMGImageDriver(str(res))
+        disk = Disk(drv)
+        disk.set_geometry(fmt_360.physical_format)
+        drv.set_physical_format(fmt_360.physical_format)
+        fs = CBMFilesystem(disk)
+        assert fs.get_validity_score() == 0
+
+    @pytest.mark.parametrize(
+        "image",
+        [
+            "vic1541_bam.d64",
+            "c128_tutorial.d64",
+            "endless_forms.d64",
+            "1571_demo.d71",
+            "1581_demo.d81",
+        ],
+    )
+    def test_real_images_score_above_threshold(self, image):
+        path = RESOURCES / image
+        if not path.exists():
+            pytest.skip(f"resource {image} not present")
+        drv = CBMImageDriver(str(path))
+        disk = Disk(drv)
+        disk.set_geometry(drv.physical_format)
+        fs = CBMFilesystem(disk)
+        assert fs.get_validity_score() >= CBMFilesystem.validity_threshold
+
+    def test_cpm_plus_d64_scores_below_threshold(self):
+        # Real CP/M-on-CBM disk: no CBM directory; CBM must not claim it loudly.
+        path = RESOURCES / "cpm_plus_30.d64"
+        if not path.exists():
+            pytest.skip("resource not present")
+        drv = CBMImageDriver(str(path))
+        disk = Disk(drv)
+        disk.set_geometry(drv.physical_format)
+        fs = CBMFilesystem(disk)
+        assert fs.get_validity_score() < CBMFilesystem.validity_threshold
+
+
+class TestCBMDisplayAndMap:
+    def test_display_info_keys(self):
+        fs = open_fs(d64_with_file())
+        info = fs.get_display_info()
+        assert info["Disk Name"] == "TEST DISK"
+        assert info["Variant"] == "1541"
+        assert info["Disk ID"] == "AA"
+        assert info["DOS Type"] == "2A"
+        assert "Blocks Free" in info
+
+    def test_display_info_reports_error_block(self, tmp_path):
+        img = bytes(d64_with_file()) + bytes([0x01]) * 683
+        p = tmp_path / "err.d64"
+        p.write_bytes(img)
+        drv = CBMImageDriver(str(p))
+        disk = Disk(drv)
+        disk.set_geometry(drv.physical_format)
+        fs = CBMFilesystem(disk)
+        assert fs.get_display_info()["Recorded Sector Errors"] == "0"
+
+    def test_disk_map_layout(self):
+        fs = open_fs(d64_with_file())
+        m = fs.get_disk_map_layout()
+        layout = layout_for_variant("D64", 35)
+        get_type = m["get_sector_type"]
+        assert get_type(layout.linear_index(18, 0)) == "system"
+        assert get_type(layout.linear_index(18, 1)) == "directory"
+        assert get_type(layout.linear_index(17, 0)) == "file"
+        assert get_type(layout.linear_index(1, 0)) == "free"
+        assert m["allocation_unit_size_sectors"] == 1
+        assert m["legend"]
+        assert m["type_color_map"]
+
+
+class TestCBM40TrackBam:
+    def test_40_track_d64_bam_tolerated(self):
+        # Tracks 36-40 have no standard BAM; they read as allocated, count 0,
+        # and verify_counts ignores them (read-tolerated, never written).
+        layout40 = layout_for_variant("D64", 40)
+        img = bytearray(layout40.total_sectors * 256)
+        base = formatted_d64_bytes()
+        img[: len(base)] = base
+        drv = CBMImageDriver("mem.d64", image_data=bytes(img))
+        assert drv.physical_format.cylinders == 40
+        disk = Disk(drv)
+        disk.set_geometry(drv.physical_format)
+        fs = CBMFilesystem(disk)
+        fs._initialize()
+        assert fs.layout.tracks == 40
+        assert fs._bam.free_count(36) == 0
+        assert not fs._bam.is_free(36, 0)
+        assert fs._bam.verify_counts()  # tracks >35 excluded from the check
+        free, _total = fs.get_free_space()
+        assert free == 664 * 254
+        assert fs.get_validity_score() >= CBMFilesystem.validity_threshold

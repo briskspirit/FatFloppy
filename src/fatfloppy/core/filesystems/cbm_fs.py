@@ -109,8 +109,12 @@ class _BamStrategy(ABC):
             if t not in self.layout.reserved_tracks
         )
 
+    def mapped_tracks(self) -> range:
+        """Tracks that have a real BAM entry (count verification covers these)."""
+        return range(1, self.layout.tracks + 1)
+
     def verify_counts(self) -> bool:
-        for t in range(1, self.layout.tracks + 1):
+        for t in self.mapped_tracks():
             bits = sum(1 for s in range(self.layout.spt(t)) if self.is_free(t, s))
             if bits != self.free_count(t):
                 return False
@@ -118,7 +122,12 @@ class _BamStrategy(ABC):
 
 
 class _Bam1541(_BamStrategy):
-    """Single BAM sector at 18/0: four bytes per track (count + 3-byte bitmap)."""
+    """Single BAM sector at 18/0: four bytes per track (count + 3-byte bitmap).
+
+    Tracks above 35 on extended 1541 images have no standard BAM entry
+    (Dolphin/Speed DOS variants are read-tolerated, never written): report
+    them allocated with count 0 and exclude them from count verification.
+    """
 
     def header_ts(self):
         return (18, 0)
@@ -127,6 +136,19 @@ class _Bam1541(_BamStrategy):
         buf = self._sector(18, 0)
         e = 0x04 + 4 * (track - 1)
         return buf, e, e + 1
+
+    def mapped_tracks(self):
+        return range(1, min(self.layout.tracks, 35) + 1)
+
+    def is_free(self, t, s):
+        if t > 35:
+            return False
+        return super().is_free(t, s)
+
+    def free_count(self, t):
+        if t > 35:
+            return 0
+        return super().free_count(t)
 
 
 class _Bam1571(_BamStrategy):
@@ -204,7 +226,9 @@ class CBMFilesystem(Filesystem):
 
     def _write_ts(self, track: int, sector: int, data: bytes) -> None:
         self.disk.write_sector(track - 1, 0, sector, data)
-        # Phase 3 BAM mutation goes through the strategy cache + flush instead.
+        # Phase 3 BAM mutation goes through the strategy cache + flush instead;
+        # the BAM flush must call self.disk.write_sector directly (NOT _write_ts)
+        # or it would invalidate the very cache entries it is flushing.
         if self._bam is not None:
             self._bam.invalidate()
 
@@ -244,13 +268,61 @@ class CBMFilesystem(Filesystem):
         )
 
     def get_validity_score(self) -> int:
-        # Real scoring lands with the read path; until then never claim a disk
-        # (and never raise: the registry probes every filesystem on every disk).
+        # Never raise: the registry probes every filesystem on every disk.
         try:
             self._initialize()
         except (ValueError, OSError):
             return 0
-        return 0
+        try:
+            t, s = self._bam.header_ts()
+            hdr = self._read_ts(t, s)
+        except Exception:
+            return 0
+        if not any(hdr):
+            return 0
+        score = 0
+        try:
+            dir_t, dir_s = hdr[0], hdr[1]
+            if 1 <= dir_t <= self.layout.tracks and dir_s < self.layout.spt(dir_t):
+                score += 15
+            dos_ok = {"1541": (0x41, 0x00), "1571": (0x41, 0x00), "1581": (0x44, 0x00)}
+            if hdr[2] in dos_ok[self.layout.variant]:
+                score += 10
+            name_off = 0x04 if self.layout.variant == "1581" else 0x90
+            name = hdr[name_off : name_off + 16]
+            if all(b == PETSCII_PAD or b in _P2U for b in name):
+                score += 10
+            if self._bam.verify_counts():
+                score += 20
+            entries_ok = True
+            dir_walk_ok = True
+            try:
+                # No early break: the full chain must be walked so an invalid
+                # directory link still raises (and caps the score below).
+                for _t, _s, _k, entry in self._iter_entries():
+                    tb = entry[2]
+                    if tb == 0x00:
+                        continue  # scratched slots never count against
+                    ftype = tb & 0x0F
+                    first_t = entry[3]
+                    if ftype not in (1, 2, 3, 4, 5) or not (
+                        1 <= first_t <= self.layout.tracks
+                    ):
+                        entries_ok = False
+            except ValueError as exc:
+                dir_walk_ok = False
+                self.logger.debug(f"Directory walk failed during scoring: {exc}")
+            if dir_walk_ok and entries_ok:
+                score += 25
+            if not dir_walk_ok:
+                # No walkable directory chain: CBM DOS cannot operate on this
+                # disk (a real 1541 errors out too), so never claim it even if
+                # the header/BAM look plausible -- e.g. CP/M-reformatted disks
+                # that keep the original 18/0 header intact.
+                score = min(score, self.validity_threshold - 5)
+        except Exception as exc:
+            self.logger.debug(f"Validity scoring stopped early: {exc}")
+        return min(score, 100)
 
     def create_directory(self, path: str) -> None:
         raise NotImplementedError("CBM DOS has no subdirectories")
@@ -265,10 +337,74 @@ class CBMFilesystem(Filesystem):
         raise NotImplementedError("CBM format arrives with the write path")
 
     def get_disk_map_layout(self) -> dict[str, Any]:
-        raise NotImplementedError("CBM disk map arrives with the read path")
+        self._initialize()
+        layout = self.layout
+        system = {layout.linear_index(*self._bam.header_ts())}
+        if layout.variant == "1571":
+            system.add(layout.linear_index(53, 0))
+        if layout.variant == "1581":
+            system |= {layout.linear_index(40, 1), layout.linear_index(40, 2)}
+        directory = set()
+        try:
+            for t, s, _d in self._iter_dir_sectors():
+                directory.add(layout.linear_index(t, s))
+        except ValueError:
+            pass
+        allocated = set(self.get_allocated_units())
+
+        def get_sector_type(lba: int) -> str:
+            if lba in system:
+                return "system"
+            if lba in directory:
+                return "directory"
+            if lba in allocated:
+                return "file"
+            return "free"
+
+        colors = {
+            "system": "#CC4444",
+            "directory": "#4444CC",
+            "file": "#44AA44",
+            "free": "#DDDDDD",
+        }
+        return {
+            "legend": [
+                ("BAM/Header", colors["system"]),
+                ("Directory", colors["directory"]),
+                ("File Data", colors["file"]),
+                ("Free", colors["free"]),
+            ],
+            "get_sector_type": get_sector_type,
+            "allocation_unit_size_sectors": 1,
+            "first_data_sector": 0,
+            "type_color_map": colors,
+        }
 
     def get_display_info(self) -> dict[str, str]:
-        raise NotImplementedError("CBM display info arrives with the read path")
+        self._initialize()
+        t, s = self._bam.header_ts()
+        hdr = self._read_ts(t, s)
+        id_off = 0x16 if self.layout.variant == "1581" else 0xA2
+        dos_off = 0x19 if self.layout.variant == "1581" else 0xA5
+        info = {
+            "Filesystem": "CBM DOS",
+            "Variant": self.layout.variant,
+            "Tracks": str(self.layout.tracks),
+            "Disk Name": self.get_volume_label() or "",
+            "Disk ID": petscii_to_unicode(hdr[id_off : id_off + 2]),
+            "DOS Type": petscii_to_unicode(hdr[dos_off : dos_off + 2]),
+            "Blocks Free": str(self._bam.free_blocks()),
+            "Directory Entries": (
+                f"{len(self.list_directory('/'))}/{self.layout.max_dir_entries}"
+            ),
+        }
+        drv = self.disk.driver
+        if getattr(drv, "has_error_block", False):
+            bad = sum(1 for c in drv.error_codes if c not in (0x00, 0x01))
+            info["Recorded Sector Errors"] = str(bad)
+        if hdr[2] not in (0x41, 0x44, 0x00):
+            info["Soft Write Protection"] = "yes (nonstandard DOS byte)"
+        return info
 
     # -- directory ---------------------------------------------------------------
 
@@ -328,6 +464,7 @@ class CBMFilesystem(Filesystem):
             extra_data={
                 "raw_name": bytes(entry[5:0x15]),
                 "type_byte": type_byte,
+                "ftype": ftype,
                 "first_ts": (first_t, first_s),
                 "rel_record_len": entry[0x17],
                 "side_sector_ts": (entry[0x15], entry[0x16]),
@@ -344,7 +481,7 @@ class CBMFilesystem(Filesystem):
             info = self._entry_to_fileinfo(entry)
             if info is None:
                 continue
-            base_type = FILE_TYPES.get(info.extra_data["type_byte"] & 0x0F)
+            base_type = FILE_TYPES[info.extra_data["ftype"]]
             if base_type in ("SEQ", "PRG", "USR", "REL"):
                 try:
                     info.size = self._chain_length_bytes(*info.extra_data["first_ts"])
@@ -390,6 +527,8 @@ class CBMFilesystem(Filesystem):
         return bytes(out)
 
     def _chain_length_bytes(self, track: int, sector: int) -> int:
+        """Exact byte length of a T/S chain. O(chain) disk I/O: walks every
+        link sector, so listing a directory re-reads each file's chain once."""
         chain = self._follow_chain(track, sector)
         if not chain:
             return 0
@@ -424,9 +563,11 @@ class CBMFilesystem(Filesystem):
         Entry-based lookup (no path splitting): CBM names may contain '/'.
         """
         self._initialize()
-        name = path.lstrip("/")
+        name = path.removeprefix("/")  # names may legally start with '/'
         for t, s, k, entry in self._iter_entries():
-            if entry[2] == 0x00:
+            # Same visibility rule as _entry_to_fileinfo: scratched slots and
+            # DEL placeholders (type nibble 0) are not addressable.
+            if entry[2] == 0x00 or entry[2] & 0x0F == 0:
                 continue
             if petscii_to_unicode(entry[5:0x15]) == name:
                 return t, s, k, entry
@@ -436,7 +577,7 @@ class CBMFilesystem(Filesystem):
         _t, _s, _k, entry = self._find_entry(path)
         if not entry[2] & 0x80:
             self.logger.warning(f"Reading splat (unclosed) file {path!r}")
-        if entry[2] & 0x0F == 5:  # CBM partition: raw contiguous blocks
+        if (entry[2] & 0x0F) == 5:  # CBM partition: raw contiguous blocks
             return b"".join(
                 self._read_ts(t, s) for t, s in self._partition_ts_list(entry)
             )
@@ -445,7 +586,7 @@ class CBMFilesystem(Filesystem):
     def get_file_allocation_units(self, path: str) -> list[int]:
         try:
             _t, _s, _k, entry = self._find_entry(path)
-            if entry[2] & 0x0F == 5:
+            if (entry[2] & 0x0F) == 5:
                 blocks = self._partition_ts_list(entry)
             else:
                 blocks = self._follow_chain(entry[3], entry[4])
