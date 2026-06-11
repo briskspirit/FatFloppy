@@ -54,9 +54,14 @@ Above L1 the module implements (spec sections 2.3, 2.4 and 4):
   LINK; OPT/EMPTY/ACL skipped) consumed into a :class:`WbakCatalog` of
   :class:`WbakTree`/:class:`WbakEntry` by :func:`build_catalog`.  The
   catalog is a *single-disk view*: tree sections continuing from a
-  previous volume keep their orphan head data out of the entry list.
+  previous volume keep their orphan head data out of the entry list,
+  retained verbatim in :attr:`WbakTree.orphan_tail` so a cross-volume
+  reassembly (:func:`stitch_tree`) can complete the file cut at the
+  previous volume's EOV.
 """
 
+import copy
+import logging
 import struct
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -64,6 +69,8 @@ from itertools import combinations
 from typing import Callable, Optional
 
 from .physical_format import PhysicalFormat, TrackFormat
+
+logger = logging.getLogger(__name__)
 
 SECTOR = 1024
 STREAM_START = 0x800
@@ -985,9 +992,19 @@ class WbakTree:
     ``complete`` is True only for an EOF trailer; EOV (or a missing
     trailer) means the tree continues on another volume.  For sections
     with ``section >= 2`` (this disk continues a tree started elsewhere)
-    ``continued_from_previous`` is set and any orphan head data arriving
-    before the first NAME record is skipped, with the skipped DATA/FILE
-    payload bytes counted in ``skipped_head_bytes``.
+    ``continued_from_previous`` is set and the orphan head data arriving
+    before the first NAME/FILE record -- the tail of the file cut at the
+    previous volume's EOV -- is retained in ``orphan_tail`` (it has no
+    owning entry on *this* disk) with its damage detail in
+    ``orphan_damage``, using the same note format as
+    :attr:`WbakEntry.damage_notes`.  :func:`stitch_tree` consumes it.
+    Sections whose HDR1 section number was destroyed (decoded as 0) get
+    the same treatment when their stream opens with ownerless DATA.
+
+    ``first_block_seq``/``last_block_seq`` record the wbak block sequence
+    range fed to this tree; block numbering continues across volumes
+    within a tree, so a continuation should start at
+    ``last_block_seq + 1`` (checked, warn-only, by :func:`stitch_tree`).
     """
 
     file_id: str
@@ -1000,7 +1017,10 @@ class WbakTree:
     root_path: Optional[str] = None  # backup source path from the SUB record
     block_count: int = 0
     continued_from_previous: bool = False
-    skipped_head_bytes: int = 0
+    orphan_tail: bytes = field(default=b"", repr=False)
+    orphan_damage: list[tuple] = field(default_factory=list)
+    first_block_seq: Optional[int] = None
+    last_block_seq: Optional[int] = None
 
 
 @dataclass
@@ -1059,7 +1079,7 @@ class _TreeAccumulator:
     Mirrors the reference implementation's ``Tree`` (file state machine:
     NAME announces, FILE opens, DATA appends, MARK/POPD/next-object
     closes) plus the catalog semantics from spec section 4 (decoded
-    tree-relative paths, damage/partial flags, orphan-head skipping for
+    tree-relative paths, damage/partial flags, orphan-tail retention for
     continuing sections, medium extents).
     """
 
@@ -1070,19 +1090,78 @@ class _TreeAccumulator:
         self.cur_size = 0  # raw FILE size (storage header included)
         self.cur_need = 0  # max(size, blocks * 1024)
         self.pending_name: Optional[bytes] = None
-        self.saw_name = False
+        self.saw_object = False  # NAME/FILE/DIR/LINK seen: orphan head over
+        self.orphan_buf = bytearray()  # synced to tree.orphan_tail at finalize
 
     # -- helpers
 
     def want_data(self) -> int:
-        """Remaining byte count of the open file (DATA resync context)."""
-        if self.cur is None:
-            return 0
-        return max(0, self.cur_need - len(self.cur_buf))
+        """Remaining byte count of the open file (DATA resync context).
 
-    def _skip_orphan_head(self) -> bool:
+        During a continuing section's orphan head the cut file's declared
+        size lives on the previous volume: any amount of continuation
+        DATA is welcome (matches the reference's cross-volume chain mode,
+        where the file is still open and its want is genuinely positive).
+        """
+        if self.cur is not None:
+            return max(0, self.cur_need - len(self.cur_buf))
+        if self._in_orphan_head():
+            return _MAX_DATA_CHUNK
+        return 0
+
+    def _in_orphan_head(self) -> bool:
         """True while a continuing section's head data has no owner here."""
-        return self.tree.continued_from_previous and not self.saw_name
+        return (
+            self.tree.continued_from_previous or self.tree.section == 0
+        ) and not self.saw_object
+
+    def _object_seen(self) -> None:
+        """First NAME/FILE/DIR/LINK record: the orphan head (if any) ends."""
+        self.saw_object = True
+
+    def _orphan_data(
+        self,
+        block_seq: int,
+        off: int,
+        body: bytes,
+        claimed: int,
+        damage: tuple[tuple[int, int], ...],
+        irregular: bool,
+    ) -> None:
+        """Retain a continuing section's ownerless head DATA chunk.
+
+        Same zero-fill/damage accounting as owned-file assembly, except
+        the zero-fill pad for a chunk cut by the block end is uncapped:
+        the cut file's declared size is unknown on this volume and
+        :func:`stitch_tree` truncates the stitched data to it.  No
+        extents are recorded -- the tail's bytes belong to *this* image,
+        not the primary volume the stitched tree will be viewed under.
+        """
+        start = off + 6
+        if irregular:
+            note = ("irregular", block_seq)
+            if note not in self.tree.orphan_damage:
+                self.tree.orphan_damage.append(note)
+        else:
+            for hole_off, hole_len in damage:
+                lo = max(start, hole_off)
+                hi = min(start + len(body), hole_off + hole_len)
+                if lo < hi:
+                    self.tree.orphan_damage.append(
+                        (
+                            "hole",
+                            block_seq,
+                            len(self.orphan_buf) + (lo - start),
+                            hi - lo,
+                        )
+                    )
+        self.orphan_buf += body
+        if len(body) < claimed:
+            pad = claimed - len(body)
+            self.tree.orphan_damage.append(
+                ("zerofill", block_seq, len(self.orphan_buf), pad)
+            )
+            self.orphan_buf += bytes(pad)
 
     def _relative_path(self, raw_name: bytes) -> str:
         decoded = decode_wbak_name(raw_name)
@@ -1114,6 +1193,7 @@ class _TreeAccumulator:
         cut_short = self.cur is not None and len(self.cur_buf) < self.cur_size
         self.close()
         self.tree.complete = complete
+        self.tree.orphan_tail = bytes(self.orphan_buf)
         if not complete and open_entry is not None and cut_short:
             open_entry.partial = True
             open_entry.damaged = bool(open_entry.damage_notes)
@@ -1125,6 +1205,9 @@ class _TreeAccumulator:
         payload = event.payload
         self.tree.block_count += 1
         block_seq = struct.unpack_from(">I", payload, 0)[0] if len(payload) >= 4 else 0
+        if self.tree.first_block_seq is None:
+            self.tree.first_block_seq = block_seq
+        self.tree.last_block_seq = block_seq
         irregular = event.damage == ((0, 0),)
         damage = () if irregular else event.damage
         for item in _tile_block(payload, self.want_data):
@@ -1165,14 +1248,12 @@ class _TreeAccumulator:
             self.close()
             return
         if kind == REC_NAME:
+            self._object_seen()
             self.pending_name = bytes(body[12:])
-            self.saw_name = True
             return
         if kind == REC_FILE:
+            self._object_seen()
             self.close()
-            if self._skip_orphan_head():
-                self.tree.skipped_head_bytes += len(body)
-                return
             header = _decode_object_header(body)
             raw_name = self.pending_name if self.pending_name is not None else b"?"
             raw_size = header.size if header else 0
@@ -1190,8 +1271,8 @@ class _TreeAccumulator:
             return
         if kind == REC_DATA:
             if self.cur is None:
-                if self._skip_orphan_head():
-                    self.tree.skipped_head_bytes += len(body)
+                if self._in_orphan_head():
+                    self._orphan_data(block_seq, off, body, claimed, damage, irregular)
                 return
             entry = self.cur
             start = off + 6
@@ -1228,6 +1309,7 @@ class _TreeAccumulator:
                     self.cur_buf += bytes(pad)
             return
         if kind == REC_DIR:
+            self._object_seen()
             self.close()
             header = _decode_object_header(body)
             name = bytes(body[80:]) if len(body) > 80 else b""
@@ -1248,6 +1330,7 @@ class _TreeAccumulator:
             self.pending_name = None
             return
         if kind == REC_LINK:
+            self._object_seen()
             self.close()
             path_len = struct.unpack_from(">H", body, 4)[0] if len(body) >= 6 else 0
             raw_name = bytes(body[6 : 6 + path_len])
@@ -1320,3 +1403,180 @@ def build_catalog(data: bytes) -> WbakCatalog:
             accumulator.feed_block(event)
     finish_section(False)
     return catalog
+
+
+# ===================================================== cross-volume stitching
+
+
+@dataclass(frozen=True)
+class ContinuationSpec:
+    """Identity of the volume expected to continue an incomplete tree.
+
+    ``backup_uid``/``volume_id`` describe the set/volume the incomplete
+    tree was read from (the UVL1 uid is the cross-volume invariant; the
+    VOL1 volume id is informational -- each floppy carries its own).
+    """
+
+    file_id: str
+    sequence: int
+    next_section: int
+    backup_uid: Optional[str]
+    volume_id: Optional[str]
+
+
+def expected_continuation(
+    tree: WbakTree, catalog: WbakCatalog
+) -> Optional[ContinuationSpec]:
+    """The continuation an EOV-cut tree expects on the next volume.
+
+    Returns None for complete trees.  ``catalog`` must be the catalog
+    the tree was built from (supplies the backup uid and volume id).
+    """
+    if tree.complete:
+        return None
+    return ContinuationSpec(
+        file_id=tree.file_id,
+        sequence=tree.sequence,
+        next_section=tree.section + 1,
+        backup_uid=catalog.backup_uid,
+        volume_id=catalog.volume_id,
+    )
+
+
+def stitch_tree(
+    prev: WbakTree,
+    cont: WbakTree,
+    *,
+    prev_uid: Optional[str],
+    cont_uid: Optional[str],
+) -> WbakTree:
+    """Merge a continuation section into its predecessor.
+
+    Pure: returns a NEW tree, mutating neither input.  Validation (in
+    order: backup uid when both sides know theirs, file_id, sequence,
+    section == prev.section + 1) raises :class:`ValueError` naming the
+    offending identity.  A block-sequence discontinuity between the two
+    sides is logged as a warning, never an error: real disks lose
+    trailers, the ANSI labels are authoritative.
+
+    Merge semantics: the cut entry (prev's single ``partial`` file; at
+    most one exists by construction) has its raw data extended with
+    ``cont.orphan_tail``, truncated to the FILE record's declared size --
+    ``partial`` clears iff the size is reached, damage flags OR.  When
+    prev has no partial entry the cut fell between files and the tail
+    must be empty (warn and discard otherwise).  The continuation's own
+    entries are appended; their extents (and the tail's bytes) live on
+    the continuation volume's image, not the primary one the merged tree
+    is viewed under, so stitched-in content carries NO extents -- the
+    disk map stays primary-volume-only.  ``complete`` is taken from the
+    continuation (EOF ends the tree, EOV expects yet another volume).
+    """
+    if prev.complete:
+        raise ValueError(
+            f"Tree {prev.file_id!r} sequence {prev.sequence} is already "
+            "complete; nothing to stitch"
+        )
+    if prev_uid is not None and cont_uid is not None and prev_uid != cont_uid:
+        raise ValueError(f"Wrong volume: backup UID {cont_uid} (expected {prev_uid})")
+    if cont.file_id != prev.file_id:
+        raise ValueError(
+            f"Wrong continuation: file_id {cont.file_id!r} (expected {prev.file_id!r})"
+        )
+    if cont.sequence != prev.sequence:
+        raise ValueError(
+            f"Wrong continuation: sequence {cont.sequence} (expected {prev.sequence})"
+        )
+    if cont.section != prev.section + 1:
+        raise ValueError(
+            f"Wrong continuation: section {cont.section} "
+            f"(expected section {prev.section + 1} of {prev.file_id!r})"
+        )
+    if (
+        prev.last_block_seq is not None
+        and cont.first_block_seq is not None
+        and cont.first_block_seq != prev.last_block_seq + 1
+    ):
+        logger.warning(
+            "wbak stitch %r section %d: block sequence discontinuity "
+            "(%d -> %d); labels are authoritative, proceeding",
+            prev.file_id,
+            cont.section,
+            prev.last_block_seq,
+            cont.first_block_seq,
+        )
+
+    entries = copy.deepcopy(prev.entries)
+    partials = [e for e in entries if e.partial]
+    if len(partials) > 1:
+        raise ValueError(
+            f"Tree {prev.file_id!r} has {len(partials)} partial entries; "
+            "expected at most one (the file cut at end-of-volume)"
+        )
+    if partials:
+        _extend_cut_entry(partials[0], cont)
+    elif cont.orphan_tail:
+        logger.warning(
+            "wbak stitch %r section %d: %d-byte orphan tail but no partial "
+            "predecessor entry; tail discarded",
+            prev.file_id,
+            cont.section,
+            len(cont.orphan_tail),
+        )
+    for entry in cont.entries:
+        appended = copy.deepcopy(entry)
+        appended.extents = []  # bytes live on the continuation volume
+        entries.append(appended)
+
+    return WbakTree(
+        file_id=prev.file_id,
+        section=cont.section,  # a further continuation must be section + 1
+        sequence=prev.sequence,
+        complete=cont.complete,
+        uid_text=prev.uid_text or cont.uid_text,
+        created=prev.created or cont.created,
+        entries=entries,
+        root_path=prev.root_path or cont.root_path,
+        block_count=prev.block_count + cont.block_count,
+        continued_from_previous=prev.continued_from_previous,
+        orphan_tail=prev.orphan_tail,  # prev's own unowned head, if any
+        orphan_damage=list(prev.orphan_damage),
+        first_block_seq=(
+            prev.first_block_seq
+            if prev.first_block_seq is not None
+            else cont.first_block_seq
+        ),
+        last_block_seq=(
+            cont.last_block_seq
+            if cont.last_block_seq is not None
+            else prev.last_block_seq
+        ),
+    )
+
+
+def _extend_cut_entry(entry: WbakEntry, cont: WbakTree) -> None:
+    """Extend the EOV-cut entry (a stitch-local copy) with the tail.
+
+    The declared raw size is reconstructed as ``entry.size + 32``
+    (:class:`WbakEntry` stores the FILE record's size minus the storage
+    header).  Tail damage notes are rebased onto the entry's raw-data
+    offsets; notes falling entirely past the truncation point are
+    dropped with the excess tail bytes they describe.
+    """
+    declared_raw = entry.size + STORAGE_HEADER_SIZE
+    base = len(entry.raw_data)
+    added_damage = False
+    for note in cont.orphan_damage:
+        if note[0] in ("hole", "zerofill"):
+            kind, block_seq, tail_off, length = note
+            start = base + tail_off
+            if start >= declared_raw:
+                continue
+            entry.damage_notes.append(
+                (kind, block_seq, start, min(length, declared_raw - start))
+            )
+        else:  # ("irregular", block_seq): whole-block damage, no offsets
+            entry.damage_notes.append(note)
+        added_damage = True
+    entry.raw_data = (entry.raw_data + cont.orphan_tail)[:declared_raw]
+    entry.partial = len(entry.raw_data) < declared_raw
+    entry.damaged = entry.damaged or added_damage

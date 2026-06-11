@@ -2,21 +2,28 @@
 """Apollo wbak parser tests: L1 framing, labels, records, catalog."""
 
 import hashlib
+import logging
 import random
 import struct
 from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from fatfloppy.core.apollo_wbak import (
     AnsiLabel,
+    ContinuationSpec,
     FrameParser,
     StreamError,
+    WbakEntry,
+    WbakTree,
     apollo_time_to_datetime,
     build_catalog,
     decode_wbak_name,
+    expected_continuation,
+    stitch_tree,
 )
 
 SEC = 1024
@@ -798,10 +805,11 @@ class TestCatalogSynthetic:
         assert world.damaged is False  # cut, not corrupted
         assert cat.read(world) == b"x" * 68  # available prefix only
 
-    def test_continued_section_orphan_head_skipped(self):
+    def test_continued_section_orphan_head_retained(self):
         # A tree section >= 2 continues a file opened on a previous volume:
-        # DATA arriving before any NAME has no owner on this disk and is
-        # skipped with a catalog-level note.
+        # DATA arriving before any NAME/FILE has no owner on this disk and
+        # is RETAINED as the tree's orphan tail for cross-volume stitching
+        # (it used to be skipped with a byte-count note).
         b = StreamBuilder()
         b.add_record(label80("VOL1", volume_id="SYN002", owner="APOLLO"))
         b.add_record(label80("UVL1", text="31F49BD4.200071FA"))
@@ -825,7 +833,8 @@ class TestCatalogSynthetic:
         cat = build_catalog(b.finish())
         (tree,) = cat.trees
         assert tree.continued_from_previous is True
-        assert tree.skipped_head_bytes == 200
+        assert tree.orphan_tail == b"y" * 200
+        assert tree.orphan_damage == []
         assert [e.path for e in tree.entries] == ["newfile"]
         assert cat.read(tree.entries[0]) == b"abcde"
 
@@ -1035,3 +1044,482 @@ class TestCatalogReal:
         assert ftn.size == 439276 - 32
         prefix = cat.read(ftn)
         assert len(prefix) == 130218 - 32  # available prefix only
+
+
+# ----------------------------------------------- cross-volume set builders
+
+
+def syn_content(total: int) -> bytes:
+    """Deterministic non-trivial content (no 00-byte pairs: cannot fake
+    embedded MARK/POPD record starts inside DATA bodies)."""
+    return bytes((i * 7 + 3) % 256 for i in range(total))
+
+
+def build_cut_volume(
+    *,
+    volume_id="SYNVA0",
+    uid_text="31F49BD4.200071FA",
+    uid=SYN_UID,
+    file_id="COM",
+    sequence=2,
+    content=b"",
+    chunks=(6000, 2000),
+    name=b"BIGFILE",
+):
+    """Volume A of a set: HDR1 section 1, one FILE declaring
+    ``len(content) + 32`` raw bytes but carrying only ``sum(chunks)``
+    content bytes (one DATA chunk per block) before the EOV trailer."""
+    raw_size = len(content) + 32
+    b = StreamBuilder()
+    b.add_record(label80("VOL1", volume_id=volume_id, owner="APOLLO"))
+    b.add_record(label80("UVL1", text=uid_text))
+    b.add_record(label80("HDR1", file_id=file_id, section=1, sequence=sequence))
+    b.add_record(label80("HDR2"))
+    b.add_record(label80("UHL1", text=uid_text))
+    b.add_tapemark()
+    first = (
+        sub_rec()
+        + mark_rec()
+        + name_rec(name)
+        + file_rec(raw_size, blocks=-(-raw_size // 1024))
+        + data_rec(storage_header(raw_size) + content[: chunks[0]])
+    )
+    b.add_record(build_block(1, uid, first))
+    done = chunks[0]
+    for seq, n in enumerate(chunks[1:], start=2):
+        b.add_record(
+            build_block(seq, uid, sub_rec() + data_rec(content[done : done + n]))
+        )
+        done += n
+    b.add_tapemark()
+    b.add_record(
+        label80(
+            "EOV1",
+            file_id=file_id,
+            section=1,
+            sequence=sequence,
+            block_count=len(chunks),
+        )
+    )
+    b.add_record(label80("EOV2"))
+    b.add_tapemark()
+    return b.finish()
+
+
+def build_continuation_volume(
+    *,
+    volume_id="SYNVB0",
+    uid_text="31F49BD4.200071FA",
+    uid=SYN_UID,
+    file_id="COM",
+    sequence=2,
+    section=2,
+    first_seq=3,
+    tail=b"",
+    follow=(b"FOLLOWON", b"follow-on data"),
+    complete=True,
+):
+    """A continuation volume: HDR1 section >= 2, leading orphan DATA (the
+    tail of the file cut on the previous volume), then optionally a
+    follow-on NAME/FILE/DATA object, then EOF (complete) or EOV."""
+    b = StreamBuilder()
+    b.add_record(label80("VOL1", volume_id=volume_id, owner="APOLLO"))
+    b.add_record(label80("UVL1", text=uid_text))
+    b.add_record(label80("HDR1", file_id=file_id, section=section, sequence=sequence))
+    b.add_record(label80("HDR2"))
+    b.add_record(label80("UHL1", text=uid_text))
+    b.add_tapemark()
+    recs = sub_rec()
+    if tail:
+        recs += data_rec(tail)
+    if follow is not None:
+        follow_name, follow_content = follow
+        raw = len(follow_content) + 32
+        recs += (
+            mark_rec()
+            + name_rec(follow_name)
+            + file_rec(raw)
+            + data_rec(storage_header(raw) + follow_content)
+        )
+    b.add_record(build_block(first_seq, uid, recs))
+    b.add_tapemark()
+    kind1, kind2 = ("EOF1", "EOF2") if complete else ("EOV1", "EOV2")
+    b.add_record(
+        label80(
+            kind1, file_id=file_id, section=section, sequence=sequence, block_count=1
+        )
+    )
+    b.add_record(label80(kind2))
+    b.add_tapemark()
+    return b.finish()
+
+
+def build_two_volume_set(**cont_overrides):
+    """Synthetic two-volume backup set; every expected literal derives
+    from what this builder wrote.
+
+    Volume A: tree COM seq 2 section 1; FILE 'BIGFILE' declares 9000
+    content bytes but carries 8000 (6000 + 2000 across blocks 1-2), EOV.
+    Volume B (same backup uid): section 2 opening with the 1000-byte
+    orphan tail that completes the file, then a follow-on file, EOF.
+    Block seqs run 1,2 on A and 3 on B (continuous).  ``cont_overrides``
+    are passed to :func:`build_continuation_volume` (mismatch tests).
+    """
+    content = syn_content(9000)
+    vol_a = build_cut_volume(content=content, chunks=(6000, 2000))
+    kw = {"tail": content[8000:], "first_seq": 3}
+    kw.update(cont_overrides)
+    vol_b = build_continuation_volume(**kw)
+    return SimpleNamespace(
+        vol_a=vol_a,
+        vol_b=vol_b,
+        content=content,
+        prefix=content[:8000],
+        tail=content[8000:],
+        uid_text="31F49BD4.200071FA",
+        file_id="COM",
+        sequence=2,
+        follow_path="followon",
+        follow_content=b"follow-on data",
+    )
+
+
+def build_three_volume_set():
+    """Three-volume chain: A (section 1, 6000 of 9000 content bytes, EOV)
+    -> B (section 2, 2000-byte tail, still short, EOV) -> C (section 3,
+    final 1000-byte tail, EOF).  Block seqs 1, 2, 3 (continuous)."""
+    content = syn_content(9000)
+    vol_a = build_cut_volume(content=content, chunks=(6000,))
+    vol_b = build_continuation_volume(
+        volume_id="SYNVB0",
+        section=2,
+        first_seq=2,
+        tail=content[6000:8000],
+        follow=None,
+        complete=False,
+    )
+    vol_c = build_continuation_volume(
+        volume_id="SYNVC0",
+        section=3,
+        first_seq=3,
+        tail=content[8000:],
+        follow=None,
+        complete=True,
+    )
+    return SimpleNamespace(
+        volumes=(vol_a, vol_b, vol_c),
+        content=content,
+        file_id="COM",
+        sequence=2,
+    )
+
+
+class TestOrphanTailRetention:
+    def test_continuation_tree_retains_orphan_tail(self):
+        s = build_two_volume_set()
+        cat = build_catalog(s.vol_b)
+        (tree,) = cat.trees
+        assert tree.section == 2 and tree.continued_from_previous
+        assert len(tree.orphan_tail) == 1000  # == len(s.tail), builder-derived
+        assert tree.orphan_tail == s.tail
+        assert tree.orphan_damage == []
+        # the follow-on object after the tail still catalogs normally
+        (follow,) = [e for e in tree.entries if not e.is_dir]
+        assert follow.path == s.follow_path
+        assert cat.read(follow) == s.follow_content
+        # block seq range is recorded for cross-volume continuity checks
+        assert (tree.first_block_seq, tree.last_block_seq) == (3, 3)
+
+    def test_section1_trees_have_empty_tail(self):
+        # real disks: every committed tree is section 1 -> no tail, and
+        # the inventories pinned elsewhere prove the entries are unchanged
+        for image in ("disk2.img", "disk8.img"):
+            cat = build_catalog((RESOURCES / image).read_bytes())
+            assert cat.trees
+            for tree in cat.trees:
+                assert tree.section == 1
+                assert tree.orphan_tail == b""
+                assert tree.orphan_damage == []
+
+    def test_orphan_tail_damage_accounted(self):
+        # The tail's first DATA chunk is cut by the block end: it claims
+        # 8178 bytes but the block holds 8142 -- the missing 36 were never
+        # written.  Same zero-fill semantics as owned-file assembly: pad
+        # so later chunks land at the right offsets, flag the loss.  The
+        # stitched entry inherits the damage at the rebased offset.
+        total = 2000 + 8178 + 300
+        content = syn_content(total)
+        chunk = content[2000 : 2000 + 8142]  # fills block 2 to exactly 8192
+        rest = content[2000 + 8178 :]  # 300 bytes after the 36 lost ones
+        vol_a = build_cut_volume(content=content, chunks=(2000,))
+
+        b = StreamBuilder()
+        b.add_record(label80("VOL1", volume_id="SYNDMG", owner="APOLLO"))
+        b.add_record(label80("UVL1", text="31F49BD4.200071FA"))
+        b.add_record(label80("HDR1", file_id="COM", section=2, sequence=2))
+        b.add_record(label80("HDR2"))
+        b.add_record(label80("UHL1", text="31F49BD4.200071FA"))
+        b.add_tapemark()
+        recs = sub_rec() + struct.pack(">HHH", 1, 8178, 1) + chunk
+        payload = struct.pack(">I", 2) + SYN_UID + struct.pack(">H", 8192) + recs
+        assert len(payload) == 8192  # the cut DATA chunk ends at the block end
+        b.add_record(payload)
+        b.add_record(build_block(3, SYN_UID, sub_rec() + data_rec(rest)))
+        b.add_tapemark()
+        b.add_record(label80("EOF1", file_id="COM", section=2, sequence=2))
+        b.add_record(label80("EOF2"))
+        b.add_tapemark()
+        vol_b = b.finish()
+
+        cat_b = build_catalog(vol_b)
+        (tree,) = cat_b.trees
+        assert tree.orphan_tail == chunk + bytes(36) + rest
+        assert tree.orphan_damage == [("zerofill", 2, 8142, 36)]
+
+        cat_a = build_catalog(vol_a)
+        merged = stitch_tree(
+            cat_a.trees[0],
+            tree,
+            prev_uid=cat_a.backup_uid,
+            cont_uid=cat_b.backup_uid,
+        )
+        (stitched,) = [e for e in merged.entries if e.path == "bigfile"]
+        assert stitched.partial is False  # declared size reached
+        assert stitched.damaged is True  # ... but 36 bytes were zero-filled
+        # rebased: 32 (storage header) + 2000 (volume A) + 8142 into raw data
+        assert ("zerofill", 2, 32 + 2000 + 8142, 36) in stitched.damage_notes
+        got = cat_a.read(stitched)
+        assert got == content[: 2000 + 8142] + bytes(36) + content[2000 + 8178 :]
+
+
+class TestContinuationSpec:
+    def test_expected_continuation_for_eov_tree(self):
+        # disk8 real: the COM tree (section 1, EOV) expects section 2 of
+        # COM seq 2 on the next volume of set FT0003.  The backup uid is
+        # read from the catalog at test time, not hardcoded.
+        cat = build_catalog((RESOURCES / "disk8.img").read_bytes())
+        com = cat.trees[1]
+        assert com.complete is False
+        spec = expected_continuation(com, cat)
+        assert spec == ContinuationSpec(
+            file_id="COM",
+            sequence=2,
+            next_section=2,
+            backup_uid=cat.backup_uid,
+            volume_id="FT0003",
+        )
+        assert spec.backup_uid is not None
+
+    def test_complete_tree_has_no_continuation(self):
+        cat = build_catalog((RESOURCES / "disk8.img").read_bytes())
+        install = cat.trees[0]
+        assert install.complete is True
+        assert expected_continuation(install, cat) is None
+
+
+class TestStitchTree:
+    @staticmethod
+    def _stitch(vol_a, vol_b):
+        cat_a = build_catalog(vol_a)
+        cat_b = build_catalog(vol_b)
+        merged = stitch_tree(
+            cat_a.trees[0],
+            cat_b.trees[0],
+            prev_uid=cat_a.backup_uid,
+            cont_uid=cat_b.backup_uid,
+        )
+        return cat_a, cat_b, merged
+
+    def test_stitch_completes_cut_file(self):
+        s = build_two_volume_set()
+        cat_a, cat_b, merged = self._stitch(s.vol_a, s.vol_b)
+        prev, cont = cat_a.trees[0], cat_b.trees[0]
+        cut = next(e for e in prev.entries if e.path == "bigfile")
+        assert cut.partial is True
+        assert cat_a.read(cut) == s.prefix  # 8000 of 9000 declared bytes
+
+        stitched = next(e for e in merged.entries if e.path == "bigfile")
+        assert stitched.partial is False
+        assert stitched.damaged is False
+        assert cat_a.read(stitched) == s.content  # all 9000 bytes
+        assert merged.complete is True
+        assert merged.section == 2  # a further continuation would be 3
+        assert (merged.file_id, merged.sequence) == (s.file_id, s.sequence)
+        assert merged.block_count == prev.block_count + cont.block_count
+        # primary-volume extents are kept: they index the primary image
+        assert stitched.extents == cut.extents
+
+        # stitching mutates NEITHER input tree
+        assert cut.partial is True and len(cut.raw_data) == 32 + 8000
+        assert prev.complete is False
+        assert cont.orphan_tail == s.tail
+
+    def test_stitch_appends_follow_on_entries(self):
+        s = build_two_volume_set()
+        cat_a, cat_b, merged = self._stitch(s.vol_a, s.vol_b)
+        follow = next(e for e in merged.entries if e.path == s.follow_path)
+        assert cat_a.read(follow) == s.follow_content
+        # its bytes live on volume B: no extents into the primary image
+        # (the disk map stays primary-volume-only)
+        assert follow.extents == []
+        # ... while the original entry on volume B's catalog keeps its own
+        orig = next(e for e in cat_b.trees[0].entries if e.path == s.follow_path)
+        assert orig.extents != []
+
+    def test_stitch_validation_matrix(self):
+        s = build_two_volume_set()
+        cat_a = build_catalog(s.vol_a)
+        prev = cat_a.trees[0]
+        uid = cat_a.backup_uid
+
+        def cont_catalog(**kw):
+            kw.setdefault("tail", s.tail)
+            kw.setdefault("first_seq", 3)
+            return build_catalog(build_continuation_volume(**kw))
+
+        bad = cont_catalog(file_id="LIB")
+        with pytest.raises(ValueError, match=r"file_id 'LIB'.*'COM'"):
+            stitch_tree(prev, bad.trees[0], prev_uid=uid, cont_uid=bad.backup_uid)
+
+        bad = cont_catalog(sequence=3)
+        with pytest.raises(ValueError, match=r"sequence 3.*2"):
+            stitch_tree(prev, bad.trees[0], prev_uid=uid, cont_uid=bad.backup_uid)
+
+        for wrong_section in (1, 3):
+            bad = cont_catalog(section=wrong_section)
+            with pytest.raises(
+                ValueError, match=rf"section {wrong_section}.*section 2"
+            ):
+                stitch_tree(prev, bad.trees[0], prev_uid=uid, cont_uid=bad.backup_uid)
+
+        wrong_uid_text = "32A339B7.000071FA"
+        bad = cont_catalog(
+            uid_text=wrong_uid_text, uid=bytes.fromhex("32a339b7000071fa")
+        )
+        with pytest.raises(ValueError, match=r"32A339B7\.000071FA.*31F49BD4\.200071FA"):
+            stitch_tree(prev, bad.trees[0], prev_uid=uid, cont_uid=bad.backup_uid)
+
+        # validation order: uid outranks file_id when both are wrong
+        bad = cont_catalog(
+            file_id="LIB",
+            uid_text=wrong_uid_text,
+            uid=bytes.fromhex("32a339b7000071fa"),
+        )
+        with pytest.raises(ValueError, match=r"32A339B7\.000071FA"):
+            stitch_tree(prev, bad.trees[0], prev_uid=uid, cont_uid=bad.backup_uid)
+
+        # internal consistency: at most one partial entry on the prev side
+        broken = WbakTree(
+            file_id="COM",
+            section=1,
+            sequence=2,
+            complete=False,
+            entries=[
+                WbakEntry(path="a", size=10, partial=True),
+                WbakEntry(path="b", size=10, partial=True),
+            ],
+        )
+        good = cont_catalog()
+        with pytest.raises(ValueError, match=r"partial"):
+            stitch_tree(broken, good.trees[0], prev_uid=None, cont_uid=good.backup_uid)
+
+    def test_three_volume_chain(self):
+        s = build_three_volume_set()
+        cat_a = build_catalog(s.volumes[0])
+        cat_b = build_catalog(s.volumes[1])
+        cat_c = build_catalog(s.volumes[2])
+
+        m1 = stitch_tree(
+            cat_a.trees[0],
+            cat_b.trees[0],
+            prev_uid=cat_a.backup_uid,
+            cont_uid=cat_b.backup_uid,
+        )
+        # intermediate result: the EOV continuation leaves the file short
+        assert m1.complete is False
+        cut = next(e for e in m1.entries if e.path == "bigfile")
+        assert cut.partial is True
+        assert cat_a.read(cut) == s.content[:8000]
+        # ... and the stitched tree advertises the NEXT continuation
+        spec = expected_continuation(m1, cat_a)
+        assert spec == ContinuationSpec(
+            file_id="COM",
+            sequence=2,
+            next_section=3,
+            backup_uid=cat_a.backup_uid,
+            volume_id=cat_a.volume_id,
+        )
+
+        m2 = stitch_tree(
+            m1,
+            cat_c.trees[0],
+            prev_uid=cat_a.backup_uid,
+            cont_uid=cat_c.backup_uid,
+        )
+        assert m2.complete is True
+        done = next(e for e in m2.entries if e.path == "bigfile")
+        assert done.partial is False
+        assert cat_a.read(done) == s.content
+        assert expected_continuation(m2, cat_a) is None
+
+    def test_empty_orphan_tail_boundary_cut(self):
+        # the file's last byte landed exactly at the end of volume A: the
+        # entry is complete (never flagged partial) but the tree still
+        # ends EOV; the continuation opens with NO orphan tail and the
+        # stitch just marks the tree complete and appends the new file.
+        content = syn_content(9000)
+        vol_a = build_cut_volume(content=content, chunks=(6000, 3000))
+        vol_b = build_continuation_volume(tail=b"", first_seq=3)
+        cat_a, cat_b, merged = self._stitch(vol_a, vol_b)
+        big = next(e for e in cat_a.trees[0].entries if e.path == "bigfile")
+        assert big.partial is False and cat_a.trees[0].complete is False
+        assert cat_b.trees[0].orphan_tail == b""
+
+        assert merged.complete is True
+        stitched = next(e for e in merged.entries if e.path == "bigfile")
+        assert stitched.partial is False
+        assert cat_a.read(stitched) == content
+        assert merged.entries[-1].path == "followon"
+        assert not any(e.partial for e in merged.entries)
+
+    def test_orphan_tail_without_partial_predecessor_warns(self, caplog):
+        # pathological: no partial entry on the prev side, yet the
+        # continuation carries a tail -- warn and discard, never fail,
+        # and never graft the tail onto a complete file.
+        content = syn_content(9000)
+        vol_a = build_cut_volume(content=content, chunks=(6000, 3000))
+        vol_b = build_continuation_volume(tail=b"\x5a" * 64, first_seq=3)
+        with caplog.at_level(logging.WARNING, logger="fatfloppy.core.apollo_wbak"):
+            cat_a, _cat_b, merged = self._stitch(vol_a, vol_b)
+        assert any("no partial" in r.message for r in caplog.records)
+        assert merged.complete is True
+        stitched = next(e for e in merged.entries if e.path == "bigfile")
+        assert cat_a.read(stitched) == content  # the stray tail went nowhere
+
+    def test_bh_seq_discontinuity_warns_not_fails(self, caplog):
+        # volume A's tree ends at block 2; a continuation starting at
+        # block 9 is suspicious (lost blocks?) but labels are
+        # authoritative: warn and stitch anyway.
+        s = build_two_volume_set(first_seq=9)
+        cat_a = build_catalog(s.vol_a)
+        cat_b = build_catalog(s.vol_b)
+        assert cat_a.trees[0].last_block_seq == 2
+        assert cat_b.trees[0].first_block_seq == 9
+        with caplog.at_level(logging.WARNING, logger="fatfloppy.core.apollo_wbak"):
+            merged = stitch_tree(
+                cat_a.trees[0],
+                cat_b.trees[0],
+                prev_uid=cat_a.backup_uid,
+                cont_uid=cat_b.backup_uid,
+            )
+        assert any("discontinuity" in r.message for r in caplog.records)
+        stitched = next(e for e in merged.entries if e.path == "bigfile")
+        assert stitched.partial is False
+        assert cat_a.read(stitched) == s.content
+
+        # the continuous case (block 3 follows block 2) stays silent
+        caplog.clear()
+        s2 = build_two_volume_set()
+        with caplog.at_level(logging.WARNING, logger="fatfloppy.core.apollo_wbak"):
+            self._stitch(s2.vol_a, s2.vol_b)
+        assert not any("discontinuity" in r.message for r in caplog.records)
