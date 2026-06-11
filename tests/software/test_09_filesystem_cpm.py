@@ -495,9 +495,14 @@ def test_invalid_filename_handling(
     result = cpm_controller.read_file("/NOEXTENSION")
     assert result is None
 
+    # Writes are strict 8.3: over-long names are rejected up front instead of
+    # being silently truncated (the old truncating behavior was the bug).
     long_name_data = b"test content"
-    assert cpm_controller.write_file("/VERYLONGFILENAME.LONGEXT", long_name_data)
+    with pytest.raises(ValueError, match="8.3"):
+        cpm_controller.write_file("/VERYLONGFILENAME.LONGEXT", long_name_data)
+    assert cpm_controller.list_directory("/") == []
 
+    assert cpm_controller.write_file("/VALIDNAM.TXT", long_name_data)
     dir_listing = cpm_controller.list_directory("/")
     assert len(dir_listing) == 1
     name, ext = dir_listing[0]["name"].split(".")

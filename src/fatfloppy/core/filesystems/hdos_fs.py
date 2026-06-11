@@ -1,6 +1,7 @@
 import contextlib
 import datetime
 import struct
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Optional
 
@@ -1143,6 +1144,28 @@ class HDOSFilesystem(Filesystem):
 
         return bytes(file_data)
 
+    def suggest_import_name(
+        self, host_name: str, existing_names: Iterable[str], is_dir: bool = False
+    ) -> str:
+        """
+        Derives a valid, unique HDOS 8.3 name from a host filename.
+
+        HDOS directory names are ASCII, so non-ASCII characters are replaced
+        with '_' before applying the base 8.3 policy. The result always passes
+        _validate_filename(strict=True).
+
+        Args:
+            host_name: The filename from the host filesystem.
+            existing_names: Names already present on the disk.
+            is_dir: True when importing a directory entry (HDOS has none, but
+                the base contract is preserved).
+
+        Returns:
+            A valid, unique on-disk 8.3 name.
+        """
+        cleaned = "".join("_" if not c.isascii() else c for c in host_name)
+        return super().suggest_import_name(cleaned, existing_names, is_dir)
+
     def write_file(self, path: str, data: bytes) -> None:
         """
         Writes data to a new file on the disk.
@@ -1161,7 +1184,9 @@ class HDOSFilesystem(Filesystem):
 
         # Validate the filename before any destructive step (delete/allocation),
         # so an invalid name cannot leave the disk mid-modified (audit hdos_fs.py:1223).
-        self._validate_filename(path)
+        # Strict: writes reject over-length names instead of silently truncating;
+        # read/delete lookups keep the lenient (truncating) behavior.
+        self._validate_filename(path, strict=True)
 
         with contextlib.suppress(FileNotFoundError):
             self.delete(path)
@@ -1232,20 +1257,27 @@ class HDOSFilesystem(Filesystem):
         self._data_base_lba_cache = None
         self.logger.info(f"Successfully wrote file '{path}' ({len(data)} bytes).")
 
-    def _validate_filename(self, path: str) -> None:
+    def _validate_filename(self, path: str, strict: bool = False) -> None:
         """
-        Validates an HDOS filename before any destructive write step.
+        Validates an HDOS filename.
 
-        Over-length names/extensions are accepted (they are truncated to the 8.3
-        on-disk fields), but an empty name or a non-ASCII name is rejected up
-        front so it cannot crash mid-write after the old file was deleted, or
-        create an invisible, undeletable directory entry (audit hdos_fs.py:1223).
+        Lenient mode (default, used by lookups): over-length names/extensions
+        are accepted (they are truncated to the 8.3 on-disk fields so existing
+        entries stay reachable), but an empty name or a non-ASCII name is
+        rejected up front so it cannot crash mid-write after the old file was
+        deleted, or create an invisible, undeletable directory entry
+        (audit hdos_fs.py:1223).
+
+        Strict mode (used by write_file): additionally rejects over-length
+        names instead of silently truncating them.
 
         Args:
             path: The file path to validate (e.g. "/NAME.EXT").
+            strict: When True, enforce the 8.3 length limits.
 
         Raises:
-            ValueError: If the name is empty or contains non-ASCII characters.
+            ValueError: If the name is empty or contains non-ASCII characters,
+                or (in strict mode) exceeds the 8.3 length limits.
         """
         raw = path.strip("/")
         name_part = raw.split(".", 1)[0]
@@ -1253,6 +1285,13 @@ class HDOSFilesystem(Filesystem):
             raise ValueError(f"HDOS filename must have a non-empty name: '{raw}'")
         if not raw.isascii():
             raise ValueError(f"HDOS filename must be ASCII: '{raw}'")
+        if strict:
+            base, _, ext = raw.partition(".")
+            if len(base) > 8 or len(ext) > 3:
+                raise ValueError(
+                    f"HDOS filenames must be 8.3 format (base <= 8 chars, "
+                    f"extension <= 3 chars): '{raw}'"
+                )
 
     def _calculate_file_size(self, entry: HDOSDirectoryEntry) -> int:
         """

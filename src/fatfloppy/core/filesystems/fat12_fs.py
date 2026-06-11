@@ -3,6 +3,7 @@ import copy
 import datetime
 import re
 import struct
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Optional
 
@@ -184,6 +185,25 @@ ATTR_LONG_NAME = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID
 ENTRY_DELETED = 0xE5
 ENTRY_UNUSED = 0x00
 
+# Device names reserved by DOS; never valid as 8.3 file base names.
+FAT_RESERVED_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "CLOCK$",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+    }
+)
+
 
 class FATFilesystem(Filesystem):
     """
@@ -202,21 +222,7 @@ class FATFilesystem(Filesystem):
     config_class: ClassVar[type] = FATVolumeInfo
 
     _invalid_83_chars_pattern = re.compile(r'[\\/:*?"<>|\s]')
-    _reserved_names = {
-        "CON",
-        "PRN",
-        "AUX",
-        "NUL",
-        "CLOCK$",
-        "COM1",
-        "COM2",
-        "COM3",
-        "COM4",
-        "LPT1",
-        "LPT2",
-        "LPT3",
-        "LPT4",
-    }
+    _reserved_names = FAT_RESERVED_NAMES
 
     def __init__(self, disk: Disk, config: Optional[FATVolumeInfo] = None):
         """
@@ -1331,6 +1337,33 @@ class FATFilesystem(Filesystem):
 
         file_data = self._read_cluster_chain_data(cluster_chain)
         return file_data[: file_entry_info.size]
+
+    def suggest_import_name(
+        self, host_name: str, existing_names: Iterable[str], is_dir: bool = False
+    ) -> str:
+        """
+        Derives a valid, unique 8.3 name, avoiding DOS reserved device names.
+
+        Extends the base 8.3 policy: if the sanitized base name collides with a
+        reserved device name (CON, PRN, ...), a '_' is appended so the result
+        always passes _is_valid_83_filename().
+
+        Args:
+            host_name: The filename from the host filesystem.
+            existing_names: Names already present in the target directory.
+            is_dir: True when importing a directory entry (no extension).
+
+        Returns:
+            A valid, unique on-disk 8.3 name.
+        """
+        name = super().suggest_import_name(host_name, existing_names, is_dir)
+        base, dot, ext = name.partition(".")
+        if base in FAT_RESERVED_NAMES:
+            base = (base + "_")[:8]
+            name = f"{base}.{ext}" if dot else base
+            if name.upper() in {n.upper() for n in existing_names}:
+                name = super().suggest_import_name(name, existing_names, is_dir)
+        return name
 
     def write_file(self, path: str, data: bytes) -> None:
         """

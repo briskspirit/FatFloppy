@@ -1,8 +1,14 @@
 """Per-filesystem import/export name policy tests."""
 
+import shutil
+from pathlib import Path
+
 import pytest
 
+from fatfloppy.core.controller import DiskController
 from fatfloppy.core.filesystems.fs_base import Filesystem
+
+RESOURCE_DIR = Path(__file__).parent.parent / "resources"
 
 
 class _StubFS(Filesystem):
@@ -156,3 +162,149 @@ class TestBaseSuggestHostName:
 class TestNameHint:
     def test_default_hint(self, stub):
         assert stub.name_hint() == "8.3 format"
+
+
+class TestFat12Names:
+    def _fs(self, tmp_path):
+        src = RESOURCE_DIR / "empty_formatted_144m.img"
+        dst = tmp_path / "fat.img"
+        shutil.copy(src, dst)
+        controller = DiskController()
+        assert controller.open_disk(str(dst), disk_type="auto")
+        return controller.filesystem
+
+    def test_reserved_name_avoided(self, tmp_path):
+        fs = self._fs(tmp_path)
+        n = fs.suggest_import_name("con.txt", set())
+        assert n.split(".")[0] not in {"CON", "PRN", "AUX", "NUL"}
+        assert fs._is_valid_83_filename(n)
+
+    def test_every_suggestion_is_valid_and_writable(self, tmp_path):
+        fs = self._fs(tmp_path)
+        existing = set()
+        for h in ["con", "aux.c", "my file.txt", "...", "中.dat", "a" * 99, "lpt1.bin"]:
+            n = fs.suggest_import_name(h, existing)
+            assert fs._is_valid_83_filename(n), (h, n)
+            fs.write_file("/" + n, b"x")
+            existing.add(n)
+
+
+class TestCpmNames:
+    def _fs(self, tmp_path):
+        # Mirrors test_09's write fixture: copy the committed image to tmp and
+        # open it with the explicit (non-interleave) write profile.
+        src = RESOURCE_DIR / "CPM" / "disk1.img"
+        dst = tmp_path / "disk1.img"
+        shutil.copy(src, dst)
+        controller = DiskController()
+        assert controller.open_disk(
+            str(dst),
+            disk_type="IMG",
+            format_info={"format_name": "cpm_8_sssd_250k"},
+        )
+        return controller.filesystem
+
+    def test_cpm_name_hint(self, tmp_path):
+        fs = self._fs(tmp_path)
+        assert fs.name_hint() == "8.3 format (CP/M)"
+
+    def test_cpm_illegal_chars_replaced(self, tmp_path):
+        fs = self._fs(tmp_path)
+        n = fs.suggest_import_name("a[b]c=d,e.txt", set())
+        assert not any(ch in n for ch in "<>,;:=?*[] ")
+        base, _, ext = n.partition(".")
+        assert len(base) <= 8 and len(ext) <= 3
+
+    def test_cpm_suggestion_ascii_only(self, tmp_path):
+        fs = self._fs(tmp_path)
+        n = fs.suggest_import_name("naïve£.txt", set())
+        assert n.isascii()
+
+    def test_cpm_write_rejects_overlong_base(self, tmp_path):
+        fs = self._fs(tmp_path)
+        with pytest.raises(ValueError, match="8.3"):
+            fs.write_file("/TOOLONGNAME.TXT", b"x")
+
+    def test_cpm_write_rejects_overlong_ext(self, tmp_path):
+        fs = self._fs(tmp_path)
+        with pytest.raises(ValueError, match="8.3"):
+            fs.write_file("/NAME.TEXT", b"x")
+
+    def test_cpm_write_rejects_illegal_chars(self, tmp_path):
+        fs = self._fs(tmp_path)
+        with pytest.raises(ValueError):
+            fs.write_file("/BAD*NAME.TXT", b"x")
+
+    def test_cpm_write_valid_name_still_works(self, tmp_path):
+        fs = self._fs(tmp_path)
+        fs.write_file("/GOOD.TXT", b"hello")
+        assert fs.read_file("/GOOD.TXT") == b"hello"
+
+    def test_cpm_user_prefix_still_accepted(self, tmp_path):
+        fs = self._fs(tmp_path)
+        fs.write_file("/U1:USERFILE.TXT", b"u1")
+        assert fs.read_file("/U1:USERFILE.TXT") == b"u1"
+
+    def test_cpm_lenient_lookup_reads_weird_existing_names(self, tmp_path):
+        # Leniency is pinned at the parser level: delete (and the allocation
+        # lookup) go through _parse_cpm_path, which must keep resolving names
+        # legacy tools wrote (spaces, over-long bases), while read_file matches
+        # the on-disk name verbatim with no validation at all. Poking raw
+        # directory sectors would mean reimplementing the skew/track math in
+        # the test, so instead we assert the parser accepts what strict write
+        # validation rejects, plus a functional probe that an over-long path
+        # still resolves on delete.
+        fs = self._fs(tmp_path)
+        user, parsed = fs._parse_cpm_path("/GO OD.TXT")
+        assert (user, parsed) == (0, "GO OD.TXT")
+        with pytest.raises(ValueError):
+            fs._validate_write_filename("/GO OD.TXT")
+        # Over-long base truncates to the existing on-disk name on lookup.
+        names = {fi.name for fi in fs.list_directory("/")}
+        assert "2FBIOS24.ASM" in names
+        fs.delete("/2FBIOS24EXTRA.ASM")
+        names = {fi.name for fi in fs.list_directory("/")}
+        assert "2FBIOS24.ASM" not in names
+
+
+class TestHdosNames:
+    def _fs(self, tmp_path):
+        # Mirrors test_10's write fixture: copy the committed image to tmp.
+        src = RESOURCE_DIR / "HDOS" / "HDOS_2-0_TEST.h8d"
+        dst = tmp_path / "HDOS_2-0_TEST.h8d"
+        shutil.copy(src, dst)
+        controller = DiskController()
+        assert controller.open_disk(str(dst), disk_type="IMG")
+        return controller.filesystem
+
+    def test_hdos_write_rejects_overlong(self, tmp_path):
+        fs = self._fs(tmp_path)
+        with pytest.raises(ValueError, match="8.3"):
+            fs.write_file("/VERYLONGNAME.TXT", b"x")
+
+    def test_hdos_write_valid_name_works(self, tmp_path):
+        fs = self._fs(tmp_path)
+        # The test image ships full; free a few sectors first.
+        fs.delete("/DVDIO.ACM")
+        fs.write_file("/OK.TXT", b"fine")
+        assert fs.read_file("/OK.TXT") == b"fine"
+
+    def test_hdos_suggestion_ascii_only(self, tmp_path):
+        fs = self._fs(tmp_path)
+        n = fs.suggest_import_name("naïve£.txt", set())
+        assert n.isascii()
+
+    def test_hdos_delete_of_existing_truncated_entry_unaffected(self, tmp_path):
+        # Strict 8.3 applies to write_file only; delete/read lookups stay
+        # lenient, so an over-long path still resolves (by truncation) to an
+        # existing on-disk entry.
+        fs = self._fs(tmp_path)
+        fs.delete("/DVDIO.ACM")
+        fs.write_file("/VERYLONG.TXT", b"data")
+        fs.delete("/VERYLONGNAME.TXT")
+        names = {fi.name for fi in fs.list_directory("/")}
+        assert "VERYLONG.TXT" not in names
+        # Parser-level pin: non-strict validation accepts what strict rejects.
+        fs._validate_filename("/VERYLONGNAME.TXT")
+        with pytest.raises(ValueError, match="8.3"):
+            fs._validate_filename("/VERYLONGNAME.TXT", strict=True)

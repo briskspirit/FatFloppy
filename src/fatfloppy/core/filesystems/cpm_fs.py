@@ -2,6 +2,7 @@ import contextlib
 import datetime
 import struct
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Optional
 
@@ -25,6 +26,8 @@ CPM_DELETED_ENTRY_MARKER = 0xE5
 # benign empties) but scored down so the cleanest interpretation wins when a
 # wrong sector skew pulls empty data into the directory (see get_validity_score).
 CPM_ZERO_ENTRY_PENALTY = 3
+# Characters the CP/M CCP/BDOS treat as delimiters; illegal inside file names.
+CPM_ILLEGAL_NAME_CHARS = set("<>,;:=?*[] ")
 
 
 @dataclass
@@ -1118,6 +1121,10 @@ class CPMFilesystem(Filesystem):
             )
         return files
 
+    def name_hint(self) -> str:
+        """Short description of CP/M naming rules, for dialogs."""
+        return "8.3 format (CP/M)"
+
     def read_file(self, path: str) -> bytes:
         """
         Reads the complete content of a specified file.
@@ -1202,6 +1209,32 @@ class CPMFilesystem(Filesystem):
             return bytes(data).rstrip(bytes([CPM_EOF_CHAR]))
         return bytes(data)
 
+    def suggest_import_name(
+        self, host_name: str, existing_names: Iterable[str], is_dir: bool = False
+    ) -> str:
+        """
+        Derives a valid, unique CP/M 8.3 name from a host filename.
+
+        CP/M directory names are ASCII and its command processor treats
+        '<>,;:=?*[] ' as delimiters, so those and any non-ASCII characters are
+        replaced with '_' before applying the base 8.3 policy. The result
+        always passes _validate_write_filename().
+
+        Args:
+            host_name: The filename from the host filesystem.
+            existing_names: Names already present on the disk.
+            is_dir: True when importing a directory entry (CP/M has none, but
+                the base contract is preserved).
+
+        Returns:
+            A valid, unique on-disk 8.3 name.
+        """
+        cleaned = "".join(
+            "_" if (c in CPM_ILLEGAL_NAME_CHARS or not c.isascii()) else c
+            for c in host_name
+        )
+        return super().suggest_import_name(cleaned, existing_names, is_dir)
+
     def write_file(self, path: str, data: bytes) -> None:
         """
         Writes data to a file on the CP/M filesystem.
@@ -1216,8 +1249,13 @@ class CPMFilesystem(Filesystem):
         Raises:
             IOError: If the filesystem is invalid, there's not enough space,
                      or the directory is full.
-            ValueError: If the DPB is not set.
+            ValueError: If the DPB is not set, or the filename is not a valid
+                strict 8.3 CP/M name (see _validate_write_filename).
         """
+        # Strict 8.3 gate for new names; lookups (read/delete) stay lenient so
+        # existing on-disk names written by legacy tools remain reachable.
+        self._validate_write_filename(path)
+
         if self.get_validity_score() < self.validity_threshold:
             raise OSError("Filesystem not valid")
 
@@ -1726,6 +1764,44 @@ class CPMFilesystem(Filesystem):
             )
 
         return user, parsed_filename.strip()
+
+    @staticmethod
+    def _validate_write_filename(path: str) -> None:
+        """
+        Strictly validates a filename for write_file (no silent truncation).
+
+        Parses an optional 'Un:' user prefix the same way _parse_cpm_path
+        does, then rejects names that would otherwise be silently truncated
+        or stored with characters the CP/M CCP cannot reference.
+
+        Args:
+            path: The CP/M path to validate (e.g. "/U1:NAME.EXT").
+
+        Raises:
+            ValueError: If the base exceeds 8 characters, the extension
+                exceeds 3 characters or contains a dot, or the name contains
+                CP/M-illegal characters.
+        """
+        path_to_parse = path.upper().lstrip("/")
+        filename_part = path_to_parse
+
+        if path_to_parse.startswith("U") and ":" in path_to_parse:
+            parts = path_to_parse.split(":", 1)
+            if parts[0][1:].isdigit():
+                filename_part = parts[1]
+
+        base, _, ext = filename_part.partition(".")
+        if len(base) > 8 or len(ext) > 3 or "." in ext:
+            raise ValueError(
+                f"CP/M filenames must be 8.3 format (base <= 8 chars, "
+                f"extension <= 3 chars): '{filename_part}'"
+            )
+        illegal = CPM_ILLEGAL_NAME_CHARS.intersection(base + ext)
+        if illegal:
+            raise ValueError(
+                f"CP/M filename contains illegal character(s) "
+                f"{''.join(sorted(illegal))!r}: '{filename_part}'"
+            )
 
     def _parse_directory_entry(self, entry_bytes: bytes) -> Optional[CPMDirectoryEntry]:
         """

@@ -582,7 +582,7 @@ def test_large_file_spanning_many_groups(
 
 
 def test_filename_edge_cases(hdos_controller: DiskController, tmp_path: Path) -> None:
-    """Tests filename edge cases including 8.3 limits, case sensitivity, and truncation."""
+    """Tests filename edge cases including strict 8.3 limits and case folding."""
     profile_name = "hdos_5.25_100k"
     profile = hdos_controller.get_format_by_name(profile_name)
     blank_img_path = tmp_path / "filename_test.h8d"
@@ -604,7 +604,13 @@ def test_filename_edge_cases(hdos_controller: DiskController, tmp_path: Path) ->
     assert hdos_controller.write_file("/NOEXT", test_content)
     assert any(f["name"] == "NOEXT" for f in hdos_controller.list_directory("/"))
 
-    assert hdos_controller.write_file("/lowercasefile.longext", test_content)
+    # Writes are strict 8.3: over-long names are rejected up front instead of
+    # being silently truncated (the old truncating behavior was the bug).
+    with pytest.raises(ValueError, match="8.3"):
+        hdos_controller.write_file("/lowercasefile.longext", test_content)
+
+    # Lowercase input within 8.3 is still folded to the uppercase on-disk name.
+    assert hdos_controller.write_file("/lowercas.lon", test_content)
     assert any(f["name"] == "LOWERCAS.LON" for f in hdos_controller.list_directory("/"))
 
     read_content = hdos_controller.read_file("/LOWERCAS.LON")
