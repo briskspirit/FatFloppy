@@ -1,4 +1,5 @@
 import datetime
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, ClassVar, Optional
@@ -311,3 +312,72 @@ class Filesystem(ABC):
             The volume label as a string, or None if not supported or not available.
         """
         return None
+
+    # -- name policy (overridable; defaults match classic 8.3 filesystems) -------
+
+    def suggest_import_name(
+        self, host_name: str, existing_names, is_dir: bool = False
+    ) -> str:
+        """
+        Derives a valid, unique on-disk name from a host filename.
+
+        Never raises for any host string. Uniqueness against ``existing_names``
+        is case-insensitive (all shipped filesystems store uppercase-canonical
+        names). The default implements classic 8.3 rules; filesystems with
+        different conventions override this.
+
+        Args:
+            host_name: The filename from the host filesystem.
+            existing_names: Iterable of names already present in the target
+                directory (compared case-insensitively).
+            is_dir: True when importing a directory entry (no extension).
+
+        Returns:
+            A valid, unique on-disk name string.
+
+        Raises:
+            ValueError: If a unique name cannot be generated after 999 attempts.
+        """
+        existing = {n.upper() for n in existing_names}
+        name = host_name.upper()
+        name = re.sub(r'[\\/:*?"<>|\s+]', "_", name)
+        if "." in name.strip(".") and not is_dir:
+            base, _, ext = name.rpartition(".")
+            base = base.replace(".", "_").strip()[:8]
+            ext = ext.strip(".")[:3]
+        else:
+            base, ext = name.replace(".", "_")[:8], ""
+        if not base.strip("_"):
+            base = "_FILE"
+        candidate = f"{base}.{ext}" if ext else base
+        if candidate.upper() not in existing:
+            return candidate
+        stem = base[:6]
+        for counter in range(1, 1000):
+            new_base = f"{stem}~{counter:02d}"[:8]
+            candidate = f"{new_base}.{ext}" if ext else new_base
+            if candidate.upper() not in existing:
+                return candidate
+        raise ValueError(f"Cannot generate unique name for {host_name!r}")
+
+    def suggest_host_name(self, name: str) -> str:
+        """
+        Makes an on-disk name safe as a host filename.
+
+        Path separators, Windows-illegal characters and control bytes become
+        '_'; leading/trailing spaces and dots are stripped; an all-separator
+        result is replaced with ``_unnamed_``.
+
+        Args:
+            name: The raw on-disk filename.
+
+        Returns:
+            A host-safe filename string, never empty.
+        """
+        safe = "".join("_" if (c in '/\\:*?"<>|' or ord(c) < 0x20) else c for c in name)
+        safe = safe.strip(" .")
+        return safe if safe.strip("_ ") else "_unnamed_"
+
+    def name_hint(self) -> str:
+        """Short description of this filesystem's naming rules, for dialogs."""
+        return "8.3 format"
