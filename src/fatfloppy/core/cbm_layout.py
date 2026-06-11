@@ -54,16 +54,17 @@ class CBMDiskLayout:
 
     variant: str  # "1541" | "1571" | "1581"
     tracks: int
-    zones: tuple
+    zones: tuple[tuple[int, int, int], ...]
     dir_track: int
     dir_sector: int
     interleave: int
     dir_interleave: int
-    reserved_tracks: tuple
+    reserved_tracks: tuple[int, ...]
     max_dir_entries: int
-    error_bytes: bool = False
     # _offsets is computed in __post_init__, never supplied by callers.
-    _offsets: list = field(default=None, init=False, repr=False, compare=False)
+    _offsets: Optional[list[int]] = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self):
         offsets, total = [0], 0
@@ -79,11 +80,13 @@ class CBMDiskLayout:
         raise ValueError(f"Track {track} out of range 1-{self.tracks}")
 
     def spt(self, track: int) -> int:
+        """Return the sectors-per-track count for the given 1-based CBM track."""
         if not 1 <= track <= self.tracks:
             raise ValueError(f"Track {track} out of range 1-{self.tracks}")
         return self._zone_spt(track)
 
     def sectors_before(self, track: int) -> int:
+        """Return the cumulative sector count preceding the given 1-based CBM track."""
         if not 1 <= track <= self.tracks:
             raise ValueError(f"Track {track} out of range 1-{self.tracks}")
         return self._offsets[track - 1]
@@ -93,12 +96,14 @@ class CBMDiskLayout:
         return self._offsets[self.tracks]
 
     def linear_index(self, track: int, sector: int) -> int:
+        """Return the absolute (0-based) sector index for (track, sector) on this disk."""
         if not 0 <= sector < self.spt(track):
             raise ValueError(f"Sector {sector} out of range on track {track}")
         return self.sectors_before(track) + sector
 
     @staticmethod
     def matches(config1, config2) -> bool:
+        """Return True if both configs represent the same CBM variant and track count."""
         return (
             isinstance(config1, CBMDiskLayout)
             and isinstance(config2, CBMDiskLayout)
@@ -117,16 +122,22 @@ class CBMDiskLayout:
             candidate = layout_for_variant(family, tracks)
             try:
                 if all(
-                    pf.get_sectors_per_track(first - 1, 0) == spt
-                    for first, _last, spt in candidate.zones
+                    pf.get_sectors_per_track(t - 1, 0) == candidate.spt(t)
+                    for t in range(1, tracks + 1)
                 ):
                     return candidate
-            except Exception:
+            except ValueError:
                 continue
         return None
 
 
 def layout_for_variant(family: str, tracks: int) -> CBMDiskLayout:
+    """Return the CBMDiskLayout for the given (family, tracks) combination.
+
+    Raises ValueError for unknown (family, tracks) pairs.
+    """
+    if (family, tracks) not in _ZONE_MAP:
+        raise ValueError(f"Unknown CBM variant {family}/{tracks}")
     zones = _ZONE_MAP[(family, tracks)]
     if family == "D64":
         return CBMDiskLayout(

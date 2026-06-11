@@ -126,3 +126,81 @@ class TestCBMLayout:
             track_formats=bad_track_formats,
         )
         assert CBMDiskLayout.infer_from_geometry(bad_pf) is None
+
+        # Corrupt STRICTLY INSIDE zone 0 (tracks 1-17, 21 SPT): split into
+        # track_start=0..9 (21 SPT) and track_start=10..16 (19 SPT wrong).
+        # Every-track check must catch the deviation at track 11 (0-based 10).
+        good_pf2 = build_physical_format("D64", 35)
+        # Replace the first zone (0-based 0..16) with two sub-zones
+        split_formats = []
+        for tf in good_pf2.track_formats:
+            if tf.track_start == 0 and tf.track_end == 16:
+                split_formats.append(
+                    TrackFormat(
+                        track_start=0,
+                        track_end=9,
+                        head_start=0,
+                        head_end=0,
+                        sectors_per_track=21,
+                        encoding=tf.encoding,
+                        rate=tf.rate,
+                        interleave=tf.interleave,
+                        bytes_per_sector=tf.bytes_per_sector,
+                        id_start=tf.id_start,
+                        iam_present=tf.iam_present,
+                    )
+                )
+                split_formats.append(
+                    TrackFormat(
+                        track_start=10,
+                        track_end=16,
+                        head_start=0,
+                        head_end=0,
+                        sectors_per_track=19,  # wrong: should be 21
+                        encoding=tf.encoding,
+                        rate=tf.rate,
+                        interleave=tf.interleave,
+                        bytes_per_sector=tf.bytes_per_sector,
+                        id_start=tf.id_start,
+                        iam_present=tf.iam_present,
+                    )
+                )
+            else:
+                split_formats.append(tf)
+        bad_pf2 = PhysicalFormat(
+            cylinders=good_pf2.cylinders,
+            heads=good_pf2.heads,
+            rpm=good_pf2.rpm,
+            heads_inverted=good_pf2.heads_inverted,
+            bytes_per_sector=good_pf2.bytes_per_sector,
+            track_formats=split_formats,
+        )
+        assert CBMDiskLayout.infer_from_geometry(bad_pf2) is None
+
+    def test_layout_for_variant_unknown_raises_value_error(self):
+        with pytest.raises(ValueError):
+            layout_for_variant("D64", 36)
+
+    def test_layout_for_variant_extended_track_counts(self):
+        assert layout_for_variant("D64", 40).total_sectors == 768
+        assert layout_for_variant("D64", 42).total_sectors == 802
+
+    def test_size_table_extra_entries(self):
+        assert CBM_SIZE_TABLE[197376] == ("D64", 40, True)
+        assert CBM_SIZE_TABLE[205312] == ("D64", 42, False)
+        assert CBM_SIZE_TABLE[206114] == ("D64", 42, True)
+
+    def test_linear_index_happy_path(self):
+        layout = layout_for_variant("D64", 35)
+        # sectors_before(18) == 357, sector 1 -> index 358
+        assert layout.linear_index(18, 1) == 358
+
+    def test_linear_index_out_of_bounds(self):
+        layout = layout_for_variant("D64", 35)
+        with pytest.raises(ValueError):
+            layout.linear_index(18, 19)  # track 18 has only 19 sectors (0-18)
+
+    def test_sectors_before_track_zero_raises(self):
+        layout = layout_for_variant("D64", 35)
+        with pytest.raises(ValueError):
+            layout.sectors_before(0)
