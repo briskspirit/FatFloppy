@@ -6,6 +6,8 @@ from typing import Any, ClassVar, Optional
 
 from ..cbm_layout import CBMDiskLayout
 from ..disk import Disk
+from ..format_profile import FormatProfile
+from ..physical_format import PhysicalFormat
 from .fs_base import FileInfo, Filesystem
 
 PETSCII_PAD = 0xA0
@@ -232,9 +234,22 @@ class CBMFilesystem(Filesystem):
         if self._bam is not None:
             self._bam.invalidate()
 
+    @classmethod
+    def get_format_definitions(cls) -> dict[str, FormatProfile]:
+        from .formats.cbm_formats import CBM_FORMATS
+
+        return CBM_FORMATS
+
     @staticmethod
     def configs_match(config1: Any, config2: Any) -> bool:
         return CBMDiskLayout.matches(config1, config2)
+
+    @staticmethod
+    def create_config_from_params(
+        _format_info: dict[str, Any], physical_format: PhysicalFormat
+    ) -> Optional[CBMDiskLayout]:
+        """CBM layouts are fully determined by geometry; format_info is unused."""
+        return CBMDiskLayout.infer_from_geometry(physical_format)
 
     def get_specific_config(self) -> Optional[Any]:
         self._initialize()
