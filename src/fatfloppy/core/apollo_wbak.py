@@ -1412,9 +1412,12 @@ def build_catalog(data: bytes) -> WbakCatalog:
 class ContinuationSpec:
     """Identity of the volume expected to continue an incomplete tree.
 
-    ``backup_uid``/``volume_id`` describe the set/volume the incomplete
-    tree was read from (the UVL1 uid is the cross-volume invariant; the
-    VOL1 volume id is informational -- each floppy carries its own).
+    ``backup_uid`` is the PER-TREE UHL1 uid (:attr:`WbakTree.uid_text`),
+    the cross-volume stitching invariant.  The per-volume UVL1 uid is NOT
+    invariant -- every volume of a set stamps its own (FT0003: disk8's
+    UVL1 differs from disk1's while the COM tree's UHL1 is identical on
+    both) -- so it must never be used for validation.  ``volume_id`` is
+    informational: each floppy carries its own VOL1 id.
     """
 
     file_id: str
@@ -1430,7 +1433,9 @@ def expected_continuation(
     """The continuation an EOV-cut tree expects on the next volume.
 
     Returns None for complete trees.  ``catalog`` must be the catalog
-    the tree was built from (supplies the backup uid and volume id).
+    the tree was built from (supplies the volume id).  The spec's uid is
+    the tree's own UHL1 uid -- the cross-volume invariant; the catalog's
+    per-volume UVL1 uid differs across a set's volumes.
     """
     if tree.complete:
         return None
@@ -1438,7 +1443,7 @@ def expected_continuation(
         file_id=tree.file_id,
         sequence=tree.sequence,
         next_section=tree.section + 1,
-        backup_uid=catalog.backup_uid,
+        backup_uid=tree.uid_text,
         volume_id=catalog.volume_id,
     )
 

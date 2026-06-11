@@ -1059,6 +1059,7 @@ def build_cut_volume(
     *,
     volume_id="SYNVA0",
     uid_text="31F49BD4.200071FA",
+    volume_uid_text=None,
     uid=SYN_UID,
     file_id="COM",
     sequence=2,
@@ -1068,11 +1069,14 @@ def build_cut_volume(
 ):
     """Volume A of a set: HDR1 section 1, one FILE declaring
     ``len(content) + 32`` raw bytes but carrying only ``sum(chunks)``
-    content bytes (one DATA chunk per block) before the EOV trailer."""
+    content bytes (one DATA chunk per block) before the EOV trailer.
+    ``volume_uid_text`` overrides the per-volume UVL1 uid (defaults to
+    ``uid_text``): real sets stamp a DIFFERENT UVL1 uid on every volume
+    while the per-tree UHL1 uid stays invariant."""
     raw_size = len(content) + 32
     b = StreamBuilder()
     b.add_record(label80("VOL1", volume_id=volume_id, owner="APOLLO"))
-    b.add_record(label80("UVL1", text=uid_text))
+    b.add_record(label80("UVL1", text=volume_uid_text or uid_text))
     b.add_record(label80("HDR1", file_id=file_id, section=1, sequence=sequence))
     b.add_record(label80("HDR2"))
     b.add_record(label80("UHL1", text=uid_text))
@@ -1110,6 +1114,7 @@ def build_continuation_volume(
     *,
     volume_id="SYNVB0",
     uid_text="31F49BD4.200071FA",
+    volume_uid_text=None,
     uid=SYN_UID,
     file_id="COM",
     sequence=2,
@@ -1121,10 +1126,12 @@ def build_continuation_volume(
 ):
     """A continuation volume: HDR1 section >= 2, leading orphan DATA (the
     tail of the file cut on the previous volume), then optionally a
-    follow-on NAME/FILE/DATA object, then EOF (complete) or EOV."""
+    follow-on NAME/FILE/DATA object, then EOF (complete) or EOV.
+    ``volume_uid_text`` overrides the per-volume UVL1 uid (defaults to
+    ``uid_text``), mirroring real sets whose UVL1 uids differ per volume."""
     b = StreamBuilder()
     b.add_record(label80("VOL1", volume_id=volume_id, owner="APOLLO"))
-    b.add_record(label80("UVL1", text=uid_text))
+    b.add_record(label80("UVL1", text=volume_uid_text or uid_text))
     b.add_record(label80("HDR1", file_id=file_id, section=section, sequence=sequence))
     b.add_record(label80("HDR2"))
     b.add_record(label80("UHL1", text=uid_text))
@@ -1295,8 +1302,11 @@ class TestOrphanTailRetention:
 class TestContinuationSpec:
     def test_expected_continuation_for_eov_tree(self):
         # disk8 real: the COM tree (section 1, EOV) expects section 2 of
-        # COM seq 2 on the next volume of set FT0003.  The backup uid is
-        # read from the catalog at test time, not hardcoded.
+        # COM seq 2 on the next volume of set FT0003.  The spec's uid is
+        # the PER-TREE UHL1 uid (the cross-volume invariant: FT0003's
+        # per-volume UVL1 uids differ between disk8 and disk1 while COM's
+        # UHL1 is identical on both), read from the catalog at test time,
+        # not hardcoded.
         cat = build_catalog((RESOURCES / "disk8.img").read_bytes())
         com = cat.trees[1]
         assert com.complete is False
@@ -1305,10 +1315,13 @@ class TestContinuationSpec:
             file_id="COM",
             sequence=2,
             next_section=2,
-            backup_uid=cat.backup_uid,
+            backup_uid=com.uid_text,
             volume_id="FT0003",
         )
         assert spec.backup_uid is not None
+        # the per-volume UVL1 uid is NOT the invariant: disk8 alone proves
+        # the two differ (UVL1 31F49A87... vs the COM UHL1 31F49BD4...)
+        assert spec.backup_uid != cat.backup_uid
 
     def test_complete_tree_has_no_continuation(self):
         cat = build_catalog((RESOURCES / "disk8.img").read_bytes())
@@ -1422,6 +1435,40 @@ class TestStitchTree:
         good = cont_catalog()
         with pytest.raises(ValueError, match=r"partial"):
             stitch_tree(broken, good.trees[0], prev_uid=None, cont_uid=good.backup_uid)
+
+    def test_stitch_with_differing_per_volume_uids(self):
+        # FT0003-proven identity nuance: every volume stamps its OWN UVL1
+        # uid (disk8 31F49A87.B00071FA vs disk1 31F49D73.D00071FA) while
+        # the tree's UHL1 uid is identical on both -- the per-tree uid is
+        # the cross-volume invariant.  A stitch keyed on the tree uids
+        # must succeed despite the UVL1 mismatch.
+        content = syn_content(9000)
+        vol_a = build_cut_volume(
+            content=content,
+            chunks=(6000, 2000),
+            volume_uid_text="31F49A87.B00071FA",
+        )
+        vol_b = build_continuation_volume(
+            tail=content[8000:],
+            first_seq=3,
+            volume_uid_text="31F49D73.D00071FA",
+        )
+        cat_a = build_catalog(vol_a)
+        cat_b = build_catalog(vol_b)
+        assert cat_a.backup_uid != cat_b.backup_uid  # per-volume UVL1s differ
+        tree_a, tree_b = cat_a.trees[0], cat_b.trees[0]
+        assert tree_a.uid_text == tree_b.uid_text  # per-tree UHL1 matches
+        # the continuation spec advertises the per-tree uid, not the UVL1
+        spec = expected_continuation(tree_a, cat_a)
+        assert spec.backup_uid == tree_a.uid_text
+        assert spec.backup_uid != cat_a.backup_uid
+        merged = stitch_tree(
+            tree_a, tree_b, prev_uid=tree_a.uid_text, cont_uid=tree_b.uid_text
+        )
+        assert merged.complete is True
+        stitched = next(e for e in merged.entries if e.path == "bigfile")
+        assert stitched.partial is False
+        assert cat_a.read(stitched) == content
 
     def test_three_volume_chain(self):
         s = build_three_volume_set()
