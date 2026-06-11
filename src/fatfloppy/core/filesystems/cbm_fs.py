@@ -1,6 +1,6 @@
 """Commodore CBM DOS filesystem (1541/1571/1581)."""
 
-import contextlib
+import dataclasses
 import datetime
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar, Optional
@@ -241,10 +241,33 @@ class _Bam1571(_BamStrategy):
 
 class _Bam1581(_BamStrategy):
     """Two BAM sectors: 40/1 covers tracks 1-40, 40/2 covers 41-80;
-    six bytes per track (count + 5-byte bitmap) starting at 0x10."""
+    six bytes per track (count + 5-byte bitmap) starting at 0x10.
+
+    A 1581 sub-directory partition carries the very same structure inside
+    itself (same global 1-40/41-80 track split, out-of-partition tracks
+    marked fully allocated). `sector_map` redirects the canonical BAM sector
+    addresses to the partition's own, e.g. {(40,1): (50,1), (40,2): (50,2)},
+    and `header` overrides the header sector, e.g. (50, 0). The defaults
+    address the root disk BAM. Cache keys (and therefore flush targets) are
+    always the REAL post-redirect addresses.
+    """
+
+    def __init__(
+        self,
+        fs: "CBMFilesystem",
+        sector_map: Optional[dict[tuple[int, int], tuple[int, int]]] = None,
+        header: tuple[int, int] = (40, 0),
+    ):
+        super().__init__(fs)
+        self._sector_map = sector_map or {}
+        self._header = header
 
     def header_ts(self):
-        return (40, 0)
+        return self._header
+
+    def _sector(self, t, s):
+        t, s = self._sector_map.get((t, s), (t, s))
+        return super()._sector(t, s)
 
     def _entry(self, track):
         s = 1 if track <= 40 else 2
@@ -269,6 +292,10 @@ class CBMFilesystem(Filesystem):
         self.layout: Optional[CBMDiskLayout] = None
         self._bam: Optional[_BamStrategy] = None
         self._initialized = False
+        # Set by _sub_fs on partition-scoped instances: confines check()'s
+        # BAM-vs-owned-blocks comparison to the partition's own tracks (its
+        # BAM marks everything outside as allocated by convention).
+        self._check_tracks: Optional[set[int]] = None
 
     def _initialize(self) -> None:
         if self._initialized:
@@ -403,12 +430,95 @@ class CBMFilesystem(Filesystem):
         return min(score, 100)
 
     def create_directory(self, path: str) -> None:
-        raise NotImplementedError("CBM DOS has no subdirectories")
+        """Creates a 1581 CBM partition formatted as a sub-directory.
+
+        path is '/NAME' or '/NAME,<sectors>' (decimal block count; default
+        120; must be >= 120 and a multiple of 40, i.e. whole tracks). The
+        partition occupies the first contiguous run of fully-free tracks that
+        does not touch or straddle the directory track 40, gets the standard
+        sub-directory structures (header, BAMs, empty directory) and a type-5
+        root entry. Only the 1581 supports partitions.
+        """
+        self._initialize()
+        if self.layout.variant != "1581":
+            raise NotImplementedError("Partitions are only supported on D81")
+        name = path.removeprefix("/")
+        base, sep, suffix = name.rpartition(",")
+        if sep and suffix.isdigit():
+            sectors = int(suffix)
+        else:
+            base, sectors = name, 120
+        if sectors < 120 or sectors % 40:
+            raise ValueError(
+                "Partition size must be >= 120 sectors and a multiple of 40, "
+                f"got {sectors}"
+            )
+        raw_name = unicode_to_petscii(base)
+        if not raw_name or len(raw_name) > 16:
+            raise ValueError(f"Invalid CBM filename {base!r} (1-16 PETSCII chars)")
+        if petscii_to_unicode(raw_name) != base:
+            raise ValueError(
+                f"Filename is not canonical PETSCII: {base!r} "
+                f"(canonical form is {petscii_to_unicode(raw_name)!r})"
+            )
+        try:
+            self._find_entry("/" + base)
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError(f"An entry named {base!r} already exists")
+        n_tracks = sectors // 40
+        dir_t = self.layout.dir_track
+        start = None
+        # First fit ascending; the windows stop short of track 40 on the low
+        # side and start past it on the high side, so a partition can neither
+        # contain nor straddle the directory track.
+        for lo, hi in ((1, dir_t - 1), (dir_t + 1, self.layout.tracks)):
+            for t0 in range(lo, hi - n_tracks + 2):
+                if all(
+                    self._bam.free_count(t) == self.layout.spt(t)
+                    for t in range(t0, t0 + n_tracks)
+                ):
+                    start = t0
+                    break
+            if start is not None:
+                break
+        if start is None:
+            raise OSError("No contiguous free region for partition")
+        for t in range(start, start + n_tracks):
+            for s in range(self.layout.spt(t)):
+                self._bam.set_allocated(t, s)
+        raw_name = raw_name.ljust(16, bytes([PETSCII_PAD]))
+        self._format_partition_subdir(start, n_tracks, raw_name)
+        try:
+            dt, ds, k = self._claim_dir_slot()
+        except OSError:
+            # Directory full: roll the whole range back so the BAM returns
+            # to its pre-create state.
+            for t in range(start, start + n_tracks):
+                for s in range(self.layout.spt(t)):
+                    self._bam.set_free(t, s)
+            self._bam.flush()
+            self.disk.flush()
+            raise
+        sec = bytearray(self._read_ts(dt, ds))
+        off = 0x20 * k
+        sec[off + 2] = 0x85  # closed CBM partition
+        sec[off + 3], sec[off + 4] = start, 0
+        sec[off + 5 : off + 0x15] = raw_name
+        sec[off + 0x15 : off + 0x1E] = bytes(9)
+        sec[off + 0x1E] = sectors & 0xFF
+        sec[off + 0x1F] = sectors >> 8
+        self._write_ts(dt, ds, bytes(sec))
+        self._bam.flush()
+        self.disk.flush()
 
     def delete(self, path: str) -> None:
         """Scratches a file: zeroes the slot's type byte FIRST, then frees its
         blocks in the BAM. A REL file's blocks include its side sectors (and
-        the D81 super side sector).
+        the D81 super side sector). A CBM partition frees its whole contiguous
+        range; a partition that qualifies as a sub-directory must be empty
+        (delete_recursive deletes it regardless of content).
 
         The whole block list is validated BEFORE any mutation: a corrupt
         chain (cycle, off-disk link, block on a track without a BAM entry, or
@@ -421,11 +531,17 @@ class CBMFilesystem(Filesystem):
         silently frees) instead of a live entry pointing at freed blocks
         (data-loss risk: the allocator could overwrite them).
         """
+        self._delete_impl(path, force=False)
+
+    def _delete_impl(self, path: str, force: bool) -> None:
         self._initialize()
+        part, inner = self._resolve(path)
+        if part is not None:
+            return self._sub_fs(part)._delete_impl("/" + inner, force)
         t, s, k, entry = self._find_entry(path)
         ftype = entry[2] & 0x0F
         if ftype == 5:
-            raise NotImplementedError("Partition delete lands in a later phase")
+            return self._delete_partition(t, s, k, entry, force)
         blocks = self._follow_chain(entry[3], entry[4])
         if ftype == 4 and entry[0x15] != 0:
             # REL: the side-sector structure is part of the file and is
@@ -456,10 +572,53 @@ class CBMFilesystem(Filesystem):
 
     def delete_recursive(self, path: str) -> bool:
         try:
-            self.delete(path)
+            self._delete_impl(path, force=True)
             return True
         except FileNotFoundError:
             return False
+
+    def _delete_partition(
+        self, t: int, s: int, k: int, entry: bytes, force: bool
+    ) -> None:
+        """Deletes a CBM partition entry: scratches the slot, then frees the
+        whole contiguous range in this directory's BAM. The range is
+        pre-validated (on-disk, off the reserved tracks, every block currently
+        allocated) before any mutation. A qualifying sub-directory with live
+        entries is refused unless `force` (delete_recursive): freeing the
+        range implicitly destroys everything inside."""
+        name = petscii_to_unicode(entry[5:0x15])
+        blocks = self._partition_ts_list(entry)  # validates the run on disk
+        for ct, cs in blocks:
+            if ct in self.layout.reserved_tracks:
+                raise ValueError(
+                    f"Partition {name!r} overlaps reserved track {ct}; not deleting"
+                )
+            if ct not in self._bam.mapped_tracks():
+                raise ValueError(
+                    f"Partition block {ct}/{cs} lies on a track with no BAM entry"
+                )
+            if self._bam.is_free(ct, cs):
+                raise ValueError(
+                    f"Partition block {ct}/{cs} is already free in the BAM"
+                )
+        if not force and self._is_subdirectory(entry):
+            sub = self._sub_fs(entry)
+            if any(
+                e[2] != 0x00 and e[2] & 0x0F != 0
+                for _t, _s, _k, e in sub._iter_entries()
+            ):
+                raise OSError(f"Partition {name!r} not empty (use recursive delete)")
+        sec = bytearray(self._read_ts(t, s))
+        sec[0x20 * k + 2] = 0x00
+        self._write_ts(t, s, bytes(sec))
+        try:
+            for ct, cs in blocks:
+                self._bam.set_free(ct, cs)
+        finally:
+            # Flush even on a mid-free failure: the scratched entry and any
+            # partial frees must reach the disk together.
+            self._bam.flush()
+            self.disk.flush()
 
     def check(self) -> bool:
         """VALIDATE-style consistency check.
@@ -468,7 +627,9 @@ class CBMFilesystem(Filesystem):
         actually own: system sectors, the directory chain, every live entry's
         data chain, REL side sectors (including D81 super side sectors),
         closed-DEL chains (real VALIDATE traces those too) and CBM partition
-        ranges.
+        ranges. A partition that qualifies as a 1581 sub-directory is
+        additionally checked with its own partition-scoped filesystem (its
+        BAM governs the partition interior) and ANDed into the verdict.
 
         Verdict rule (probe-driven, see test_44):
         - FAILURE: a live block marked free in the BAM (data-loss risk: the
@@ -486,7 +647,10 @@ class CBMFilesystem(Filesystem):
             # the side-2 BAM, the rest stays allocated): all of it is system.
             expected |= {(53, s) for s in range(self.layout.spt(53))}
         if self.layout.variant == "1581":
-            expected |= {(40, 1), (40, 2)}
+            # BAM sectors 1 and 2 on the header track: 40 on the root disk,
+            # the partition's start track on a sub-directory filesystem.
+            ht = self._bam.header_ts()[0]
+            expected |= {(ht, 1), (ht, 2)}
         ok = True
         try:
             for t, s, _d in self._iter_dir_sectors():
@@ -507,22 +671,27 @@ class CBMFilesystem(Filesystem):
                         except ValueError as exc:
                             self.logger.warning(f"check(): broken DEL chain: {exc}")
                     continue
-                if ftype == 5:  # CBM partition: contiguous whole tracks
-                    sectors = entry[0x1E] | (entry[0x1F] << 8)
-                    start_t = entry[3]
-                    if sectors % 40 or entry[4] != 0:
+                if ftype == 5:  # CBM partition: contiguous raw blocks
+                    expected.update(self._partition_ts_list(entry))
+                    if self._is_subdirectory(entry) and not self._sub_fs(entry).check():
                         self.logger.warning(
-                            "check(): non-standard partition entry "
-                            f"(start {start_t}/{entry[4]}, {sectors} sectors); "
-                            "skipping"
+                            "check(): sub-directory partition "
+                            f"{petscii_to_unicode(entry[5:0x15])!r} failed "
+                            "its own check"
                         )
-                        continue
-                    for pt in range(start_t, start_t + sectors // 40):
-                        for ps in range(self.layout.spt(pt)):
-                            expected.add((pt, ps))
+                        ok = False
                     continue
                 expected.update(self._follow_chain(entry[3], entry[4]))
-                if ftype == 4 and entry[0x15] != 0:
+                if ftype == 4:
+                    if entry[0x15] == 0:
+                        # No side-sector pointer: readable as a chain but not
+                        # usable as a REL by real DOS. Warn only.
+                        self.logger.warning(
+                            "check(): REL entry "
+                            f"{petscii_to_unicode(entry[5:0x15])!r} has no "
+                            "side-sector pointer"
+                        )
+                        continue
                     expected.update(self._iter_side_sectors(entry[0x15], entry[0x16]))
                     if not self._verify_rel_side_sectors(entry):
                         ok = False
@@ -530,6 +699,10 @@ class CBMFilesystem(Filesystem):
             self.logger.warning(f"check(): unwalkable structure: {exc}")
             return False
         mapped = set(self._bam.mapped_tracks())
+        if self._check_tracks is not None:
+            # Sub-directory filesystem: only the partition's own tracks are
+            # meaningful (its BAM marks everything outside fully allocated).
+            mapped &= self._check_tracks
         allocated = {
             (t, s)
             for t in mapped
@@ -629,9 +802,7 @@ class CBMFilesystem(Filesystem):
         if extra:
             extra(bam)
         self._write_ts(18, 0, bytes(bam))
-        d = bytearray(256)
-        d[1] = 0xFF  # chain end: 8 fresh directory slots
-        self._write_ts(18, 1, bytes(d))
+        self._write_ts(18, 1, self._fresh_dir_sector())
 
     def _format_1571(self, raw_name: bytes, raw_id: bytes) -> None:
         layout = self.layout
@@ -651,38 +822,100 @@ class CBMFilesystem(Filesystem):
             )
         self._write_ts(53, 0, bytes(side))
 
-    def _format_1581(self, raw_name: bytes, raw_id: bytes) -> None:
-        layout = self.layout
+    @staticmethod
+    def _build_1581_header(
+        dir_ts: tuple[int, int], raw_name: bytes, raw_id: bytes
+    ) -> bytes:
+        """1581 header sector (disk root at 40/0 or a partition's at start/0):
+        directory pointer, DOS byte 'D', name, ID, '3D' version."""
         hdr = bytearray(256)
-        hdr[0], hdr[1], hdr[2] = 40, 3, 0x44
+        hdr[0], hdr[1], hdr[2] = dir_ts[0], dir_ts[1], 0x44
         hdr[0x04:0x14] = raw_name
         hdr[0x14:0x16] = b"\xa0\xa0"
         hdr[0x16:0x18] = raw_id
         hdr[0x18] = 0xA0
         hdr[0x19], hdr[0x1A] = ord("3"), ord("D")
         hdr[0x1B:0x1D] = b"\xa0\xa0"
-        self._write_ts(40, 0, bytes(hdr))
-        for which, (lo, hi), nxt in (
-            (1, (1, 40), (40, 2)),
-            (2, (41, 80), (0, 0xFF)),
-        ):
-            bam = bytearray(256)
-            bam[0], bam[1] = nxt
-            bam[2], bam[3] = 0x44, 0xBB  # DOS version, one's complement
-            bam[4:6] = raw_id
-            bam[6] = 0xC0  # verify on + check header CRC
-            for t in range(lo, hi + 1):
-                e = 0x10 + 6 * ((t - 1) % 40)
-                bits, free = self._all_free_bits(layout.spt(t)), layout.spt(t)
-                if t == 40:
-                    bits &= ~0b1111  # header, both BAM sectors, directory
-                    free -= 4
-                bam[e] = free
-                bam[e + 1 : e + 6] = bits.to_bytes(5, "little")
-            self._write_ts(40, which, bytes(bam))
+        return bytes(hdr)
+
+    def _build_1581_bam_sector(
+        self, nxt: tuple[int, int], raw_id: bytes, lo: int, hi: int, free_bits
+    ) -> bytes:
+        """One 1581 BAM sector covering tracks lo..hi. free_bits(t) returns
+        the free-sector bitmap for track t (0 = fully allocated); the count
+        byte is its popcount, keeping count and bitmap consistent by
+        construction."""
+        bam = bytearray(256)
+        bam[0], bam[1] = nxt
+        bam[2], bam[3] = 0x44, 0xBB  # DOS version, one's complement
+        bam[4:6] = raw_id
+        bam[6] = 0xC0  # verify on + check header CRC
+        for t in range(lo, hi + 1):
+            e = 0x10 + 6 * ((t - 1) % 40)
+            bits = free_bits(t)
+            bam[e] = bin(bits).count("1")
+            bam[e + 1 : e + 6] = bits.to_bytes(5, "little")
+        return bytes(bam)
+
+    @staticmethod
+    def _fresh_dir_sector() -> bytes:
         d = bytearray(256)
         d[1] = 0xFF  # chain end: 8 fresh directory slots
-        self._write_ts(40, 3, bytes(d))
+        return bytes(d)
+
+    def _format_1581(self, raw_name: bytes, raw_id: bytes) -> None:
+        layout = self.layout
+
+        def free_bits(t: int) -> int:
+            bits = self._all_free_bits(layout.spt(t))
+            if t == 40:
+                bits &= ~0b1111  # header, both BAM sectors, directory
+            return bits
+
+        self._write_ts(40, 0, self._build_1581_header((40, 3), raw_name, raw_id))
+        self._write_ts(
+            40, 1, self._build_1581_bam_sector((40, 2), raw_id, 1, 40, free_bits)
+        )
+        self._write_ts(
+            40, 2, self._build_1581_bam_sector((0, 0xFF), raw_id, 41, 80, free_bits)
+        )
+        self._write_ts(40, 3, self._fresh_dir_sector())
+
+    def _format_partition_subdir(
+        self, start_t: int, n_tracks: int, raw_name: bytes
+    ) -> None:
+        """Writes a 1581 sub-directory's structures inside a partition at
+        tracks start_t..start_t+n_tracks-1: header at (start,0), BAMs at
+        (start,1)/(start,2) covering the same global 1-40/41-80 split with
+        every out-of-partition track marked fully allocated, directory at
+        (start,3). Reuses the root disk's ID (matches real 1581 partitions,
+        e.g. 1581_demo's PIC.DIR)."""
+        root_hdr = self._read_ts(*self._bam.header_ts())
+        raw_id = bytes(root_hdr[0x16:0x18])
+        inside = range(start_t, start_t + n_tracks)
+
+        def free_bits(t: int) -> int:
+            if t not in inside:
+                return 0
+            bits = self._all_free_bits(self.layout.spt(t))
+            if t == start_t:
+                bits &= ~0b1111  # header, both BAM sectors, directory
+            return bits
+
+        self._write_ts(
+            start_t, 0, self._build_1581_header((start_t, 3), raw_name, raw_id)
+        )
+        self._write_ts(
+            start_t,
+            1,
+            self._build_1581_bam_sector((start_t, 2), raw_id, 1, 40, free_bits),
+        )
+        self._write_ts(
+            start_t,
+            2,
+            self._build_1581_bam_sector((0, 0xFF), raw_id, 41, 80, free_bits),
+        )
+        self._write_ts(start_t, 3, self._fresh_dir_sector())
 
     def get_disk_map_layout(self) -> dict[str, Any]:
         self._initialize()
@@ -822,12 +1055,33 @@ class CBMFilesystem(Filesystem):
 
     def list_directory(self, path: str) -> list[FileInfo]:
         self._initialize()
-        if path not in ("", "/"):
-            raise FileNotFoundError(f"No such directory: {path}")
+        if path in ("", "/"):
+            return self._list_root()
+        name = path.removeprefix("/")
+        if self.layout.variant == "1581" and "/" not in name:
+            entry = self._find_root_type5(name)
+            if entry is not None:
+                if not self._is_subdirectory(entry):
+                    raise NotADirectoryError(
+                        f"{name} is a raw CBM partition, not a sub-directory"
+                    )
+                return self._sub_fs(entry)._list_root()
+        raise FileNotFoundError(f"No such directory: {path}")
+
+    def _list_root(self) -> list[FileInfo]:
+        """Lists this filesystem's own directory (the disk root, or the
+        partition's directory on a _sub_fs instance). Qualifying CBM
+        sub-directory partitions list as directories; raw partitions stay
+        plain files (their whole range is readable as raw bytes)."""
         out = []
         for _t, _s, _k, entry in self._iter_entries():
             info = self._entry_to_fileinfo(entry)
             if info is None:
+                continue
+            if info.extra_data["ftype"] == 5 and self._is_subdirectory(entry):
+                info.is_dir = True
+                info.size = 0
+                out.append(info)
                 continue
             base_type = FILE_TYPES[info.extra_data["ftype"]]
             if base_type in ("SEQ", "PRG", "USR", "REL"):
@@ -903,6 +1157,111 @@ class CBMFilesystem(Filesystem):
             if s >= self.layout.spt(t):
                 t, s = t + 1, 0
         return out
+
+    # -- partitions (1581 sub-directories) -----------------------------------------
+
+    def _partition_track_range(self, entry: bytes) -> Optional[tuple[int, int]]:
+        """(start_track, n_tracks) of a whole-track-aligned CBM partition, or
+        None when the entry is not track-aligned (start sector != 0, size not
+        a whole number of tracks) or the range runs off the disk."""
+        sectors = entry[0x1E] | (entry[0x1F] << 8)
+        start_t, start_s = entry[3], entry[4]
+        if start_s != 0 or sectors == 0 or not 1 <= start_t <= self.layout.tracks:
+            return None
+        t, total = start_t, 0
+        while total < sectors:
+            if t > self.layout.tracks:
+                return None
+            total += self.layout.spt(t)
+            t += 1
+        if total != sectors:
+            return None
+        return start_t, t - start_t
+
+    def _is_subdirectory(self, entry: bytes) -> bool:
+        """True when a CBM partition entry qualifies as a 1581 sub-directory:
+        whole-track aligned, >= 120 sectors (3 tracks), track range excludes
+        the root directory track 40, and the partition interior carries its
+        own 1581 header at (start,0) and BAM at (start,1)."""
+        if self.layout.variant != "1581":
+            return False
+        rng = self._partition_track_range(entry)
+        if rng is None:
+            return False
+        t0, n = rng
+        if n < 3 or t0 <= self.layout.dir_track <= t0 + n - 1:
+            return False
+        try:
+            hdr = self._read_ts(t0, 0)
+            bam = self._read_ts(t0, 1)
+        except (OSError, ValueError):
+            return False
+        return hdr[2] == 0x44 and bam[2] == 0x44 and bam[3] == 0xBB
+
+    def _sub_fs(self, entry: bytes) -> "CBMFilesystem":
+        """Filesystem view of a qualifying 1581 sub-directory partition: the
+        SAME disk, a partition-scoped layout (directory at start/3; every
+        track outside the partition plus the start track itself reserved, so
+        the allocator only touches partition data tracks) and a _Bam1581
+        redirected at the partition's own header/BAM sectors."""
+        t0, n = self._partition_track_range(entry)
+        inside = set(range(t0, t0 + n))
+        sub_layout = dataclasses.replace(
+            self.layout,
+            dir_track=t0,
+            dir_sector=3,
+            reserved_tracks=tuple(
+                t
+                for t in range(1, self.layout.tracks + 1)
+                if t not in inside or t == t0
+            ),
+        )
+        sub = CBMFilesystem(self.disk, config=sub_layout)
+        sub.layout = sub_layout
+        sub._bam = _Bam1581(
+            sub,
+            sector_map={(40, 1): (t0, 1), (40, 2): (t0, 2)},
+            header=(t0, 0),
+        )
+        sub._check_tracks = inside
+        sub._initialized = True
+        return sub
+
+    def _find_root_type5(self, name: str) -> Optional[bytes]:
+        """First visible CBM-partition (type 5) entry named `name`, or None."""
+        for _t, _s, _k, entry in self._iter_entries():
+            if entry[2] == 0x00 or entry[2] & 0x0F == 0:
+                continue
+            if entry[2] & 0x0F == 5 and petscii_to_unicode(entry[5:0x15]) == name:
+                return entry
+        return None
+
+    def _resolve(self, path: str) -> tuple[Optional[bytes], str]:
+        """Routes '/PARTITION/NAME' paths one level deep on 1581 disks.
+
+        Returns (partition_entry, inner_name) when the first path component
+        names a qualifying sub-directory partition; otherwise (None,
+        full_name) so the caller looks the whole string up in this directory
+        (CBM names may legally contain '/'). Raises NotADirectoryError when
+        the component names a raw (unformatted) partition and
+        FileNotFoundError for deeper nesting: nested partitions exist on real
+        1581 disks but are not traversable here."""
+        self._initialize()
+        name = path.removeprefix("/")
+        if self.layout.variant == "1581" and "/" in name:
+            comp0, _slash, rest = name.partition("/")
+            entry = self._find_root_type5(comp0)
+            if entry is not None:
+                if "/" in rest:
+                    raise FileNotFoundError(
+                        f"Nested partition paths are not supported: {path}"
+                    )
+                if not self._is_subdirectory(entry):
+                    raise NotADirectoryError(
+                        f"{comp0} is a raw CBM partition, not a sub-directory"
+                    )
+                return entry, rest
+        return None, name
 
     def _iter_side_sectors(self, t: int, s: int):
         """Yields every side-sector (and super side sector) T/S of a REL entry.
@@ -1140,8 +1499,7 @@ class CBMFilesystem(Filesystem):
         record of zeros, mirroring CBM DOS initializing record 1 on a fresh
         REL file. The directory block count includes data blocks, all side
         sectors, and (on D81) the super side sector."""
-        with contextlib.suppress(FileNotFoundError):
-            self.delete("/" + base)
+        self._scratch_existing(base)
         if not data:
             data = bytes(reclen)  # new REL: one blank record
         if len(data) % reclen:
@@ -1206,6 +1564,18 @@ class CBMFilesystem(Filesystem):
         self._bam.flush()
         self.disk.flush()
 
+    def _scratch_existing(self, base: str) -> None:
+        """Scratch-and-replace prelude: deletes an existing entry named
+        `base`, refusing to clobber a CBM partition (real DOS refuses to
+        overwrite a CBM type with a file)."""
+        try:
+            _t, _s, _k, entry = self._find_entry("/" + base)
+        except FileNotFoundError:
+            return
+        if entry[2] & 0x0F == 5:
+            raise ValueError("Cannot overwrite a partition with a file")
+        self.delete("/" + base)
+
     def _claim_dir_slot(self) -> tuple[int, int, int]:
         """Returns (track, sector, slot) of a free directory slot, reusing a
         scratched slot anywhere in the chain or extending the chain within the
@@ -1264,6 +1634,9 @@ class CBMFilesystem(Filesystem):
         raise FileNotFoundError(f"No such file: {path}")
 
     def read_file(self, path: str) -> bytes:
+        part, inner = self._resolve(path)
+        if part is not None:
+            return self._sub_fs(part).read_file("/" + inner)
         _t, _s, _k, entry = self._find_entry(path)
         if not entry[2] & 0x80:
             self.logger.warning(f"Reading splat (unclosed) file {path!r}")
@@ -1275,13 +1648,16 @@ class CBMFilesystem(Filesystem):
 
     def get_file_allocation_units(self, path: str) -> list[int]:
         try:
+            part, inner = self._resolve(path)
+            if part is not None:
+                return self._sub_fs(part).get_file_allocation_units("/" + inner)
             _t, _s, _k, entry = self._find_entry(path)
             if (entry[2] & 0x0F) == 5:
                 blocks = self._partition_ts_list(entry)
             else:
                 blocks = self._follow_chain(entry[3], entry[4])
             return [self.layout.linear_index(t, s) for t, s in blocks]
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, NotADirectoryError, ValueError):
             return []
 
     def write_file(self, path: str, data: bytes) -> None:
@@ -1293,9 +1669,14 @@ class CBMFilesystem(Filesystem):
         allocated, so large rewrites fit in the freed space. The trade-off: a
         mid-write disk-full leaves the old file deleted -- but the rollback
         still frees the new partial chain, so the BAM stays consistent.
+        A name collision with a CBM partition raises ValueError (real DOS
+        refuses to overwrite a CBM type with a file).
         """
         self._initialize()
-        base, ftype, reclen = self._split_type_suffix(path.removeprefix("/"))
+        part, inner = self._resolve(path)
+        if part is not None:
+            return self._sub_fs(part).write_file("/" + inner, data)
+        base, ftype, reclen = self._split_type_suffix(inner)
         raw_name = unicode_to_petscii(base)
         if not raw_name or len(raw_name) > 16:
             raise ValueError(f"Invalid CBM filename {base!r} (1-16 PETSCII chars)")
@@ -1309,8 +1690,7 @@ class CBMFilesystem(Filesystem):
             )
         if ftype == 4:
             return self._write_rel_file(base, raw_name, data, reclen)
-        with contextlib.suppress(FileNotFoundError):
-            self.delete("/" + base)
+        self._scratch_existing(base)
         chunks = [data[i : i + PAYLOAD] for i in range(0, len(data), PAYLOAD)] or [b""]
         chain = self._write_chain(chunks)
         try:
