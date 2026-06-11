@@ -546,3 +546,109 @@ class TestFormat:
         assert fs._bam.verify_counts()
         fs.write_file("/T", b"y" * 600)
         assert fs.read_file("/T") == b"y" * 600
+
+
+class TestChurnAndCheck:
+    @pytest.mark.parametrize(
+        "profile", ["cbm_1541_d64", "cbm_1571_d71", "cbm_1581_d81"]
+    )
+    def test_fragmentation_churn(self, profile):
+        import random
+
+        rng = random.Random(1234)
+        fs = fresh_formatted(profile, label="CHURN")
+        live = {}
+        for i in range(120):
+            name = f"F{i % 30}"
+            if name in live and rng.random() < 0.5:
+                fs.delete("/" + name)
+                del live[name]
+            else:
+                data = rng.randbytes(rng.randint(0, 2000))
+                fs.write_file("/" + name, data)
+                live[name] = data
+            assert fs._bam.verify_counts(), f"BAM count drift at iteration {i}"
+        for name, data in live.items():
+            assert fs.read_file("/" + name) == data, f"content mismatch for {name}"
+        assert fs.check()
+
+    def test_churn_then_reopen_consistent(self):
+        import random
+
+        rng = random.Random(99)
+        fs = fresh_formatted("cbm_1541_d64", label="REOPEN")
+        live = {}
+        for i in range(60):
+            name = f"G{i % 12}"
+            if name in live and rng.random() < 0.4:
+                fs.delete("/" + name)
+                del live[name]
+            else:
+                data = rng.randbytes(rng.randint(1, 1500))
+                fs.write_file("/" + name, data)
+                live[name] = data
+        fs.disk.flush()
+        fs2 = CBMFilesystem(fs.disk)
+        assert {e.name for e in fs2.list_directory("/")} == set(live)
+        for name, data in live.items():
+            assert fs2.read_file("/" + name) == data
+        assert fs2.check()
+
+    def test_check_detects_bam_chain_mismatch(self):
+        from .test_42_cbm_filesystem_read import d64_with_file
+
+        fs = open_fs(d64_with_file())
+        assert fs.check()  # consistent fixture passes first
+        fs._initialize()
+        fs._bam.set_free(17, 0)  # file's first sector now marked free
+        fs._bam.flush()
+        fs3 = CBMFilesystem(fs.disk)
+        assert fs3.check() is False
+
+    def test_check_warns_on_orphaned_allocation(self, caplog):
+        # Probe-driven rule: an orphaned-but-allocated block is what a real
+        # DOS VALIDATE silently frees -- no data is at risk, so check() warns
+        # and still passes (1571_demo legitimately carries two such blocks).
+        from .test_42_cbm_filesystem_read import d64_with_file
+
+        fs = open_fs(d64_with_file())
+        fs._initialize()
+        fs._bam.set_allocated(5, 5)  # allocated but belongs to no file
+        fs._bam.flush()
+        fs2 = CBMFilesystem(fs.disk)
+        with caplog.at_level(logging.WARNING):
+            assert fs2.check() is True
+        assert any("orphaned" in r.message for r in caplog.records)
+
+    def test_check_fails_on_count_bitmap_mismatch(self):
+        from .test_42_cbm_filesystem_read import d64_with_file
+
+        img = d64_with_file()
+        img[0x16500 + 0x04] = 5  # track 1 count says 5 free, bitmap says 21
+        fs = open_fs(img)
+        assert fs.check() is False
+
+    @pytest.mark.parametrize(
+        "image",
+        [
+            "vic1541_bam.d64",
+            "c128_tutorial.d64",
+            "endless_forms.d64",
+            # 1571_demo carries 2 orphaned all-zero blocks (36/6, 36/7) plus a
+            # closed-DEL entry owning a 4-block chain and a REL file: orphans
+            # warn (never fail), DEL/REL chains are traced as expected-allocated.
+            "1571_demo.d71",
+            "1581_demo.d81",  # has a CBM partition (PIC.DIR, tracks 50-59)
+        ],
+    )
+    def test_real_images_pass_check(self, image):
+        from .test_42_cbm_filesystem_read import RESOURCES
+
+        path = RESOURCES / image
+        if not path.exists():
+            pytest.skip(f"resource {image} not present")
+        drv = CBMImageDriver(str(path))
+        disk = Disk(drv)
+        disk.set_geometry(drv.physical_format)
+        fs = CBMFilesystem(disk)
+        assert fs.check()

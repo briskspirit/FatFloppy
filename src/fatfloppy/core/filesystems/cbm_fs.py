@@ -435,6 +435,99 @@ class CBMFilesystem(Filesystem):
         except FileNotFoundError:
             return False
 
+    def check(self) -> bool:
+        """VALIDATE-style consistency check.
+
+        Compares the BAM against the set of blocks the directory structures
+        actually own: system sectors, the directory chain, every live entry's
+        data chain, REL side sectors (including D81 super side sectors),
+        closed-DEL chains (real VALIDATE traces those too) and CBM partition
+        ranges.
+
+        Verdict rule (probe-driven, see test_44):
+        - FAILURE: a live block marked free in the BAM (data-loss risk: the
+          allocator could overwrite it), BAM free counts inconsistent with the
+          bitmaps, or an unwalkable directory/live-file structure.
+        - WARNING only: allocated-but-unowned (orphaned) blocks. A real DOS
+          VALIDATE frees those silently; vintage disks legitimately carry them
+          (e.g. 1571_demo has two orphaned all-zero blocks).
+        """
+        self._initialize()
+        expected = {self._bam.header_ts()}
+        if self.layout.variant == "1571":
+            # 1571 DOS reserves the whole of track 53 at format time (53/0 is
+            # the side-2 BAM, the rest stays allocated): all of it is system.
+            expected |= {(53, s) for s in range(self.layout.spt(53))}
+        if self.layout.variant == "1581":
+            expected |= {(40, 1), (40, 2)}
+        ok = True
+        try:
+            for t, s, _d in self._iter_dir_sectors():
+                expected.add((t, s))
+            for _t, _s, _k, entry in self._iter_entries():
+                tb = entry[2]
+                if tb == 0x00:
+                    continue  # scratched slot
+                ftype = tb & 0x0F
+                if ftype == 0:
+                    # Closed DEL entries can own a chain (directory-art and
+                    # stash tricks); real VALIDATE traces them. A broken DEL
+                    # chain is not a data-loss risk: warn and move on, its
+                    # blocks surface as orphans at worst.
+                    if tb & 0x80 and entry[3] != 0:
+                        try:
+                            expected.update(self._follow_chain(entry[3], entry[4]))
+                        except ValueError as exc:
+                            self.logger.warning(f"check(): broken DEL chain: {exc}")
+                    continue
+                if ftype == 5:  # CBM partition: contiguous whole tracks
+                    sectors = entry[0x1E] | (entry[0x1F] << 8)
+                    start_t = entry[3]
+                    if sectors % 40 or entry[4] != 0:
+                        self.logger.warning(
+                            "check(): non-standard partition entry "
+                            f"(start {start_t}/{entry[4]}, {sectors} sectors); "
+                            "skipping"
+                        )
+                        continue
+                    for pt in range(start_t, start_t + sectors // 40):
+                        for ps in range(self.layout.spt(pt)):
+                            expected.add((pt, ps))
+                    continue
+                expected.update(self._follow_chain(entry[3], entry[4]))
+                if ftype == 4 and entry[0x15] != 0:
+                    expected.update(self._iter_side_sectors(entry[0x15], entry[0x16]))
+        except ValueError as exc:
+            self.logger.warning(f"check(): unwalkable structure: {exc}")
+            return False
+        mapped = set(self._bam.mapped_tracks())
+        allocated = {
+            (t, s)
+            for t in mapped
+            for s in range(self.layout.spt(t))
+            if not self._bam.is_free(t, s)
+        }
+        # Unmapped tracks (e.g. 36-40 on extended 1541 images) have no BAM
+        # entry to compare against.
+        expected = {ts for ts in expected if ts[0] in mapped}
+        missing = expected - allocated  # live data marked free: data-loss risk
+        orphaned = allocated - expected  # allocated but unowned: benign cruft
+        if missing:
+            self.logger.warning(
+                f"check(): {len(missing)} live blocks marked free: "
+                f"{sorted(missing)[:8]}"
+            )
+            ok = False
+        if orphaned:
+            self.logger.warning(
+                f"check(): {len(orphaned)} orphaned allocated blocks "
+                f"(a real VALIDATE would free them): {sorted(orphaned)[:8]}"
+            )
+        if not self._bam.verify_counts():
+            self.logger.warning("check(): BAM free counts inconsistent with bitmaps")
+            ok = False
+        return ok
+
     def format_fs(
         self, profile: FormatProfile, volume_label: Optional[str] = None
     ) -> None:
@@ -780,6 +873,29 @@ class CBMFilesystem(Filesystem):
             if s >= self.layout.spt(t):
                 t, s = t + 1, 0
         return out
+
+    def _iter_side_sectors(self, t: int, s: int):
+        """Yields every side-sector (and super side sector) T/S of a REL entry.
+
+        D64/D71 RELs point straight at a plain side-sector chain; D81 RELs
+        point at a super side sector (byte 2 == 0xFE) holding up to 126 group
+        pointers, each the head of a side-sector chain. Range checks and cycle
+        guards come from _follow_chain; the super sector itself is validated
+        here before the first read.
+        """
+        self._initialize()
+        if not (1 <= t <= self.layout.tracks) or not (0 <= s < self.layout.spt(t)):
+            raise ValueError(f"Side sector pointer outside disk at {t}/{s}")
+        first = self._read_ts(t, s)
+        if first[2] == 0xFE:  # D81 super side sector
+            yield (t, s)
+            for g in range(126):
+                gt, gs = first[3 + 2 * g], first[4 + 2 * g]
+                if gt == 0:
+                    break
+                yield from self._follow_chain(gt, gs)
+        else:
+            yield from self._follow_chain(t, s)
 
     # -- allocation --------------------------------------------------------------
 
