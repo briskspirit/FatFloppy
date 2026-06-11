@@ -8,6 +8,8 @@ from fatfloppy.core.cbm_layout import (
     build_physical_format,
     layout_for_variant,
 )
+from fatfloppy.core.controller import DiskController
+from fatfloppy.core.driver_factory import DriverFactory
 from fatfloppy.core.drivers.cbm_image import CBMImageDriver
 
 
@@ -368,3 +370,48 @@ class TestCBMImageDriver:
         drv = CBMImageDriver.__new__(CBMImageDriver)
         ok, _ = CBMImageDriver.validate_for_opening(drv, str(p))
         assert not ok
+
+    def test_validate_rejects_random_196608_error_message(self, tmp_path):
+        p = tmp_path / "x.img"
+        p.write_bytes(bytes([0x55]) * 196608)
+        drv = CBMImageDriver.__new__(CBMImageDriver)
+        ok, err = CBMImageDriver.validate_for_opening(drv, str(p))
+        assert not ok
+        assert err is not None and "CBM" in err
+
+    def test_validate_rejects_mac_800k_error_message(self, tmp_path):
+        p = tmp_path / "x.d81"
+        p.write_bytes(bytes([0xAA]) * 819200)
+        drv = CBMImageDriver.__new__(CBMImageDriver)
+        ok, err = CBMImageDriver.validate_for_opening(drv, str(p))
+        assert not ok
+        assert err is not None and "CBM" in err
+
+
+class TestCBMAutoDetection:
+    """Tests for CBM auto-detection via DriverFactory and DiskController."""
+
+    def test_factory_picks_cbm_driver_for_d64(self, tmp_path):
+        """A valid D64 image must be claimed by the CBM driver when disk_type='auto'."""
+        p = tmp_path / "auto.d64"
+        p.write_bytes(make_blank_d64())
+        drv = DriverFactory.create("auto", source=str(p))
+        assert drv.driver_type == "CBM"
+
+    def test_controller_opens_d64_with_cbm_driver(self, tmp_path):
+        """DiskController.open_disk with disk_type='auto' must select the CBM driver."""
+        p = tmp_path / "auto.d64"
+        p.write_bytes(make_blank_d64())
+        controller = DiskController()
+        result = controller.open_disk(str(p), disk_type="auto")
+        assert result, "open_disk should succeed for a valid blank D64"
+        assert controller.driver is not None
+        assert controller.driver.driver_type == "CBM"
+        controller.close_disk()
+
+    def test_img_fallback_not_shadowed(self, tmp_path):
+        """A 360 K raw IMG must not be claimed by the CBM driver."""
+        p = tmp_path / "fat.img"
+        p.write_bytes(bytes(368640))
+        drv = DriverFactory.create("auto", source=str(p))
+        assert drv.driver_type != "CBM"

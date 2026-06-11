@@ -139,7 +139,7 @@ class CBMImageDriver(DiskIODriver):
             ValueError: If ``data`` is not exactly 256 bytes.
         """
         if self.read_only:
-            raise OSError("42-track D64 images are read-only")
+            raise OSError(f"{self._layout.tracks}-track CBM images are read-only")
         if len(data) != CBM_BYTES_PER_SECTOR:
             raise ValueError(f"Sector data must be 256 bytes, got {len(data)}")
         off = self._sector_offset(cylinder, head, sector)
@@ -188,7 +188,7 @@ class CBMImageDriver(DiskIODriver):
             raise ValueError(
                 f"CBM geometry requires 21 or 40 sectors/track on track 0, got {spt0}"
             )
-        family = {21: "D64", 40: "D81"}.get(spt0, "D64")
+        family = {21: "D64", 40: "D81"}[spt0]
         if pf.cylinders == 70:
             family = "D71"
         tracks = pf.cylinders
@@ -236,7 +236,7 @@ class CBMImageDriver(DiskIODriver):
             weak = (probe[2] == 0x44) + (probe[0x19:0x1B] == b"3D")
             if strong or weak >= 2:
                 return True, None
-            return False, "Size matches D81 but no 1581 header/BAM signatures"
+            return False, "Size matches D81 but no CBM 1581 header/BAM signatures"
         signals = 0
         if 1 <= probe[0] <= tracks and probe[1] < 21:
             signals += 1
