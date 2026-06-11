@@ -12,6 +12,7 @@ import pytest
 from fatfloppy.core.apollo_wbak import (
     IMAGE_SIZE,
     STREAM_START,
+    ContinuationSpec,
     WbakCatalog,
     WbakEntry,
     build_catalog,
@@ -20,12 +21,17 @@ from fatfloppy.core.controller import DiskController
 from fatfloppy.core.filesystems.apollo_wbak_fs import (
     ApolloWbakConfig,
     ApolloWbakFilesystem,
+    AttachResult,
 )
+from fatfloppy.core.filesystems.fs_base import Filesystem
 
 from .test_49_apollo_wbak_parser import (
     SYN_UID,
     StreamBuilder,
     build_block,
+    build_continuation_volume,
+    build_three_volume_set,
+    build_two_volume_set,
     data_rec,
     file_rec,
     label80,
@@ -36,8 +42,36 @@ from .test_49_apollo_wbak_parser import (
 
 RESOURCES = Path(__file__).parent.parent / "resources" / "APOLLO"
 CBM_RESOURCES = Path(__file__).parent.parent / "resources" / "CBM"
+REAL_VOLUMES = Path(
+    "/Volumes/EXTERNAL/BACKUPS/ZED/VINTAGE_STUFF_70s/Disk_Images/APOLLO"
+)
 
 CLEANUP_SHA256 = "3e4f699d17b9b08936e1f1d501bec3c3a56c4d2e978eb64134a32ac4186539e1"
+# Stitched-content pins, derived from the reference cross-volume extraction
+# (docs/superpowers/research/apollo/empirical/extracted/): sha256 of the
+# reference file with its 32-byte storage header stripped.
+#   COM.seq2.31F49BD4/COM/FTN_SR9.2 -- 409,074 raw bytes (130,218 on disk8
+#   + 278,856 on disk1); 439,276 were declared, so 30,202 were never
+#   written to the set and the stitched file stays PARTIAL.
+FTN_STITCHED_SHA256 = "6b19bd9fd46f13baa879eb7c6e37adf056b7284043e3f54fc138c48e2a0b6101"
+#   SYS5_BIN.seq1.32A33654/SYS5/BIN/CC -- 29,708 raw bytes (15,664 on disk4
+#   + disk3's 14,044-byte tail); 30,500 declared -> stays PARTIAL too.
+CC_STITCHED_SHA256 = "e4da40612da40d6350ecfe23a1397c3fb669ef79a8df574479c8e5ad6af386f7"
+
+
+def real_volume_bytes(name: str) -> bytes:
+    path = REAL_VOLUMES / name
+    if not path.exists():
+        pytest.skip(f"real volume {name} not present under {REAL_VOLUMES}")
+    return path.read_bytes()
+
+
+def open_volume(tmp_path: Path, data: bytes, name: str = "primary.img"):
+    path = tmp_path / name
+    path.write_bytes(data)
+    controller = DiskController()
+    assert controller.open_disk(str(path), disk_type="auto")
+    return controller
 
 
 @pytest.fixture(scope="module")
@@ -463,3 +497,223 @@ class TestPlaceholderUniquification:
         assert fs.read_file("/treeq/?") == b"one"
         assert fs.read_file("/treeq/?~1") == b"two"
         controller.close_disk()
+
+
+class TestAttachVolume:
+    def test_capability_flag(self):
+        assert ApolloWbakFilesystem.supports_volume_attach is True
+        # absent (falsy) on the base class: the GUI probes via getattr
+        assert getattr(Filesystem, "supports_volume_attach", False) is False
+
+    def test_pending_continuations_disk8(self, disk8):
+        # one EOV-cut tree (COM); the spec's uid is the per-tree UHL1 uid
+        # read from the catalog at test time, not the per-volume UVL1
+        cat = build_catalog((RESOURCES / "disk8.img").read_bytes())
+        assert disk8.filesystem.pending_continuations() == [
+            ContinuationSpec(
+                file_id="COM",
+                sequence=2,
+                next_section=2,
+                backup_uid=cat.trees[1].uid_text,
+                volume_id="FT0003",
+            )
+        ]
+
+    def test_attach_synthetic_continuation(self, tmp_path):
+        s = build_two_volume_set()
+        controller = open_volume(tmp_path, s.vol_a)
+        try:
+            fs = controller.filesystem
+            assert fs.read_file("/com/bigfile") == s.prefix  # partial before
+            result = fs.attach_volume(s.vol_b)
+            assert isinstance(result, AttachResult)
+            assert result.volume_id == "SYNVB0"
+            assert result.stitched_tree_ids == ("COM",)
+            assert result.still_incomplete == []
+            # the previously-partial file now reads in full
+            assert fs.read_file("/com/bigfile") == s.content
+            big = next(i for i in fs.list_directory("/com") if i.name == "bigfile")
+            assert "PARTIAL" not in big.attributes
+            assert big.extra_data["partial"] is False
+            # the continuation's follow-on entry joined the namespace
+            assert fs.read_file("/com/followon") == s.follow_content
+            info = fs.get_display_info()
+            assert info["Attached Volumes"] == "SYNVB0"
+            assert info["Partial Files"] == "0"
+            assert "EOV" not in info["Backup Sets"]  # stitched -> complete
+            assert fs.pending_continuations() == []
+        finally:
+            controller.close_disk()
+
+    def test_attach_wrong_volume_rejected_state_unchanged(self, tmp_path):
+        s = build_two_volume_set()
+        controller = open_volume(tmp_path, s.vol_a)
+        try:
+            fs = controller.filesystem
+            pending_before = fs.pending_continuations()
+            prefix_before = fs.read_file("/com/bigfile")
+
+            # identity mismatch (wrong sequence + section): no candidate
+            # matches; the error names expected vs found, with volume ids
+            wrong = build_continuation_volume(
+                volume_id="SYNVC9", sequence=7, section=4, tail=s.tail
+            )
+            with pytest.raises(
+                ValueError,
+                match=(
+                    r"Wrong volume 'SYNVC9'.*"
+                    r"expected section 2 of 'COM' seq 2 \(uid 31F49BD4\.200071FA\).*"
+                    r"contains 'COM' seq 7 section 4"
+                ),
+            ):
+                fs.attach_volume(wrong)
+
+            # uid mismatch on a structurally matching continuation: the
+            # per-tree UHL1 validation in stitch_tree rejects it
+            imposter = build_continuation_volume(
+                uid_text="32A339B7.000071FA",
+                uid=bytes.fromhex("32a339b7000071fa"),
+                tail=s.tail,
+            )
+            with pytest.raises(ValueError, match=r"backup UID 32A339B7\.000071FA"):
+                fs.attach_volume(imposter)
+
+            # not a wbak backup volume at all
+            with pytest.raises(ValueError, match=r"not a wbak backup volume"):
+                fs.attach_volume(build_aegis_stub())
+
+            # all three failures left the filesystem state untouched ...
+            assert fs.pending_continuations() == pending_before
+            assert fs.read_file("/com/bigfile") == prefix_before
+            assert "Attached Volumes" not in fs.get_display_info()
+            # ... and the RIGHT volume still attaches cleanly afterwards
+            assert fs.attach_volume(s.vol_b).stitched_tree_ids == ("COM",)
+            assert fs.read_file("/com/bigfile") == s.content
+        finally:
+            controller.close_disk()
+
+    def test_attach_same_volume_twice_rejected(self, tmp_path):
+        s = build_two_volume_set()
+        controller = open_volume(tmp_path, s.vol_a)
+        try:
+            fs = controller.filesystem
+            fs.attach_volume(s.vol_b)
+            with pytest.raises(ValueError, match=r"already attached"):
+                fs.attach_volume(s.vol_b)
+            # the success state survives the rejected re-attach
+            assert fs.read_file("/com/bigfile") == s.content
+            assert fs.get_display_info()["Attached Volumes"] == "SYNVB0"
+        finally:
+            controller.close_disk()
+
+    def test_three_volume_chain_still_incomplete(self, tmp_path):
+        s = build_three_volume_set()
+        vol_a, vol_b, vol_c = s.volumes
+        controller = open_volume(tmp_path, vol_a)
+        try:
+            fs = controller.filesystem
+            r1 = fs.attach_volume(vol_b)
+            assert r1.stitched_tree_ids == ("COM",)
+            # B ends EOV: the chain advertises the next (section 3) volume
+            assert r1.still_incomplete == [
+                ContinuationSpec(
+                    file_id="COM",
+                    sequence=2,
+                    next_section=3,
+                    backup_uid="31F49BD4.200071FA",
+                    volume_id="SYNVA0",
+                )
+            ]
+            assert r1.still_incomplete == fs.pending_continuations()
+            # intermediate state: a longer prefix, still PARTIAL
+            assert fs.read_file("/com/bigfile") == s.content[:8000]
+            big = next(i for i in fs.list_directory("/com") if i.name == "bigfile")
+            assert "PARTIAL" in big.attributes
+
+            r2 = fs.attach_volume(vol_c)
+            assert r2.stitched_tree_ids == ("COM",)
+            assert r2.still_incomplete == []
+            assert fs.read_file("/com/bigfile") == s.content
+            assert fs.get_display_info()["Attached Volumes"] == "SYNVB0, SYNVC0"
+        finally:
+            controller.close_disk()
+
+    def test_real_disk8_plus_disk1(self):
+        # FT0003 COM seq 2: disk8 (section 1, EOV) -> disk1 (section 2,
+        # EOF).  The two volumes carry DIFFERENT per-volume UVL1 uids; the
+        # COM tree's UHL1 uid is identical on both -- the attach must
+        # succeed on the per-tree invariant.
+        disk1 = real_volume_bytes("disk1.img")
+        disk9 = real_volume_bytes("disk9.img")
+        controller = DiskController()
+        assert controller.open_disk(str(RESOURCES / "disk8.img"), disk_type="auto")
+        try:
+            fs = controller.filesystem
+            pending_before = fs.pending_continuations()
+            assert [spec.file_id for spec in pending_before] == ["COM"]
+            prefix = fs.read_file("/com/ftn_sr9.2")
+            assert len(prefix) == 130218 - 32
+
+            # disk9 belongs to FT0006: rejected, state unchanged
+            with pytest.raises(ValueError, match=r"Wrong volume 'FT0006'"):
+                fs.attach_volume(disk9)
+            assert fs.pending_continuations() == pending_before
+            assert fs.read_file("/com/ftn_sr9.2") == prefix
+
+            result = fs.attach_volume(disk1)
+            assert result.volume_id == "FT0003"
+            assert result.stitched_tree_ids == ("COM",)
+            assert result.still_incomplete == []
+
+            # 30,202 of the declared 439,276 raw bytes were never written
+            # to the set: the stitched file stays PARTIAL (and DMG), and
+            # its content pins against the reference stitched extraction
+            content = fs.read_file("/com/ftn_sr9.2")
+            assert len(content) == 409042
+            assert hashlib.sha256(content).hexdigest() == FTN_STITCHED_SHA256
+            ftn = next(i for i in fs.list_directory("/com") if i.name == "ftn_sr9.2")
+            assert "PARTIAL" in ftn.attributes
+            assert "DMG" in ftn.attributes
+            # disk1's foreign trees (DOMAIN_EXAMPLES, SYS/HELP, DOC) are
+            # NOT merged: continuation-only, the namespace stays put
+            assert {i.name for i in fs.list_directory("/")} == {"install", "com"}
+            assert fs.get_display_info()["Attached Volumes"] == "FT0003"
+        finally:
+            controller.close_disk()
+
+    def test_real_sys5_bin_disk4_plus_disk3(self):
+        # Second real set, second proof of the per-tree uid invariant:
+        # disk4 (SYS5/BIN seq 1 section 1, EOV) + disk3 (section 2, EOF).
+        # 'cc' is the EOV-cut file itself: 15,664 raw bytes on disk4 +
+        # disk3's 14,044-byte tail = 29,708 of 30,500 declared (792 never
+        # written -> stays PARTIAL); content pins against the reference.
+        real_volume_bytes("disk4.img")  # skip guard
+        disk3 = real_volume_bytes("disk3.img")
+        controller = DiskController()
+        assert controller.open_disk(str(REAL_VOLUMES / "disk4.img"), disk_type="auto")
+        try:
+            fs = controller.filesystem
+            result = fs.attach_volume(disk3)
+            assert result.volume_id == "5BIO"
+            assert result.stitched_tree_ids == ("SYS5/BIN",)
+            assert result.still_incomplete == []
+            content = fs.read_file("/sys5/bin/cc")
+            assert len(content) == 29676
+            assert hashlib.sha256(content).hexdigest() == CC_STITCHED_SHA256
+            # disk3's follow-on entries joined the tree's namespace
+            names = {i.name for i in fs.list_directory("/sys5/bin")}
+            assert {"touch", "who", "csh"} <= names
+        finally:
+            controller.close_disk()
+
+    def test_behavior_unchanged_without_attach(self, disk8, caplog):
+        # no attach performed: partial reads still return the available
+        # prefix with a warning -- corpus sweeps and API callers see no
+        # change from the attach machinery
+        with caplog.at_level(logging.WARNING):
+            content = disk8.filesystem.read_file("/com/ftn_sr9.2")
+        assert len(content) == 130218 - 32
+        assert any(
+            "end of volume" in r.message and "prefix" in r.message
+            for r in caplog.records
+        )

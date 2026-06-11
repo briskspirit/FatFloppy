@@ -24,6 +24,13 @@ directory hierarchy (spec section 4):
 - ``FileInfo.attributes`` is a space-joined marker string: ``LINK`` for
   symbolic links, ``PARTIAL`` for the file cut by end-of-volume, ``DMG``
   for parser-flagged damage; clean files/directories get ``""``.
+- Cross-volume reassembly: :meth:`ApolloWbakFilesystem.attach_volume`
+  stitches the next volume of a split backup set into the mounted
+  catalog (``PARTIAL`` clears once the cut file's declared size is
+  satisfied).  Attached volumes supply CONTENT only -- the disk map,
+  allocation units, free space and ``check()`` keep describing the
+  primary medium -- and attachments last for the filesystem instance's
+  lifetime (closing the disk discards them).
 - All mutating operations raise ``OSError("Apollo wbak volumes are
   read-only")``.
 """
@@ -39,11 +46,14 @@ from ..apollo_wbak import (
     IMAGE_SIZE,
     SECTOR,
     SECTORS_PER_TRACK,
+    ContinuationSpec,
     WbakCatalog,
     WbakEntry,
     WbakTree,
     build_catalog,
     decode_wbak_name,
+    expected_continuation,
+    stitch_tree,
 )
 from ..format_profile import FormatProfile
 from .fs_base import FileInfo, Filesystem
@@ -72,6 +82,21 @@ class ApolloWbakConfig:
     set_id: str = "BACKUP"
 
 
+@dataclass
+class AttachResult:
+    """Outcome of a successful :meth:`ApolloWbakFilesystem.attach_volume`.
+
+    ``stitched_tree_ids`` names the trees (HDR1 file_ids) the attached
+    volume continued; ``still_incomplete`` lists the continuation specs
+    still pending afterwards -- non-empty for 3+ volume chains, where the
+    caller should prompt for the next volume.
+    """
+
+    volume_id: Optional[str]
+    stitched_tree_ids: tuple
+    still_incomplete: list  # list[ContinuationSpec]
+
+
 class ApolloWbakFilesystem(Filesystem):
     """Read-only filesystem over an Apollo wbak backup catalog."""
 
@@ -79,6 +104,9 @@ class ApolloWbakFilesystem(Filesystem):
     filesystem_aliases: ClassVar[list[str]] = ["APOLLO", "WBAK"]
     validity_threshold: ClassVar[int] = 40
     config_class: ClassVar[Optional[type]] = ApolloWbakConfig
+    # Capability flag the GUI probes (via getattr) before offering the
+    # insert-next-volume prompt; absent/False on every other filesystem.
+    supports_volume_attach: ClassVar[bool] = True
 
     def __init__(self, disk, config: Optional[Any] = None):
         super().__init__(disk, config)
@@ -88,6 +116,9 @@ class ApolloWbakFilesystem(Filesystem):
         self._index: list[tuple[str, WbakTree, WbakEntry]] = []
         self._recoverable_cache: Optional[int] = None
         self._initialized = False
+        # One (volume_id, {(tree uid, section), ...}) record per attached
+        # volume: the duplicate-attach guard and the display-info list.
+        self._attached_volumes: list[tuple[Optional[str], frozenset]] = []
 
     # ------------------------------------------------------------------
     # Initialization / catalog adaptation
@@ -268,6 +299,106 @@ class ApolloWbakFilesystem(Filesystem):
         return created.replace(tzinfo=None) if created else _APOLLO_EPOCH
 
     # ------------------------------------------------------------------
+    # Cross-volume reassembly
+    # ------------------------------------------------------------------
+
+    def pending_continuations(self) -> list[ContinuationSpec]:
+        """Continuation specs for every incomplete (EOV-cut) tree, in
+        tree order; empty when every tree ends with an EOF trailer."""
+        self._initialize()
+        return [
+            expected_continuation(tree, self._catalog)
+            for tree in self._catalog.trees
+            if not tree.complete
+        ]
+
+    def attach_volume(self, data: bytes) -> AttachResult:
+        """Stitch a continuation volume's image into the mounted catalog.
+
+        Parses ``data`` as a wbak volume and merges every tree section
+        that continues one of this catalog's incomplete trees (matched on
+        file_id + sequence + section; the per-tree UHL1 uid -- the
+        cross-volume invariant -- is validated by :func:`stitch_tree`).
+        Validation is all-or-nothing: every failure raises
+        :class:`ValueError` BEFORE any state changes (candidates are
+        stitched into a local map and swapped in only after the whole
+        volume validates), so a rejected attach leaves the filesystem
+        exactly as it was.
+
+        The attached volume supplies CONTENT only: the medium-level views
+        (disk map, allocation units, free space, ``check()``) keep
+        describing the primary volume, and foreign trees on the attached
+        volume (other sequences of the set) are not merged.
+        """
+        self._initialize()
+        catalog = build_catalog(data)
+        if catalog.volume_id is None or not catalog.trees:
+            raise ValueError(
+                "Attached image is not a wbak backup volume "
+                "(no ANSI volume/header labels found)"
+            )
+        keys = frozenset((tree.uid_text, tree.section) for tree in catalog.trees)
+        for attached_id, attached_keys in self._attached_volumes:
+            if catalog.volume_id == attached_id and keys & attached_keys:
+                raise ValueError(f"Volume {catalog.volume_id!r} is already attached")
+        pending = [tree for tree in self._catalog.trees if not tree.complete]
+        if not pending:
+            raise ValueError(
+                "Every tree on this volume is complete; nothing for "
+                f"volume {catalog.volume_id!r} to continue"
+            )
+        stitched: dict[int, WbakTree] = {}
+        stitched_ids: list[str] = []
+        for index, prev in enumerate(self._catalog.trees):
+            if prev.complete:
+                continue
+            cont = next(
+                (
+                    tree
+                    for tree in catalog.trees
+                    if tree.file_id == prev.file_id
+                    and tree.sequence == prev.sequence
+                    and tree.section == prev.section + 1
+                ),
+                None,
+            )
+            if cont is None:
+                continue
+            stitched[index] = stitch_tree(
+                prev, cont, prev_uid=prev.uid_text, cont_uid=cont.uid_text
+            )
+            stitched_ids.append(prev.file_id)
+        if not stitched:
+            expected = "; ".join(
+                f"section {spec.next_section} of {spec.file_id!r} "
+                f"seq {spec.sequence} (uid {spec.backup_uid})"
+                for spec in (
+                    expected_continuation(tree, self._catalog) for tree in pending
+                )
+            )
+            found = "; ".join(
+                f"{tree.file_id!r} seq {tree.sequence} section {tree.section} "
+                f"(uid {tree.uid_text})"
+                for tree in catalog.trees
+            )
+            raise ValueError(
+                f"Wrong volume {catalog.volume_id!r}: expected {expected}; "
+                f"the volume contains {found}"
+            )
+        # every validation passed: swap the stitched trees in
+        self._catalog.trees = [
+            stitched.get(index, tree) for index, tree in enumerate(self._catalog.trees)
+        ]
+        self._build_index()
+        self._recoverable_cache = None
+        self._attached_volumes.append((catalog.volume_id, keys))
+        return AttachResult(
+            volume_id=catalog.volume_id,
+            stitched_tree_ids=tuple(stitched_ids),
+            still_incomplete=self.pending_continuations(),
+        )
+
+    # ------------------------------------------------------------------
     # Mutators: read-only
     # ------------------------------------------------------------------
 
@@ -437,7 +568,7 @@ class ApolloWbakFilesystem(Filesystem):
                 line += " (continues from a previous volume)"
             tree_lines.append(line)
         created = cat.created.strftime("%Y-%m-%d %H:%M:%S UTC") if cat.created else ""
-        return {
+        info = {
             "Filesystem": "Apollo wbak (read-only)",
             "Volume ID": cat.volume_id or "",
             "Owner": cat.owner or "",
@@ -451,6 +582,11 @@ class ApolloWbakFilesystem(Filesystem):
             "Partial Files": str(sum(1 for entry in files if entry.partial)),
             "Read-Only": "yes",
         }
+        if self._attached_volumes:
+            info["Attached Volumes"] = ", ".join(
+                volume_id or "?" for volume_id, _keys in self._attached_volumes
+            )
+        return info
 
     def get_specific_config(self) -> Optional[ApolloWbakConfig]:
         self._initialize()
