@@ -1,13 +1,31 @@
 """CBM write-path tests."""
 
 import logging
+import tempfile
+from pathlib import Path
 
 import pytest
 
 from fatfloppy.core.cbm_layout import layout_for_variant
+from fatfloppy.core.disk import Disk
+from fatfloppy.core.drivers.cbm_image import CBMImageDriver
 from fatfloppy.core.filesystems.cbm_fs import CBMFilesystem
+from fatfloppy.core.filesystems.formats.cbm_formats import CBM_FORMATS
 
 from .test_42_cbm_filesystem_read import formatted_d64_bytes, open_fs
+
+
+def fresh_formatted(profile_name, label="MY DISK,XY"):
+    """Blank driver-initialized image of the given profile, then format_fs."""
+    p = CBM_FORMATS[profile_name]
+    path = Path(tempfile.mkdtemp(prefix="fatfloppy-fmt-")) / "new.img"
+    drv = CBMImageDriver(str(path))
+    drv.initialize_new_image(p.physical_format)
+    disk = Disk(drv)
+    disk.set_geometry(drv.physical_format)
+    fs = CBMFilesystem(disk)
+    fs.format_fs(p, volume_label=label)
+    return fs
 
 
 class TestBamWrite:
@@ -426,3 +444,105 @@ class TestReviewHardening:
         assert fs._bam.free_blocks() == 664
         assert fs._bam.verify_counts()
         assert fs.list_directory("/") == []
+
+
+class TestFormat:
+    @pytest.mark.parametrize(
+        "profile,variant,blocks_free",
+        [
+            ("cbm_1541_d64", "1541", 664),
+            ("cbm_1571_d71", "1571", 1328),
+            ("cbm_1581_d81", "1581", 3160),
+        ],
+    )
+    def test_format_blank_image(self, profile, variant, blocks_free):
+        fs = fresh_formatted(profile)
+        assert fs.get_volume_label() == "MY DISK"
+        assert fs.get_display_info()["Disk ID"] == "XY"
+        fs._initialize()
+        assert fs.layout.variant == variant
+        assert fs._bam.free_blocks() == blocks_free
+        assert fs._bam.verify_counts()
+        assert fs.list_directory("/") == []
+        assert fs.get_validity_score() >= 60
+        fs.write_file("/T", b"x" * 1000)
+        assert fs.read_file("/T") == b"x" * 1000
+
+    def test_format_matches_real_1541_bam_layout(self):
+        fs = fresh_formatted("cbm_1541_d64", label="TEST")
+        bam = fs.disk.driver.read_sector(17, 0, 0)
+        assert bam[0:3] == bytes([18, 1, 0x41])
+        assert bam[0x04:0x08] == bytes([21, 0xFF, 0xFF, 0x1F])  # track 1 all free
+        assert bam[0x48] == 17  # track 18: 18/0+18/1 allocated
+        assert bam[0x90:0xA0] == b"TEST".ljust(16, b"\xa0")
+        assert bam[0xA0:0xA2] == b"\xa0\xa0"
+        assert bam[0xA2:0xA4] == b"00"  # default ID when label has no comma
+        assert bam[0xA4] == 0xA0
+        assert bam[0xA5:0xA7] == b"2A"
+        assert bam[0xA7:0xAB] == b"\xa0" * 4
+        d = fs.disk.driver.read_sector(17, 0, 1)
+        assert d[0] == 0 and d[1] == 0xFF
+
+    def test_format_d71_layout(self):
+        fs = fresh_formatted("cbm_1571_d71")
+        bam = fs.disk.driver.read_sector(17, 0, 0)
+        assert bam[3] == 0x80  # double-sided flag
+        assert bam[0xDD] == 21  # track 36 free count
+        assert bam[0xDD + 17] == 0  # track 53 reserved: count 0
+        side = fs.disk.driver.read_sector(52, 0, 0)  # 53/0
+        assert side[0:3] == b"\xff\xff\x1f"  # track 36 bitmap all free
+        assert side[3 * 17 : 3 * 17 + 3] == b"\x00\x00\x00"  # track 53 all allocated
+
+    def test_format_d81_layout(self):
+        fs = fresh_formatted("cbm_1581_d81", label="EIGHTY,GB")
+        hdr = fs.disk.driver.read_sector(39, 0, 0)
+        assert hdr[0:3] == bytes([40, 3, 0x44])
+        assert hdr[0x04:0x14] == b"EIGHTY".ljust(16, b"\xa0")
+        assert hdr[0x16:0x18] == b"GB"
+        assert hdr[0x19:0x1B] == b"3D"
+        bam1 = fs.disk.driver.read_sector(39, 0, 1)
+        assert bam1[0:2] == bytes([40, 2])
+        assert bam1[2:4] == bytes([0x44, 0xBB])
+        assert bam1[4:6] == b"GB"
+        assert bam1[6] == 0xC0
+        e40 = 0x10 + 6 * 39
+        assert bam1[e40] == 36  # track 40: header+2 BAM+dir allocated
+        assert bam1[e40 + 1] == 0xF0
+        bam2 = fs.disk.driver.read_sector(39, 0, 2)
+        assert bam2[0:2] == bytes([0, 0xFF])
+        assert bam2[2:4] == bytes([0x44, 0xBB])
+        d = fs.disk.driver.read_sector(39, 0, 3)
+        assert d[0] == 0 and d[1] == 0xFF
+
+    def test_format_wipes_previous_contents(self):
+        fs = open_fs(formatted_d64_bytes())
+        fs.write_file("/OLD", b"data")
+        fs.format_fs(CBM_FORMATS["cbm_1541_d64"], volume_label="WIPED")
+        assert fs.list_directory("/") == []
+        assert fs.get_volume_label() == "WIPED"
+        fs._initialize()
+        assert fs._bam.free_blocks() == 664
+
+    def test_format_label_validation(self):
+        fs = open_fs(formatted_d64_bytes())
+        with pytest.raises(ValueError):
+            fs.format_fs(CBM_FORMATS["cbm_1541_d64"], volume_label="X" * 17)
+
+    def test_format_geometry_mismatch_rejected_before_wipe(self):
+        fs = open_fs(formatted_d64_bytes())
+        fs.write_file("/KEEP", b"safe")
+        for wrong in ("cbm_1581_d81", "cbm_1541_d64_40track"):
+            with pytest.raises(ValueError, match="geometry"):
+                fs.format_fs(CBM_FORMATS[wrong], volume_label="NOPE")
+        # Rejected BEFORE wiping: previous contents fully intact.
+        assert fs.get_volume_label() == "TEST DISK"
+        assert fs.read_file("/KEEP") == b"safe"
+
+    def test_format_40track_profile(self):
+        fs = fresh_formatted("cbm_1541_d64_40track", label="FORTY")
+        fs._initialize()
+        assert fs.layout.tracks == 40
+        assert fs._bam.free_blocks() == 664  # tracks 36-40 unmapped, never written
+        assert fs._bam.verify_counts()
+        fs.write_file("/T", b"y" * 600)
+        assert fs.read_file("/T") == b"y" * 600

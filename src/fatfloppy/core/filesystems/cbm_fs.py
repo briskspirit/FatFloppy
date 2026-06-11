@@ -435,8 +435,131 @@ class CBMFilesystem(Filesystem):
         except FileNotFoundError:
             return False
 
-    def format_fs(self, profile, volume_label=None) -> None:
-        raise NotImplementedError("CBM format arrives with the write path")
+    def format_fs(
+        self, profile: FormatProfile, volume_label: Optional[str] = None
+    ) -> None:
+        """Formats the disk as an empty CBM filesystem (byte-exact CBM DOS
+        BAM/header layout). volume_label is 'NAME' or 'NAME,ID' (c1541 style);
+        the ID defaults to '00' and is padded with '0' when shorter than 2.
+        """
+        layout = profile.filesystem_config
+        if not isinstance(layout, CBMDiskLayout):
+            raise ValueError("Profile has no CBM layout config")
+        pf, mine = profile.physical_format, self.disk.physical_format
+        if pf.cylinders != mine.cylinders or pf.get_sectors_per_track(
+            0, 0
+        ) != mine.get_sectors_per_track(0, 0):
+            raise ValueError("Profile geometry does not match the open disk")
+        label = volume_label or "UNTITLED"
+        name, _sep, disk_id = label.partition(",")
+        raw_name = unicode_to_petscii(name.upper())
+        if not raw_name or len(raw_name) > 16:
+            raise ValueError(f"Disk name must be 1-16 PETSCII chars, got {name!r}")
+        raw_name = raw_name.ljust(16, bytes([PETSCII_PAD]))
+        raw_id = (unicode_to_petscii(disk_id.upper()) if disk_id else b"00")[:2].ljust(
+            2, b"0"
+        )
+        # Wipe first: _write_ts pops any stale key from the old BAM strategy's
+        # cache, and the strategy itself is replaced AFTER the wipe so its
+        # first _sector() read pulls the freshly-built bytes from the disk.
+        for t in range(1, layout.tracks + 1):
+            for s in range(layout.spt(t)):
+                self._write_ts(t, s, bytes(256))
+        self.layout = layout
+        self.config = layout
+        self._bam = _STRATEGIES[layout.variant](self)
+        self._initialized = True
+        {
+            "1541": self._format_1541,
+            "1571": self._format_1571,
+            "1581": self._format_1581,
+        }[layout.variant](raw_name, raw_id)
+        self.disk.flush()
+
+    @staticmethod
+    def _all_free_bits(spt: int) -> int:
+        return (1 << spt) - 1
+
+    def _format_1541(self, raw_name: bytes, raw_id: bytes, extra=None) -> None:
+        layout = self.layout
+        bam = bytearray(256)
+        bam[0], bam[1], bam[2] = 18, 1, 0x41
+        # Extended 1541 images (tracks 36+) get no BAM entries: read-tolerated
+        # only, hence the min(..., 35) cap.
+        for t in range(1, min(layout.tracks, 35) + 1):
+            spt = layout.spt(t)
+            e = 0x04 + 4 * (t - 1)
+            bits, free = self._all_free_bits(spt), spt
+            if t == 18:
+                bits &= ~0b11  # 18/0 BAM + 18/1 first directory sector
+                free -= 2
+            bam[e] = free
+            bam[e + 1 : e + 4] = bytes(
+                [bits & 0xFF, (bits >> 8) & 0xFF, (bits >> 16) & 0xFF]
+            )
+        bam[0x90:0xA0] = raw_name
+        bam[0xA0:0xA2] = b"\xa0\xa0"
+        bam[0xA2:0xA4] = raw_id
+        bam[0xA4] = 0xA0
+        bam[0xA5:0xA7] = b"2A"
+        bam[0xA7:0xAB] = b"\xa0" * 4
+        if extra:
+            extra(bam)
+        self._write_ts(18, 0, bytes(bam))
+        d = bytearray(256)
+        d[1] = 0xFF  # chain end: 8 fresh directory slots
+        self._write_ts(18, 1, bytes(d))
+
+    def _format_1571(self, raw_name: bytes, raw_id: bytes) -> None:
+        layout = self.layout
+
+        def extra(bam: bytearray) -> None:
+            bam[3] = 0x80  # double-sided flag
+            for t in range(36, 71):
+                bam[0xDD + (t - 36)] = 0 if t == 53 else layout.spt(t)
+
+        self._format_1541(raw_name, raw_id, extra=extra)
+        side = bytearray(256)  # 53/0: side-2 bitmaps, 3 bytes per track
+        for t in range(36, 71):
+            bits = 0 if t == 53 else self._all_free_bits(layout.spt(t))
+            off = 3 * (t - 36)
+            side[off : off + 3] = bytes(
+                [bits & 0xFF, (bits >> 8) & 0xFF, (bits >> 16) & 0xFF]
+            )
+        self._write_ts(53, 0, bytes(side))
+
+    def _format_1581(self, raw_name: bytes, raw_id: bytes) -> None:
+        layout = self.layout
+        hdr = bytearray(256)
+        hdr[0], hdr[1], hdr[2] = 40, 3, 0x44
+        hdr[0x04:0x14] = raw_name
+        hdr[0x14:0x16] = b"\xa0\xa0"
+        hdr[0x16:0x18] = raw_id
+        hdr[0x18] = 0xA0
+        hdr[0x19], hdr[0x1A] = ord("3"), ord("D")
+        hdr[0x1B:0x1D] = b"\xa0\xa0"
+        self._write_ts(40, 0, bytes(hdr))
+        for which, (lo, hi), nxt in (
+            (1, (1, 40), (40, 2)),
+            (2, (41, 80), (0, 0xFF)),
+        ):
+            bam = bytearray(256)
+            bam[0], bam[1] = nxt
+            bam[2], bam[3] = 0x44, 0xBB  # DOS version, one's complement
+            bam[4:6] = raw_id
+            bam[6] = 0xC0  # verify on + check header CRC
+            for t in range(lo, hi + 1):
+                e = 0x10 + 6 * ((t - 1) % 40)
+                bits, free = self._all_free_bits(layout.spt(t)), layout.spt(t)
+                if t == 40:
+                    bits &= ~0b1111  # header, both BAM sectors, directory
+                    free -= 4
+                bam[e] = free
+                bam[e + 1 : e + 6] = bits.to_bytes(5, "little")
+            self._write_ts(40, which, bytes(bam))
+        d = bytearray(256)
+        d[1] = 0xFF  # chain end: 8 fresh directory slots
+        self._write_ts(40, 3, bytes(d))
 
     def get_disk_map_layout(self) -> dict[str, Any]:
         self._initialize()
