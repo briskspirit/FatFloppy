@@ -415,6 +415,20 @@ class TestCBMValidity:
         fs = open_fs(bytearray(layout.total_sectors * 256))
         assert fs.get_validity_score() == 0
 
+    def test_zeroed_header_fields_not_penalized(self):
+        # Crack-era disks (corpus: Archon.d64) keep a valid 18/0 link and DOS
+        # byte but zero everything else - disk name, ID, BAM bitmap. The
+        # directory is fully valid and a real 1541 operates on the disk, so
+        # the zeroed name field must not forfeit points: dropping below a
+        # heuristic CP/M DPB inference misdetects the disk as CP/M.
+        img = d64_with_file()
+        base = open_fs(bytearray(img)).get_validity_score()
+        layout = layout_for_variant("D64", 35)
+        off = layout.sectors_before(18) * 256
+        img[off + 3 : off + 256] = bytes(253)  # keep 18/1 link + 'A', zero rest
+        fs = open_fs(img)
+        assert fs.get_validity_score() == base
+
     def test_random_disk_scores_below_threshold(self):
         import random
 

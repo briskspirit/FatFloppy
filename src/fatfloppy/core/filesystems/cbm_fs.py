@@ -392,7 +392,10 @@ class CBMFilesystem(Filesystem):
             if hdr[2] in _DOS_BYTE_OK[self.layout.variant]:
                 score += 10
             name = hdr[name_off : name_off + 16]
-            if all(b == PETSCII_PAD or b in _P2U for b in name):
+            # 0x00 tolerated alongside 0xA0 padding: crack-era disks (e.g.
+            # the corpus' Archon.d64) zero the name field while the rest of
+            # the header and directory stay fully valid.
+            if all(b in (PETSCII_PAD, 0x00) or b in _P2U for b in name):
                 score += 10
             if self._bam.verify_counts():
                 score += 20
