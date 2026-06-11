@@ -481,3 +481,13 @@ class TestCbmNames:
         fs = self._fs()
         hint = fs.name_hint()
         assert ",p" in hint and "16" in hint
+
+    def test_truncated_name_has_no_trailing_space(self):
+        # "ABCDEFGHIJKLMNO file.txt" uppercased is "ABCDEFGHIJKLMNO FILE.TXT";
+        # strip() removes nothing (no leading/trailing spaces at that point),
+        # [:16] yields "ABCDEFGHIJKLMNO " -- the 16th char is a space from
+        # the host basename.  rstrip() must remove it.
+        fs = self._fs()
+        n = fs.suggest_import_name("ABCDEFGHIJKLMNO file.txt", set())
+        assert not n.endswith(" "), repr(n)
+        assert n  # must be non-empty

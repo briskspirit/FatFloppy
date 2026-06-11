@@ -133,14 +133,15 @@ def test_export_copy_all_lands_safe(cbm_fm, tmp_path, monkeypatch):
 
 
 def test_export_collision_uniquified(tmp_path):
-    """Colliding host names get ' (2)', ' (3)', ... suffixes."""
+    """Same-batch collisions get ' (2)', ' (3)', ... suffixes; pre-existing
+    files on disk are overwritten (legacy refresh workflow)."""
     used = set()
-    assert _unique_host_name(str(tmp_path), "NAME", used) == "NAME"
-    assert _unique_host_name(str(tmp_path), "NAME", used) == "NAME (2)"
-    assert _unique_host_name(str(tmp_path), "NAME", used) == "NAME (3)"
-    # A file already on disk forces a suffix even across batches.
+    assert _unique_host_name("NAME", used) == "NAME"
+    assert _unique_host_name("NAME", used) == "NAME (2)"
+    assert _unique_host_name("NAME", used) == "NAME (3)"
+    # A pre-existing file does NOT force a suffix across independent batches.
     (tmp_path / "TAKEN").write_bytes(b"x")
-    assert _unique_host_name(str(tmp_path), "TAKEN", set()) == "TAKEN (2)"
+    assert _unique_host_name("TAKEN", set()) == "TAKEN"
 
 
 # --------------------------------------------------------------------------- #

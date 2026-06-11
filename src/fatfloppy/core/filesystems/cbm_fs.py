@@ -1801,7 +1801,7 @@ class CBMFilesystem(Filesystem):
                 out.append("-")
             else:
                 out.append(ch)
-        name = "".join(out).strip()[:16] or "-FILE"
+        name = "".join(out).strip()[:16].rstrip() or "-FILE"
         if name.upper() not in existing:
             return name
         for counter in range(1, 100):

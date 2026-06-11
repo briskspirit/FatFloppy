@@ -37,26 +37,26 @@ def _active_filesystem(manager):
     return getattr(controller, "filesystem", None)
 
 
-def _unique_host_name(base_dir: str, name: str, used: set[str]) -> str:
+def _unique_host_name(name: str, used: set[str]) -> str:
     """
-    Uniquifies a host filename within a destination directory and batch.
+    Uniquifies a host filename within a batch.
 
     Two distinct on-disk names can map to the same host-safe name (e.g.
     "COPY/ALL" and "COPY_ALL" both become "COPY_ALL"), so multi-item
-    extraction appends " (2)", " (3)", ... when the target already exists in
-    base_dir or was produced earlier in the same batch.
+    extraction appends " (2)", " (3)", ... when the name was already produced
+    earlier in the same batch.  Pre-existing host files are overwritten
+    (legacy refresh workflow); same-batch collisions get " (N)".
 
     Args:
-        base_dir: The local destination directory.
         name: The host-safe candidate name.
         used: Names already produced in this batch (updated in place).
 
     Returns:
-        A name unique within base_dir and the current batch.
+        A name unique within the current batch.
     """
     candidate = name
     counter = 2
-    while candidate in used or (Path(base_dir) / candidate).exists():
+    while candidate in used:
         candidate = f"{name} ({counter})"
         counter += 1
     used.add(candidate)
@@ -447,7 +447,7 @@ class FileManager(QObject):
 
                         source_path = self.parent._build_full_path(node.name)
                         local_name = _unique_host_name(
-                            base_dir, self._host_name(node.name), used_names
+                            self._host_name(node.name), used_names
                         )
                         local_path = _safe_local_join(base_dir, local_name)
                         if node.is_dir:
@@ -473,7 +473,7 @@ class FileManager(QObject):
                     node = item.node
                     source_path = self.parent._build_full_path(node.name)
                     local_name = _unique_host_name(
-                        base_dir, self._host_name(node.name), used_names
+                        self._host_name(node.name), used_names
                     )
                     local_path = _safe_local_join(base_dir, local_name)
                     if node.is_dir:
@@ -540,6 +540,12 @@ class FileManager(QObject):
                     self.logger.warning(f"Name '{new_name}' rejected: {e}")
                     prompt = f"{e}\nEnter file name ({hint}):"
                     continue
+                except OSError as e:
+                    # Disk-level error (e.g. "Disk full"): the name is not
+                    # the problem, so show the error and stop without re-prompting.
+                    self.logger.error(f"Write error for '{new_name}': {e}")
+                    QMessageBox.warning(self.parent, "Write Error", str(e))
+                    break
                 self.logger.info(f"Imported 1 item to '{target_path}'.")
                 self.refresh_needed.emit(target_path)
                 self.operation_complete.emit(f"Imported 1 item to '{target_path}'")
@@ -818,9 +824,7 @@ class FileManager(QObject):
                     )
 
                 item_source_path = posixpath.normpath(f"{source_dir_path}/{item_name}")
-                local_name = _unique_host_name(
-                    local_dir_path, self._host_name(item_name), used_names
-                )
+                local_name = _unique_host_name(self._host_name(item_name), used_names)
                 item_local_path = _safe_local_join(local_dir_path, local_name)
                 if item["is_dir"]:
                     self._extract_directory(item_source_path, item_local_path)
