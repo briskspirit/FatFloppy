@@ -532,13 +532,19 @@ class ApolloWbakFilesystem(Filesystem):
 
     @staticmethod
     def configs_match(config1: Any, config2: Any) -> bool:
-        """Type match plus volume-id equality; a ``None`` volume_id is the
-        profile sentinel and matches any parsed volume (volume IDs are
-        per-disk, not per-format)."""
+        """Type match plus volume-id and set-id equality.
+
+        ``set_id`` must be ``"BACKUP"`` on both sides (documents that only
+        wbak backup tapes are supported; a sentinel ``None`` volume_id
+        matches any parsed volume because volume IDs are per-disk, not
+        per-format).
+        """
         if not (
             isinstance(config1, ApolloWbakConfig)
             and isinstance(config2, ApolloWbakConfig)
         ):
+            return False
+        if config1.set_id != config2.set_id:
             return False
         if config1.volume_id is None or config2.volume_id is None:
             return True

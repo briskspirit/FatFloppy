@@ -655,10 +655,11 @@ class FileManager(QObject):
                         self.import_multiple_paths(
                             sub_paths, new_dir_path, auto_name=True
                         )
-                except (OSError, ValueError) as e:
-                    # Surface the failure (e.g. a read-only filesystem) in a
-                    # dialog: an exception escaping this Qt slot would be
-                    # fatal to the application.
+                except (OSError, ValueError, NotImplementedError) as e:
+                    # Surface the failure (e.g. a read-only filesystem, or a
+                    # filesystem that doesn't support directories) in a dialog:
+                    # an exception escaping this Qt slot would be fatal to the
+                    # application.
                     self.logger.error(f"Error importing {dest_name}: {e}")
                     failed_imports.append(f"{dest_name}: {e}")
 

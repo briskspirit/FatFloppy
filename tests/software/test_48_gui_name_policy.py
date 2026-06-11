@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 import pytest  # noqa: E402
 from PyQt6.QtCore import QObject  # noqa: E402
-from PyQt6.QtWidgets import QFileDialog, QInputDialog  # noqa: E402
+from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox  # noqa: E402
 
 from fatfloppy.core.controller import DiskController  # noqa: E402
 from fatfloppy.gui.managers.file_manager import (  # noqa: E402
@@ -205,3 +205,31 @@ def test_single_import_reprompts_on_collision(cbm_fm, tmp_path, monkeypatch):
     assert "16" in prompts[0]  # the CBM hint, not "(8.3 format)"
     assert "exists" in prompts[1]
     assert cbm_fm.parent.controller.read_file("/FRESH NAME") == b"x"
+
+
+# --------------------------------------------------------------------------- #
+# Folder import onto a no-directory filesystem surfaces failure, not a crash
+# --------------------------------------------------------------------------- #
+
+
+def test_folder_import_on_cpm_surfaces_failure_dialog(cpm_fm, tmp_path, monkeypatch):
+    """Importing a host directory onto CP/M (which raises NotImplementedError
+    for create_directory) must show an Import-Failed dialog rather than
+    letting the exception escape the Qt slot and crash the application."""
+    host_dir = tmp_path / "subdir"
+    host_dir.mkdir()
+    (host_dir / "file.txt").write_bytes(b"payload")
+
+    boxes = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *a, **_k: boxes.append(a)),
+    )
+    cpm_fm.import_multiple_paths([str(host_dir)], "/", auto_name=True)
+
+    assert boxes, "expected an Import Failed dialog, not a raised exception"
+    _parent, title, text = boxes[0][:3]
+    assert title == "Import Failed"
+    # CP/M auto-naming uppercases the directory name; check case-insensitively.
+    assert "subdir" in text.lower()
