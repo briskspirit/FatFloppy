@@ -115,6 +115,31 @@ class _BamStrategy(ABC):
             if t not in self.layout.reserved_tracks
         )
 
+    def _set_bit(self, t: int, s: int, free: bool) -> None:
+        if t not in self.mapped_tracks():
+            raise ValueError(f"Track {t} has no writable BAM entry")
+        if not 0 <= s < self.layout.spt(t):
+            raise ValueError(f"Sector {s} out of range on track {t}")
+        buf, c, bm = self._entry(t)
+        mask = 1 << (s % 8)
+        cur = bool(buf[bm + s // 8] & mask)
+        if cur == free:
+            state = "free" if free else "allocated"
+            raise ValueError(f"BAM bit for {t}/{s} already {state}")
+        buf[bm + s // 8] ^= mask
+        buf[c] += 1 if free else -1
+
+    def set_allocated(self, t: int, s: int) -> None:
+        self._set_bit(t, s, free=False)
+
+    def set_free(self, t: int, s: int) -> None:
+        self._set_bit(t, s, free=True)
+
+    def flush(self) -> None:
+        # Persist via the disk directly: _write_ts would pop our own cache.
+        for (t, s), buf in self._cache.items():
+            self.fs.disk.write_sector(t - 1, 0, s, bytes(buf))
+
     def mapped_tracks(self) -> range:
         """Tracks that have a real BAM entry (count verification covers these)."""
         return range(1, self.layout.tracks + 1)
@@ -183,6 +208,21 @@ class _Bam1571(_BamStrategy):
             return super().free_count(t)
         return self._sector(18, 0)[0xDD + (t - 36)]
 
+    def _set_bit(self, t, s, free):
+        if t <= 35:
+            return super()._set_bit(t, s, free)
+        # Side-2 entries are split: bitmap lives at 53/0, count at 18/0.
+        if not 0 <= s < self.layout.spt(t):
+            raise ValueError(f"Sector {s} out of range on track {t}")
+        bm_buf = self._sector(53, 0)
+        cnt_buf = self._sector(18, 0)
+        off, mask = 3 * (t - 36) + s // 8, 1 << (s % 8)
+        if bool(bm_buf[off] & mask) == free:
+            state = "free" if free else "allocated"
+            raise ValueError(f"BAM bit for {t}/{s} already {state}")
+        bm_buf[off] ^= mask
+        cnt_buf[0xDD + (t - 36)] += 1 if free else -1
+
 
 class _Bam1581(_BamStrategy):
     """Two BAM sectors: 40/1 covers tracks 1-40, 40/2 covers 41-80;
@@ -232,11 +272,13 @@ class CBMFilesystem(Filesystem):
 
     def _write_ts(self, track: int, sector: int, data: bytes) -> None:
         self.disk.write_sector(track - 1, 0, sector, data)
-        # Phase 3 BAM mutation goes through the strategy cache + flush instead;
-        # the BAM flush must call self.disk.write_sector directly (NOT _write_ts)
-        # or it would invalidate the very cache entries it is flushing.
+        # Contract: BAM sectors are mutated exclusively through the strategy
+        # cache (set_allocated/set_free + flush, which writes the disk directly
+        # to avoid invalidating itself); everything else goes through _write_ts.
+        # Drop only this sector's cached buffer if present -- a data-sector
+        # write must NOT discard unrelated pending BAM mutations.
         if self._bam is not None:
-            self._bam.invalidate()
+            self._bam._cache.pop((track, sector), None)
 
     @classmethod
     def get_format_definitions(cls) -> dict[str, FormatProfile]:
@@ -572,6 +614,60 @@ class CBMFilesystem(Filesystem):
             if s >= self.layout.spt(t):
                 t, s = t + 1, 0
         return out
+
+    # -- allocation --------------------------------------------------------------
+
+    def _track_search_order(self) -> list[int]:
+        """File-allocation track order: 1581 linear; others distance-ascending
+        from the directory track, lower side first (17, 19, 16, 20, ...)."""
+        if self.layout.variant == "1581":
+            return [
+                t
+                for t in range(1, self.layout.tracks + 1)
+                if t not in self.layout.reserved_tracks
+            ]
+        d = self.layout.dir_track
+        order = []
+        for delta in range(1, self.layout.tracks):
+            for t in (d - delta, d + delta):
+                if (
+                    1 <= t <= self.layout.tracks
+                    and t not in self.layout.reserved_tracks
+                ):
+                    order.append(t)
+        return order
+
+    def _allocate_in_track(self, t: int, start: int = 0) -> Optional[tuple[int, int]]:
+        spt = self.layout.spt(t)
+        s = start % spt
+        for _ in range(spt):
+            if self._bam.is_free(t, s):
+                self._bam.set_allocated(t, s)
+                return t, s
+            s = (s + 1) % spt
+        return None
+
+    def _allocate_first_sector(self) -> tuple[int, int]:
+        for t in self._track_search_order():
+            if self._bam.free_count(t) > 0:
+                got = self._allocate_in_track(t)
+                if got:
+                    return got
+        raise OSError("Disk full")
+
+    def _allocate_next_sector(self, last_t: int, last_s: int) -> tuple[int, int]:
+        if self._bam.free_count(last_t) > 0:
+            got = self._allocate_in_track(
+                last_t, (last_s + self.layout.interleave) % self.layout.spt(last_t)
+            )
+            if got:
+                return got
+        for t in self._track_search_order():
+            if self._bam.free_count(t) > 0:
+                got = self._allocate_in_track(t)
+                if got:
+                    return got
+        raise OSError("Disk full")
 
     # -- lookup ------------------------------------------------------------------
 
