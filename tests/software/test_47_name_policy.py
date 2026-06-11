@@ -11,6 +11,46 @@ from fatfloppy.core.filesystems.fs_base import Filesystem
 RESOURCE_DIR = Path(__file__).parent.parent / "resources"
 
 
+def _fresh_fat12(tmp_path):
+    src = RESOURCE_DIR / "empty_formatted_144m.img"
+    dst = tmp_path / "fat.img"
+    shutil.copy(src, dst)
+    controller = DiskController()
+    assert controller.open_disk(str(dst), disk_type="auto")
+    return controller.filesystem
+
+
+def _fresh_cpm(tmp_path):
+    # Mirrors test_09's write fixture: copy the committed image to tmp and
+    # open it with the explicit (non-interleave) write profile.
+    src = RESOURCE_DIR / "CPM" / "disk1.img"
+    dst = tmp_path / "disk1.img"
+    shutil.copy(src, dst)
+    controller = DiskController()
+    assert controller.open_disk(
+        str(dst),
+        disk_type="IMG",
+        format_info={"format_name": "cpm_8_sssd_250k"},
+    )
+    return controller.filesystem
+
+
+def _fresh_hdos(tmp_path):
+    # Mirrors test_10's write fixture: copy the committed image to tmp.
+    src = RESOURCE_DIR / "HDOS" / "HDOS_2-0_TEST.h8d"
+    dst = tmp_path / "HDOS_2-0_TEST.h8d"
+    shutil.copy(src, dst)
+    controller = DiskController()
+    assert controller.open_disk(str(dst), disk_type="IMG")
+    return controller.filesystem
+
+
+def _fresh_cbm():
+    from .test_44_cbm_write import fresh_formatted
+
+    return fresh_formatted("cbm_1541_d64", label="NAMES")
+
+
 class _StubFS(Filesystem):
     """Concrete shell exposing the base-class name-policy defaults."""
 
@@ -166,12 +206,7 @@ class TestNameHint:
 
 class TestFat12Names:
     def _fs(self, tmp_path):
-        src = RESOURCE_DIR / "empty_formatted_144m.img"
-        dst = tmp_path / "fat.img"
-        shutil.copy(src, dst)
-        controller = DiskController()
-        assert controller.open_disk(str(dst), disk_type="auto")
-        return controller.filesystem
+        return _fresh_fat12(tmp_path)
 
     def test_reserved_name_avoided(self, tmp_path):
         fs = self._fs(tmp_path)
@@ -220,18 +255,7 @@ class TestFat12Names:
 
 class TestCpmNames:
     def _fs(self, tmp_path):
-        # Mirrors test_09's write fixture: copy the committed image to tmp and
-        # open it with the explicit (non-interleave) write profile.
-        src = RESOURCE_DIR / "CPM" / "disk1.img"
-        dst = tmp_path / "disk1.img"
-        shutil.copy(src, dst)
-        controller = DiskController()
-        assert controller.open_disk(
-            str(dst),
-            disk_type="IMG",
-            format_info={"format_name": "cpm_8_sssd_250k"},
-        )
-        return controller.filesystem
+        return _fresh_cpm(tmp_path)
 
     def test_cpm_name_hint(self, tmp_path):
         fs = self._fs(tmp_path)
@@ -365,13 +389,7 @@ class TestCpmNames:
 
 class TestHdosNames:
     def _fs(self, tmp_path):
-        # Mirrors test_10's write fixture: copy the committed image to tmp.
-        src = RESOURCE_DIR / "HDOS" / "HDOS_2-0_TEST.h8d"
-        dst = tmp_path / "HDOS_2-0_TEST.h8d"
-        shutil.copy(src, dst)
-        controller = DiskController()
-        assert controller.open_disk(str(dst), disk_type="IMG")
-        return controller.filesystem
+        return _fresh_hdos(tmp_path)
 
     def test_hdos_write_rejects_overlong(self, tmp_path):
         fs = self._fs(tmp_path)
@@ -408,9 +426,7 @@ class TestHdosNames:
 
 class TestCbmNames:
     def _fs(self):
-        from .test_44_cbm_write import fresh_formatted
-
-        return fresh_formatted("cbm_1541_d64", label="NAMES")
+        return _fresh_cbm()
 
     def test_full_16_chars_kept(self):
         fs = self._fs()
@@ -491,3 +507,53 @@ class TestCbmNames:
         n = fs.suggest_import_name("ABCDEFGHIJKLMNO file.txt", set())
         assert not n.endswith(" "), repr(n)
         assert n  # must be non-empty
+
+
+HOSTILE_HOST_NAMES = [
+    "readme.txt",
+    ".gitignore",
+    "...",
+    "my file (v2),final.txt",
+    "中文文件.dat",
+    "🙂🙂🙂",
+    "a" * 300,
+    "x/y\\z:w*q?.bin",
+    "CON",
+    "aux.c",
+    "name~01.txt",
+    "trailing. ",
+    ",,,",
+    "£↑←.prg",
+    "Mixed.Case.Name",
+    "  spaces  ",
+]
+
+# CP/M stores file sizes in 128-byte records: reads of non-text extensions
+# return whole records, so only a record-aligned payload round-trips
+# byte-exact on every filesystem.  Must contain no 0x1A (CP/M text EOF),
+# which text-extension reads strip.
+_PAYLOAD = b"data" * 32
+assert len(_PAYLOAD) == 128 and b"\x1a" not in _PAYLOAD
+
+
+def _fresh_each_filesystem(tmp_path):
+    yield "FAT12", _fresh_fat12(tmp_path)
+    yield "CPM", _fresh_cpm(tmp_path)
+    hdos = _fresh_hdos(tmp_path)
+    # The committed HDOS image ships 100% full; free room for the battery.
+    hdos.delete("/DVDIO.ACM")
+    hdos.delete("/H47LIB.ACM")
+    yield "HDOS", hdos
+    yield "CBM", _fresh_cbm()
+
+
+def test_every_suggestion_is_writable_everywhere(tmp_path):
+    for label, fs in _fresh_each_filesystem(tmp_path):
+        existing: set[str] = set()
+        for hostile in HOSTILE_HOST_NAMES:
+            n = fs.suggest_import_name(hostile, existing)
+            fs.write_file("/" + n, _PAYLOAD)
+            assert fs.read_file("/" + n) == _PAYLOAD, f"{label}: {hostile!r} -> {n!r}"
+            listed = {e.name for e in fs.list_directory("/")}
+            assert n in listed, f"{label}: {hostile!r} -> {n!r} not listed"
+            existing.add(n)
