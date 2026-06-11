@@ -285,6 +285,11 @@ class DragDropTreeWidget(QTreeWidget):
         """
         Extracts a file from disk image to local filesystem for dragging.
 
+        Drag-out intentionally bypasses the insert-next-volume attach prompt:
+        a wbak entry cut at end-of-volume yields the available prefix
+        silently, exactly as if the prompt had been declined (modal dialogs
+        cannot interrupt a drag gesture).
+
         Args:
             source_path: Path to the file on the disk image.
             local_path: Local filesystem path to extract to.

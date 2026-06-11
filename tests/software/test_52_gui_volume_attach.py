@@ -36,6 +36,7 @@ from fatfloppy.gui.managers.file_manager import FileManager  # noqa: E402
 from .test_42_cbm_filesystem_read import d64_with_file  # noqa: E402
 from .test_49_apollo_wbak_parser import (  # noqa: E402
     build_continuation_volume,
+    build_three_volume_set,
     build_two_volume_set,
 )
 
@@ -248,6 +249,44 @@ class TestGuiVolumeAttach:
         assert len(dialogs) == 1
         assert (dest_dir / "bigfile").read_bytes() == s.content
         assert (dest_dir / "bigfile (2)").read_bytes() == s.content
+
+    def test_three_volume_chain_prompts_per_volume(self, tmp_path, monkeypatch):
+        # N-volume chains, end to end: A (EOV) -> B (section 2, EOV) -> C
+        # (section 3, EOF).  Attaching B stitches a longer prefix but the
+        # tree still ends EOV, so the loop must prompt AGAIN for C; after C
+        # the tree completes and prompting stops (the two-answer script
+        # fails the test on a third question).
+        s = build_three_volume_set()
+        vol_a, vol_b, vol_c = s.volumes
+        vol_b_path = tmp_path / "vol_b.img"
+        vol_b_path.write_bytes(vol_b)
+        vol_c_path = tmp_path / "vol_c.img"
+        vol_c_path.write_bytes(vol_c)
+        fm = open_file_manager(vol_a, tmp_path)
+        try:
+            dest = tmp_path / "bigfile.out"
+            monkeypatch.setattr(
+                QFileDialog,
+                "getSaveFileName",
+                staticmethod(lambda *_a, **_k: (str(dest), "")),
+            )
+            questions = patch_question(monkeypatch, [YES, YES])
+            dialogs = patch_open_dialog(monkeypatch, [str(vol_b_path), str(vol_c_path)])
+            warnings = patch_warning(monkeypatch)
+            select(fm, "bigfile")
+
+            fm.extract_selected_items()
+
+            assert dest.read_bytes() == s.content  # all 9000 bytes, byte-exact
+            assert len(questions) == 2  # one prompt per missing volume
+            assert "section 2 of 'COM'" in questions[0][1]
+            assert "section 3 of 'COM'" in questions[1][1]
+            assert len(dialogs) == 2
+            assert warnings == []
+            fs = fm.parent.controller.filesystem
+            assert fs.pending_continuations() == []
+        finally:
+            fm.parent.controller.close_disk()
 
     def test_non_apollo_fs_never_prompts(self, tmp_path, monkeypatch):
         # CBM splat file (PRG never closed): a "cut-like" entry on a
