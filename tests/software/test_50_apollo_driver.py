@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
+from fatfloppy.core.apollo_wbak import IMAGE_SIZE
 from fatfloppy.core.controller import DiskController
 from fatfloppy.core.driver_factory import DriverFactory
 from fatfloppy.core.drivers.apollo_floppy import ApolloFloppyDriver
 
 RESOURCES = Path(__file__).parent.parent / "resources" / "APOLLO"
-IMAGE_SIZE = 1_261_568
 
 
 class TestApolloDriver:
@@ -34,8 +34,20 @@ class TestApolloDriver:
         with pytest.raises(OSError, match="read-only"):
             drv.write_sector(0, 0, 0, bytes(1024))
         assert drv.supports_new_image_creation is False
+        assert drv.supports_in_place_formatting is False
         with pytest.raises(NotImplementedError):
             drv.initialize_new_image(None)
+
+    def test_geometry_builder_is_shared(self):
+        # The driver and the format profile must use the SAME geometry
+        # builder (single source of truth in core.apollo_wbak).
+        from fatfloppy.core.apollo_wbak import build_apollo_physical_format
+        from fatfloppy.core.filesystems.formats.apollo_formats import APOLLO_FORMATS
+
+        canonical = build_apollo_physical_format()
+        drv = ApolloFloppyDriver(str(RESOURCES / "disk2.img"))
+        assert drv.physical_format == canonical
+        assert APOLLO_FORMATS["apollo_1.2m_wbak"].physical_format == canonical
 
     def test_bounds(self):
         drv = ApolloFloppyDriver(str(RESOURCES / "disk2.img"))

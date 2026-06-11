@@ -63,10 +63,47 @@ from datetime import date, datetime, timedelta, timezone
 from itertools import combinations
 from typing import Callable, Optional
 
+from .physical_format import PhysicalFormat, TrackFormat
+
 SECTOR = 1024
 STREAM_START = 0x800
 IMAGE_SIZE = 1_261_568
 APOLLO_MAGIC = b"APOLLO"
+
+# Fixed geometry shared by the driver and the format profile (single
+# source of truth): 77 cylinders x 2 heads x 8 sectors x 1024 bytes,
+# MFM 500 kb/s, 360 rpm.
+CYLINDERS = 77
+HEADS = 2
+SECTORS_PER_TRACK = 8
+RPM = 360
+RATE_KBPS = 500
+
+
+def build_apollo_physical_format() -> PhysicalFormat:
+    """Build the fixed PhysicalFormat for Apollo DOMAIN floppies (77x2x8x1024)."""
+    tf = TrackFormat(
+        track_start=0,
+        track_end=CYLINDERS - 1,
+        head_start=0,
+        head_end=HEADS - 1,
+        sectors_per_track=SECTORS_PER_TRACK,
+        encoding="MFM",
+        rate=RATE_KBPS,
+        interleave=1,
+        bytes_per_sector=SECTOR,
+        id_start=0,
+        iam_present=True,
+    )
+    return PhysicalFormat(
+        cylinders=CYLINDERS,
+        heads=HEADS,
+        rpm=RPM,
+        heads_inverted=False,
+        bytes_per_sector=SECTOR,
+        track_formats=[tf],
+    )
+
 
 FLAG_WHOLE = 0
 FLAG_FIRST = 1

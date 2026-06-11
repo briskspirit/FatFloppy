@@ -19,45 +19,28 @@ import copy
 from pathlib import Path
 from typing import ClassVar, Optional
 
-from ..apollo_wbak import APOLLO_MAGIC, IMAGE_SIZE
-from ..physical_format import PhysicalFormat, TrackFormat
+from ..apollo_wbak import (
+    APOLLO_MAGIC,
+    IMAGE_SIZE,
+    build_apollo_physical_format,
+)
+from ..apollo_wbak import (
+    CYLINDERS as _CYLINDERS,
+)
+from ..apollo_wbak import (
+    HEADS as _HEADS,
+)
+from ..apollo_wbak import (
+    SECTOR as _BPS,
+)
+from ..apollo_wbak import (
+    SECTORS_PER_TRACK as _SPT,
+)
+from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
 from .base_driver import DiskIODriver
 
-# Geometry constants — one uniform geometry for all Apollo floppy images.
-_CYLINDERS = 77
-_HEADS = 2
-_SPT = 8
-_BPS = 1024
-_RPM = 360
-_RATE = 500  # kbps, 500 = MFM HD
-
 logger = get_logger("ApolloFloppyDriver")
-
-
-def _build_physical_format() -> PhysicalFormat:
-    """Build the fixed PhysicalFormat for Apollo DOMAIN floppies (77×2×8×1024)."""
-    tf = TrackFormat(
-        track_start=0,
-        track_end=_CYLINDERS - 1,
-        head_start=0,
-        head_end=_HEADS - 1,
-        sectors_per_track=_SPT,
-        encoding="MFM",
-        rate=_RATE,
-        interleave=1,
-        bytes_per_sector=_BPS,
-        id_start=0,
-        iam_present=True,
-    )
-    return PhysicalFormat(
-        cylinders=_CYLINDERS,
-        heads=_HEADS,
-        rpm=_RPM,
-        heads_inverted=False,
-        bytes_per_sector=_BPS,
-        track_formats=[tf],
-    )
 
 
 class ApolloFloppyDriver(DiskIODriver):
@@ -91,7 +74,7 @@ class ApolloFloppyDriver(DiskIODriver):
             )
 
         self._data = data
-        self.physical_format = _build_physical_format()
+        self.physical_format = build_apollo_physical_format()
         self.logger.info(f"Opened Apollo floppy image: {file_path}")
 
     # ------------------------------------------------------------------
@@ -129,6 +112,11 @@ class ApolloFloppyDriver(DiskIODriver):
     # ------------------------------------------------------------------
     # Image creation / flush
     # ------------------------------------------------------------------
+
+    @property
+    def supports_in_place_formatting(self) -> bool:
+        """Apollo images are archival; in-place formatting is not supported."""
+        return False
 
     @property
     def supports_new_image_creation(self) -> bool:
