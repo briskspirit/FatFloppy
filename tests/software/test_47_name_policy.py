@@ -116,6 +116,18 @@ class TestBaseSuggestImportName:
             b, _, e = n.partition(".")
             assert len(b) <= 8 and len(e) <= 3
 
+    def test_uniqueness_survives_many_collisions(self, stub):
+        existing = {"README.TXT"}
+        generated = []
+        for _ in range(30):
+            n = stub.suggest_import_name("readme.txt", existing)
+            generated.append(n)
+            existing.add(n.upper())
+        assert len(generated) == len({n.upper() for n in generated}), "duplicates found"
+        for n in generated:
+            b, _, _ = n.partition(".")
+            assert len(b) <= 8, f"base too long: {n!r}"
+
 
 class TestBaseSuggestHostName:
     def test_slash_replaced(self, stub):
@@ -131,7 +143,11 @@ class TestBaseSuggestHostName:
         assert stub.suggest_host_name("  ..NAME.. ") == "NAME"
 
     def test_empty_becomes_unnamed(self, stub):
-        assert stub.suggest_host_name("///") == "_unnamed_"
+        assert stub.suggest_host_name("///") == "___"
+
+    def test_genuinely_empty_becomes_unnamed(self, stub):
+        for hostile in ["", ".", "..", "...", "   "]:
+            assert stub.suggest_host_name(hostile) == "_unnamed_", repr(hostile)
 
     def test_unicode_glyphs_kept(self, stub):
         assert stub.suggest_host_name("£UP↑LEFT←") == "£UP↑LEFT←"

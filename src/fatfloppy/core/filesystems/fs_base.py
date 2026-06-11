@@ -1,6 +1,7 @@
 import datetime
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Optional
 
@@ -316,15 +317,15 @@ class Filesystem(ABC):
     # -- name policy (overridable; defaults match classic 8.3 filesystems) -------
 
     def suggest_import_name(
-        self, host_name: str, existing_names, is_dir: bool = False
+        self, host_name: str, existing_names: Iterable[str], is_dir: bool = False
     ) -> str:
         """
         Derives a valid, unique on-disk name from a host filename.
 
-        Never raises for any host string. Uniqueness against ``existing_names``
-        is case-insensitive (all shipped filesystems store uppercase-canonical
-        names). The default implements classic 8.3 rules; filesystems with
-        different conventions override this.
+        Never raises due to the content of ``host_name``. Uniqueness against
+        ``existing_names`` is case-insensitive (all shipped filesystems store
+        uppercase-canonical names). The default implements classic 8.3 rules;
+        filesystems with different conventions override this.
 
         Args:
             host_name: The filename from the host filesystem.
@@ -344,7 +345,7 @@ class Filesystem(ABC):
         if "." in name.strip(".") and not is_dir:
             base, _, ext = name.rpartition(".")
             base = base.replace(".", "_").strip()[:8]
-            ext = ext.strip(".")[:3]
+            ext = ext[:3]
         else:
             base, ext = name.replace(".", "_")[:8], ""
         if not base.strip("_"):
@@ -352,9 +353,9 @@ class Filesystem(ABC):
         candidate = f"{base}.{ext}" if ext else base
         if candidate.upper() not in existing:
             return candidate
-        stem = base[:6]
         for counter in range(1, 1000):
-            new_base = f"{stem}~{counter:02d}"[:8]
+            suffix = f"~{counter:02d}"
+            new_base = base[: 8 - len(suffix)] + suffix
             candidate = f"{new_base}.{ext}" if ext else new_base
             if candidate.upper() not in existing:
                 return candidate
@@ -365,8 +366,8 @@ class Filesystem(ABC):
         Makes an on-disk name safe as a host filename.
 
         Path separators, Windows-illegal characters and control bytes become
-        '_'; leading/trailing spaces and dots are stripped; an all-separator
-        result is replaced with ``_unnamed_``.
+        '_'; leading/trailing spaces and dots are stripped; an empty result
+        becomes ``_unnamed_``.
 
         Args:
             name: The raw on-disk filename.
@@ -376,7 +377,7 @@ class Filesystem(ABC):
         """
         safe = "".join("_" if (c in '/\\:*?"<>|' or ord(c) < 0x20) else c for c in name)
         safe = safe.strip(" .")
-        return safe if safe.strip("_ ") else "_unnamed_"
+        return safe if safe else "_unnamed_"
 
     def name_hint(self) -> str:
         """Short description of this filesystem's naming rules, for dialogs."""
