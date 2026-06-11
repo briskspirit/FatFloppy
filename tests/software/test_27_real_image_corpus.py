@@ -47,6 +47,8 @@ def _candidate_driver_types(path: Path) -> list[str]:
         return ["IMD"]
     if suffix in (".h8d", ".h17", ".h17disk"):
         return ["H17", "IMG"]
+    if suffix in (".d64", ".d71", ".d81"):
+        return ["CBM"]
     return ["IMG", "IMD"]
 
 
