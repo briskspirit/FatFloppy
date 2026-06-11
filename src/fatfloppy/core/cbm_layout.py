@@ -117,8 +117,8 @@ class CBMDiskLayout:
             candidate = layout_for_variant(family, tracks)
             try:
                 if all(
-                    pf.get_sectors_per_track(t - 1, 0) == candidate.spt(t)
-                    for t in (1, tracks)
+                    pf.get_sectors_per_track(first - 1, 0) == spt
+                    for first, _last, spt in candidate.zones
                 ):
                     return candidate
             except Exception:

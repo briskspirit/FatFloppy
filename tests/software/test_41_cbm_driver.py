@@ -89,3 +89,40 @@ class TestCBMLayout:
         assert layout is not None and layout.variant == "1571"
         pf64 = build_physical_format("D64", 35)
         assert CBMDiskLayout.infer_from_geometry(pf64).variant == "1541"
+
+    def test_infer_rejects_wrong_interior_zones(self):
+        from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
+
+        # Build a D64/35 physical format but corrupt the interior zone (tracks
+        # 18-24, zone index 1) to report 21 SPT instead of the correct 19 SPT.
+        # infer_from_geometry must return None because the interior zone mismatches.
+        good_pf = build_physical_format("D64", 35)
+        bad_track_formats = []
+        for tf in good_pf.track_formats:
+            if tf.track_start == 17:  # zone covering CBM tracks 18-24 (0-based 17-23)
+                bad_track_formats.append(
+                    TrackFormat(
+                        track_start=tf.track_start,
+                        track_end=tf.track_end,
+                        head_start=tf.head_start,
+                        head_end=tf.head_end,
+                        sectors_per_track=21,  # wrong: should be 19
+                        encoding=tf.encoding,
+                        rate=tf.rate,
+                        interleave=tf.interleave,
+                        bytes_per_sector=tf.bytes_per_sector,
+                        id_start=tf.id_start,
+                        iam_present=tf.iam_present,
+                    )
+                )
+            else:
+                bad_track_formats.append(tf)
+        bad_pf = PhysicalFormat(
+            cylinders=good_pf.cylinders,
+            heads=good_pf.heads,
+            rpm=good_pf.rpm,
+            heads_inverted=good_pf.heads_inverted,
+            bytes_per_sector=good_pf.bytes_per_sector,
+            track_formats=bad_track_formats,
+        )
+        assert CBMDiskLayout.infer_from_geometry(bad_pf) is None
