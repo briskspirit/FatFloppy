@@ -3,6 +3,7 @@
 import dataclasses
 import datetime
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import Any, ClassVar, Optional
 
 from ..cbm_layout import CBMDiskLayout
@@ -1783,7 +1784,7 @@ class CBMFilesystem(Filesystem):
     def suggest_import_name(
         self,
         host_name: str,
-        existing_names,
+        existing_names: Iterable[str],
         is_dir: bool = False,  # noqa: ARG002
     ) -> str:
         """

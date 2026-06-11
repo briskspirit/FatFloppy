@@ -68,6 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CP/M and HDOS reject invalid or over-length filenames on write instead of
   silently truncating, and CP/M user numbers are bounded to 0-15 on write
   (lookups stay lenient so existing on-disk oddities remain addressable).
+- FAT12 rejects the punctuation MS-DOS forbids in 8.3 short names
+  (`, ; = [ ] +`) on write, and import suggestions replace those characters
+  with `_`. Directory entries already carrying them (only writable by
+  non-DOS tools) are now skipped on listing like other invalid entries;
+  verified with zero impact across the real-image corpus.
 - Import and export naming is delegated to per-filesystem policies: each
   filesystem suggests valid, de-duplicated import names (FAT/CP/M/HDOS 8.3
   with `~NN`; CBM 16-character PETSCII with `-NN`) and sanitizes export
