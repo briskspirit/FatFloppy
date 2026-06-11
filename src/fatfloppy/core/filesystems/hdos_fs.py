@@ -1261,15 +1261,18 @@ class HDOSFilesystem(Filesystem):
         """
         Validates an HDOS filename.
 
-        Lenient mode (default, used by lookups): over-length names/extensions
-        are accepted (they are truncated to the 8.3 on-disk fields so existing
-        entries stay reachable), but an empty name or a non-ASCII name is
-        rejected up front so it cannot crash mid-write after the old file was
-        deleted, or create an invisible, undeletable directory entry
-        (audit hdos_fs.py:1223).
+        Lenient mode (default): over-length names/extensions are accepted
+        (they are truncated to the 8.3 on-disk fields so existing entries
+        stay reachable), but an empty name or a non-ASCII name is rejected
+        up front so it cannot crash mid-write after the old file was deleted,
+        or create an invisible, undeletable directory entry (audit
+        hdos_fs.py:1223). No production code calls the lenient default today
+        (lookups go straight to name truncation); it is kept for symmetry
+        with the CP/M validator and exercised by tests.
 
-        Strict mode (used by write_file): additionally rejects over-length
-        names instead of silently truncating them.
+        Strict mode (used by the only production caller, write_file):
+        additionally rejects over-length names instead of silently
+        truncating them.
 
         Args:
             path: The file path to validate (e.g. "/NAME.EXT").

@@ -205,6 +205,32 @@ FAT_RESERVED_NAMES = frozenset(
 )
 
 
+def _is_cp437_safe(ch: str) -> bool:
+    """
+    Returns True if a character survives the FAT name round trip.
+
+    The directory writer encodes names with cp437 errors="replace", so any
+    character that cannot encode becomes '?' on disk -- an entry the lister
+    then skips as invalid. Names are stored uppercased, so the check is on
+    ch.upper() (e.g. 'ï' is cp437 but its uppercase 'Ï' is not). Control
+    characters encode fine but are rejected by _is_valid_83_filename, so
+    they are unsafe too.
+
+    Args:
+        ch: A single character from a host filename.
+
+    Returns:
+        True if the character can appear in an on-disk FAT name.
+    """
+    if ord(ch) < 0x20:
+        return False
+    try:
+        ch.upper().encode("cp437")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 class FATFilesystem(Filesystem):
     """
     Provides an interface to a FAT12 filesystem on a disk image.
@@ -1344,9 +1370,12 @@ class FATFilesystem(Filesystem):
         """
         Derives a valid, unique 8.3 name, avoiding DOS reserved device names.
 
-        Extends the base 8.3 policy: if the sanitized base name collides with a
-        reserved device name (CON, PRN, ...), a '_' is appended so the result
-        always passes _is_valid_83_filename().
+        Extends the base 8.3 policy two ways. Characters that do not survive
+        the cp437 round trip (the writer encodes names cp437 errors="replace",
+        which would store an invisible '????' entry) are replaced with '_'
+        before the base policy runs. Then, if the sanitized base name collides
+        with a reserved device name (CON, PRN, ...), a '_' is appended so the
+        result always passes _is_valid_83_filename().
 
         Args:
             host_name: The filename from the host filesystem.
@@ -1356,13 +1385,17 @@ class FATFilesystem(Filesystem):
         Returns:
             A valid, unique on-disk 8.3 name.
         """
-        name = super().suggest_import_name(host_name, existing_names, is_dir)
+        # Materialize once: existing_names may be a one-shot generator, and it
+        # is consulted again below for the reserved-name collision re-check.
+        existing = {n.upper() for n in existing_names}
+        cleaned = "".join(ch if _is_cp437_safe(ch) else "_" for ch in host_name)
+        name = super().suggest_import_name(cleaned, existing, is_dir)
         base, dot, ext = name.partition(".")
         if base in FAT_RESERVED_NAMES:
             base = (base + "_")[:8]
             name = f"{base}.{ext}" if dot else base
-            if name.upper() in {n.upper() for n in existing_names}:
-                name = super().suggest_import_name(name, existing_names, is_dir)
+            if name.upper() in existing:
+                name = super().suggest_import_name(name, existing, is_dir)
         return name
 
     def write_file(self, path: str, data: bytes) -> None:

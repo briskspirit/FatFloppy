@@ -39,7 +39,7 @@ DISK3_FILES = {
     "DISK017.[#]",
     "ET.COM",
     "KLEEN.COM",
-    "KLEENDOC.",
+    "KLEENDOC",  # extension-less; renders dot-less (CP/M convention)
     "LOAD.COM",
     "NZBIOS.ASM",
     "NZBIOS.PRN",

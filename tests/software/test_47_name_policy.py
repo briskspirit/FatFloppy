@@ -179,13 +179,42 @@ class TestFat12Names:
         assert n.split(".")[0] not in {"CON", "PRN", "AUX", "NUL"}
         assert fs._is_valid_83_filename(n)
 
+    def test_existing_names_generator_safe(self, tmp_path):
+        # existing_names may be any Iterable, including a one-shot generator;
+        # the reserved-name collision re-check must not silently see an
+        # exhausted (empty) iterable and return a colliding name.
+        fs = self._fs(tmp_path)
+        n = fs.suggest_import_name("con.txt", (x for x in ["CON_.TXT"]))
+        assert n.upper() != "CON_.TXT"
+        assert fs._is_valid_83_filename(n)
+
     def test_every_suggestion_is_valid_and_writable(self, tmp_path):
+        # Every suggestion must survive the FULL round trip: the writer encodes
+        # names cp437 errors="replace", so a non-cp437 suggestion silently
+        # becomes "????.DAT" on disk -- an entry the lister skips: invisible,
+        # unreadable, undeletable. Read-back + listing is what catches that.
         fs = self._fs(tmp_path)
         existing = set()
-        for h in ["con", "aux.c", "my file.txt", "...", "中.dat", "a" * 99, "lpt1.bin"]:
+        battery = [
+            "con",
+            "aux.c",
+            "my file.txt",
+            "...",
+            "中.dat",
+            "a" * 99,
+            "lpt1.bin",
+            "中文文件.dat",
+            "naïve£.txt",  # ï is cp437 but its uppercase Ï is NOT
+            "🙂.txt",
+            "a\x01b.txt",
+        ]
+        for h in battery:
             n = fs.suggest_import_name(h, existing)
             assert fs._is_valid_83_filename(n), (h, n)
             fs.write_file("/" + n, b"x")
+            assert fs.read_file("/" + n) == b"x", (h, n)
+            listed = {fi.name for fi in fs.list_directory("/")}
+            assert n in listed, (h, n, listed)
             existing.add(n)
 
 
@@ -244,6 +273,73 @@ class TestCpmNames:
         fs = self._fs(tmp_path)
         fs.write_file("/U1:USERFILE.TXT", b"u1")
         assert fs.read_file("/U1:USERFILE.TXT") == b"u1"
+
+    def test_cpm_user_number_bounds_on_write(self, tmp_path):
+        # Real CP/M user areas are 0-15. Writing 'U229:' would stamp 0xE5 into
+        # the user byte -- the deleted-entry marker -- creating an entry that
+        # is free space the moment it is written. Bound writes; lookups stay
+        # lenient so weird on-disk entries remain addressable.
+        fs = self._fs(tmp_path)
+        fs.write_file("/U15:HIUSER.TXT", b"ok")
+        assert fs.read_file("/U15:HIUSER.TXT") == b"ok"
+        for bad in ("/U16:FILE.TXT", "/U229:FILE.TXT"):
+            with pytest.raises(ValueError, match="0-15"):
+                fs.write_file(bad, b"x")
+        # Lookup parsing stays lenient for out-of-range users.
+        assert fs._parse_cpm_path("/U99:FILE.TXT") == (99, "FILE.TXT")
+
+    def test_cpm_extensionless_round_trip(self, tmp_path):
+        # Extension-less names render dot-less ("NOEXT", the CP/M convention),
+        # and every consumer of the rendered name (list/read/delete/rewrite)
+        # must agree. Historically the entry rendered "NOEXT." while the path
+        # parser produced "NOEXT": the file listed but could not be read or
+        # deleted, and a rewrite duplicated extent 0.
+        fs = self._fs(tmp_path)
+        fs.write_file("/NOEXT", b"v1")
+
+        names = {fi.name for fi in fs.list_directory("/")}
+        assert "NOEXT" in names
+        assert "NOEXT." not in names
+
+        # Empty extension is non-text; CP/M pads records to 128 bytes.
+        assert fs.read_file("/NOEXT")[:2] == b"v1"
+        # The dotted spelling of the same name must resolve too.
+        assert fs.read_file("/NOEXT.")[:2] == b"v1"
+
+        fs.delete("/NOEXT")
+        assert "NOEXT" not in {fi.name for fi in fs.list_directory("/")}
+
+        # Rewrite must scratch-and-replace, not pile up stale extent-0 entries.
+        fs.write_file("/NOEXT", b"v1")
+        fs.write_file("/NOEXT", b"v2")
+        assert fs.read_file("/NOEXT")[:2] == b"v2"
+        matches = [
+            e
+            for e in fs._read_directory_entries()
+            if not e.is_deleted()
+            and e.user == 0
+            and e.get_filename().upper() == "NOEXT"
+        ]
+        assert len(matches) == 1, [e.get_filename() for e in matches]
+
+    def test_cpm_dotted_name_still_round_trips(self, tmp_path):
+        # Regression guard for the extension-less fix: a normal dotted name
+        # must keep its exact rendering and full round trip.
+        fs = self._fs(tmp_path)
+        fs.write_file("/GOOD.TXT", b"hello")
+        assert "GOOD.TXT" in {fi.name for fi in fs.list_directory("/")}
+        # .TXT is a text extension; EOF padding is stripped on read.
+        assert fs.read_file("/GOOD.TXT") == b"hello"
+        fs.write_file("/GOOD.TXT", b"hello2")
+        assert fs.read_file("/GOOD.TXT") == b"hello2"
+        matches = [
+            e
+            for e in fs._read_directory_entries()
+            if not e.is_deleted() and e.get_filename().upper() == "GOOD.TXT"
+        ]
+        assert len(matches) == 1
+        fs.delete("/GOOD.TXT")
+        assert "GOOD.TXT" not in {fi.name for fi in fs.list_directory("/")}
 
     def test_cpm_lenient_lookup_reads_weird_existing_names(self, tmp_path):
         # Leniency is pinned at the parser level: delete (and the allocation

@@ -151,12 +151,16 @@ class CPMDirectoryEntry:
         """
         Constructs the full 8.3 filename from the entry.
 
+        Extension-less entries render without a trailing dot ("NOEXT", the
+        CP/M convention), matching what _parse_cpm_path produces so every
+        consumer of the rendered name (list/read/delete/rewrite) agrees.
+
         Returns:
-            The formatted filename string (e.g., "FILENAME.EXT").
+            The formatted filename string (e.g., "FILENAME.EXT" or "NOEXT").
         """
         name_clean = "".join(chr(ord(c) & 0x7F) for c in self.name).strip()
         ext_clean = "".join(chr(ord(c) & 0x7F) for c in self.ext).strip()
-        return f"{name_clean}.{ext_clean}"
+        return f"{name_clean}.{ext_clean}" if ext_clean else name_clean
 
     def is_deleted(self) -> bool:
         """
@@ -1148,25 +1152,15 @@ class CPMFilesystem(Filesystem):
         if self.get_validity_score() < self.validity_threshold:
             raise OSError("Filesystem is not valid or not recognized as CP/M.")
 
-        path = path.lstrip("/")
-        specified_user: Optional[int] = None
-        filename: str
-
-        if ":" in path:
-            try:
-                user_part, file_part = path.split(":", 1)
-                if user_part.upper().startswith("U") and user_part[1:].isdigit():
-                    specified_user = int(user_part[1:])
-                    filename = file_part
-                else:
-                    filename = path
-            except ValueError:
-                filename = path
-        else:
-            filename = path
-
-        if "." not in filename:
-            raise ValueError(f"Invalid filename format: {filename}")
+        specified_user, filename = self._split_user_prefix(path)
+        # Rendered names never end with '.'; "/NOEXT." is the dotted spelling
+        # of the extension-less file "NOEXT", so normalize it for matching.
+        # Otherwise the on-disk name is matched verbatim (no validation), so
+        # names written by legacy tools stay reachable.
+        if filename.endswith("."):
+            filename = filename[:-1]
+        if not filename:
+            raise ValueError(f"Invalid filename format: {path}")
 
         if self._cached_directory is None:
             self._cached_directory = self._read_directory_entries()
@@ -1190,7 +1184,7 @@ class CPMFilesystem(Filesystem):
 
         group = matching_groups[0]
         data = bytearray()
-        _name_part, ext_part = filename.split(".", 1)
+        _name_part, _, ext_part = filename.partition(".")
         text_exts = ["ASM", "PRN", "BAS", "TXT", "DOC", "HEX"]
         is_text = ext_part.upper() in text_exts
 
@@ -1715,6 +1709,32 @@ class CPMFilesystem(Filesystem):
             self._skew_table_cache[num_sectors] = table
         return table
 
+    @staticmethod
+    def _split_user_prefix(path: str) -> tuple[Optional[int], str]:
+        """
+        Splits an optional 'Un:' user prefix from a CP/M path.
+
+        Shared by _parse_cpm_path, _validate_write_filename and read_file so
+        the three sites cannot drift in how they recognize the prefix. The
+        path is uppercased and any leading '/' stripped.
+
+        Args:
+            path: The CP/M path (e.g. "/U1:NAME.EXT" or "NAME.EXT").
+
+        Returns:
+            A tuple of (user_number, filename_part). user_number is None when
+            the path carries no user prefix; callers choose their own default
+            (0 for parse/write, "search all users" for read_file). The number
+            is not range-checked here -- lookups stay lenient, write
+            validation bounds it.
+        """
+        path_to_parse = path.upper().lstrip("/")
+        if path_to_parse.startswith("U") and ":" in path_to_parse:
+            prefix, _, rest = path_to_parse.partition(":")
+            if prefix[1:].isdigit():
+                return int(prefix[1:]), rest
+        return None, path_to_parse
+
     def _parse_cpm_path(self, path: str) -> tuple[int, str]:
         """
         Parses a CP/M path into a user number and an 8.3 filename.
@@ -1728,19 +1748,9 @@ class CPMFilesystem(Filesystem):
         Raises:
             ValueError: If the filename is empty.
         """
-        path_to_parse = path.upper().lstrip("/")
-        user = 0
-        filename_part = path_to_parse
-
-        if path_to_parse.startswith("U") and ":" in path_to_parse:
-            parts = path_to_parse.split(":", 1)
-            user_str = parts[0][1:]
-            if user_str.isdigit():
-                try:
-                    user = int(user_str)
-                    filename_part = parts[1]
-                except ValueError:
-                    pass
+        user, filename_part = self._split_user_prefix(path)
+        if user is None:
+            user = 0
 
         name_parts = filename_part.split(".", 1)
         base = name_parts[0][:8]
@@ -1770,25 +1780,24 @@ class CPMFilesystem(Filesystem):
         """
         Strictly validates a filename for write_file (no silent truncation).
 
-        Parses an optional 'Un:' user prefix the same way _parse_cpm_path
-        does, then rejects names that would otherwise be silently truncated
-        or stored with characters the CP/M CCP cannot reference.
+        Parses an optional 'Un:' user prefix via _split_user_prefix (the same
+        helper _parse_cpm_path uses), then rejects names that would otherwise
+        be silently truncated or stored with characters the CP/M CCP cannot
+        reference. The user number is bounded to the real CP/M range 0-15:
+        e.g. 'U229:' would stamp 0xE5 -- the deleted-entry marker -- into the
+        user byte, creating an entry that is reclaimed as free space.
 
         Args:
             path: The CP/M path to validate (e.g. "/U1:NAME.EXT").
 
         Raises:
-            ValueError: If the base exceeds 8 characters, the extension
-                exceeds 3 characters or contains a dot, or the name contains
-                CP/M-illegal characters.
+            ValueError: If the user number exceeds 15, the base exceeds
+                8 characters, the extension exceeds 3 characters or contains
+                a dot, or the name contains CP/M-illegal characters.
         """
-        path_to_parse = path.upper().lstrip("/")
-        filename_part = path_to_parse
-
-        if path_to_parse.startswith("U") and ":" in path_to_parse:
-            parts = path_to_parse.split(":", 1)
-            if parts[0][1:].isdigit():
-                filename_part = parts[1]
+        user, filename_part = CPMFilesystem._split_user_prefix(path)
+        if user is not None and user > 15:
+            raise ValueError(f"CP/M user numbers are 0-15, got U{user}: in '{path}'")
 
         base, _, ext = filename_part.partition(".")
         if len(base) > 8 or len(ext) > 3 or "." in ext:

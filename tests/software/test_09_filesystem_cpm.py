@@ -640,12 +640,16 @@ def test_file_with_no_extension(cpm_controller: DiskController, tmp_path: Path) 
     filename = "/NOEXT."
     assert cpm_controller.write_file(filename, test_data)
 
+    # Extension-less names render dot-less (CP/M convention), but both path
+    # spellings resolve to the same file.
     read_data = cpm_controller.read_file(filename)
+    assert read_data[: len(test_data)] == test_data
+    read_data = cpm_controller.read_file("/NOEXT")
     assert read_data[: len(test_data)] == test_data
 
     dir_listing = cpm_controller.list_directory("/")
     assert len(dir_listing) == 1
-    assert dir_listing[0]["name"] == "NOEXT."
+    assert dir_listing[0]["name"] == "NOEXT"
 
     cpm_controller.close_disk()
 
