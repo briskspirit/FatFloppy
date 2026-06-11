@@ -11,6 +11,69 @@ from ..physical_format import PhysicalFormat
 from ..utils.logging_config import get_logger
 
 
+def default_suggest_import_name(
+    host_name: str, existing_names: Iterable[str], is_dir: bool = False
+) -> str:
+    """
+    Derives a valid, unique on-disk name using the classic 8.3 default rules.
+
+    Module-level so callers without a Filesystem instance (e.g. the GUI when
+    no disk is loaded) can apply the default policy; the base
+    ``Filesystem.suggest_import_name`` delegates here.
+
+    Args:
+        host_name: The filename from the host filesystem.
+        existing_names: Iterable of names already present in the target
+            directory (compared case-insensitively).
+        is_dir: True when importing a directory entry (no extension).
+
+    Returns:
+        A valid, unique on-disk name string.
+
+    Raises:
+        ValueError: If a unique name cannot be generated after 999 attempts.
+    """
+    existing = {n.upper() for n in existing_names}
+    name = host_name.upper()
+    name = re.sub(r'[\\/:*?"<>|\s+]', "_", name)
+    if "." in name.strip(".") and not is_dir:
+        base, _, ext = name.rpartition(".")
+        base = base.replace(".", "_").strip()[:8]
+        ext = ext[:3]
+    else:
+        base, ext = name.replace(".", "_")[:8], ""
+    if not base.strip("_"):
+        base = "_FILE"
+    candidate = f"{base}.{ext}" if ext else base
+    if candidate.upper() not in existing:
+        return candidate
+    for counter in range(1, 1000):
+        suffix = f"~{counter:02d}"
+        new_base = base[: 8 - len(suffix)] + suffix
+        candidate = f"{new_base}.{ext}" if ext else new_base
+        if candidate.upper() not in existing:
+            return candidate
+    raise ValueError(f"Cannot generate unique name for {host_name!r}")
+
+
+def default_suggest_host_name(name: str) -> str:
+    """
+    Makes an on-disk name safe as a host filename (default policy).
+
+    Module-level so callers without a Filesystem instance can apply the
+    default policy; the base ``Filesystem.suggest_host_name`` delegates here.
+
+    Args:
+        name: The raw on-disk filename.
+
+    Returns:
+        A host-safe filename string, never empty.
+    """
+    safe = "".join("_" if (c in '/\\:*?"<>|' or ord(c) < 0x20) else c for c in name)
+    safe = safe.strip(" .")
+    return safe if safe else "_unnamed_"
+
+
 @dataclass
 class FileInfo:
     """
@@ -339,27 +402,7 @@ class Filesystem(ABC):
         Raises:
             ValueError: If a unique name cannot be generated after 999 attempts.
         """
-        existing = {n.upper() for n in existing_names}
-        name = host_name.upper()
-        name = re.sub(r'[\\/:*?"<>|\s+]', "_", name)
-        if "." in name.strip(".") and not is_dir:
-            base, _, ext = name.rpartition(".")
-            base = base.replace(".", "_").strip()[:8]
-            ext = ext[:3]
-        else:
-            base, ext = name.replace(".", "_")[:8], ""
-        if not base.strip("_"):
-            base = "_FILE"
-        candidate = f"{base}.{ext}" if ext else base
-        if candidate.upper() not in existing:
-            return candidate
-        for counter in range(1, 1000):
-            suffix = f"~{counter:02d}"
-            new_base = base[: 8 - len(suffix)] + suffix
-            candidate = f"{new_base}.{ext}" if ext else new_base
-            if candidate.upper() not in existing:
-                return candidate
-        raise ValueError(f"Cannot generate unique name for {host_name!r}")
+        return default_suggest_import_name(host_name, existing_names, is_dir=is_dir)
 
     def suggest_host_name(self, name: str) -> str:
         """
@@ -375,9 +418,7 @@ class Filesystem(ABC):
         Returns:
             A host-safe filename string, never empty.
         """
-        safe = "".join("_" if (c in '/\\:*?"<>|' or ord(c) < 0x20) else c for c in name)
-        safe = safe.strip(" .")
-        return safe if safe else "_unnamed_"
+        return default_suggest_host_name(name)
 
     def name_hint(self) -> str:
         """Short description of this filesystem's naming rules, for dialogs."""

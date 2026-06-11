@@ -6,12 +6,61 @@ Manages file operations including import, export, deletion, and editing.
 import logging
 import os
 import posixpath
-import re
 from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMainWindow, QMessageBox
+
+from fatfloppy.core.filesystems.fs_base import (
+    default_suggest_host_name,
+    default_suggest_import_name,
+)
+
+
+def _active_filesystem(manager):
+    """
+    Returns the manager's open filesystem, or None when nothing is loaded.
+
+    Tolerates a missing controller/filesystem (no disk open) and even an
+    unbound call with manager=None (the test suite pins the no-filesystem
+    fallback by calling naming methods unbound).
+
+    Args:
+        manager: A FileManager instance, or None.
+
+    Returns:
+        The active Filesystem, or None.
+    """
+    parent = getattr(manager, "parent", None)
+    controller = getattr(parent, "controller", None)
+    return getattr(controller, "filesystem", None)
+
+
+def _unique_host_name(base_dir: str, name: str, used: set[str]) -> str:
+    """
+    Uniquifies a host filename within a destination directory and batch.
+
+    Two distinct on-disk names can map to the same host-safe name (e.g.
+    "COPY/ALL" and "COPY_ALL" both become "COPY_ALL"), so multi-item
+    extraction appends " (2)", " (3)", ... when the target already exists in
+    base_dir or was produced earlier in the same batch.
+
+    Args:
+        base_dir: The local destination directory.
+        name: The host-safe candidate name.
+        used: Names already produced in this batch (updated in place).
+
+    Returns:
+        A name unique within base_dir and the current batch.
+    """
+    candidate = name
+    counter = 2
+    while candidate in used or (Path(base_dir) / candidate).exists():
+        candidate = f"{name} ({counter})"
+        counter += 1
+    used.add(candidate)
+    return candidate
 
 
 def _sanitize_local_name(name: str) -> str:
@@ -107,8 +156,9 @@ class FileManager(QObject):
             return
 
         current_path = self.parent.current_path
+        hint = self._name_hint()
         dir_name, ok = QInputDialog.getText(
-            self.parent, "Create New Directory", "Enter directory name (8.3 format):"
+            self.parent, "Create New Directory", f"Enter directory name ({hint}):"
         )
         if not ok or not dir_name:
             self.logger.debug("Create Directory dialog cancelled or no name entered.")
@@ -329,7 +379,7 @@ class FileManager(QObject):
                 )
                 if not base_dir:
                     return
-                local_dir_path = _safe_local_join(base_dir, node.name)
+                local_dir_path = _safe_local_join(base_dir, self._host_name(node.name))
 
                 if is_physical:
 
@@ -352,7 +402,7 @@ class FileManager(QObject):
                     self.operation_complete.emit("Extraction complete.")
             else:
                 save_path, _ = QFileDialog.getSaveFileName(
-                    self.parent, "Save File", node.name
+                    self.parent, "Save File", self._host_name(node.name)
                 )
                 if not save_path:
                     return
@@ -389,18 +439,21 @@ class FileManager(QObject):
 
                 def extract_multiple_op(progress_callback=None):
                     total = len(selected_items)
+                    used_names: set[str] = set()
                     for idx, item in enumerate(selected_items):
                         node = item.node
                         if progress_callback:
                             progress_callback(idx, total, f"Extracting {node.name}...")
 
                         source_path = self.parent._build_full_path(node.name)
+                        local_name = _unique_host_name(
+                            base_dir, self._host_name(node.name), used_names
+                        )
+                        local_path = _safe_local_join(base_dir, local_name)
                         if node.is_dir:
-                            local_dir_path = _safe_local_join(base_dir, node.name)
-                            self._extract_directory(source_path, local_dir_path)
+                            self._extract_directory(source_path, local_path)
                         else:
-                            local_file_path = _safe_local_join(base_dir, node.name)
-                            self._extract_file(source_path, local_file_path)
+                            self._extract_file(source_path, local_path)
 
                     if progress_callback:
                         progress_callback(total, total, "Complete")
@@ -415,15 +468,18 @@ class FileManager(QObject):
                     cancelable=False,
                 )
             else:
+                used_names: set[str] = set()
                 for item in selected_items:
                     node = item.node
                     source_path = self.parent._build_full_path(node.name)
+                    local_name = _unique_host_name(
+                        base_dir, self._host_name(node.name), used_names
+                    )
+                    local_path = _safe_local_join(base_dir, local_name)
                     if node.is_dir:
-                        local_dir_path = _safe_local_join(base_dir, node.name)
-                        self._extract_directory(source_path, local_dir_path)
+                        self._extract_directory(source_path, local_path)
                     else:
-                        local_file_path = _safe_local_join(base_dir, node.name)
-                        self._extract_file(source_path, local_file_path)
+                        self._extract_file(source_path, local_path)
                 self.operation_complete.emit("Extraction complete.")
 
     def import_multiple_paths(
@@ -443,31 +499,50 @@ class FileManager(QObject):
 
         if len(file_paths) == 1 and Path(file_paths[0]).is_file() and not auto_name:
             local_path = file_paths[0]
-            base_name = Path(local_path).name
-            base_name = self._format_83_filename(base_name)
-            new_name, ok = QInputDialog.getText(
-                self.parent,
-                "File Name",
-                f"Enter file name for {base_name} (8.3 format):",
-                text=base_name,
+            hint = self._name_hint()
+            base_name = self._format_83_filename(Path(local_path).name)
+            prompt = f"Enter file name for {base_name} ({hint}):"
+            suggested = base_name
+            is_physical = (
+                self.parent.controller.driver
+                and self.parent.controller.driver.driver_category == "physical"
             )
-            if not ok or not new_name:
-                self.logger.debug("File name input cancelled for import.")
-                return
+            while True:
+                new_name, ok = QInputDialog.getText(
+                    self.parent, "File Name", prompt, text=suggested
+                )
+                if not ok or not new_name:
+                    self.logger.debug("File name input cancelled for import.")
+                    return
+                suggested = new_name
 
-            existing_names = [
-                item["name"].upper()
-                for item in self.parent.controller.list_directory(target_path)
-            ]
-            if new_name.upper() in existing_names:
-                QMessageBox.warning(
-                    self.parent,
-                    "Warning",
-                    f"File '{new_name}' already exists in {target_path}",
-                )
-                self.logger.warning(
-                    f"File '{new_name}' already exists, import aborted."
-                )
+                existing_names = [
+                    item["name"].upper()
+                    for item in self.parent.controller.list_directory(target_path)
+                ]
+                if new_name.upper() in existing_names:
+                    prompt = (
+                        f"File '{new_name}' already exists in {target_path}.\n"
+                        f"Enter file name ({hint}):"
+                    )
+                    continue
+
+                if is_physical:
+                    # Physical writes run threaded; a rejected name surfaces
+                    # through the threaded operation's error box instead.
+                    break
+
+                try:
+                    self._add_file_to_disk(local_path, new_name, target_path)
+                except ValueError as e:
+                    # The filesystem rejected the name: show the reason and
+                    # re-prompt instead of aborting.
+                    self.logger.warning(f"Name '{new_name}' rejected: {e}")
+                    prompt = f"{e}\nEnter file name ({hint}):"
+                    continue
+                self.logger.info(f"Imported 1 item to '{target_path}'.")
+                self.refresh_needed.emit(target_path)
+                self.operation_complete.emit(f"Imported 1 item to '{target_path}'")
                 return
 
             file_paths_with_names = [(local_path, new_name)]
@@ -700,7 +775,11 @@ class FileManager(QObject):
         )
         file_data = Path(file_path).read_bytes()
 
-        full_path = posixpath.normpath(f"{dest_path}/{dest_name}")
+        # posixpath.join, not normpath(f"{dest_path}/{dest_name}"): normpath
+        # preserves a POSIX-special double leading slash, so a root target
+        # produced "//NAME" and CBM (which allows '/' in names) stored the
+        # file as "/NAME".
+        full_path = posixpath.join(dest_path, dest_name)
         success = self.parent.controller.write_file(full_path, file_data)
         if not success:
             raise Exception(f"Failed to write file {dest_name}")
@@ -726,6 +805,7 @@ class FileManager(QObject):
 
             total_items = len([i for i in items if i["name"] not in [".", ".."]])
             current_item = 0
+            used_names: set[str] = set()
 
             for item in items:
                 item_name = item["name"]
@@ -738,7 +818,10 @@ class FileManager(QObject):
                     )
 
                 item_source_path = posixpath.normpath(f"{source_dir_path}/{item_name}")
-                item_local_path = _safe_local_join(local_dir_path, item_name)
+                local_name = _unique_host_name(
+                    local_dir_path, self._host_name(item_name), used_names
+                )
+                item_local_path = _safe_local_join(local_dir_path, local_name)
                 if item["is_dir"]:
                     self._extract_directory(item_source_path, item_local_path)
                 else:
@@ -788,37 +871,32 @@ class FileManager(QObject):
 
     def _format_83_filename(self, filename: str) -> str:
         """
-        Formats a filename into an 8.3 FAT-compatible format.
+        Suggests a valid on-disk name for a host filename.
+
+        Kept under its legacy 8.3 name for existing callers; it now delegates
+        to the active filesystem's name policy, falling back to the classic
+        8.3 default when no filesystem is loaded.
 
         Args:
-            filename: The original filename.
+            filename: The original host filename.
 
         Returns:
-            The 8.3 formatted filename.
+            A valid on-disk name suggestion.
         """
-        filename = re.sub(r'[<>:"/\\|?*]', "", filename).strip().upper()
-
-        # Split on the LAST dot so "my.file.tar.gz" -> base "my.file.tar", ext "gz".
-        stripped = filename.strip(".")
-        if "." in stripped:
-            base, _, ext = filename.rpartition(".")
-        else:
-            base, ext = filename, ""
-
-        # Interior dots are illegal in an 8.3 base; replace them, and never emit an
-        # empty base (e.g. dotfiles like ".gitignore") (audit file_manager.py:788).
-        base = base.replace(".", "_").strip()[:8]
-        if not base:
-            base = "_FILE"
-        ext = ext[:3]
-
-        return f"{base}.{ext}" if ext else base
+        fs = _active_filesystem(self)
+        if fs is None:
+            return default_suggest_import_name(filename, set())
+        return fs.suggest_import_name(filename, set())
 
     def _generate_unique_83_name(
         self, original_name: str, target_path: str, is_dir: bool
     ) -> str:
         """
-        Generates a unique 8.3 filename (or directory name) for target filesystem.
+        Generates a valid on-disk name unique within target_path.
+
+        Kept under its legacy 8.3 name for existing callers; it now delegates
+        to the active filesystem's name policy, falling back to the classic
+        8.3 default when no filesystem is loaded.
 
         Args:
             original_name: The original name from the local filesystem.
@@ -827,52 +905,40 @@ class FileManager(QObject):
             is_dir: True if the item is a directory, False for a file.
 
         Returns:
-            A unique 8.3 format name.
+            A valid, unique on-disk name.
 
         Raises:
             ValueError: If a unique name cannot be generated after many attempts.
         """
-
-        def to_83_name_format(name: str, is_directory: bool) -> str:
-            name = name.upper()
-            name = re.sub(r'[\\/:*?"<>|\s+]', "_", name)
-            if "." in name and not is_directory:
-                base, ext = name.rsplit(".", 1)
-                base = base[:8]
-                ext = ext[:3]
-                return f"{base}.{ext}"
-            else:
-                return name[:8]
-
         existing_names = {
-            item["name"].upper()
-            for item in self.parent.controller.list_directory(target_path)
+            item["name"] for item in self.parent.controller.list_directory(target_path)
         }
-        base_name_83 = to_83_name_format(original_name, is_dir)
+        fs = _active_filesystem(self)
+        if fs is None:
+            return default_suggest_import_name(
+                original_name, existing_names, is_dir=is_dir
+            )
+        return fs.suggest_import_name(original_name, existing_names, is_dir=is_dir)
 
-        if base_name_83 not in existing_names:
-            return base_name_83
+    def _host_name(self, name: str) -> str:
+        """
+        Maps an on-disk name to a host-safe filename for extraction.
 
-        if "." in base_name_83 and not is_dir:
-            base, ext = base_name_83.rsplit(".", 1)
-            base = base[:6]
-            for counter in range(1, 1000):
-                new_base = f"{base}~{counter:02d}"[:8]
-                new_name = f"{new_base}.{ext}"
-                if new_name not in existing_names:
-                    return new_name
-        else:
-            base = base_name_83[:6]
-            for counter in range(1, 1000):
-                new_name = f"{base}~{counter:02d}"[:8]
-                if new_name not in existing_names:
-                    return new_name
+        Args:
+            name: The raw on-disk filename.
 
-        self.logger.error(
-            f"Failed to generate unique 8.3 name for '{original_name}' in "
-            f"'{target_path}'."
-        )
-        raise ValueError("Cannot generate unique name")
+        Returns:
+            A host-safe filename, per the active filesystem's policy.
+        """
+        fs = _active_filesystem(self)
+        if fs is None:
+            return default_suggest_host_name(name)
+        return fs.suggest_host_name(name)
+
+    def _name_hint(self) -> str:
+        """Returns the active filesystem's naming-rules hint for dialog labels."""
+        fs = _active_filesystem(self)
+        return fs.name_hint() if fs else "8.3 format"
 
     def _import_directory_recursive(
         self, local_path: str, target_path: str, progress_callback=None
