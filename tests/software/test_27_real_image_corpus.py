@@ -33,6 +33,9 @@ pytestmark = pytest.mark.skipif(
 # Altair MITS 8" images (137-byte physical sectors).
 _MITS_SIZES = {337568, 337664}
 
+# Apollo DOMAIN floppies (77x2x8x1024 PV image, exact size).
+_APOLLO_SIZE = 1_261_568
+
 
 def _candidate_driver_types(path: Path) -> list[str]:
     size = path.stat().st_size
@@ -49,6 +52,12 @@ def _candidate_driver_types(path: Path) -> list[str]:
         return ["H17", "IMG"]
     if suffix in (".d64", ".d71", ".d81"):
         return ["CBM"]
+    # Without this, Apollo images still pass via IMG + the shipped format
+    # profile (the image is raw bytes), but the APOLLO driver path itself
+    # is never exercised; the driver's magic validation rejects non-Apollo
+    # files of this size, which then fall through to IMG.
+    if size == _APOLLO_SIZE:
+        return ["APOLLO", "IMG", "IMD"]
     return ["IMG", "IMD"]
 
 
