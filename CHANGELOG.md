@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apollo DOMAIN wbak backup floppy support (read-only):
+  - Apollo floppy image driver for the 77x2x8x1024 physical-volume container
+    (`.img`, exactly 1,261,568 bytes with the `APOLLO` signature; AEGIS-native
+    disks are recognized as Apollo containers but not yet browsable)
+  - wbak "tape-on-floppy" stream parser covering all four layers of the format
+    (segment framing, ANSI X3.27 labels, backup blocks, object records), with
+    recovery of the wbak writer's pathologies on real media (stale sectors,
+    absorbed/lost middle segments, drop-on-miss) -- damaged files read back
+    with holes zero-filled and are flagged, files cut by end-of-volume are
+    flagged partial
+  - read-only filesystem presenting each backup tree as a directory hierarchy
+    with the genuine Apollo timestamps
 - Commodore CBM DOS support:
   - D64/D71/D81 image driver (1541/1571/1581 variable-zone geometry derived
     from the exact file size), including the trailing error-byte D64/D71
@@ -41,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against it with zero regressions in per-file content hashes.
 
 ### Fixed
+- GUI crash when importing files onto a read-only filesystem: the synchronous
+  import path let the filesystem's error escape a Qt slot (fatal in PyQt);
+  failures are now collected and shown in a dialog.
 - Extensive safety/correctness hardening across physical-disk access,
   archival-image parsing (IMD/H17), write ordering, hostile-input handling,
   and the filesystem/driver/core/GUI layers (audit remediation, Groups 1-10).

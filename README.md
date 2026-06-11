@@ -1,17 +1,18 @@
 # FatFloppy
 
-FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, HDOS, and Commodore CBM DOS filesystems across multiple disk image formats (IMG, IMD, H17, MITS DSK, D64/D71/D81). This is an **alpha version**, with core features working but more to come.
+FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, HDOS, Commodore CBM DOS, and Apollo DOMAIN wbak filesystems across multiple disk image formats (IMG, IMD, H17, MITS DSK, D64/D71/D81, Apollo floppy). This is an **alpha version**, with core features working but more to come.
 
 [![License: Unlicense](https://img.shields.io/badge/License-Unlicense-yellow.svg)](https://unlicense.org)
 
 ## Key Features
 
-- **Multiple Filesystems**: FAT12, CP/M, HDOS, and CBM DOS support, including
-  many non-standard vintage layouts (no-BPB DOS, DEC Rainbow, 86-DOS,
-  hard-sectored Heath H17 / MITS Altair CP/M, and more)
-- **Multiple Formats**: IMG, IMD, H17, MITS DSK, and Commodore D64/D71/D81
-  image formats (including error-byte D64/D71 variants; 42-track D64 images
-  open read-only)
+- **Multiple Filesystems**: FAT12, CP/M, HDOS, CBM DOS, and Apollo DOMAIN
+  wbak (read-only) support, including many non-standard vintage layouts
+  (no-BPB DOS, DEC Rainbow, 86-DOS, hard-sectored Heath H17 / MITS Altair
+  CP/M, and more)
+- **Multiple Formats**: IMG, IMD, H17, MITS DSK, Commodore D64/D71/D81, and
+  Apollo DOMAIN floppy image formats (including error-byte D64/D71 variants;
+  42-track D64 images open read-only)
 - **Physical Disk Access**: Greaseweazle hardware integration
 - **File Operations**: Read, write, delete files, and create directories
 - **Create & Format**: Make new blank images and format them to a chosen profile
@@ -116,6 +117,20 @@ fatfloppy
   1581 partition formatted as a browsable sub-directory (`NAME` alone
   defaults to 120 sectors; the size must be at least 120 sectors and a
   multiple of 40, i.e. whole tracks).
+
+### Apollo DOMAIN wbak Notes
+
+- **Read-only**: Apollo floppies are archival backup media; FatFloppy opens
+  them read-only.
+- **Container**: `.img` files of exactly 1,261,568 bytes (77×2×8×1024)
+  carrying the `APOLLO` physical-volume signature.
+- **Browsing**: each `wbak` backup tree on the disk mounts as a directory
+  hierarchy with the genuine Apollo timestamps.
+- **Damage handling**: files damaged on the medium are flagged `DMG` and read
+  back with their holes zero-filled; a file cut by the end of the volume is
+  flagged `PARTIAL` and reads back as the available prefix.
+- **AEGIS disks**: AEGIS-filesystem (native) Apollo floppies are recognized
+  as Apollo containers but their filesystem cannot be browsed yet.
 
 ### Filenames on Import/Export
 
