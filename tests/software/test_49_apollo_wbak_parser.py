@@ -1,16 +1,22 @@
 # tests/software/test_49_apollo_wbak_parser.py
 """Apollo wbak parser tests: L1 framing, labels, records, catalog."""
 
+import hashlib
 import random
 import struct
 from collections import Counter
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from fatfloppy.core.apollo_wbak import (
+    AnsiLabel,
     FrameParser,
     StreamError,
+    apollo_time_to_datetime,
+    build_catalog,
+    decode_wbak_name,
 )
 
 SEC = 1024
@@ -482,3 +488,550 @@ class TestRealDiskTiling:
             ),
             (85, ((6220, 1012),)),
         ]
+
+
+# ---------------------------------------------------------------- L2 helpers
+
+
+def label80(kind: str, **fields) -> bytes:
+    """Build an 80-byte ANSI X3.27 label (ECMA-13 1-based byte positions).
+
+    Numeric fields accept a ``*_text`` override so junk can be injected
+    (real disk10 has a destroyed EOF1 with non-digit numeric fields).
+    """
+    buf = bytearray(b" " * 80)
+    buf[0:4] = kind.encode("ascii")
+
+    def put(bp: int, text: str) -> None:
+        buf[bp - 1 : bp - 1 + len(text)] = text.encode("ascii")
+
+    if kind == "VOL1":
+        put(5, fields.get("volume_id", "").ljust(6))
+        put(38, fields.get("owner", "").ljust(14))
+        put(80, "3")
+    elif kind in ("UVL1", "UHL1", "UTL1"):
+        put(5, fields.get("text", ""))
+    elif kind in ("HDR1", "EOF1", "EOV1"):
+        put(5, fields.get("file_id", "").ljust(17))
+        put(22, fields.get("set_id", "BACKUP"))
+        put(28, fields.get("section_text", f"{fields.get('section', 1):04d}"))
+        put(32, fields.get("sequence_text", f"{fields.get('sequence', 1):04d}"))
+        put(36, "0001")
+        put(40, "00")
+        put(42, fields.get("created_text", " 86351"))
+        put(48, " 86351")
+        put(55, fields.get("block_count_text", f"{fields.get('block_count', 0):06d}"))
+    elif kind in ("HDR2", "EOF2", "EOV2"):
+        put(5, fields.get("record_format", "F"))
+        put(6, f"{fields.get('block_len', 8192):05d}")
+        put(11, f"{fields.get('record_len', 8192):05d}")
+    return bytes(buf)
+
+
+# ------------------------------------------------------------ L3/L4 helpers
+
+SYN_UID = b"\x31\xf4\x9b\xd4\x20\x00\x71\xfa"  # == UVL1 "31F49BD4.200071FA"
+SYN_TIME = 0x31F49BD4  # 1986-12-17 21:37:04 UTC
+
+
+def obj_rec(type1: int, type2: int, body: bytes) -> bytes:
+    """One L4 object record: 6-byte magic + payload, +1 pad if odd."""
+    out = struct.pack(">HHH", type1, len(body), type2) + body
+    if len(body) % 2:
+        out += b"\x00"
+    return out
+
+
+def sub_rec(root: bytes = b"//NODE/TREE") -> bytes:
+    body = struct.pack(">H", 1) + bytes(8) + struct.pack(">H", len(root)) + root
+    return obj_rec(9, 1, body)
+
+
+def mark_rec() -> bytes:
+    return obj_rec(8, 1, bytes(4))
+
+
+def name_rec(path: bytes) -> bytes:
+    return obj_rec(2, 1, b"\x01" * 8 + bytes(4) + path)
+
+
+def file_rec(size: int, blocks: int = 1, mtime: int = SYN_TIME) -> bytes:
+    """SR9.5 FILE record: layout per the reference's decode_file_header."""
+    body = (
+        b"\x00\x00\x90\x00"  # magic 0x00009000
+        + b"\x02" * 8  # object uid
+        + struct.pack(">8I", 0x311, 0, 0x1800F, 0, size, blocks, mtime, mtime)
+        + b"\x03" * 8  # parent uid
+        + bytes(12)  # 3 x u32 spare
+    )
+    assert len(body) == 64
+    return obj_rec(0, 1, body)
+
+
+def dir_rec(name: bytes, mtime: int = SYN_TIME) -> bytes:
+    attrs = (
+        b"\x00\x01\x90\x00"  # magic 0x00019000
+        + b"\x04" * 8
+        + struct.pack(">8I", 0, 0, 0, 0, 0, 0, mtime, mtime)
+        + bytes(8)
+        + bytes(28)
+    )
+    assert len(attrs) == 80
+    return obj_rec(3, 2, attrs + name)
+
+
+def link_rec(path: bytes, target: bytes) -> bytes:
+    body = bytes(4) + struct.pack(">H", len(path)) + path + target
+    return obj_rec(5, 1, body)
+
+
+def data_rec(content: bytes) -> bytes:
+    return obj_rec(1, 1, content)
+
+
+def storage_header(total_size: int) -> bytes:
+    """The 32-byte object storage header (0020 0001 + dtm + total size)."""
+    return b"\x00\x20\x00\x01" + bytes(8) + struct.pack(">I", total_size) + bytes(16)
+
+
+def build_block(seq: int, uid: bytes, records: bytes) -> bytes:
+    """A canonical 8192-byte block: 14-byte header + records + zero pad."""
+    payload = struct.pack(">I", seq) + uid + struct.pack(">H", 14 + len(records))
+    payload += records
+    assert len(payload) <= 8192
+    return payload + bytes(8192 - len(payload))
+
+
+def build_synthetic_image() -> bytes:
+    """Full two-tree wbak volume: tree A complete (EOF), tree B cut (EOV).
+
+    Tree A holds a DIR "SUB", a FILE "SUB/HELLO" (11 content bytes behind
+    the 32-byte storage header) and a LINK; tree B holds one FILE whose
+    DATA was cut by the end of volume.
+    """
+    b = StreamBuilder()
+    b.add_record(label80("VOL1", volume_id="SYN001", owner="APOLLO"))
+    b.add_record(label80("UVL1", text="31F49BD4.200071FA"))
+    # tree A
+    b.add_record(label80("HDR1", file_id="TREEA", section=1, sequence=1))
+    b.add_record(label80("HDR2"))
+    b.add_record(label80("UHL1", text="31F49BD4.200071FA 1986/12/17 21:37:04"))
+    b.add_tapemark()
+    records_a = (
+        sub_rec()
+        + mark_rec()
+        + dir_rec(b"SUB")
+        + mark_rec()
+        + name_rec(b"SUB/HELLO")
+        + file_rec(11 + 32)
+        + data_rec(storage_header(11 + 32) + b"hello world")
+        + mark_rec()
+        + link_rec(b"SUB/LNK", b"hello_target")
+    )
+    b.add_record(build_block(1, SYN_UID, records_a))
+    b.add_tapemark()
+    b.add_record(label80("EOF1", file_id="TREEA", section=1, sequence=1, block_count=1))
+    b.add_record(label80("EOF2"))
+    b.add_tapemark()
+    # tree B: FILE claims 1000 content bytes; only 68 arrive before EOV
+    b.add_record(label80("HDR1", file_id="TREEB", section=1, sequence=2))
+    b.add_record(label80("HDR2"))
+    b.add_record(label80("UHL1", text="31F49BD5.200071FA"))
+    b.add_tapemark()
+    records_b = (
+        sub_rec()
+        + mark_rec()
+        + name_rec(b"WORLD")
+        + file_rec(1000 + 32, blocks=2)
+        + data_rec(storage_header(1000 + 32) + b"x" * 68)
+    )
+    b.add_record(build_block(1, SYN_UID, records_b))
+    b.add_tapemark()
+    b.add_record(label80("EOV1", file_id="TREEB", section=1, sequence=2, block_count=1))
+    b.add_record(label80("EOV2"))
+    b.add_tapemark()
+    return b.finish()
+
+
+class TestL2Labels:
+    def test_vol1_fields(self):
+        lab = AnsiLabel.parse(label80("VOL1", volume_id="5ETC", owner="APOLLO"))
+        assert lab.kind == "VOL1"
+        assert lab.volume_id == "5ETC"
+        assert lab.owner == "APOLLO"
+
+    def test_hdr1_fields_with_slash_file_id(self):
+        raw = label80(
+            "HDR1", file_id="SYS5/ETC", set_id="BACKUP", section=1, sequence=1
+        )
+        lab = AnsiLabel.parse(raw)
+        assert lab.kind == "HDR1"
+        assert lab.file_id == "SYS5/ETC"
+        assert lab.set_id == "BACKUP"
+        assert lab.section == 1
+        assert lab.sequence == 1
+        assert lab.created == date(1986, 12, 17)  # " 86351" = day 351 of 1986
+
+    def test_eov_vs_eof_and_block_count(self):
+        eof = AnsiLabel.parse(label80("EOF1", file_id="X", block_count=25))
+        eov = AnsiLabel.parse(label80("EOV1", file_id="X", block_count=85))
+        assert (eof.kind, eof.block_count) == ("EOF1", 25)
+        assert (eov.kind, eov.block_count) == ("EOV1", 85)
+
+    def test_junk_numeric_fields_decode_to_none(self):
+        # real disk10 has a destroyed EOF1: numeric fields must not raise
+        raw = label80(
+            "EOF1",
+            file_id="LIB",
+            section_text="??\xff?".replace("\xff", "Q"),
+            sequence_text="    ",
+            created_text="\x07unk!?"[:6].ljust(6),
+            block_count_text="?int??",
+        )
+        lab = AnsiLabel.parse(raw)
+        assert lab.section is None
+        assert lab.sequence is None
+        assert lab.created is None
+        assert lab.block_count is None
+
+    def test_hdr2_fields(self):
+        lab = AnsiLabel.parse(label80("HDR2"))
+        assert lab.kind == "HDR2"
+        assert lab.record_format == "F"
+        assert lab.block_len == 8192
+        assert lab.record_len == 8192
+
+    def test_uhl1_uid_and_datetime_text(self):
+        raw = label80("UHL1", text="31F49BD4.200071FA 1986/12/17 21:37:04")
+        lab = AnsiLabel.parse(raw)
+        assert lab.uid_text == "31F49BD4.200071FA"
+        assert lab.date_text == "1986/12/17"
+        assert lab.time_text == "21:37:04"
+
+    def test_non_label_rejected(self):
+        with pytest.raises(ValueError):
+            AnsiLabel.parse(b"JUNK" + b" " * 76)
+
+
+class TestNameDecoding:
+    def test_uppercase_becomes_lowercase(self):
+        assert decode_wbak_name(b"SUB/HELLO") == "sub/hello"
+        assert decode_wbak_name(b"CLEANUP_V1.0") == "cleanup_v1.0"
+
+    def test_colon_escape_keeps_literal_uppercase(self):
+        assert decode_wbak_name(b"FOO:BAR") == "fooBar"
+        assert decode_wbak_name(b":M:A:K:EFILE") == "MAKEfile"
+
+    def test_passthrough_of_non_letters(self):
+        assert decode_wbak_name(b"?") == "?"
+        assert decode_wbak_name(b"A_1.2-3") == "a_1.2-3"
+
+
+class TestApolloTime:
+    def test_epoch(self):
+        assert apollo_time_to_datetime(0) == datetime(1980, 1, 1, tzinfo=timezone.utc)
+
+    def test_disk8_uhl1_uids_match_label_datetimes(self):
+        # The committed disk8 carries two UHL1 labels (read from the image):
+        #   UHL1 31F49A80.A00071FA 1986/12/17 21:35:35
+        #   UHL1 31F49BD4.200071FA 1986/12/17 21:37:04
+        # The UID high word is the Apollo creation timestamp; converting it
+        # must land within a minute of the label's own date/time text.
+        data = (RESOURCES / "disk8.img").read_bytes()
+        events = FrameParser(data).parse()
+        uhl1 = [
+            AnsiLabel.parse(e.payload)
+            for e in events
+            if e.kind == "record" and e.payload[:4] == b"UHL1"
+        ]
+        assert len(uhl1) == 2
+        for label in uhl1:
+            stated = datetime.strptime(
+                f"{label.date_text} {label.time_text}", "%Y/%m/%d %H:%M:%S"
+            ).replace(tzinfo=timezone.utc)
+            converted = apollo_time_to_datetime(int(label.uid_text.split(".")[0], 16))
+            assert abs((converted - stated).total_seconds()) <= 60
+        # pinned literal: the COM tree's UHL1 stamp
+        assert uhl1[1].uid_text == "31F49BD4.200071FA"
+        pinned = datetime(1986, 12, 17, 21, 37, 4, tzinfo=timezone.utc)
+        assert abs((apollo_time_to_datetime(0x31F49BD4) - pinned).total_seconds()) <= 60
+
+
+class TestCatalogSynthetic:
+    def test_two_tree_catalog_with_file_dir_link(self):
+        img = build_synthetic_image()
+        cat = build_catalog(img)
+        assert cat.volume_id == "SYN001"
+        assert cat.owner == "APOLLO"
+        assert cat.backup_uid == "31F49BD4.200071FA"
+        assert cat.created == apollo_time_to_datetime(SYN_TIME)
+        assert [(t.file_id, t.section, t.sequence, t.complete) for t in cat.trees] == [
+            ("TREEA", 1, 1, True),
+            ("TREEB", 1, 2, False),
+        ]
+
+        tree_a = cat.trees[0]
+        assert tree_a.uid_text == "31F49BD4.200071FA"
+        assert tree_a.created == date(1986, 12, 17)
+        assert [e.path for e in tree_a.entries] == ["sub", "sub/hello", "sub/lnk"]
+        sub, hello, lnk = tree_a.entries
+        assert sub.is_dir and not sub.damaged
+        assert hello.size == 11
+        assert hello.raw_name == b"SUB/HELLO"
+        assert hello.mtime == apollo_time_to_datetime(SYN_TIME)
+        assert hello.atime == apollo_time_to_datetime(SYN_TIME)
+        assert not hello.damaged and not hello.partial
+        assert cat.read(hello) == b"hello world"
+        assert lnk.link_target == "hello_target"
+        # extents cover the raw DATA chunk (incl. the 32-byte storage
+        # header) and point at real medium bytes
+        assert sum(length for _, length in hello.extents) == 11 + 32
+        raw = b"".join(img[o : o + n] for o, n in hello.extents)
+        assert raw == storage_header(11 + 32) + b"hello world"
+
+        tree_b = cat.trees[1]
+        assert tree_b.complete is False
+        (world,) = tree_b.entries
+        assert world.path == "world"
+        assert world.size == 1000
+        assert world.partial is True  # DATA cut by end of volume
+        assert world.damaged is False  # cut, not corrupted
+        assert cat.read(world) == b"x" * 68  # available prefix only
+
+    def test_continued_section_orphan_head_skipped(self):
+        # A tree section >= 2 continues a file opened on a previous volume:
+        # DATA arriving before any NAME has no owner on this disk and is
+        # skipped with a catalog-level note.
+        b = StreamBuilder()
+        b.add_record(label80("VOL1", volume_id="SYN002", owner="APOLLO"))
+        b.add_record(label80("UVL1", text="31F49BD4.200071FA"))
+        b.add_record(label80("HDR1", file_id="TREEC", section=2, sequence=1))
+        b.add_record(label80("HDR2"))
+        b.add_record(label80("UHL1", text="31F49BD4.200071FA"))
+        b.add_tapemark()
+        records = (
+            sub_rec()
+            + data_rec(b"y" * 200)  # tail of the previous volume's file
+            + mark_rec()
+            + name_rec(b"NEWFILE")
+            + file_rec(5 + 32)
+            + data_rec(storage_header(5 + 32) + b"abcde")
+        )
+        b.add_record(build_block(1, SYN_UID, records))
+        b.add_tapemark()
+        b.add_record(label80("EOF1", file_id="TREEC", section=2, sequence=1))
+        b.add_record(label80("EOF2"))
+        b.add_tapemark()
+        cat = build_catalog(b.finish())
+        (tree,) = cat.trees
+        assert tree.continued_from_previous is True
+        assert tree.skipped_head_bytes == 200
+        assert [e.path for e in tree.entries] == ["newfile"]
+        assert cat.read(tree.entries[0]) == b"abcde"
+
+    def test_aegis_like_image_yields_empty_catalog(self):
+        # Documented choice: an APOLLO container without a wbak tape stream
+        # (disk5 analogue) returns an EMPTY catalog (volume_id None, no
+        # trees) instead of raising -- detection (Task 5) scores on that.
+        rng = random.Random(0x5EED)
+        img = bytearray(b"APOLLO\x00\x01")
+        img += bytes(START - len(img))
+        img += bytes(rng.randrange(256) for _ in range(IMAGE_SIZE - START))
+        cat = build_catalog(bytes(img))
+        assert cat.volume_id is None
+        assert cat.trees == []
+
+    def test_truncated_image_still_raises(self):
+        with pytest.raises(StreamError):
+            build_catalog(b"APOLLO\x00\x01" + bytes(100))
+
+
+class TestReviewBatch:
+    def test_chain_only_validation_note_on_damaged_head(self):
+        # disk8 block seq 30 lost its head segment (block header gone): it
+        # validates on the seq/uid chain alone and must say so.
+        data = (RESOURCES / "disk8.img").read_bytes()
+        events = FrameParser(data).parse()
+        flagged = [
+            e
+            for e in events
+            if e.kind == "record" and "chain-only validation" in e.note
+        ]
+        assert len(flagged) == 1
+        assert struct.unpack_from(">I", flagged[0].payload)[0] == 30
+
+    def test_filler_event_length(self):
+        b = StreamBuilder()
+        b.add_record(b"Z" * (SEC - 12 - 5))  # leaves 5 bytes -> filler run
+        b.add_record(b"W" * 80)
+        events = FrameParser(b.finish(), classifier=accept_all).parse()
+        fillers = [e for e in events if e.kind == "filler"]
+        assert fillers[0].length == 5
+
+    def test_irregular_short_record_sentinel_and_catalog_damage(self):
+        # A short record whose segments do not fit the canonical block
+        # tiling carries the ((0, 0)) sentinel; the catalog treats the
+        # whole block as damaged without inventing hole extents.
+        records = (
+            sub_rec()
+            + mark_rec()
+            + name_rec(b"VICTIM")
+            + file_rec(500 + 32)
+            + data_rec(storage_header(500 + 32) + b"q" * 500)
+        )
+        payload = build_block(1, SYN_UID, records)
+        b = StreamBuilder()
+        b.add_record(label80("VOL1", volume_id="SYN003", owner="APOLLO"))
+        b.add_record(label80("UVL1", text="31F49BD4.200071FA"))
+        b.add_record(label80("HDR1", file_id="TREED", section=1, sequence=1))
+        b.add_record(label80("HDR2"))
+        b.add_record(label80("UHL1", text="31F49BD4.200071FA"))
+        b.add_tapemark()
+        b.buf += filler_to_boundary(b.pos())
+        b.buf += seg(1, payload[:800])  # head + tail only: 900 bytes,
+        b.buf += seg(3, payload[800:900])  # 8192-900 not a multiple of 1012
+        b.add_tapemark()
+        b.add_record(label80("EOF1", file_id="TREED", section=1, sequence=1))
+        b.add_record(label80("EOF2"))
+        b.add_tapemark()
+        img = b.finish()
+
+        events = FrameParser(img).parse()
+        irregular = [e for e in events if e.kind == "record" and e.damage == ((0, 0),)]
+        assert len(irregular) == 1
+        assert irregular[0].note == "irregular short record"
+
+        cat = build_catalog(img)
+        (tree,) = cat.trees
+        (victim,) = tree.entries
+        assert victim.path == "victim"
+        assert victim.damaged is True
+        assert ("irregular", 1) in victim.damage_notes
+        assert not any(note[0] == "hole" for note in victim.damage_notes)
+
+
+class TestCatalogReal:
+    def test_disk2_inventory(self):
+        # Pinned against the reference implementation, re-run 2026-06-11:
+        #   python3 docs/superpowers/research/apollo/empirical/wbak_dump.py \
+        #       list tests/resources/APOLLO/disk2.img
+        # -> SYS5/ETC (seq 1, uid 32A339B6.F00071FA) EOF, 25 blocks,
+        #    36 files, 2 dirs, 3 links; link SYS5/ETC/RC -> '`node_data/etc.rc';
+        #    9 files carry DAMAGE annotations; MOTD's is
+        #    [('hole', 24, 1040, 186)] (matches full_listing.txt).
+        data = (RESOURCES / "disk2.img").read_bytes()
+        cat = build_catalog(data)
+        assert cat.volume_id == "5ETC"
+        assert cat.owner == "APOLLO"
+        assert cat.backup_uid == "32A339B7.000071FA"
+        assert cat.created is not None
+        assert cat.created.date() == date(1987, 1, 21)
+
+        (tree,) = cat.trees
+        assert tree.file_id == "SYS5/ETC"
+        assert tree.section == 1
+        assert tree.sequence == 1
+        assert tree.complete is True  # EOF
+        assert tree.uid_text == "32A339B6.F00071FA"
+        assert tree.created == date(1987, 1, 21)  # HDR1 " 87021"
+        assert tree.continued_from_previous is False
+        assert tree.block_count == 25
+
+        files = [e for e in tree.entries if not e.is_dir and e.link_target is None]
+        dirs = [e for e in tree.entries if e.is_dir]
+        links = [e for e in tree.entries if e.link_target is not None]
+        assert len(files) == 36
+        assert len(dirs) == 2
+        assert len(links) == 3
+        assert {d.path for d in dirs} == {"", "net"}  # "" = the tree root
+
+        rc = next(e for e in links if e.path == "rc")
+        assert rc.link_target == "`node_data/etc.rc"
+        assert {e.path for e in links} == {"rc", "mnttab", "utmp"}
+
+        # damage census: 9 files carry parser damage annotations
+        assert sum(1 for e in files if e.damage_notes) == 9
+        motd = next(e for e in files if e.path == "motd")
+        assert motd.damaged is True
+        assert motd.damage_notes == [("hole", 24, 1040, 186)]
+        # the file whose NAME record was destroyed keeps the placeholder
+        assert sum(1 for e in files if e.path == "?") == 1
+
+        # an intact file reads fully: RELEASELOG, 74 - 32 = 42 bytes
+        releaselog = next(e for e in files if e.path == "releaselog")
+        assert releaselog.size == 42
+        assert not releaselog.damaged
+        assert len(cat.read(releaselog)) == 42
+
+    def test_disk8_inventory_and_extraction(self):
+        # Pinned against the reference implementation, re-run 2026-06-11:
+        #   python3 docs/superpowers/research/apollo/empirical/wbak_dump.py \
+        #       list tests/resources/APOLLO/disk8.img
+        # -> INSTALL (seq 1) EOF, 65 blocks, 72 files + 5 dirs;
+        #    COM (seq 2, section 1) EOV, 85 blocks, 2 files, the open one
+        #    cut at [SHORT 130218/439276] with [('hole', 85, 128246, 1012)].
+        # The CLEANUP_V1.0 sha256 is of the reference-extracted file
+        # (empirical/extracted/INSTALL.seq1.31F49A80/INSTALL/COM/
+        # CLEANUP_V1.0, 1226 bytes) with its 32-byte storage header
+        # stripped: sha256(file[32:]), 1194 bytes.
+        data = (RESOURCES / "disk8.img").read_bytes()
+        cat = build_catalog(data)
+        assert cat.volume_id == "FT0003"
+        assert cat.owner == "APOLLO"
+        assert cat.backup_uid == "31F49A87.B00071FA"
+        assert [(t.file_id, t.section, t.sequence, t.complete) for t in cat.trees] == [
+            ("INSTALL", 1, 1, True),
+            ("COM", 1, 2, False),
+        ]
+
+        install = cat.trees[0]
+        assert install.block_count == 65
+        files = [e for e in install.entries if not e.is_dir and e.link_target is None]
+        dirs = [e for e in install.entries if e.is_dir]
+        assert len(files) == 72
+        assert len(dirs) == 5
+        assert {d.path for d in dirs} == {
+            "",
+            "com",
+            "optional_sw_files",
+            "ftn",
+            "ftn/com",
+        }
+
+        cleanup = next(e for e in files if e.path == "com/cleanup_v1.0")
+        assert cleanup.size == 1226 - 32
+        assert not cleanup.damaged and not cleanup.partial
+        # FILE-record time fields: time1 == time2 == 0x31F49334 (decoded
+        # with the reference's field layout; 1986-12-17T21:27:25Z)
+        assert cleanup.mtime == apollo_time_to_datetime(0x31F49334)
+        assert cleanup.mtime.date() == date(1986, 12, 17)
+        assert cleanup.atime == cleanup.mtime
+        content = cat.read(cleanup)
+        assert len(content) == cleanup.size
+        assert content.startswith(b"#!/com/sh")
+        assert b"compat_cleanup" in content
+        assert (
+            hashlib.sha256(content).hexdigest()
+            == "3e4f699d17b9b08936e1f1d501bec3c3a56c4d2e978eb64134a32ac4186539e1"
+        )
+
+        # a damaged-flagged entry from the absorbed-stale/lost-middle disk:
+        # CPT carries [('zerofill', 7, 2348, 3144)] per the reference
+        cpt = next(e for e in files if e.path == "com/cpt")
+        assert cpt.damaged is True
+        assert ("zerofill", 7, 2348, 3144) in cpt.damage_notes
+
+        com = cat.trees[1]
+        assert com.complete is False  # EOV -> continues on another volume
+        assert com.block_count == 85
+        assert len(com.entries) == 2
+        orphan, ftn = com.entries
+        assert orphan.path == "?"  # NAME record lost to in-block junk
+        assert orphan.damaged is True
+        assert ftn.path == "ftn_sr9.2"
+        assert ftn.partial is True  # cut by EOV
+        assert ftn.damaged is True  # also overlaps an L1 zero-fill
+        assert ("hole", 85, 128246, 1012) in ftn.damage_notes
+        assert ftn.size == 439276 - 32
+        prefix = cat.read(ftn)
+        assert len(prefix) == 130218 - 32  # available prefix only

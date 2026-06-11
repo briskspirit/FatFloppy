@@ -43,10 +43,23 @@ disks by the reference implementation):
 Classification is pluggable via ``FrameParser(data, classifier=...)``; the
 default classifier accepts ANSI labels by tag and wbak blocks by the
 seq/uid chain maintained in the parser (``expected_seq``/``expected_uid``).
+
+Above L1 the module implements (spec sections 2.3, 2.4 and 4):
+
+- **L2**: :class:`AnsiLabel` -- the 80-byte ANSI X3.27 / ECMA-13 labels
+  (``VOL1 UVL1 (HDR1 HDR2 UHL1 TM data TM (EOF1|EOV1)(EOF2|EOV2) TM)*``).
+- **L3**: 8192-byte data blocks -- 14-byte header (u32BE seq, u64BE backup
+  UID, u16BE bh_size; the latter is unreliable, records self-terminate).
+- **L4**: 6-byte-magic object records (SUB/MARK/NAME/FILE/DATA/DIR/POPD/
+  LINK; OPT/EMPTY/ACL skipped) consumed into a :class:`WbakCatalog` of
+  :class:`WbakTree`/:class:`WbakEntry` by :func:`build_catalog`.  The
+  catalog is a *single-disk view*: tree sections continuing from a
+  previous volume keep their orphan head data out of the entry list.
 """
 
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from itertools import combinations
 from typing import Callable, Optional
 
@@ -98,6 +111,19 @@ class FrameEvent:
     inside a record, drop-on-miss), ``badrec`` (well-framed but
     unclassifiable record stepped over), ``gap`` (unparseable mid-sector
     bytes, resync at the next boundary).
+
+    ``damage`` lists the zero-filled (payload_offset, length) ranges of a
+    reconstructed record.  The sentinel ``((0, 0),)`` marks an *irregular*
+    short record whose segments do not fit the canonical block tiling: the
+    payload is the surviving bytes joined as-is, the loss cannot be
+    located, and consumers must treat the whole record as damaged (the
+    catalog does; it derives no hole extents from the sentinel).
+
+    ``spans`` maps payload ranges back to the medium as (payload_offset,
+    image_offset, length) tuples; zero-filled ranges have no span.
+
+    ``length`` is the byte count consumed by ``filler`` events (0 for
+    other kinds).
     """
 
     offset: int
@@ -106,6 +132,8 @@ class FrameEvent:
     note: str = ""
     category: str = ""  # classifier verdict for records: "label" | "block"
     damage: tuple[tuple[int, int], ...] = ()
+    spans: tuple[tuple[int, int, int], ...] = ()
+    length: int = 0
 
     @property
     def damaged(self) -> bool:
@@ -113,6 +141,14 @@ class FrameEvent:
 
 
 Classifier = Callable[["FrameParser", bytes, Optional[int]], Optional[str]]
+
+
+def _block_header_ok(payload: bytes) -> bool:
+    """Structural block-header check: sane bh_size and a SUB (9/1) first."""
+    if len(payload) < 22:
+        return False
+    used, type1, _size, type2 = struct.unpack_from(">HHHH", payload, 12)
+    return (type1, type2) == _SUB_RECORD_TYPE and 14 <= used <= BLOCK_SIZE
 
 
 def default_classifier(
@@ -129,23 +165,22 @@ def default_classifier(
       expected sequence and bytes 4:12 equal the backup UID -- 10+ exact
       bytes, strong enough to reject stale sectors from older runs.  A
       record whose head segment lost the block header (head_len < 22)
-      still validates on the chain alone (12 bytes suffice).
+      still validates on the chain alone (12 bytes suffice); a chained
+      block that fails the structural SUB check returns ``block-chain``
+      so the emitted event is noted as chain-only validated.
     """
     if len(payload) == LABEL_SIZE and payload[:4] in LABEL_TAGS:
         return "label"
     damaged_head = head_len is not None and head_len < 22
     if parser.expected_seq is None:
-        if damaged_head or len(payload) < 22:
+        if damaged_head or not _block_header_ok(payload):
             return None
-        used, type1, _size, type2 = struct.unpack_from(">HHHH", payload, 12)
-        if (type1, type2) == _SUB_RECORD_TYPE and 14 <= used <= BLOCK_SIZE:
-            return "block"
-        return None
+        return "block"
     if len(payload) < (12 if damaged_head else 22):
         return None
     (seq,) = struct.unpack_from(">I", payload, 0)
     if seq == parser.expected_seq and payload[4:12] == parser.expected_uid:
-        return "block"
+        return "block" if _block_header_ok(payload) else "block-chain"
     return None
 
 
@@ -280,34 +315,55 @@ class FrameParser:
                     return kept, [segments[i][0] for i in combo], category
         return None, None, None
 
+    @staticmethod
+    def _join_with_spans(
+        segments: list[tuple[int, bytes]],
+    ) -> tuple[bytes, tuple[tuple[int, int, int], ...]]:
+        """Concatenate segment payloads, recording their medium spans."""
+        spans = []
+        cursor = 0
+        for off, payload in segments:
+            spans.append((cursor, off + 6, len(payload)))
+            cursor += len(payload)
+        return b"".join(p for _, p in segments), tuple(spans)
+
     def _reconstruct(
-        self, segments: list[tuple[int, bytes]], gap_offsets: "list[int]"
-    ) -> tuple[bytes, tuple[tuple[int, int], ...], str]:
+        self, segments: list[tuple[int, bytes]], gap_offsets: list[int]
+    ) -> tuple[
+        bytes, tuple[tuple[int, int], ...], tuple[tuple[int, int, int], ...], str
+    ]:
         """Rebuild the canonical 8192-byte block from surviving segments.
 
-        Returns (payload, damage_ranges, note).  Damage model (verified by
-        the reference implementation):
+        Returns (payload, damage_ranges, spans, note).  Damage model
+        (verified by the reference implementation):
 
         - no medium gaps (contiguous segments, k middles missing): buffer
           level loss at the record join -- the lost middles are the FIRST
           k after the head; the survivors are the last ones.
         - gap sectors seen while collecting: one pending middle was dropped
-          per missed sector, at its in-order medium position.
+          per missed sector, at its in-order medium position.  When the
+          gap sectors outnumber the missing slots, the in-order replay
+          fills every slot before the medium item list runs out and the
+          excess trailing items are dropped -- including middles displaced
+          past the last slot, which are debris by construction (a record
+          can never carry more middles than its zero-filled holes admit).
         """
         total = sum(len(p) for _, p in segments)
         if total >= BLOCK_SIZE or len(segments) < 2:
-            return b"".join(p for _, p in segments), (), ""
-        head = segments[0][1]
-        tail = segments[-1][1]
+            payload, spans = self._join_with_spans(segments)
+            return payload, (), spans, ""
+        head_off, head = segments[0]
+        tail_off, tail = segments[-1]
         middles = segments[1:-1]
         space = BLOCK_SIZE - len(head) - len(tail)
         if space % MIDDLE_SIZE or any(len(p) != MIDDLE_SIZE for _, p in middles):
             # does not fit the canonical block tiling: keep as-is, mark it
-            joined = b"".join(p for _, p in segments)
-            return joined, ((0, 0),), "irregular short record"
+            # with the ((0, 0)) sentinel (see FrameEvent.damage)
+            payload, spans = self._join_with_spans(segments)
+            return payload, ((0, 0),), spans, "irregular short record"
         slot_count = space // MIDDLE_SIZE
         lost = slot_count - len(middles)
-        slots: list[Optional[bytes]] = [None] * slot_count
+        slots: list[Optional[tuple[int, bytes]]] = [None] * slot_count
         if gap_offsets and len(gap_offsets) >= lost:
             # drop-on-miss: replay the medium order, leaving a hole at
             # each missed sector's in-order position
@@ -316,25 +372,30 @@ class FrameParser:
                 + [(off, None) for off in gap_offsets],
                 key=lambda item: item[0],
             )
-            for index, (_off, payload) in enumerate(order):
+            for index, (off, payload) in enumerate(order):
                 if index >= slot_count:
-                    break  # more gaps than holes: ignore the excess
-                slots[index] = payload  # None leaves a zero-filled hole
+                    break  # excess items dropped (see docstring)
+                # a gap (payload None) leaves a zero-filled hole
+                slots[index] = None if payload is None else (off, payload)
         else:
             # buffer-level loss: the FIRST `lost` middles are missing
-            for i, (_off, payload) in enumerate(middles):
-                slots[lost + i] = payload
+            for i, (off, payload) in enumerate(middles):
+                slots[lost + i] = (off, payload)
         out = bytearray(head)
+        spans = [(0, head_off + 6, len(head))]
         damage: list[tuple[int, int]] = []
         for slot in slots:
             if slot is None:
                 damage.append((len(out), MIDDLE_SIZE))
                 out += bytes(MIDDLE_SIZE)
             else:
-                out += slot
+                off, payload = slot
+                spans.append((len(out), off + 6, len(payload)))
+                out += payload
+        spans.append((len(out), tail_off + 6, len(tail)))
         out += tail
         note = f"zero-filled {len(damage)} middles" if damage else ""
-        return bytes(out), tuple(damage), note
+        return bytes(out), tuple(damage), tuple(spans), note
 
     def _emit(
         self,
@@ -342,9 +403,15 @@ class FrameParser:
         payload: bytes,
         category: str,
         damage: tuple[tuple[int, int], ...] = (),
+        spans: tuple[tuple[int, int, int], ...] = (),
         note: str = "",
     ) -> None:
         """Append a record event and advance the block chain state."""
+        if category == "block-chain":
+            # accepted on the seq/uid chain alone (structural SUB check
+            # failed, e.g. the head segment lost the block header)
+            category = "block"
+            note = f"{note}; chain-only validation" if note else "chain-only validation"
         if category == "label":
             damage = ()  # labels are atomic 80-byte units
             note = ""
@@ -356,6 +423,7 @@ class FrameParser:
                 note=note,
                 category=category,
                 damage=damage,
+                spans=spans,
             )
         )
         if category == "label":
@@ -382,7 +450,11 @@ class FrameParser:
                 while pos + 2 <= boundary and data[pos : pos + 2] == FILLER_WORD:
                     pos += 2
                 note = "" if pos == boundary else "short filler run"
-                self.events.append(FrameEvent(run_start, "filler", note=note))
+                self.events.append(
+                    FrameEvent(
+                        run_start, "filler", note=note, length=boundary - run_start
+                    )
+                )
                 pos = boundary
                 continue
 
@@ -402,7 +474,12 @@ class FrameParser:
                 if flags == FLAG_WHOLE:
                     category = self._classify(payload)
                     if category is not None:
-                        self._emit(pos, payload, category)
+                        self._emit(
+                            pos,
+                            payload,
+                            category,
+                            spans=((0, pos + 6, len(payload)),),
+                        )
                         tapemark_run = 0
                         pos = next_pos
                         continue
@@ -431,8 +508,17 @@ class FrameParser:
                                         note="absorbed stale middle dropped",
                                     )
                                 )
-                            block, damage, note = self._reconstruct(kept, gap_offsets)
-                            self._emit(pos, block, category, damage=damage, note=note)
+                            block, damage, spans, note = self._reconstruct(
+                                kept, gap_offsets
+                            )
+                            self._emit(
+                                pos,
+                                block,
+                                category,
+                                damage=damage,
+                                spans=spans,
+                                note=note,
+                            )
                             tapemark_run = 0
                             pos = next_pos
                             continue
@@ -465,3 +551,728 @@ class FrameParser:
                 pos = self._next_boundary(pos)
 
         return self.events
+
+
+# ====================================================================== L2
+
+APOLLO_EPOCH_UNIX = 315_532_800  # 1980-01-01T00:00:00Z
+_APOLLO_UNITS_PER_SECOND = 3.814697265625  # 250000 4us ticks / 2**16
+
+
+def apollo_time_to_datetime(hi32: int) -> datetime:
+    """Convert an Apollo timestamp (high 32 bits of the 4-microsecond tick
+    counter since 1980-01-01 UTC, i.e. ticks >> 16) to an aware datetime.
+
+    ``unix = hi32 / 3.814697265625 + 315532800`` (spec section 2.4).
+    """
+    unix = hi32 / _APOLLO_UNITS_PER_SECOND + APOLLO_EPOCH_UNIX
+    return datetime.fromtimestamp(unix, tz=timezone.utc)
+
+
+def _label_text(raw: bytes, position: int, length: int) -> str:
+    """ECMA-13 field access by 1-based byte position."""
+    return raw[position - 1 : position - 1 + length].decode("ascii", "replace")
+
+
+def _label_int(raw: bytes, position: int, length: int) -> Optional[int]:
+    text = _label_text(raw, position, length).strip()
+    return int(text) if text.isdigit() else None
+
+
+def _label_date(raw: bytes, position: int) -> Optional[date]:
+    """Decode an ECMA-13 ' YYDDD' date field; junk decodes to None."""
+    text = _label_text(raw, position, 6)
+    year_text, day_text = text[1:3], text[3:6]
+    if not (year_text.isdigit() and day_text.isdigit()):
+        return None
+    day = int(day_text)
+    if not 1 <= day <= 366:
+        return None
+    return date(1900 + int(year_text), 1, 1) + timedelta(days=day - 1)
+
+
+@dataclass
+class AnsiLabel:
+    """One decoded 80-byte ANSI X3.27 / ECMA-13 label (spec section 2.3).
+
+    Field availability depends on ``kind``; fields a label type does not
+    carry stay None.  Numeric fields are junk-tolerant: non-digit content
+    decodes to None instead of raising (real media exist with destroyed
+    trailer labels, e.g. disk10's EOF1).
+    """
+
+    kind: str
+    # VOL1
+    volume_id: Optional[str] = None
+    owner: Optional[str] = None
+    # HDR1 / EOF1 / EOV1
+    file_id: Optional[str] = None
+    set_id: Optional[str] = None
+    section: Optional[int] = None
+    sequence: Optional[int] = None
+    created: Optional[date] = None
+    block_count: Optional[int] = None
+    # HDR2 / EOF2 / EOV2
+    record_format: Optional[str] = None
+    block_len: Optional[int] = None
+    record_len: Optional[int] = None
+    # UVL1 / UHL1 / UTL1
+    uid_text: Optional[str] = None
+    date_text: Optional[str] = None  # UHL1 "YYYY/MM/DD"
+    time_text: Optional[str] = None  # UHL1 "HH:MM:SS"
+
+    @staticmethod
+    def parse(raw: bytes) -> "AnsiLabel":
+        if len(raw) != LABEL_SIZE or raw[:4] not in LABEL_TAGS:
+            raise ValueError(f"Not an ANSI label: {raw[:4]!r}")
+        kind = raw[:4].decode("ascii")
+        label = AnsiLabel(kind)
+        if kind == "VOL1":
+            label.volume_id = _label_text(raw, 5, 6).strip()
+            label.owner = _label_text(raw, 38, 14).strip()
+        elif kind in ("UVL1", "UHL1", "UTL1"):
+            tokens = _label_text(raw, 5, 76).split()
+            label.uid_text = tokens[0] if tokens else None
+            if kind == "UHL1":
+                label.date_text = tokens[1] if len(tokens) > 1 else None
+                label.time_text = tokens[2] if len(tokens) > 2 else None
+        elif kind in ("HDR1", "EOF1", "EOV1"):
+            label.file_id = _label_text(raw, 5, 17).strip()
+            label.set_id = _label_text(raw, 22, 6).strip()
+            label.section = _label_int(raw, 28, 4)
+            label.sequence = _label_int(raw, 32, 4)
+            label.created = _label_date(raw, 42)
+            label.block_count = _label_int(raw, 55, 6)
+        elif kind in ("HDR2", "EOF2", "EOV2"):
+            label.record_format = _label_text(raw, 5, 1)
+            label.block_len = _label_int(raw, 6, 5)
+            label.record_len = _label_int(raw, 11, 5)
+        return label
+
+
+# =================================================================== L3/L4
+
+# (type1, type2) object record types, SR9.5 (spec section 2.4)
+REC_FILE = (0, 1)
+REC_DATA = (1, 1)
+REC_NAME = (2, 1)
+REC_DIR = (3, 2)
+REC_POPD = (4, 1)
+REC_LINK = (5, 1)
+REC_OPT = (6, 1)
+REC_MARK = (8, 1)  # object-start delimiter; also the EMPTY filler
+REC_SUB = (9, 1)
+REC_ACL = (10, 1)
+
+_FILE_MAGIC = b"\x00\x00\x90\x00"
+_DIR_MAGIC = b"\x00\x01\x90\x00"
+_STORAGE_HEADER_MAGIC = b"\x00\x20\x00\x01"
+STORAGE_HEADER_SIZE = 32
+_MAX_DATA_CHUNK = BLOCK_SIZE - 14  # the most a block could ever hold
+_MARK_BYTES = b"\x00\x08\x00\x04\x00\x01\x00\x00\x00\x00"  # a full MARK record
+
+
+def decode_wbak_name(raw: bytes) -> str:
+    """Decode a stored wbak name (rbak rule): uppercase becomes lowercase;
+    a ``:X`` escape yields the literal character X (uppercase preserved).
+    """
+    text = raw.decode("latin-1")
+    out = []
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if char == ":" and i + 1 < len(text):
+            out.append(text[i + 1])
+            i += 2
+        else:
+            out.append(char.lower())
+            i += 1
+    return "".join(out)
+
+
+def _printable(chunk: bytes) -> bool:
+    return all(31 < byte < 127 for byte in chunk)
+
+
+def _record_valid(payload: bytes, pos: int, lim: int, want_data: int = 0) -> bool:
+    """Strict structural validity of an object-record header at ``pos``.
+
+    ``want_data`` > 0 admits DATA records (a file is open and incomplete);
+    DATA is the riskiest type to accept blindly after junk.
+    """
+    if pos + 6 > lim:
+        return False
+    type1, size, type2 = struct.unpack_from(">HHH", payload, pos)
+    end = pos + 6 + size
+    if type1 == 8:  # MARK / EMPTY
+        return type2 == 1 and size == 4 and payload[pos + 6 : pos + 10] == bytes(4)
+    if type1 == 9:  # SUB
+        return type2 == 1 and 12 < size < 256
+    if type1 == 2:  # NAME: u64 uid | u32 0 | printable relpath
+        if not (type2 == 1 and 12 < size < 1000 and end <= lim):
+            return False
+        if payload[pos + 14 : pos + 18] != bytes(4):
+            return False
+        return _printable(payload[pos + 18 : end])
+    if type1 == 0:  # FILE: 64 bytes, magic 0x00009000
+        return type2 == 1 and size == 64 and payload[pos + 6 : pos + 10] == _FILE_MAGIC
+    if type1 == 3:  # DIR: >= 80-byte attrs, magic 0x00019000, name
+        return (
+            type2 == 2
+            and 80 <= size < 1100
+            and payload[pos + 6 : pos + 10] == _DIR_MAGIC
+            and (size == 80 or _printable(payload[pos + 86 : end]))
+        )
+    if type1 == 4:  # POPD: u32 0 + printable parent path
+        return (
+            type2 == 1
+            and 4 <= size < 1000
+            and end <= lim
+            and payload[pos + 6 : pos + 10] == bytes(4)
+            and _printable(payload[pos + 10 : end])
+        )
+    if type1 == 5:  # LINK: u32 0, u16 pathlen, path, target
+        if not (type2 == 1 and 6 < size < 2000 and end <= lim):
+            return False
+        if payload[pos + 6 : pos + 10] != bytes(4):
+            return False
+        (path_len,) = struct.unpack_from(">H", payload, pos + 10)
+        return path_len + 6 <= size and _printable(payload[pos + 12 : end])
+    if type1 == 1:  # DATA: the claimed size may overrun the block end
+        return type2 == 1 and 0 < size <= _MAX_DATA_CHUNK and want_data > 0
+    if type1 in (6, 10):  # OPT / ACL
+        return type2 in (1, 2) and size < 4096
+    return False
+
+
+def _resync(payload: bytes, pos: int, lim: int, want_data: int = 0) -> Optional[int]:
+    """Scan even offsets for the next valid record start.
+
+    DATA gets one-step chaining: it is accepted only when followed by the
+    block end or another valid record.  Returns the offset or None.
+    """
+    cursor = pos + (pos & 1)
+    while cursor + 6 <= lim:
+        (type1,) = struct.unpack_from(">H", payload, cursor)
+        if type1 in (8, 2, 0, 3, 4, 5) and _record_valid(payload, cursor, lim):
+            return cursor
+        if type1 == 1 and want_data and _record_valid(payload, cursor, lim, want_data):
+            (size,) = struct.unpack_from(">H", payload, cursor + 2)
+            after = cursor + 6 + size + (size & 1)
+            if (
+                after >= lim - 1
+                or _record_valid(payload, after, lim, want_data)
+                or _record_valid(payload, after, lim)
+            ):
+                return cursor
+        cursor += 2
+    return None
+
+
+def _embedded_object_start(
+    payload: bytes, body_off: int, body: bytes, lim: int
+) -> Optional[int]:
+    """Find an embedded object start inside an abandoned DATA span.
+
+    The writer may abandon a DATA chunk mid-way and start the next object
+    (MARK marker, or a POPD group) inside the claimed span.  Returns the
+    body-relative offset of the embedded start, or None.
+    """
+    rel = 0
+    while True:
+        found = body.find(_MARK_BYTES, rel)
+        if found < 0:
+            break
+        if found % 2 == 0 and _record_valid(payload, body_off + found + 10, lim):
+            return found
+        rel = found + 2
+    rel = 0
+    while True:  # POPD group: 0004 size 0001 00000000 <printable>
+        found = body.find(b"\x00\x04", rel)
+        if found < 0 or found + 6 > len(body):
+            break
+        if found % 2 == 0 and _record_valid(payload, body_off + found, lim):
+            (size,) = struct.unpack_from(">H", body, found + 2)
+            after = body_off + found + 6 + size + (size & 1)
+            if _record_valid(payload, after, lim):
+                return found
+        rel = found + 2
+    return None
+
+
+def _tile_block(
+    payload: bytes, want_data_fn: Optional[Callable[[], int]] = None
+) -> list[tuple]:
+    """Tile one block's interior into object records with junk resync.
+
+    Returns ``("rec", offset, type1, type2, body, claimed_size)`` and
+    ``("junk", offset, length)`` items.  ``claimed_size`` may exceed
+    ``len(body)`` when a DATA chunk is cut by the block end (the file
+    continues in the next block's DATA record; the missing claimed bytes
+    were never written).  A DATA chunk abandoned mid-way with the next
+    object's records embedded inside its claimed span is truncated at the
+    embedded object start.
+    """
+    lim = min(len(payload), BLOCK_SIZE)
+    want = want_data_fn or (lambda: 0)
+    items: list[tuple] = []
+    pos = 14
+    while pos + 6 <= lim:
+        type1, size, type2 = struct.unpack_from(">HHH", payload, pos)
+        # sequential tiling accepts DATA even with no file open (the
+        # tiling is authoritative); the want-context guards resync only
+        if not _record_valid(payload, pos, lim, want_data=max(want(), 1)):
+            found = _resync(payload, pos, lim, want_data=want())
+            items.append(("junk", pos, (lim if found is None else found) - pos))
+            if found is None:
+                break
+            pos = found
+            continue
+        body = payload[pos + 6 : min(pos + 6 + size, lim)]
+        if (type1, type2) == REC_DATA:
+            embedded = _embedded_object_start(payload, pos + 6, body, lim)
+            if embedded is not None:
+                items.append(("rec", pos, type1, type2, body[:embedded], embedded))
+                pos = pos + 6 + embedded
+                continue
+        items.append(("rec", pos, type1, type2, body, size))
+        pos += 6 + size + (size & 1)
+    return items
+
+
+@dataclass
+class _ObjectHeader:
+    """SR9.5 FILE/DIR attribute header.
+
+    Field positions verified against the reference implementation's
+    actual unpacking (``decode_file_header``; its docstring differs
+    subtly -- the code wins): u32 magic; u64 uid; then 8 x u32 at offset
+    12: type, zero, acl, zero, size (incl. the 32-byte storage header),
+    blocks (1024-byte pages), time1 (mtime), time2 (atime); u64 parent
+    uid at offset 44; 3 x u32 spare.
+    """
+
+    uid: bytes
+    type_code: int
+    size: int
+    blocks: int
+    mtime_raw: int
+    atime_raw: int
+    parent_uid: bytes
+
+
+def _decode_object_header(body: bytes) -> Optional[_ObjectHeader]:
+    if len(body) < 52:
+        return None
+    type_code, _z1, _acl, _z2, size, blocks, time1, time2 = struct.unpack_from(
+        ">8I", body, 12
+    )
+    return _ObjectHeader(
+        uid=bytes(body[4:12]),
+        type_code=type_code,
+        size=size,
+        blocks=blocks,
+        mtime_raw=time1,
+        atime_raw=time2,
+        parent_uid=bytes(body[44:52]),
+    )
+
+
+def _extents_for_range(
+    spans: tuple[tuple[int, int, int], ...], start: int, end: int
+) -> list[tuple[int, int]]:
+    """Map a payload byte range to medium (image_offset, length) extents."""
+    extents = []
+    for payload_off, image_off, length in spans:
+        lo = max(start, payload_off)
+        hi = min(end, payload_off + length)
+        if lo < hi:
+            extents.append((image_off + (lo - payload_off), hi - lo))
+    return extents
+
+
+# ================================================================= catalog
+
+
+@dataclass
+class WbakEntry:
+    """One object from a backup tree (file, directory or symbolic link).
+
+    ``path`` is the decoded (lowercased, ``:X`` unescaped) name relative
+    to the tree: the stored path's leading ``file_id`` component is
+    stripped when present and the tree root directory itself gets path
+    "".  Objects whose NAME record was destroyed keep the reference
+    implementation's placeholder "?".
+
+    ``size`` is the content size in bytes: the FILE header's size minus
+    the 32-byte storage header, floored at 0.
+
+    ``extents`` lists the medium-backed (image_offset, length) byte
+    ranges of the raw DATA chunks in stream order, including the storage
+    header bytes -- for disk-map / file-allocation use.  Zero-filled
+    losses have no medium bytes and are omitted; ``damage_notes`` carries
+    them instead.
+
+    ``damage_notes`` holds detail tuples mirroring the reference
+    implementation: ``("zerofill", block_seq, data_offset, length)`` for
+    a chunk cut at a block end, ``("hole", block_seq, data_offset,
+    length)`` for content overlapping an L1 zero-filled range, and
+    ``("irregular", block_seq)`` for content fed from an irregular short
+    block (whole record damaged, no locatable holes).
+
+    ``partial`` marks the file that was still open when its tree section
+    ended without an EOF trailer (cut by end-of-volume); reading it
+    yields the available prefix.  ``raw_data`` is the assembled raw
+    object stream (storage header included), kept verbatim for
+    :meth:`WbakCatalog.read`.
+    """
+
+    path: str
+    is_dir: bool = False
+    size: int = 0
+    mtime: Optional[datetime] = None
+    atime: Optional[datetime] = None
+    damaged: bool = False
+    partial: bool = False
+    link_target: Optional[str] = None
+    raw_name: bytes = b""
+    extents: list[tuple[int, int]] = field(default_factory=list)
+    damage_notes: list[tuple] = field(default_factory=list)
+    raw_data: bytes = field(default=b"", repr=False)
+
+
+@dataclass
+class WbakTree:
+    """One HDR1..EOF1/EOV1 tree section as seen on this disk.
+
+    ``complete`` is True only for an EOF trailer; EOV (or a missing
+    trailer) means the tree continues on another volume.  For sections
+    with ``section >= 2`` (this disk continues a tree started elsewhere)
+    ``continued_from_previous`` is set and any orphan head data arriving
+    before the first NAME record is skipped, with the skipped DATA/FILE
+    payload bytes counted in ``skipped_head_bytes``.
+    """
+
+    file_id: str
+    section: int
+    sequence: int
+    complete: bool
+    uid_text: Optional[str] = None
+    created: Optional[date] = None
+    entries: list[WbakEntry] = field(default_factory=list)
+    root_path: Optional[str] = None  # backup source path from the SUB record
+    block_count: int = 0
+    continued_from_previous: bool = False
+    skipped_head_bytes: int = 0
+
+
+@dataclass
+class WbakCatalog:
+    """Single-disk view of a wbak backup volume.
+
+    ``created`` is decoded from the backup UID's timestamp word (the
+    UVL1 text ``"%8x.%8x"``); VOL1 itself carries no date.
+    """
+
+    volume_id: Optional[str] = None
+    owner: Optional[str] = None
+    created: Optional[datetime] = None
+    backup_uid: Optional[str] = None
+    trees: list[WbakTree] = field(default_factory=list)
+
+    def read(self, entry: WbakEntry) -> bytes:
+        """Assemble a file entry's content.
+
+        Strips the 32-byte storage header when present and truncates to
+        the declared size.  Zero-filled gaps are already embedded in the
+        assembled data; partial entries (cut by end-of-volume) yield the
+        available prefix.  Links have no content (b"").
+        """
+        if entry.is_dir:
+            raise IsADirectoryError(entry.path)
+        data = entry.raw_data
+        if data[:4] == _STORAGE_HEADER_MAGIC:
+            data = data[STORAGE_HEADER_SIZE:]
+        return bytes(data[: entry.size])
+
+
+def _uid_datetime(uid_text: Optional[str]) -> Optional[datetime]:
+    """Decode the timestamp word of a "%8x.%8x" backup/tree UID."""
+    if not uid_text:
+        return None
+    head = uid_text.split(".")[0]
+    if not 1 <= len(head) <= 8:
+        return None
+    try:
+        return apollo_time_to_datetime(int(head, 16))
+    except ValueError:
+        return None
+
+
+class _TreeAccumulator:
+    """L4 object-stream consumer building one tree's entries.
+
+    Mirrors the reference implementation's ``Tree`` (file state machine:
+    NAME announces, FILE opens, DATA appends, MARK/POPD/next-object
+    closes) plus the catalog semantics from spec section 4 (decoded
+    tree-relative paths, damage/partial flags, orphan-head skipping for
+    continuing sections, medium extents).
+    """
+
+    def __init__(self, tree: WbakTree):
+        self.tree = tree
+        self.cur: Optional[WbakEntry] = None
+        self.cur_buf = bytearray()
+        self.cur_size = 0  # raw FILE size (storage header included)
+        self.cur_need = 0  # max(size, blocks * 1024)
+        self.pending_name: Optional[bytes] = None
+        self.saw_name = False
+
+    # -- helpers
+
+    def want_data(self) -> int:
+        """Remaining byte count of the open file (DATA resync context)."""
+        if self.cur is None:
+            return 0
+        return max(0, self.cur_need - len(self.cur_buf))
+
+    def _skip_orphan_head(self) -> bool:
+        """True while a continuing section's head data has no owner here."""
+        return self.tree.continued_from_previous and not self.saw_name
+
+    def _relative_path(self, raw_name: bytes) -> str:
+        decoded = decode_wbak_name(raw_name)
+        prefix = decode_wbak_name(self.tree.file_id.encode("ascii", "replace"))
+        if decoded == prefix:
+            return ""  # the tree root directory itself
+        if prefix and decoded.startswith(prefix + "/"):
+            return decoded[len(prefix) + 1 :]
+        return decoded
+
+    def close(self) -> None:
+        """Finish the open file entry and append it to the tree."""
+        if self.cur is None:
+            return
+        entry = self.cur
+        entry.raw_data = bytes(self.cur_buf)
+        entry.damaged = bool(entry.damage_notes) or len(entry.raw_data) < self.cur_size
+        self.tree.entries.append(entry)
+        self.cur = None
+        self.cur_buf = bytearray()
+        self.cur_size = 0
+        self.cur_need = 0
+
+    def finalize(self, complete: bool) -> None:
+        """Close the section.  The file still open at an EOV (or missing)
+        trailer was cut by the end of volume: flag it partial, and judge
+        its damage on its notes alone (shortness is expected)."""
+        open_entry = self.cur
+        cut_short = self.cur is not None and len(self.cur_buf) < self.cur_size
+        self.close()
+        self.tree.complete = complete
+        if not complete and open_entry is not None and cut_short:
+            open_entry.partial = True
+            open_entry.damaged = bool(open_entry.damage_notes)
+
+    # -- record consumption
+
+    def feed_block(self, event: FrameEvent) -> None:
+        """Tile one block event and feed its records."""
+        payload = event.payload
+        self.tree.block_count += 1
+        block_seq = struct.unpack_from(">I", payload, 0)[0] if len(payload) >= 4 else 0
+        irregular = event.damage == ((0, 0),)
+        damage = () if irregular else event.damage
+        for item in _tile_block(payload, self.want_data):
+            if item[0] != "rec":
+                continue  # junk run: already skipped by the tiler
+            _kind, off, type1, type2, body, claimed = item
+            self._feed(
+                block_seq,
+                off,
+                type1,
+                type2,
+                body,
+                claimed,
+                event.spans,
+                damage,
+                irregular,
+            )
+
+    def _feed(
+        self,
+        block_seq: int,
+        off: int,
+        type1: int,
+        type2: int,
+        body: bytes,
+        claimed: int,
+        spans: tuple[tuple[int, int, int], ...],
+        damage: tuple[tuple[int, int], ...],
+        irregular: bool,
+    ) -> None:
+        kind = (type1, type2)
+        if kind == REC_SUB:
+            if self.tree.root_path is None and len(body) >= 12:
+                (path_len,) = struct.unpack_from(">H", body, 10)
+                self.tree.root_path = body[12 : 12 + path_len].decode("latin-1")
+            return
+        if kind == REC_MARK:  # object delimiter (and the EMPTY filler)
+            self.close()
+            return
+        if kind == REC_NAME:
+            self.pending_name = bytes(body[12:])
+            self.saw_name = True
+            return
+        if kind == REC_FILE:
+            self.close()
+            if self._skip_orphan_head():
+                self.tree.skipped_head_bytes += len(body)
+                return
+            header = _decode_object_header(body)
+            raw_name = self.pending_name if self.pending_name is not None else b"?"
+            raw_size = header.size if header else 0
+            self.cur = WbakEntry(
+                path=self._relative_path(raw_name),
+                size=max(0, raw_size - STORAGE_HEADER_SIZE),
+                mtime=apollo_time_to_datetime(header.mtime_raw) if header else None,
+                atime=apollo_time_to_datetime(header.atime_raw) if header else None,
+                raw_name=raw_name,
+            )
+            self.cur_buf = bytearray()
+            self.cur_size = raw_size
+            self.cur_need = max(raw_size, (header.blocks if header else 0) * 1024)
+            self.pending_name = None
+            return
+        if kind == REC_DATA:
+            if self.cur is None:
+                if self._skip_orphan_head():
+                    self.tree.skipped_head_bytes += len(body)
+                return
+            entry = self.cur
+            start = off + 6
+            entry.extents += _extents_for_range(spans, start, start + len(body))
+            if irregular:
+                # irregular short block: the whole record is damaged and
+                # the loss cannot be located -- no hole extents
+                note = ("irregular", block_seq)
+                if note not in entry.damage_notes:
+                    entry.damage_notes.append(note)
+            else:
+                for hole_off, hole_len in damage:
+                    lo = max(start, hole_off)
+                    hi = min(start + len(body), hole_off + hole_len)
+                    if lo < hi:
+                        entry.damage_notes.append(
+                            (
+                                "hole",
+                                block_seq,
+                                len(self.cur_buf) + (lo - start),
+                                hi - lo,
+                            )
+                        )
+            self.cur_buf += body
+            if len(body) < claimed:
+                # chunk cut by the block end: the claimed remainder was
+                # never written; zero-fill (capped at what the file still
+                # needs) so later chunks land at the right offsets
+                pad = min(claimed - len(body), self.want_data())
+                if pad > 0:
+                    entry.damage_notes.append(
+                        ("zerofill", block_seq, len(self.cur_buf), pad)
+                    )
+                    self.cur_buf += bytes(pad)
+            return
+        if kind == REC_DIR:
+            self.close()
+            header = _decode_object_header(body)
+            name = bytes(body[80:]) if len(body) > 80 else b""
+            raw_name = name or self.pending_name or b"?"
+            self.tree.entries.append(
+                WbakEntry(
+                    path=self._relative_path(raw_name),
+                    is_dir=True,
+                    mtime=(
+                        apollo_time_to_datetime(header.mtime_raw) if header else None
+                    ),
+                    atime=(
+                        apollo_time_to_datetime(header.atime_raw) if header else None
+                    ),
+                    raw_name=raw_name,
+                )
+            )
+            self.pending_name = None
+            return
+        if kind == REC_LINK:
+            self.close()
+            path_len = struct.unpack_from(">H", body, 4)[0] if len(body) >= 6 else 0
+            raw_name = bytes(body[6 : 6 + path_len])
+            target = body[6 + path_len :].decode("latin-1", "replace")
+            self.tree.entries.append(
+                WbakEntry(
+                    path=self._relative_path(raw_name),
+                    link_target=target,
+                    raw_name=raw_name,
+                )
+            )
+            self.pending_name = None
+            return
+        if kind == REC_POPD:
+            self.close()
+            return
+        # OPT / ACL / unknown types: skipped, like real rbak
+
+
+def build_catalog(data: bytes) -> WbakCatalog:
+    """Parse a whole wbak floppy image into a :class:`WbakCatalog`.
+
+    Walks the L1 frame events: ANSI labels drive the volume/tree state,
+    block records are tiled into object records and consumed per tree.
+    An APOLLO container without a wbak tape stream (e.g. an AEGIS-native
+    filesystem) yields an EMPTY catalog (``volume_id`` None, no trees)
+    rather than raising; :class:`StreamError` is still raised for
+    truncated images.
+    """
+    parser = FrameParser(data)
+    events = parser.parse()
+    catalog = WbakCatalog()
+    accumulator: Optional[_TreeAccumulator] = None
+
+    def finish_section(complete: bool) -> None:
+        nonlocal accumulator
+        if accumulator is not None:
+            accumulator.finalize(complete)
+            accumulator = None
+
+    for event in events:
+        if event.kind != "record":
+            continue
+        if event.category == "label":
+            label = AnsiLabel.parse(event.payload)
+            if label.kind == "VOL1":
+                catalog.volume_id = label.volume_id
+                catalog.owner = label.owner
+            elif label.kind == "UVL1":
+                catalog.backup_uid = label.uid_text
+                catalog.created = _uid_datetime(label.uid_text)
+            elif label.kind == "HDR1":
+                finish_section(False)  # missing trailer: not complete
+                tree = WbakTree(
+                    file_id=label.file_id or "",
+                    section=label.section or 0,
+                    sequence=label.sequence or 0,
+                    complete=False,
+                    created=label.created,
+                    continued_from_previous=(label.section or 0) >= 2,
+                )
+                catalog.trees.append(tree)
+                accumulator = _TreeAccumulator(tree)
+            elif label.kind == "UHL1" and accumulator is not None:
+                accumulator.tree.uid_text = label.uid_text
+            elif label.kind in ("EOF1", "EOV1"):
+                finish_section(label.kind == "EOF1")
+            # HDR2 / EOF2 / EOV2 / UTL1 carry no catalog state
+        elif accumulator is not None:
+            accumulator.feed_block(event)
+    finish_section(False)
+    return catalog
