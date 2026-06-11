@@ -991,9 +991,11 @@ class CPMFilesystem(Filesystem):
         this tries plausible combinations of reserved tracks (off), block size
         (bsh), directory size (drm) and software sector skew, scores each with
         the normal CP/M validator (which rejects any garbage directory entry),
-        and keeps the best layout that also lists at least one real file.
-        Requiring a real listed file prevents an all-deleted/empty region on a
-        non-CP/M disk from registering as CP/M.
+        and keeps the best layout that also lists at least one real file with
+        a plausible CP/M filename (_plausible_inferred_filename). Requiring a
+        plausibly-named listed file prevents an all-deleted/empty region - or
+        one printable-garbage slot in game data - on a non-CP/M disk from
+        registering as CP/M.
 
         The skew sweep lets hard-sectored disks (e.g. the Heath/Zenith H17,
         whose driver exposes raw physical order) be read: an interleave of 1 is
@@ -1024,7 +1026,11 @@ class CPMFilesystem(Filesystem):
                         try:
                             s = probe.get_validity_score()
                             files = (
-                                len(probe.list_directory("/"))
+                                sum(
+                                    1
+                                    for f in probe.list_directory("/")
+                                    if self._plausible_inferred_filename(f.name)
+                                )
                                 if s >= self.validity_threshold
                                 else 0
                             )
@@ -1035,6 +1041,23 @@ class CPMFilesystem(Filesystem):
                             if best_score >= 95:
                                 return best_dpb
         return best_dpb
+
+    @staticmethod
+    def _plausible_inferred_filename(name: str) -> bool:
+        """Plausibility gate for DPB *inference* only (never applied when a
+        profile or explicit DPB supplies the layout).
+
+        The sweep tries hundreds of candidate layouts, so a single
+        printable-garbage directory slot in non-CP/M data can hijack a disk
+        (corpus: Archon.d64, a C64 crack disk whose game data held one such
+        slot). A layout is only accepted on the strength of filenames a real
+        CP/M system would create: uppercase (the CCP upcases all input) and
+        starting with a letter or digit.
+        """
+        stem = name.partition(".")[0]
+        if not stem or not ("A" <= stem[0] <= "Z" or "0" <= stem[0] <= "9"):
+            return False
+        return not any("a" <= c <= "z" for c in name)
 
     def get_volume_label(self) -> Optional[str]:
         """
