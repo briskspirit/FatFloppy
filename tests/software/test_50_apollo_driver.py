@@ -12,6 +12,19 @@ from fatfloppy.core.drivers.apollo_floppy import ApolloFloppyDriver
 RESOURCES = Path(__file__).parent.parent / "resources" / "APOLLO"
 
 
+def build_aegis_pv_image() -> bytes:
+    """Real disk5 PV-label layout: u16 version, magic ``APOLLO`` at offset 2.
+
+    AEGIS-native disks carry the canonical PV label (``\\x00\\x00APOLLO``
+    then the volume name, e.g. ``FLPB.SR9``); wbak backup disks write a
+    minimal label with the magic at offset 0.  Both are Apollo containers
+    and the driver must claim both."""
+    img = bytearray(b"\x00\x00APOLLOFLPB.SR9")
+    img += b" " * (0x28 - len(img))
+    img += bytes(IMAGE_SIZE - len(img))
+    return bytes(img)
+
+
 class TestApolloDriver:
     def test_open_disk2_geometry(self):
         drv = ApolloFloppyDriver(str(RESOURCES / "disk2.img"))
@@ -73,6 +86,16 @@ class TestApolloDriver:
         ok, _ = drv.validate_for_opening(str(p2))
         assert not ok
 
+    def test_validate_accepts_offset2_pv_magic(self, tmp_path):
+        # Pinned against real disk5: the corpus sweep showed it falling
+        # through to the raw IMG driver because validate_for_opening only
+        # looked for the magic at offset 0.
+        p = tmp_path / "aegis.img"
+        p.write_bytes(build_aegis_pv_image())
+        drv = ApolloFloppyDriver.__new__(ApolloFloppyDriver)
+        ok, err = drv.validate_for_opening(str(p))
+        assert ok, err
+
     def test_rejects_wrong_size_on_open(self, tmp_path):
         p = tmp_path / "bad.img"
         p.write_bytes(b"APOLLO" + bytes(1000))
@@ -90,6 +113,17 @@ class TestApolloAutoDetect:
         p.write_bytes(bytes(IMAGE_SIZE))  # right size, no magic
         drv = DriverFactory.create("auto", source=str(p))
         assert drv.driver_type != "APOLLO"
+
+    def test_controller_opens_aegis_pv_disk_geometry_only(self, tmp_path):
+        # disk5 analogue: APOLLO container, no wbak stream -> APOLLO
+        # driver claims it, no filesystem is detected.
+        p = tmp_path / "aegis.img"
+        p.write_bytes(build_aegis_pv_image())
+        controller = DiskController()
+        assert controller.open_disk(str(p), disk_type="auto")
+        assert controller.driver.driver_type == "APOLLO"
+        assert controller.filesystem is None
+        controller.close_disk()
 
     def test_controller_opens_disk8(self, tmp_path):
         import shutil

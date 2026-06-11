@@ -48,7 +48,9 @@ class ApolloFloppyDriver(DiskIODriver):
 
     Geometry: 77 cylinders × 2 heads × 8 sectors × 1024 bytes (MFM, 500 kb/s,
     360 rpm).  Validated by file size (exactly 1,261,568 bytes) and PV-label
-    magic (``APOLLO`` at offset 0).
+    magic: ``APOLLO`` at offset 0 (the minimal label wbak writes) or at
+    offset 2 (the canonical AEGIS PV label -- u16 version, then the magic;
+    real disk5 reads ``\\x00\\x00APOLLOFLPB.SR9``).
     """
 
     driver_type: ClassVar[str] = "APOLLO"
@@ -171,8 +173,11 @@ class ApolloFloppyDriver(DiskIODriver):
     ) -> tuple[bool, Optional[str]]:
         """Accept the file only if size == IMAGE_SIZE and magic bytes match.
 
-        Only the first 6 bytes are read — the minimal check to gate on content
-        without pulling the whole 1.2 MB into memory during auto-detection.
+        The PV-label magic is accepted at offset 0 (wbak's minimal label)
+        or offset 2 (canonical AEGIS PV label: u16 version, then the
+        magic).  Only the first 8 bytes are read — the minimal check to
+        gate on content without pulling the whole 1.2 MB into memory
+        during auto-detection.
 
         Args:
             source: Path to the candidate image file.
@@ -187,9 +192,12 @@ class ApolloFloppyDriver(DiskIODriver):
         if size != IMAGE_SIZE:
             return False, f"Not an Apollo image: size {size} != {IMAGE_SIZE}"
         with path.open("rb") as f:
-            magic = f.read(len(APOLLO_MAGIC))
-        if magic != APOLLO_MAGIC:
-            return False, "Not an Apollo image: missing APOLLO magic at offset 0"
+            head = f.read(2 + len(APOLLO_MAGIC))
+        if (
+            head[: len(APOLLO_MAGIC)] != APOLLO_MAGIC
+            and head[2 : 2 + len(APOLLO_MAGIC)] != APOLLO_MAGIC
+        ):
+            return False, "Not an Apollo image: missing APOLLO magic at offset 0 or 2"
         return True, None
 
     # ------------------------------------------------------------------
