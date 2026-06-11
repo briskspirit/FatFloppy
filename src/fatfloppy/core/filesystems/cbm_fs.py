@@ -127,8 +127,16 @@ class _BamStrategy(ABC):
         if cur == free:
             state = "free" if free else "allocated"
             raise ValueError(f"BAM bit for {t}/{s} already {state}")
+        new_count = buf[c] + (1 if free else -1)
+        if not 0 <= new_count <= self.layout.spt(t):
+            # Corrupt count byte: raise BEFORE flipping the bitmap so the
+            # BAM stays exactly as found (visible, repairable).
+            raise ValueError(
+                f"BAM free count for track {t} would become {new_count} "
+                f"(valid 0-{self.layout.spt(t)}); count byte is corrupt"
+            )
         buf[bm + s // 8] ^= mask
-        buf[c] += 1 if free else -1
+        buf[c] = new_count
 
     def set_allocated(self, t: int, s: int) -> None:
         self._set_bit(t, s, free=False)
@@ -221,8 +229,14 @@ class _Bam1571(_BamStrategy):
         if bool(bm_buf[off] & mask) == free:
             state = "free" if free else "allocated"
             raise ValueError(f"BAM bit for {t}/{s} already {state}")
+        new_count = cnt_buf[0xDD + (t - 36)] + (1 if free else -1)
+        if not 0 <= new_count <= self.layout.spt(t):
+            raise ValueError(
+                f"BAM free count for track {t} would become {new_count} "
+                f"(valid 0-{self.layout.spt(t)}); count byte is corrupt"
+            )
         bm_buf[off] ^= mask
-        cnt_buf[0xDD + (t - 36)] += 1 if free else -1
+        cnt_buf[0xDD + (t - 36)] = new_count
 
 
 class _Bam1581(_BamStrategy):
@@ -392,14 +406,19 @@ class CBMFilesystem(Filesystem):
         raise NotImplementedError("CBM DOS has no subdirectories")
 
     def delete(self, path: str) -> None:
-        """Scratches a file: frees its data chain in the BAM, then zeroes the
-        slot's type byte.
+        """Scratches a file: zeroes the slot's type byte FIRST, then frees its
+        chain in the BAM.
 
-        The whole chain is validated BEFORE any BAM mutation: a corrupt chain
+        The whole chain is validated BEFORE any mutation: a corrupt chain
         (cycle, off-disk link, block on a track without a BAM entry, or a
         block already free, e.g. cross-linked) raises ValueError and leaves
         both the BAM and the directory entry intact so the situation stays
         visible.
+
+        Mutation order is entry-first so a failure mid-free degrades to
+        orphaned-allocated blocks (warn-only in check(), what a real VALIDATE
+        silently frees) instead of a live entry pointing at freed blocks
+        (data-loss risk: the allocator could overwrite them).
         """
         self._initialize()
         t, s, k, entry = self._find_entry(path)
@@ -420,13 +439,17 @@ class CBMFilesystem(Filesystem):
             if (ct, cs) in seen:
                 raise ValueError(f"Chain block {ct}/{cs} appears twice in the chain")
             seen.add((ct, cs))
-        for ct, cs in chain:
-            self._bam.set_free(ct, cs)
         sec = bytearray(self._read_ts(t, s))
         sec[0x20 * k + 2] = 0x00
         self._write_ts(t, s, bytes(sec))
-        self._bam.flush()
-        self.disk.flush()
+        try:
+            for ct, cs in chain:
+                self._bam.set_free(ct, cs)
+        finally:
+            # Flush even on a mid-free failure: the scratched entry and any
+            # partial frees must reach the disk together.
+            self._bam.flush()
+            self.disk.flush()
 
     def delete_recursive(self, path: str) -> bool:
         try:
@@ -497,7 +520,7 @@ class CBMFilesystem(Filesystem):
                 expected.update(self._follow_chain(entry[3], entry[4]))
                 if ftype == 4 and entry[0x15] != 0:
                     expected.update(self._iter_side_sectors(entry[0x15], entry[0x16]))
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             self.logger.warning(f"check(): unwalkable structure: {exc}")
             return False
         mapped = set(self._bam.mapped_tracks())
@@ -538,10 +561,11 @@ class CBMFilesystem(Filesystem):
         layout = profile.filesystem_config
         if not isinstance(layout, CBMDiskLayout):
             raise ValueError("Profile has no CBM layout config")
-        pf, mine = profile.physical_format, self.disk.physical_format
-        if pf.cylinders != mine.cylinders or pf.get_sectors_per_track(
-            0, 0
-        ) != mine.get_sectors_per_track(0, 0):
+        # Full zone-map gate: the open disk's geometry must infer back to the
+        # exact same CBM layout (variant + track count). A shallow cylinders +
+        # track-0 spt check would accept uniform non-CBM geometries.
+        inferred = CBMDiskLayout.infer_from_geometry(self.disk.physical_format)
+        if not CBMDiskLayout.matches(inferred, layout):
             raise ValueError("Profile geometry does not match the open disk")
         label = volume_label or "UNTITLED"
         name, _sep, disk_id = label.partition(",")

@@ -446,6 +446,121 @@ class TestReviewHardening:
         assert fs.list_directory("/") == []
 
 
+class TestPhase3Hardening:
+    """Hardening batch from the phase-3 merge review."""
+
+    def test_midfree_failure_degrades_to_orphans(self):
+        """delete() scratches the entry FIRST: a failure mid-free leaves
+        orphaned-allocated blocks (warn-only) instead of a live entry pointing
+        at freed blocks (data loss)."""
+        fs = open_fs(formatted_d64_bytes())
+        fs.write_file("/X", bytes(254 * 3))  # chain 17/0 -> 17/10 -> 17/20
+        fs._initialize()
+        orig = fs._bam.set_free
+        calls = {"n": 0}
+
+        def failing(t, s):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("simulated BAM failure")
+            return orig(t, s)
+
+        fs._bam.set_free = failing
+        try:
+            with pytest.raises(OSError, match="simulated"):
+                fs.delete("/X")
+        finally:
+            fs._bam.set_free = orig
+        # Entry already scratched: the file is gone from the directory.
+        assert fs.list_directory("/") == []
+        # First block freed, the rest stay allocated -> orphans, never
+        # live-but-free.
+        assert fs._bam.is_free(17, 0)
+        assert not fs._bam.is_free(17, 10)
+        assert not fs._bam.is_free(17, 20)
+        assert fs._bam.verify_counts()
+        assert fs.check() is True  # orphans warn only
+
+    def test_corrupt_count_set_free_raises_without_mutation(self):
+        fs = open_fs(formatted_d64_bytes())
+        fs._initialize()
+        fs._bam.set_allocated(17, 0)
+        buf, c, _bm = fs._bam._entry(17)
+        buf[c] = 255  # poke a corrupt free count
+        pre = bytes(buf)
+        with pytest.raises(ValueError, match="count"):
+            fs._bam.set_free(17, 0)
+        assert bytes(fs._bam._entry(17)[0]) == pre  # bitmap and count untouched
+
+    def test_corrupt_count_1571_side2_raises_without_mutation(self):
+        from .test_42_cbm_filesystem_read import formatted_d71_bytes
+
+        fs = open_fs(formatted_d71_bytes())
+        fs._initialize()
+        fs._bam.set_allocated(40, 3)
+        cnt_buf = fs._bam._sector(18, 0)
+        cnt_buf[0xDD + (40 - 36)] = 255  # poke a corrupt side-2 free count
+        pre_bm = bytes(fs._bam._sector(53, 0))
+        pre_cnt = bytes(cnt_buf)
+        with pytest.raises(ValueError, match="count"):
+            fs._bam.set_free(40, 3)
+        assert bytes(fs._bam._sector(53, 0)) == pre_bm
+        assert bytes(fs._bam._sector(18, 0)) == pre_cnt
+
+    def test_check_returns_false_on_read_failure(self):
+        from .test_42_cbm_filesystem_read import d64_with_file
+
+        fs = open_fs(d64_with_file())
+        assert fs.check()  # consistent fixture passes first
+        orig = fs.disk.read_sector
+
+        def failing(cylinder, head, sector):
+            if cylinder == 16:  # the file's data track 17
+                raise OSError("simulated read failure")
+            return orig(cylinder, head, sector)
+
+        fs.disk.read_sector = failing
+        try:
+            assert fs.check() is False
+        finally:
+            fs.disk.read_sector = orig
+
+    def test_format_rejects_uniform_non_cbm_geometry(self):
+        """A 35x21x256 uniform geometry matches the old shallow gate
+        (cylinders + track-0 spt) but is not CBM-zoned: must be rejected."""
+        from fatfloppy.core.drivers.img import IMGImageDriver
+        from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
+
+        pf = PhysicalFormat(
+            cylinders=35,
+            heads=1,
+            rpm=300,
+            heads_inverted=False,
+            bytes_per_sector=256,
+            track_formats=[
+                TrackFormat(
+                    track_start=0,
+                    track_end=34,
+                    head_start=0,
+                    head_end=0,
+                    sectors_per_track=21,
+                    encoding="MFM",
+                    rate=250,
+                    interleave=1,
+                    bytes_per_sector=256,
+                )
+            ],
+        )
+        path = Path(tempfile.mkdtemp(prefix="fatfloppy-uni-")) / "uniform.img"
+        drv = IMGImageDriver(str(path))
+        drv.initialize_new_image(pf)
+        disk = Disk(drv)
+        disk.set_geometry(pf)
+        fs = CBMFilesystem(disk)
+        with pytest.raises(ValueError, match="geometry"):
+            fs.format_fs(CBM_FORMATS["cbm_1541_d64"], volume_label="NOPE")
+
+
 class TestFormat:
     @pytest.mark.parametrize(
         "profile,variant,blocks_free",
