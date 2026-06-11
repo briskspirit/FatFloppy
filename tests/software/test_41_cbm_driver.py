@@ -8,6 +8,19 @@ from fatfloppy.core.cbm_layout import (
     build_physical_format,
     layout_for_variant,
 )
+from fatfloppy.core.drivers.cbm_image import CBMImageDriver
+
+
+def make_blank_d64(tracks=35, error_block=False) -> bytes:
+    layout = layout_for_variant("D64", tracks)
+    data = bytearray(layout.total_sectors * 256)
+    # Minimal plausible BAM at 18/0 so content probes pass where needed.
+    off = layout.sectors_before(18) * 256
+    data[off + 0], data[off + 1], data[off + 2] = 18, 1, 0x41
+    data[off + 0x90 : off + 0xAB] = b"\xa0" * 0x1B
+    if error_block:
+        data += bytes([0x01]) * layout.total_sectors
+    return bytes(data)
 
 
 class TestCBMLayout:
@@ -204,3 +217,62 @@ class TestCBMLayout:
         layout = layout_for_variant("D64", 35)
         with pytest.raises(ValueError):
             layout.sectors_before(0)
+
+
+class TestCBMImageDriver:
+    def test_open_d64_from_data_geometry(self):
+        drv = CBMImageDriver("mem.d64", image_data=make_blank_d64())
+        assert drv.has_embedded_geometry
+        assert drv.physical_format.cylinders == 35
+        assert drv.physical_format.get_sectors_per_track(0, 0) == 21
+
+    def test_read_write_sector_round_trip(self, tmp_path):
+        p = tmp_path / "t.d64"
+        p.write_bytes(make_blank_d64())
+        drv = CBMImageDriver(str(p))
+        payload = bytes(range(256))
+        drv.write_sector(17, 0, 0, payload)  # CBM 18/0
+        assert drv.read_sector(17, 0, 0) == payload
+        drv.flush()
+        raw = p.read_bytes()
+        assert raw[0x16500:0x16600] == payload
+
+    def test_sector_bounds_checked(self):
+        drv = CBMImageDriver("mem.d64", image_data=make_blank_d64())
+        with pytest.raises(OSError):
+            drv.read_sector(0, 0, 21)  # track 1 has 21 sectors: 0-20
+        with pytest.raises(OSError):
+            drv.read_sector(35, 0, 0)  # only 35 cylinders
+        with pytest.raises(OSError):
+            drv.read_sector(0, 1, 0)  # single-head
+
+    def test_error_block_parsed_and_preserved(self, tmp_path):
+        p = tmp_path / "err.d64"
+        p.write_bytes(make_blank_d64(error_block=True))
+        drv = CBMImageDriver(str(p))
+        assert drv.has_error_block
+        assert drv.get_sector_error(0, 0, 0) == 0x01
+        drv.write_sector(0, 0, 0, bytes(256))
+        drv.flush()
+        assert p.stat().st_size == 175531
+        assert p.read_bytes()[-683:] == bytes([0x01]) * 683
+
+    def test_42_track_is_read_only(self):
+        layout = layout_for_variant("D64", 42)
+        drv = CBMImageDriver("mem.d64", image_data=bytes(layout.total_sectors * 256))
+        assert drv.physical_format.cylinders == 42
+        with pytest.raises(OSError):
+            drv.write_sector(0, 0, 0, bytes(256))
+
+    def test_initialize_new_image_d81(self, tmp_path):
+        p = tmp_path / "new.d81"
+        drv = CBMImageDriver(str(p))
+        drv.initialize_new_image(build_physical_format("D81", 80))
+        drv.flush()
+        assert p.stat().st_size == 819200
+
+    def test_rejects_wrong_size(self, tmp_path):
+        p = tmp_path / "bad.d64"
+        p.write_bytes(bytes(100000))
+        with pytest.raises(ValueError):
+            CBMImageDriver(str(p))
