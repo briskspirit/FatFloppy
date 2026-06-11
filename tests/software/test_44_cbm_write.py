@@ -742,6 +742,15 @@ class TestChurnAndCheck:
         fs = open_fs(img)
         assert fs.check() is False
 
+    def test_check_fails_on_corrupt_live_chain(self):
+        from .test_42_cbm_filesystem_read import d64_with_file
+
+        img = d64_with_file()
+        off = (layout_for_variant("D64", 35).sectors_before(17) + 0) * 256
+        img[off], img[off + 1] = 99, 0  # live file's chain points off-disk
+        fs = open_fs(img)
+        assert fs.check() is False
+
     @pytest.mark.parametrize(
         "image",
         [
