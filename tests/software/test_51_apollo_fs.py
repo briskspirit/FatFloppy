@@ -345,22 +345,48 @@ class TestMapAndDisplay:
         assert fs.get_file_allocation_units("/install/com") == []  # directory
         assert fs.get_file_allocation_units("/nope") == []
 
-    def test_free_space_read_only(self, disk2):
-        free, total = disk2.filesystem.get_free_space()
-        assert free == 0
-        cat = build_catalog((RESOURCES / "disk2.img").read_bytes())
+    def test_free_space_is_disk_capacity(self, disk2):
+        # Semantics changed in review: (free, total) is the FAT12-style
+        # "data area" pair, and for a tape-on-floppy the data area is the
+        # whole medium.  Returning recoverable-content bytes as "total"
+        # rendered as a misleading "131.1 KB" capacity in the GUI space
+        # panel; the content figure now lives in get_display_info under
+        # "Recoverable Content".
+        assert disk2.filesystem.get_free_space() == (0, IMAGE_SIZE)
+
+    def test_disk8_recoverable_content_is_recovered_not_declared(self, disk8):
+        # disk8 carries an entry whose destroyed FILE header declares
+        # 0x20202000 (ASCII spaces) bytes; the recoverable-content figure
+        # must count recovered content, not declared sizes, or the info
+        # panel shows 514 MB on a 1.2 MB floppy.
+        info = disk8.filesystem.get_display_info()
+        content = int(info["Recoverable Content"].split()[0].replace(",", ""))
+        assert 0 < content < IMAGE_SIZE
+        cat = build_catalog((RESOURCES / "disk8.img").read_bytes())
         expected = sum(
             len(cat.read(e)) for t in cat.trees for e in t.entries if not e.is_dir
         )
-        assert total == expected > 0
+        assert content == expected
 
-    def test_disk8_total_is_recovered_not_declared(self, disk8):
-        # disk8 carries an entry whose destroyed FILE header declares
-        # 0x20202000 (ASCII spaces) bytes; totals must count recovered
-        # content, not declared sizes, or the space panel shows 514 MB
-        # on a 1.2 MB floppy.
-        _free, total = disk8.filesystem.get_free_space()
-        assert 0 < total < IMAGE_SIZE
+    def test_recoverable_content_is_cached(self, disk2):
+        # The content figure re-read every file per call before review;
+        # it must be computed once and cached.
+        fs = disk2.filesystem
+        original_read = fs._catalog.read
+        calls = []
+
+        def counting_read(entry):
+            calls.append(entry)
+            return original_read(entry)
+
+        fs._catalog.read = counting_read
+        try:
+            fs.get_display_info()
+            after_first = len(calls)
+            fs.get_display_info()
+            assert len(calls) == after_first  # second call hit the cache
+        finally:
+            fs._catalog.read = original_read
 
     def test_allocation_unit_size_for_gui_space_panel(self, disk2):
         # The GUI space panel divides by filesystem.allocation_unit_size
@@ -377,6 +403,7 @@ class TestMapAndDisplay:
         assert info["Trees"] == "2"
         assert info["Files"] == "74"  # 72 INSTALL + 2 COM
         assert info["Read-Only"] == "yes"
+        assert "Recoverable Content" in info
         assert info["Partial Files"] == "1"
         assert int(info["Damaged Files"]) > 0
         sets = info["Backup Sets"]

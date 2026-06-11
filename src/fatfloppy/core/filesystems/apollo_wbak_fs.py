@@ -12,7 +12,10 @@ directory hierarchy (spec section 4):
   no dict may let a later entry shadow an earlier one.
 - Entries whose NAME record was destroyed keep the catalog placeholder
   ``?``; the filesystem uniquifies colliding placeholders as ``?``,
-  ``?~1``, ``?~2`` ... in entry order.
+  ``?~1``, ``?~2`` ... in entry order.  A file legitimately named ``?``
+  is indistinguishable from a placeholder (the marker IS the literal name
+  byte) and would be uniquified the same way -- harmless, since ``?`` is
+  a shell wildcard on AEGIS and never appears as a real name.
 - ``FileInfo.datetime`` carries the genuine Apollo mtime as a NAIVE UTC
   datetime (``tzinfo`` stripped) -- the shipped filesystems all use naive
   datetimes (FAT12 stores naive local time); entries without an mtime
@@ -33,6 +36,7 @@ from ..apollo_wbak import (
     APOLLO_MAGIC,
     CYLINDERS,
     HEADS,
+    IMAGE_SIZE,
     SECTOR,
     SECTORS_PER_TRACK,
     WbakCatalog,
@@ -82,6 +86,7 @@ class ApolloWbakFilesystem(Filesystem):
         # Ordered (full_path, tree, entry) triples; FIRST match wins on
         # duplicate paths, "?" placeholders pre-uniquified.
         self._index: list[tuple[str, WbakTree, WbakEntry]] = []
+        self._recoverable_cache: Optional[int] = None
         self._initialized = False
 
     # ------------------------------------------------------------------
@@ -298,20 +303,33 @@ class ApolloWbakFilesystem(Filesystem):
         return SECTOR
 
     def get_free_space(self) -> tuple[int, int]:
-        """Read-only: 0 bytes free; total = recoverable content bytes
-        across all trees (what :meth:`read_file` would yield).
+        """Read-only: 0 bytes free; total = medium capacity.
+
+        The shipped filesystems report (free, total) of the data area
+        (FAT12 returns ``num_clusters * cluster_size``); for a
+        tape-on-floppy the data area is the whole 1,261,568-byte image.
+        The recoverable-content figure -- a *content* statistic, not a
+        capacity -- is reported by :meth:`get_display_info` instead, so
+        the GUI space panel no longer renders content bytes as a
+        misleading "131.1 KB" disk size."""
+        self._initialize()
+        return 0, IMAGE_SIZE
+
+    def _recoverable_bytes(self) -> int:
+        """Total bytes :meth:`read_file` would yield across all trees
+        (cached: computing it reads every file's extents).
 
         Declared FILE-header sizes are deliberately NOT summed: destroyed
         headers declare junk (disk8 carries an entry claiming 0x20202000
         -- four ASCII spaces -- bytes, 514 MB on a 1.2 MB floppy)."""
-        self._initialize()
-        total = sum(
-            len(self._catalog.read(entry))
-            for tree in self._catalog.trees
-            for entry in tree.entries
-            if not entry.is_dir
-        )
-        return 0, total
+        if self._recoverable_cache is None:
+            self._recoverable_cache = sum(
+                len(self._catalog.read(entry))
+                for tree in self._catalog.trees
+                for entry in tree.entries
+                if not entry.is_dir
+            )
+        return self._recoverable_cache
 
     def get_allocated_units(self) -> list[int]:
         """Sectors touched by the stream's records (labels + data blocks).
@@ -428,6 +446,7 @@ class ApolloWbakFilesystem(Filesystem):
             "Trees": str(len(cat.trees)),
             "Backup Sets": "; ".join(tree_lines),
             "Files": str(len(files)),
+            "Recoverable Content": f"{self._recoverable_bytes():,} bytes",
             "Damaged Files": str(sum(1 for entry in files if entry.damaged)),
             "Partial Files": str(sum(1 for entry in files if entry.partial)),
             "Read-Only": "yes",
