@@ -70,6 +70,10 @@ CBM_EPOCH = datetime.datetime(1982, 1, 1)  # CBM DOS stores no timestamps
 
 FILE_TYPES = {0: "DEL", 1: "SEQ", 2: "PRG", 3: "USR", 4: "REL", 5: "CBM"}
 
+# Accepted DOS-version bytes per variant; 0x00 is tolerated for
+# soft-write-protect/blank DOS bytes (all-zero headers are rejected earlier).
+_DOS_BYTE_OK = {"1541": (0x41, 0x00), "1571": (0x41, 0x00), "1581": (0x44, 0x00)}
+
 
 class _BamStrategy(ABC):
     """Per-variant BAM access. Operates on cached BAM sector buffers."""
@@ -139,7 +143,7 @@ class _Bam1541(_BamStrategy):
         e = 0x04 + 4 * (track - 1)
         return buf, e, e + 1
 
-    def mapped_tracks(self):
+    def mapped_tracks(self) -> range:
         return range(1, min(self.layout.tracks, 35) + 1)
 
     def is_free(self, t, s):
@@ -291,19 +295,18 @@ class CBMFilesystem(Filesystem):
         try:
             t, s = self._bam.header_ts()
             hdr = self._read_ts(t, s)
-        except Exception:
+        except (OSError, ValueError):
             return 0
         if not any(hdr):
             return 0
         score = 0
+        name_off = 0x04 if self.layout.variant == "1581" else 0x90
         try:
             dir_t, dir_s = hdr[0], hdr[1]
             if 1 <= dir_t <= self.layout.tracks and dir_s < self.layout.spt(dir_t):
                 score += 15
-            dos_ok = {"1541": (0x41, 0x00), "1571": (0x41, 0x00), "1581": (0x44, 0x00)}
-            if hdr[2] in dos_ok[self.layout.variant]:
+            if hdr[2] in _DOS_BYTE_OK[self.layout.variant]:
                 score += 10
-            name_off = 0x04 if self.layout.variant == "1581" else 0x90
             name = hdr[name_off : name_off + 16]
             if all(b == PETSCII_PAD or b in _P2U for b in name):
                 score += 10
@@ -335,7 +338,7 @@ class CBMFilesystem(Filesystem):
                 # the header/BAM look plausible -- e.g. CP/M-reformatted disks
                 # that keep the original 18/0 header intact.
                 score = min(score, self.validity_threshold - 5)
-        except Exception as exc:
+        except (OSError, ValueError, IndexError) as exc:
             self.logger.debug(f"Validity scoring stopped early: {exc}")
         return min(score, 100)
 
@@ -413,9 +416,9 @@ class CBMFilesystem(Filesystem):
                 f"{len(self.list_directory('/'))}/{self.layout.max_dir_entries}"
             ),
         }
-        drv = self.disk.driver
-        if getattr(drv, "has_error_block", False):
-            bad = sum(1 for c in drv.error_codes if c not in (0x00, 0x01))
+        error_codes = getattr(self.disk.driver, "error_codes", None)
+        if error_codes is not None:
+            bad = sum(1 for c in error_codes if c not in (0x00, 0x01))
             info["Recorded Sector Errors"] = str(bad)
         if hdr[2] not in (0x41, 0x44, 0x00):
             info["Soft Write Protection"] = "yes (nonstandard DOS byte)"
