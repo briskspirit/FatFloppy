@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import ClassVar, Optional
 
 from ..cbm_layout import (
+    CBM_AMBIGUOUS_SIZES,
     CBM_BYTES_PER_SECTOR,
     CBM_SIZE_TABLE,
     CBMDiskLayout,
@@ -206,17 +207,46 @@ class CBMImageDriver(DiskIODriver):
     def validate_for_opening(
         self, source: str, **_kwargs
     ) -> tuple[bool, Optional[str]]:
+        """Accept CBM image files by size; probe content for ambiguous sizes.
+
+        Unique sizes (174848, 175531, etc.) are accepted on size alone.
+        Ambiguous sizes (196608, 819200) that collide with raw IMG or Mac/Atari
+        800 K images require a minimal BAM/header content probe before the
+        driver claims the file.
         """
-        Size-gate: accept only files whose exact byte count is a known CBM image
-        size. This prevents the driver from claiming non-CBM files during
-        auto-detection. Content probes are added in Task 3.
-        """
-        if not Path(source).exists():
+        path = Path(source)
+        if not path.exists():
             return False, f"File not found: {source}"
-        size = Path(source).stat().st_size
+        size = path.stat().st_size
         if size not in CBM_SIZE_TABLE:
             return False, f"Not a known CBM image size: {size}"
-        return True, None
+        if size not in CBM_AMBIGUOUS_SIZES:
+            return True, None
+        family, tracks, _err = CBM_SIZE_TABLE[size]
+        layout = layout_for_variant(family, tracks)
+        probe_off = layout.sectors_before(layout.dir_track) * CBM_BYTES_PER_SECTOR
+        with path.open("rb") as f:
+            f.seek(probe_off)
+            probe = f.read(2 * CBM_BYTES_PER_SECTOR)
+        if len(probe) < 2 * CBM_BYTES_PER_SECTOR:
+            return False, "Truncated CBM image"
+        if family == "D81":
+            bam = probe[CBM_BYTES_PER_SECTOR:]
+            strong = bam[2] == 0x44 and bam[3] == 0xBB
+            weak = (probe[2] == 0x44) + (probe[0x19:0x1B] == b"3D")
+            if strong or weak >= 2:
+                return True, None
+            return False, "Size matches D81 but no 1581 header/BAM signatures"
+        signals = 0
+        if 1 <= probe[0] <= tracks and probe[1] < 21:
+            signals += 1
+        if probe[2] in (0x41, 0x00):
+            signals += 1
+        if 0xA0 in probe[0x90:0xA0]:
+            signals += 1
+        if signals >= 2:
+            return True, None
+        return False, "Size matches 40-track D64 but no CBM BAM signals"
 
     def validate_state_for_opening(self) -> tuple[bool, Optional[str]]:
         if self._layout is None:

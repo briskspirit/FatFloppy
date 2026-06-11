@@ -318,3 +318,53 @@ class TestCBMImageDriver:
         drv = CBMImageDriver("mem.img", image_data=bytes(174848))
         with pytest.raises(ValueError):
             drv.initialize_new_image(build_physical_format("D64", 42))
+
+    def test_validate_accepts_unique_size(self, tmp_path):
+        p = tmp_path / "x.d64"
+        p.write_bytes(bytes(174848))  # all-zero but size is CBM-unique
+        drv = CBMImageDriver(str(p))
+        ok, err = drv.validate_for_opening(str(p))
+        assert ok, err
+
+    def test_validate_rejects_random_196608(self, tmp_path):
+        p = tmp_path / "x.img"
+        p.write_bytes(bytes([0x55]) * 196608)  # plausible raw IMG, no CBM BAM
+        drv = CBMImageDriver.__new__(CBMImageDriver)
+        ok, _ = CBMImageDriver.validate_for_opening(drv, str(p))
+        assert not ok
+
+    def test_validate_accepts_real_40_track_bam(self, tmp_path):
+        data = bytearray(196608)
+        data[0x16500], data[0x16501], data[0x16502] = 18, 1, 0x41
+        data[0x16500 + 0x90 : 0x16500 + 0xAB] = b"\xa0" * 0x1B
+        p = tmp_path / "x.d64"
+        p.write_bytes(bytes(data))
+        drv = CBMImageDriver.__new__(CBMImageDriver)
+        ok, err = CBMImageDriver.validate_for_opening(drv, str(p))
+        assert ok, err
+
+    def test_validate_rejects_mac_800k(self, tmp_path):
+        p = tmp_path / "x.d81"
+        p.write_bytes(bytes([0xAA]) * 819200)  # no 1581 header/BAM signatures
+        drv = CBMImageDriver.__new__(CBMImageDriver)
+        ok, _ = CBMImageDriver.validate_for_opening(drv, str(p))
+        assert not ok
+
+    def test_validate_accepts_real_d81_header(self, tmp_path):
+        data = bytearray(819200)
+        h = 0x61800
+        data[h + 2] = 0x44
+        data[h + 0x19], data[h + 0x1A] = ord("3"), ord("D")
+        data[h + 0x100 + 2], data[h + 0x100 + 3] = 0x44, 0xBB  # BAM 40/1
+        p = tmp_path / "x.d81"
+        p.write_bytes(bytes(data))
+        drv = CBMImageDriver.__new__(CBMImageDriver)
+        ok, err = CBMImageDriver.validate_for_opening(drv, str(p))
+        assert ok, err
+
+    def test_validate_rejects_unknown_size(self, tmp_path):
+        p = tmp_path / "x.d64"
+        p.write_bytes(bytes(180000))
+        drv = CBMImageDriver.__new__(CBMImageDriver)
+        ok, _ = CBMImageDriver.validate_for_opening(drv, str(p))
+        assert not ok
