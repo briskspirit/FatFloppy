@@ -633,28 +633,46 @@ class FileManager(QObject):
                 cancelable=False,
             )
         else:
+            failed_imports: list[str] = []
             for local_path, dest_name in file_paths_with_names:
-                if Path(local_path).is_file():
-                    self._add_file_to_disk(local_path, dest_name, target_path)
-                elif Path(local_path).is_dir():
-                    new_dir_path = (
-                        f"{target_path}/{dest_name}"
-                        if target_path != "/"
-                        else f"/{dest_name}"
-                    )
-                    success = self.parent.controller.create_directory(new_dir_path)
-                    if not success:
-                        self.logger.error(f"Failed to create directory {dest_name}")
-                        continue
+                try:
+                    if Path(local_path).is_file():
+                        self._add_file_to_disk(local_path, dest_name, target_path)
+                    elif Path(local_path).is_dir():
+                        new_dir_path = (
+                            f"{target_path}/{dest_name}"
+                            if target_path != "/"
+                            else f"/{dest_name}"
+                        )
+                        success = self.parent.controller.create_directory(new_dir_path)
+                        if not success:
+                            self.logger.error(f"Failed to create directory {dest_name}")
+                            failed_imports.append(dest_name)
+                            continue
 
-                    items = [p.name for p in Path(local_path).iterdir()]
-                    sub_paths = [str(Path(local_path) / item) for item in items]
-                    self.import_multiple_paths(sub_paths, new_dir_path, auto_name=True)
+                        items = [p.name for p in Path(local_path).iterdir()]
+                        sub_paths = [str(Path(local_path) / item) for item in items]
+                        self.import_multiple_paths(
+                            sub_paths, new_dir_path, auto_name=True
+                        )
+                except (OSError, ValueError) as e:
+                    # Surface the failure (e.g. a read-only filesystem) in a
+                    # dialog: an exception escaping this Qt slot would be
+                    # fatal to the application.
+                    self.logger.error(f"Error importing {dest_name}: {e}")
+                    failed_imports.append(f"{dest_name}: {e}")
 
             self.refresh_needed.emit(target_path)
-            item_word = "item" if len(file_paths_with_names) == 1 else "items"
+            if failed_imports:
+                QMessageBox.warning(
+                    self.parent,
+                    "Import Failed",
+                    "Failed to import:\n" + "\n".join(failed_imports),
+                )
+            imported = len(file_paths_with_names) - len(failed_imports)
+            item_word = "item" if imported == 1 else "items"
             self.operation_complete.emit(
-                f"Imported {len(file_paths_with_names)} {item_word} to '{target_path}'"
+                f"Imported {imported} {item_word} to '{target_path}'"
             )
 
     def read_file_threaded(self, path: str, on_success: Callable) -> None:

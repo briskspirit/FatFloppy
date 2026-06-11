@@ -1009,6 +1009,11 @@ class WbakCatalog:
 
     ``created`` is decoded from the backup UID's timestamp word (the
     UVL1 text ``"%8x.%8x"``); VOL1 itself carries no date.
+
+    ``frame_events`` retains the full L1 event list and ``eot_found``
+    whether the stream terminated with an EOT -- consumers (the
+    filesystem's disk map and consistency check) need them without
+    re-parsing the image.
     """
 
     volume_id: Optional[str] = None
@@ -1016,6 +1021,8 @@ class WbakCatalog:
     created: Optional[datetime] = None
     backup_uid: Optional[str] = None
     trees: list[WbakTree] = field(default_factory=list)
+    eot_found: bool = False
+    frame_events: list[FrameEvent] = field(default_factory=list, repr=False)
 
     def read(self, entry: WbakEntry) -> bytes:
         """Assemble a file entry's content.
@@ -1272,7 +1279,7 @@ def build_catalog(data: bytes) -> WbakCatalog:
     """
     parser = FrameParser(data)
     events = parser.parse()
-    catalog = WbakCatalog()
+    catalog = WbakCatalog(eot_found=parser.eot_offset is not None, frame_events=events)
     accumulator: Optional[_TreeAccumulator] = None
 
     def finish_section(complete: bool) -> None:

@@ -118,4 +118,10 @@ class TestApolloFormatProfile:
         assert pf.get_sectors_per_track(0, 0) == 8
         assert pf.bytes_per_sector == 1024
         assert pf.rpm == 360
-        assert profile.filesystem_config is None
+        # Task 5 wires the volume-id-less sentinel config: it names the
+        # APOLLO_WBAK filesystem for profile matching during detection.
+        from fatfloppy.core.filesystems.apollo_wbak_fs import ApolloWbakConfig
+
+        assert isinstance(profile.filesystem_config, ApolloWbakConfig)
+        assert profile.filesystem_config.volume_id is None
+        assert profile.get_filesystem_type() == "APOLLO_WBAK"
