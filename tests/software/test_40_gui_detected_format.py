@@ -78,3 +78,25 @@ def test_detected_format_inferred_cpm():
     text = _detected_text(str(path))
     assert "Container: IMD" in text
     assert "auto-inferred (CPM)" in text
+
+
+def test_detected_format_shows_cbm_driver_and_d64_profile():
+    """A .d64 surfaces the CBM container and the 1541 profile."""
+    path = RES / "CBM" / "c128_tutorial.d64"
+    if not path.exists():
+        pytest.skip(f"resource missing: {path}")
+    text = _detected_text(str(path))
+    assert "Container: CBM" in text
+    assert "cbm_1541_d64" in text
+    assert "Commodore 1541" in text  # the profile description
+
+
+def test_detected_format_shows_cbm_driver_and_d81_profile():
+    """A .d81 surfaces the CBM container and the 1581 profile."""
+    path = RES / "CBM" / "1581_demo.d81"
+    if not path.exists():
+        pytest.skip(f"resource missing: {path}")
+    text = _detected_text(str(path))
+    assert "Container: CBM" in text
+    assert "cbm_1581_d81" in text
+    assert "Commodore 1581" in text  # the profile description
