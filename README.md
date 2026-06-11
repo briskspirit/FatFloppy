@@ -1,15 +1,17 @@
 # FatFloppy
 
-FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, and HDOS filesystems across multiple disk image formats (IMG, IMD, H17, MITS DSK). This is an **alpha version**, with core features working but more to come.
+FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, HDOS, and Commodore CBM DOS filesystems across multiple disk image formats (IMG, IMD, H17, MITS DSK, D64/D71/D81). This is an **alpha version**, with core features working but more to come.
 
 [![License: Unlicense](https://img.shields.io/badge/License-Unlicense-yellow.svg)](https://unlicense.org)
 
 ## Key Features
 
-- **Multiple Filesystems**: FAT12, CP/M, and HDOS support, including many
-  non-standard vintage layouts (no-BPB DOS, DEC Rainbow, 86-DOS, hard-sectored
-  Heath H17 / MITS Altair CP/M, and more)
-- **Multiple Formats**: IMG, IMD, H17, and MITS DSK image formats
+- **Multiple Filesystems**: FAT12, CP/M, HDOS, and CBM DOS support, including
+  many non-standard vintage layouts (no-BPB DOS, DEC Rainbow, 86-DOS,
+  hard-sectored Heath H17 / MITS Altair CP/M, and more)
+- **Multiple Formats**: IMG, IMD, H17, MITS DSK, and Commodore D64/D71/D81
+  image formats (including error-byte D64/D71 variants; 42-track D64 images
+  open read-only)
 - **Physical Disk Access**: Greaseweazle hardware integration
 - **File Operations**: Read, write, delete files, and create directories
 - **Create & Format**: Make new blank images and format them to a chosen profile
@@ -100,6 +102,20 @@ fatfloppy
 - **Navigate**: Use the directory tree and file list to browse.
 - **Manage Files**: Extract, add, delete, or create folders via toolbar buttons or drag-and-drop.
 - **View Disk Map**: See sector usage, toggle heads if double-sided.
+
+### CBM DOS (D64/D71/D81) Notes
+
+- **File types**: file names take c1541-style type suffixes — `,p` (PRG, the
+  default when no suffix is given), `,s` (SEQ), `,u` (USR), and `,r:<len>`
+  (REL with a record length of 1-254). A comma that does not parse as a type
+  code stays part of the file name.
+- **Writes**: rewriting an existing name uses scratch-and-replace semantics
+  (like CBM DOS `@0:`), and REL files get proper side sectors (plus super
+  side sectors on the 1581).
+- **Partitions (D81 only)**: creating a folder named `NAME,<sectors>` makes a
+  1581 partition formatted as a browsable sub-directory (`NAME` alone
+  defaults to 120 sectors; the size must be at least 120 sectors and a
+  multiple of 40, i.e. whole tracks).
 
 ## Building from Source
 

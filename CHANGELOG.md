@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Commodore CBM DOS support:
+  - D64/D71/D81 image driver (1541/1571/1581 variable-zone geometry derived
+    from the exact file size), including the trailing error-byte D64/D71
+    variants (preserved verbatim on write) and 42-track D64 images (read-only)
+  - CBM DOS filesystem with full read/write: PETSCII file names, c1541-style
+    type suffixes (`,p` `,s` `,u` `,r:<len>`), scratch-and-replace rewrites,
+    and REL files with side sectors (plus super side sectors on the 1581)
+  - 1581 (D81) partitions browsable and creatable as sub-directories
+    (`NAME,<sectors>`)
+  - VALIDATE-style filesystem check reconciling the BAM against the directory
+  - Format profiles, detection, and formatting of new blank D64/D71/D81 images
+- 80-track double-sided H37 HDOS format profile (`hdos_5.25_400k_dssd`), so
+  raw 400KB 80x2x10x256 HDOS dumps are detected and writable.
 - Detection and reading of many additional vintage CP/M and DOS layouts:
   - Heath/Zenith H17 hard-sectored CP/M (4:1 software sector skew)
   - CP/M disks with no shipped DPB profile (e.g. Zenith Z-100, Kaypro II, IMSAI)
@@ -24,7 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "Detected Format" panel in the Disk Information dock showing the container
   driver and the matched format profile (or that the layout was inferred).
 - Opt-in regression sweep over a real disk-image corpus
-  (set `FATFLOPPY_TEST_IMAGES`).
+  (set `FATFLOPPY_TEST_IMAGES`); the CBM and detection changes were verified
+  against it with zero regressions in per-file content hashes.
 
 ### Fixed
 - Extensive safety/correctness hardening across physical-disk access,
@@ -33,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MITS Altair minifloppy writes/creates reframing data tracks as system tracks
   and corrupting the directory.
 - CP/M writes overwriting existing files on disks with all-zero directory slots.
+- HDOS claiming disks whose geometry no HDOS controller can produce: detection
+  is now gated to the H17/H37/H47 shapes (40/80 tracks x 10, 77 x 26, 256-byte
+  sectors), so variable-zone disks (e.g. D64) are never misdetected as HDOS.
+- CP/M DPB inference claiming non-CP/M disks: the heuristic sweep now requires
+  plausible directory filenames before accepting an inferred layout.
+- Space/usage display showing every sector free on CBM disks (the filesystem
+  did not expose its allocation unit size to the GUI).
 
 ### Changed
 - `open_disk` now defaults to content-based `auto` driver detection.
