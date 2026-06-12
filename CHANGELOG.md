@@ -100,6 +100,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scoring now requires plausible 8.3 entries (DEC's EBCDIC label track no
   longer counts), and uniform-fill FAT candidates are rejected during no-BPB
   boot-sector synthesis.
+- Auto-detection no longer claims a filesystem below that filesystem's own
+  validity threshold (the global claim floor masked self-invalid matches and
+  could shadow a valid lower-scoring candidate).
+- Plain text files (e.g. archived directory listings) are no longer claimed
+  as CP/M volumes by DPB inference; trailing NUL padding from block-padded
+  transfers is tolerated, and the scan is skipped on physical media.
+- The file browser refreshes automatically after attaching the next volume
+  of a split Apollo wbak backup set.
+- Apollo AEGIS volumes that are recognized but structurally damaged now
+  report the damage in the disk information panel instead of browsing as
+  silently empty.
+- Replacing an RT-11 file now allocates the new copy before freeing the old
+  one (authentic .ENTER ordering), so an interrupted write can no longer
+  leave the directory pointing at partially overwritten data; replacing a
+  file on a nearly full volume may now require deleting it first, exactly
+  like real RT-11.
 - Detection over-claiming: HDOS and inferred-DPB CP/M no longer claim disks of
   other formats (detection is now gated on plausible geometry and directory
   contents), and the new drivers cannot shadow existing ones — all verified
@@ -126,9 +142,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-DOS tools) are now skipped on listing like other invalid entries;
   verified with zero impact across the real-image corpus.
 - Import and export naming is delegated to per-filesystem policies: each
-  filesystem suggests valid, de-duplicated import names (FAT/CP/M/HDOS 8.3
-  with `~NN`; CBM 16-character PETSCII with `-NN`; RT-11 6.3 RAD50 with
-  digit suffixes) and sanitizes export names for the host.
+  filesystem suggests valid, de-duplicated import names (FAT/CP/M 8.3 with
+  `~NN`; HDOS letter-first 8.3 with digit suffixes; CBM 16-character PETSCII
+  with `-NN`; RT-11 6.3 RAD50 with digit suffixes) and sanitizes export
+  names for the host.
+- HDOS rejects filenames outside the real HDOS charset on write (letter
+  first, then letters and digits, for both name and extension); lookups stay
+  lenient so existing on-disk oddities remain addressable.
 
 ## [0.1.1] - 2026-06-10
 

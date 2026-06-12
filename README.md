@@ -210,7 +210,9 @@ fatfloppy
 ### Filenames on Import/Export
 
 Importing a host file auto-generates a name valid for the target filesystem:
-FAT, CP/M, and HDOS get 8.3 names with `~NN` de-duplication; CBM keeps up to
+FAT and CP/M get 8.3 names with `~NN` de-duplication; HDOS gets letter-first
+8.3 names of letters and digits (other characters become `X`, leading digits
+get an `F` prefix) with digit-suffix de-duplication; CBM keeps up to
 16 PETSCII characters with `-NN` de-duplication, and commas are neutralized
 so type suffixes like `,s` stay deliberate rather than accidental; RT-11 gets
 6.3 RAD50 names (characters outside the set become `$`) with digit-suffix
@@ -247,11 +249,6 @@ make appimage  # Creates AppImage (requires linuxdeploy and linuxdeploy-plugin-q
   logical-block math; on volumes with sector interleave or skew (RT-11
   physical images, skewed CP/M layouts) the highlight is approximate — the
   per-sector usage coloring itself is always exact
-- After attaching the next volume of a split Apollo wbak backup set, the
-  file browser does not refresh automatically (reopen or refresh to see the
-  stitched results)
-- An AEGIS volume that is recognized but structurally damaged browses as an
-  empty volume rather than reporting the damage
 - TD0 is always a read-only container, even for filesystems marked writable
   in the table above (convert to IMG to edit such a disk)
 
