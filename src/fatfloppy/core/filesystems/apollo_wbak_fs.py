@@ -301,6 +301,12 @@ class ApolloWbakFilesystem(Filesystem):
                 "damage_notes": list(entry.damage_notes),
                 "partial": entry.partial,
                 "atime": entry.atime,
+                # Debris-size truth: when the FILE record's declared size
+                # was implausible (size_unreliable) FileInfo.size carries
+                # the recoverable content length and the raw declared
+                # field is preserved here (None for reliable sizes).
+                "size_unreliable": entry.size_unreliable,
+                "declared_size_raw": entry.declared_size_raw,
                 # Tree identity for the GUI's insert-next-volume matching:
                 # (tree_id, sequence) name the tree within the backup set
                 # and section is its CURRENT section (advances on stitch),
@@ -469,8 +475,11 @@ class ApolloWbakFilesystem(Filesystem):
         (cached: computing it reads every file's extents).
 
         Declared FILE-header sizes are deliberately NOT summed: destroyed
-        headers declare junk (disk8 carries an entry claiming 0x20202000
-        -- four ASCII spaces -- bytes, 514 MB on a 1.2 MB floppy)."""
+        headers declare junk (disk8 carries an entry whose raw size field
+        reads 0x20202020 -- four ASCII spaces, 538,976,288 bytes = 514 MB
+        on a 1.2 MB floppy; such entries now report their recoverable
+        length, but damaged entries with PLAUSIBLE declared sizes still
+        declare more than what :meth:`WbakCatalog.read` yields)."""
         if self._recoverable_cache is None:
             self._recoverable_cache = sum(
                 len(self._catalog.read(entry))

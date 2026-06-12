@@ -303,6 +303,98 @@ class TestRead:
         assert disk2.filesystem.read_file("/sys5/etc/rc") == b""
 
 
+class TestDebrisSizes:
+    """FILE records whose attribute block was overwritten by old medium
+    debris declare garbage sizes (e.g. b'    ' = 538,976,288 bytes on a
+    1.2 MB floppy).  FileInfo must report the honest recoverable length,
+    keep DMG, and retain the truth in extra_data."""
+
+    def test_disk8_table_rec_ftn_reports_zero(self, disk8):
+        fs = disk8.filesystem
+        infos = fs.list_directory("/install/ftn")
+        info = next(i for i in infos if i.name == "table_rec_ftn")
+        assert info.size == 0  # was 538,976,256 (b'    ' minus storage header)
+        assert "DMG" in info.attributes
+        assert info.extra_data["size_unreliable"] is True
+        assert info.extra_data["declared_size_raw"] == 538_976_288
+        assert fs.read_file("/install/ftn/table_rec_ftn") == b""
+
+    def test_disk8_reliable_sizes_carry_no_markers(self, disk8):
+        infos = disk8.filesystem.list_directory("/install/com")
+        info = next(i for i in infos if i.name == "cleanup_v1.0")
+        assert info.size == 1226 - 32
+        assert info.extra_data["size_unreliable"] is False
+        assert info.extra_data["declared_size_raw"] is None
+
+    def test_real_disk4_du_df_report_zero(self):
+        # disk4's SYS5/BIN carries TWO debris-size entries, neither with
+        # any recoverable DATA: du declares b'LAG ' (1,279,346,464) and df
+        # 0x019A0038 (26,869,816 -- the smallest debris size corpus-wide,
+        # 21.3x the volume capacity).  Pre-change sizes: 1,279,346,432 and
+        # 26,869,784.
+        real_volume_bytes("disk4.img")  # skip guard
+        controller = DiskController()
+        assert controller.open_disk(str(REAL_VOLUMES / "disk4.img"), disk_type="auto")
+        try:
+            fs = controller.filesystem
+            infos = fs.list_directory("/sys5/bin")
+            du = next(i for i in infos if i.name == "du")
+            df = next(i for i in infos if i.name == "df")
+            assert du.size == 0 and df.size == 0
+            assert du.extra_data["size_unreliable"] is True
+            assert df.extra_data["size_unreliable"] is True
+            assert du.extra_data["declared_size_raw"] == 1_279_346_464
+            assert df.extra_data["declared_size_raw"] == 26_869_816
+            assert "DMG" in du.attributes and "DMG" in df.attributes
+            assert fs.read_file("/sys5/bin/du") == b""
+            assert fs.read_file("/sys5/bin/df") == b""
+        finally:
+            controller.close_disk()
+
+    def test_real_disk10_getftn_reports_recoverable(self):
+        # disk10's getftn declares b'lack' (1,818,321,771 -- the largest
+        # debris size corpus-wide) but 7,130 content bytes were assembled:
+        # the size must report those, and reading must still return them
+        # (read_file slices data[:size] -- naturally correct now).
+        # Pre-change size: 1,818,321,739.
+        real_volume_bytes("disk10.img")  # skip guard
+        controller = DiskController()
+        assert controller.open_disk(str(REAL_VOLUMES / "disk10.img"), disk_type="auto")
+        try:
+            fs = controller.filesystem
+            infos = fs.list_directory("/domain_examples/ftn_examples")
+            info = next(i for i in infos if i.name == "getftn")
+            assert info.size == 7130
+            assert "DMG" in info.attributes
+            assert info.extra_data["size_unreliable"] is True
+            assert info.extra_data["declared_size_raw"] == 1_818_321_771
+            content = fs.read_file("/domain_examples/ftn_examples/getftn")
+            assert len(content) == 7130
+        finally:
+            controller.close_disk()
+
+    def test_real_disk6_genuine_large_size_unchanged(self):
+        # lib/dseelib is a REAL multi-volume library: 1,417,878 declared
+        # raw bytes, the largest GENUINE declared size in the corpus at
+        # 1.12x one volume's 1,261,568-byte capacity (a multi-volume file
+        # legitimately exceeds one volume).  It must NOT be flagged; its
+        # size stays as-declared (pinned pre-change: 1,417,846 displayed).
+        real_volume_bytes("disk6.img")  # skip guard
+        controller = DiskController()
+        assert controller.open_disk(str(REAL_VOLUMES / "disk6.img"), disk_type="auto")
+        try:
+            fs = controller.filesystem
+            info = next(i for i in fs.list_directory("/lib") if i.name == "dseelib")
+            assert info.size == 1_417_878 - 32
+            assert info.extra_data["size_unreliable"] is False
+            assert info.extra_data["declared_size_raw"] is None
+            # pre-existing flags, pinned: cut at EOV and damaged
+            assert "PARTIAL" in info.attributes
+            assert "DMG" in info.attributes
+        finally:
+            controller.close_disk()
+
+
 class TestReadOnly:
     @pytest.mark.parametrize(
         "call",
@@ -434,9 +526,9 @@ class TestMapAndDisplay:
 
     def test_disk8_recoverable_content_is_recovered_not_declared(self, disk8):
         # disk8 carries an entry whose destroyed FILE header declares
-        # 0x20202000 (ASCII spaces) bytes; the recoverable-content figure
-        # must count recovered content, not declared sizes, or the info
-        # panel shows 514 MB on a 1.2 MB floppy.
+        # 0x20202020 (four ASCII spaces, 538,976,288) bytes; the
+        # recoverable-content figure must count recovered content, not
+        # declared sizes, or the info panel shows 514 MB on a 1.2 MB floppy.
         info = disk8.filesystem.get_display_info()
         content = int(info["Recoverable Content"].split()[0].replace(",", ""))
         assert 0 < content < IMAGE_SIZE

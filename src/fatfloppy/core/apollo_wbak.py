@@ -712,6 +712,18 @@ _FILE_MAGIC = b"\x00\x00\x90\x00"
 _DIR_MAGIC = b"\x00\x01\x90\x00"
 _STORAGE_HEADER_MAGIC = b"\x00\x20\x00\x01"
 STORAGE_HEADER_SIZE = 32
+
+# A FILE record's declared size beyond this bound is medium debris (the
+# attribute block was overwritten by old text on the re-used medium), not
+# a plausible file size.  Corpus evidence, every real Apollo volume
+# examined: the largest GENUINE declared size is LIB/dseelib at 1,417,878
+# bytes -- 1.12x the 1,261,568-byte volume capacity (a multi-volume
+# library legitimately exceeds one volume) -- while the SMALLEST debris
+# size is SYS5/BIN/df at 26,869,816 bytes (21.3x capacity; the other
+# three debris fields read as ASCII text: b'    ', b'LAG ', b'lack').
+# 8x capacity splits the two populations with wide margins on both sides:
+# 7.1x above the genuine maximum, 2.7x below the debris minimum.
+SIZE_UNRELIABLE_LIMIT = 8 * IMAGE_SIZE  # 10,092,544 bytes
 _MAX_DATA_CHUNK = BLOCK_SIZE - 14  # the most a block could ever hold
 _MARK_BYTES = b"\x00\x08\x00\x04\x00\x01\x00\x00\x00\x00"  # a full MARK record
 
@@ -983,6 +995,15 @@ def _extents_for_range(
 # ================================================================= catalog
 
 
+def _content_length(raw_data: bytes) -> int:
+    """Content byte count of an assembled raw object stream: its length
+    minus the 32-byte storage header when one leads the data, floored
+    at 0 (a truncated storage header still identifies itself by magic)."""
+    if raw_data[:4] == _STORAGE_HEADER_MAGIC:
+        return max(0, len(raw_data) - STORAGE_HEADER_SIZE)
+    return len(raw_data)
+
+
 @dataclass
 class WbakEntry:
     """One object from a backup tree (file, directory or symbolic link).
@@ -998,7 +1019,15 @@ class WbakEntry:
     by the recovery.
 
     ``size`` is the content size in bytes: the FILE header's size minus
-    the 32-byte storage header, floored at 0.
+    the 32-byte storage header, floored at 0.  When the FILE record's
+    attribute block was overwritten by old medium debris the declared
+    size field is garbage (e.g. four ASCII spaces = 538,976,288 bytes on
+    a 1,261,568-byte floppy): entries whose declared size exceeds
+    ``SIZE_UNRELIABLE_LIMIT`` report the assembled recoverable content
+    length instead, with ``size_unreliable`` True, the raw declared
+    field preserved in ``declared_size_raw`` (None otherwise) and
+    ``damaged`` forced True (the size-shortness test can no longer fire
+    once ``size`` tracks the actual data).
 
     ``extents`` lists the medium-backed (image_offset, length) byte
     ranges of the raw DATA chunks in stream order, including the storage
@@ -1030,6 +1059,8 @@ class WbakEntry:
     link_target: Optional[str] = None
     raw_name: bytes = b""
     name_recovered: bool = False
+    size_unreliable: bool = False
+    declared_size_raw: Optional[int] = None
     extents: list[tuple[int, int]] = field(default_factory=list)
     damage_notes: list[tuple] = field(default_factory=list)
     raw_data: bytes = field(default=b"", repr=False)
@@ -1098,9 +1129,11 @@ class WbakCatalog:
         """Assemble a file entry's content.
 
         Strips the 32-byte storage header when present and truncates to
-        the declared size.  Zero-filled gaps are already embedded in the
-        assembled data; partial entries (cut by end-of-volume) yield the
-        available prefix.  Links have no content (b"").
+        ``entry.size`` -- the declared size, or the recoverable content
+        length for entries whose declared size is debris
+        (``size_unreliable``).  Zero-filled gaps are already embedded in
+        the assembled data; partial entries (cut by end-of-volume) yield
+        the available prefix.  Links have no content (b"").
         """
         if entry.is_dir:
             raise IsADirectoryError(entry.path)
@@ -1228,7 +1261,17 @@ class _TreeAccumulator:
             return
         entry = self.cur
         entry.raw_data = bytes(self.cur_buf)
-        entry.damaged = bool(entry.damage_notes) or len(entry.raw_data) < self.cur_size
+        if entry.size_unreliable:
+            # debris declared size (see the REC_FILE branch of _feed):
+            # report the honest recoverable content length and force
+            # damaged -- the shortness test below can never fire once
+            # size tracks the assembled data
+            entry.size = _content_length(entry.raw_data)
+            entry.damaged = True
+        else:
+            entry.damaged = (
+                bool(entry.damage_notes) or len(entry.raw_data) < self.cur_size
+            )
         self.tree.entries.append(entry)
         self.cur = None
         self.cur_buf = bytearray()
@@ -1246,7 +1289,9 @@ class _TreeAccumulator:
         self.tree.orphan_tail = bytes(self.orphan_buf)
         if not complete and open_entry is not None and cut_short:
             open_entry.partial = True
-            open_entry.damaged = bool(open_entry.damage_notes)
+            open_entry.damaged = (
+                bool(open_entry.damage_notes) or open_entry.size_unreliable
+            )
 
     # -- record consumption
 
@@ -1336,15 +1381,33 @@ class _TreeAccumulator:
             if raw_name is None:
                 raw_name = b"?"
             raw_size = header.size if header else 0
+            size_unreliable = raw_size > SIZE_UNRELIABLE_LIMIT
+            if size_unreliable:
+                logger.info(
+                    "wbak block %d: FILE record %r declares an implausible "
+                    "%d-byte size (> %d, the debris bound); reporting the "
+                    "recoverable length instead",
+                    block_seq,
+                    raw_name,
+                    raw_size,
+                    SIZE_UNRELIABLE_LIMIT,
+                )
             self.cur = WbakEntry(
                 path=self._relative_path(raw_name),
+                # debris sizes are replaced by the assembled content
+                # length at close(); until then the declared value stands
                 size=max(0, raw_size - STORAGE_HEADER_SIZE),
                 mtime=apollo_time_to_datetime(header.mtime_raw) if header else None,
                 atime=apollo_time_to_datetime(header.atime_raw) if header else None,
                 raw_name=raw_name,
                 name_recovered=name_recovered,
+                size_unreliable=size_unreliable,
+                declared_size_raw=raw_size if size_unreliable else None,
             )
             self.cur_buf = bytearray()
+            # cur_size/cur_need keep the declared value even when it is
+            # debris: the assembly behavior (zero-fill caps, DATA resync
+            # context) must stay byte-identical to the pre-flag parser
             self.cur_size = raw_size
             self.cur_need = max(raw_size, (header.blocks if header else 0) * 1024)
             self.pending_name = None
@@ -1646,22 +1709,36 @@ def _extend_cut_entry(entry: WbakEntry, cont: WbakTree) -> None:
     header).  Tail damage notes are rebased onto the entry's raw-data
     offsets; notes falling entirely past the truncation point are
     dropped with the excess tail bytes they describe.
+
+    An entry whose declared size is debris (``size_unreliable``; its
+    ``size`` already tracks the assembled content, see
+    :class:`WbakEntry`) has NO trustworthy truncation point: the whole
+    tail is appended, ``size`` is recomputed from the merged data, and
+    the entry stays partial and damaged -- completeness can never be
+    confirmed against a debris size field.
     """
-    declared_raw = entry.size + STORAGE_HEADER_SIZE
+    declared_raw: Optional[int] = (
+        None if entry.size_unreliable else entry.size + STORAGE_HEADER_SIZE
+    )
     base = len(entry.raw_data)
     added_damage = False
     for note in cont.orphan_damage:
         if note[0] in ("hole", "zerofill"):
             kind, block_seq, tail_off, length = note
             start = base + tail_off
-            if start >= declared_raw:
-                continue
-            entry.damage_notes.append(
-                (kind, block_seq, start, min(length, declared_raw - start))
-            )
+            if declared_raw is not None:
+                if start >= declared_raw:
+                    continue
+                length = min(length, declared_raw - start)
+            entry.damage_notes.append((kind, block_seq, start, length))
         else:  # ("irregular", block_seq): whole-block damage, no offsets
             entry.damage_notes.append(note)
         added_damage = True
     entry.raw_data = (entry.raw_data + cont.orphan_tail)[:declared_raw]
-    entry.partial = len(entry.raw_data) < declared_raw
-    entry.damaged = entry.damaged or added_damage
+    if entry.size_unreliable:
+        entry.size = _content_length(entry.raw_data)
+        entry.partial = True
+        entry.damaged = True
+    else:
+        entry.partial = len(entry.raw_data) < declared_raw
+        entry.damaged = entry.damaged or added_damage

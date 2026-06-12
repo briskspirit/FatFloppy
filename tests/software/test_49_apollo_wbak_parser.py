@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from fatfloppy.core.apollo_wbak import (
+    SIZE_UNRELIABLE_LIMIT,
     AnsiLabel,
     ContinuationSpec,
     FrameParser,
@@ -1075,6 +1076,10 @@ class TestCatalogReal:
         assert com.block_count == 85
         assert len(com.entries) == 2
         orphan, ftn = com.entries
+        # genuine declared sizes -- damaged-but-plausible -- keep their
+        # FILE-header value and carry no unreliable-size markers
+        assert ftn.size_unreliable is False
+        assert ftn.declared_size_raw is None
         # stays "?": the NAME header survived but the zero word and path
         # were overwritten by file text (junk starts 00 02 00 13 00 01 ...
         # 00 00 7f 12), so the UID-overlap recovery rule must NOT fire
@@ -1088,6 +1093,87 @@ class TestCatalogReal:
         assert ftn.size == 439276 - 32
         prefix = cat.read(ftn)
         assert len(prefix) == 130218 - 32  # available prefix only
+
+    def test_disk8_debris_size_reports_recoverable_length(self):
+        # INSTALL/ftn/table_rec_ftn's FILE attribute block was overwritten
+        # by old text debris on the medium: the declared-size field reads
+        # b'    ' (0x20202020 = 538,976,288 bytes -- 427x the 1,261,568-byte
+        # volume capacity) and no DATA was recovered.  The entry must report
+        # the honest recoverable length (0 bytes), stay damaged, and retain
+        # the raw declared field for forensics.
+        data = (RESOURCES / "disk8.img").read_bytes()
+        # re-verify the forensic key bytes: the FILE record at image offset
+        # 0x081BF0 carries the four-ASCII-spaces size field at 0x081C12
+        assert data[0x081BF0:0x081BF6] == struct.pack(">HHH", 0, 64, 1)
+        assert data[0x081C12:0x081C16] == b"    "
+        cat = build_catalog(data)
+        install = cat.trees[0]
+        entry = next(e for e in install.entries if e.path == "ftn/table_rec_ftn")
+        assert entry.size_unreliable is True
+        assert entry.declared_size_raw == 538_976_288
+        assert entry.size == 0  # was 538,976,256: debris minus storage header
+        assert entry.damaged is True  # DMG semantics kept despite size == len
+        assert entry.partial is False
+        assert cat.read(entry) == b""
+
+
+# ------------------------------------------------- debris-size FILE headers
+
+
+def build_declared_size_image(raw_size: int, content: bytes) -> bytes:
+    """One tree, one FILE record declaring ``raw_size`` raw bytes while
+    actually carrying ``content`` behind a 32-byte storage header."""
+    b = StreamBuilder()
+    b.add_record(label80("VOL1", volume_id="SYNSZ1", owner="APOLLO"))
+    b.add_record(label80("UVL1", text="31F49BD4.200071FA"))
+    b.add_record(label80("HDR1", file_id="TREES", section=1, sequence=1))
+    b.add_record(label80("HDR2"))
+    b.add_record(label80("UHL1", text="31F49BD4.200071FA"))
+    b.add_tapemark()
+    records = (
+        sub_rec()
+        + mark_rec()
+        + name_rec(b"TREES/VICTIM")
+        + file_rec(raw_size)
+        + data_rec(storage_header(raw_size) + content)
+        + mark_rec()
+    )
+    b.add_record(build_block(1, SYN_UID, records))
+    b.add_tapemark()
+    b.add_record(label80("EOF1", file_id="TREES", section=1, sequence=1))
+    b.add_record(label80("EOF2"))
+    b.add_tapemark()
+    return b.finish()
+
+
+class TestDebrisSizeBound:
+    """The unreliable-size bound: declared > 8x the 1,261,568-byte volume
+    capacity (corpus evidence: largest GENUINE declared size 1.12x capacity,
+    smallest debris 21.3x -- see SIZE_UNRELIABLE_LIMIT)."""
+
+    def test_at_bound_stays_declared(self):
+        # exactly AT the bound (not over): the declared size is kept, the
+        # shortness test flags the damage as before, no debris markers
+        img = build_declared_size_image(SIZE_UNRELIABLE_LIMIT, b"q" * 100)
+        cat = build_catalog(img)
+        (entry,) = [e for e in cat.trees[0].entries if not e.is_dir]
+        assert entry.size_unreliable is False
+        assert entry.declared_size_raw is None
+        assert entry.size == SIZE_UNRELIABLE_LIMIT - 32
+        assert entry.damaged is True  # 100 bytes recovered of millions
+        assert cat.read(entry) == b"q" * 100
+
+    def test_over_bound_reports_recoverable_length(self):
+        # one byte OVER the bound: the size field is debris -- report the
+        # assembled content length, keep DMG, retain the raw declared field
+        img = build_declared_size_image(SIZE_UNRELIABLE_LIMIT + 1, b"q" * 100)
+        cat = build_catalog(img)
+        (entry,) = [e for e in cat.trees[0].entries if not e.is_dir]
+        assert entry.size_unreliable is True
+        assert entry.declared_size_raw == SIZE_UNRELIABLE_LIMIT + 1
+        assert entry.size == 100
+        assert entry.damaged is True  # explicit: shortness can no longer fire
+        assert cat.read(entry) == b"q" * 100
 
 
 # --------------------------------------------- clipped-NAME recovery (L4)
@@ -1242,14 +1328,16 @@ def build_cut_volume(
     content=b"",
     chunks=(6000, 2000),
     name=b"BIGFILE",
+    declared_raw=None,
 ):
     """Volume A of a set: HDR1 section 1, one FILE declaring
     ``len(content) + 32`` raw bytes but carrying only ``sum(chunks)``
     content bytes (one DATA chunk per block) before the EOV trailer.
     ``volume_uid_text`` overrides the per-volume UVL1 uid (defaults to
     ``uid_text``): real sets stamp a DIFFERENT UVL1 uid on every volume
-    while the per-tree UHL1 uid stays invariant."""
-    raw_size = len(content) + 32
+    while the per-tree UHL1 uid stays invariant.  ``declared_raw``
+    overrides the FILE record's declared size (debris-size tests)."""
+    raw_size = declared_raw if declared_raw is not None else len(content) + 32
     b = StreamBuilder()
     b.add_record(label80("VOL1", volume_id=volume_id, owner="APOLLO"))
     b.add_record(label80("UVL1", text=volume_uid_text or uid_text))
@@ -1542,6 +1630,34 @@ class TestStitchTree:
         assert cut.partial is True and len(cut.raw_data) == 32 + 8000
         assert prev.complete is False
         assert cont.orphan_tail == s.tail
+
+    def test_stitch_debris_size_appends_whole_tail(self):
+        # An EOV-cut file whose declared size is debris has NO trustworthy
+        # truncation point: the stitch appends the entire tail, the honest
+        # size tracks the assembled content, and the entry stays PARTIAL
+        # and damaged -- completeness can never be confirmed against a
+        # debris size field.
+        content = syn_content(9000)
+        vol_a = build_cut_volume(
+            content=content,
+            chunks=(6000, 2000),
+            declared_raw=SIZE_UNRELIABLE_LIMIT + 1,
+        )
+        vol_b = build_continuation_volume(tail=content[8000:], first_seq=3)
+        cat_a, cat_b, merged = self._stitch(vol_a, vol_b)
+
+        cut = next(e for e in cat_a.trees[0].entries if e.path == "bigfile")
+        assert cut.size_unreliable is True
+        assert cut.size == 8000  # honest pre-stitch content length
+        assert cut.partial is True and cut.damaged is True
+
+        stitched = next(e for e in merged.entries if e.path == "bigfile")
+        assert stitched.size_unreliable is True
+        assert stitched.declared_size_raw == SIZE_UNRELIABLE_LIMIT + 1
+        assert stitched.size == 9000  # whole tail appended, size honest
+        assert stitched.partial is True  # completeness unknowable
+        assert stitched.damaged is True
+        assert cat_a.read(stitched) == content
 
     def test_stitch_appends_follow_on_entries(self):
         s = build_two_volume_set()
