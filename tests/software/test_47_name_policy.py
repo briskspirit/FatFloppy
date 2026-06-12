@@ -51,6 +51,19 @@ def _fresh_cbm():
     return fresh_formatted("cbm_1541_d64", label="NAMES")
 
 
+def _fresh_rt11(tmp_path):
+    # Freshly formatted logical-order volume (RT-11 write tests' pattern).
+    img = tmp_path / "rt11.img"
+    controller = DiskController()
+    assert controller.format_disk_media(
+        format_name="rt11_logical_494",
+        volume_label="NAMES",
+        file_path=str(img),
+        disk_type="IMG",
+    )
+    return controller.filesystem
+
+
 class _StubFS(Filesystem):
     """Concrete shell exposing the base-class name-policy defaults."""
 
@@ -534,6 +547,87 @@ class TestCbmNames:
         assert n  # must be non-empty
 
 
+class TestRT11Names:
+    def _fs(self, tmp_path):
+        return _fresh_rt11(tmp_path)
+
+    def test_name_hint(self, tmp_path):
+        fs = self._fs(tmp_path)
+        assert fs.name_hint() == "6.3 RAD50 (A-Z, 0-9, $)"
+
+    def test_plain_name_uppercased_63(self, tmp_path):
+        fs = self._fs(tmp_path)
+        assert fs.suggest_import_name("readme.txt", set()) == "README.TXT"
+        assert fs.suggest_import_name("a.b", set()) == "A.B"
+
+    def test_long_name_truncated_63(self, tmp_path):
+        fs = self._fs(tmp_path)
+        assert (
+            fs.suggest_import_name("averylongfilename.markdown", set()) == "AVERYL.MAR"
+        )
+
+    def test_non_rad50_chars_mapped_to_dollar(self, tmp_path):
+        fs = self._fs(tmp_path)
+        assert fs.suggest_import_name("my file.txt", set()) == "MY$FIL.TXT"
+        assert fs.suggest_import_name("naïve£.txt", set()) == "NA$VE$.TXT"
+        assert fs.suggest_import_name("a-b_c.dat", set()) == "A$B$C.DAT"
+
+    def test_percent_never_suggested(self, tmp_path):
+        # write_file accepts the full RAD50 charset incl. '%', but the
+        # suggestion charset is deliberately narrower (A-Z, 0-9, $).
+        fs = self._fs(tmp_path)
+        assert "%" not in fs.suggest_import_name("100%.txt", set())
+
+    def test_tilde_never_emitted(self, tmp_path):
+        fs = self._fs(tmp_path)
+        n = fs.suggest_import_name("file~name.txt", {"FILE$N.TXT"})
+        assert "~" not in n
+
+    def test_uniqueness_digit_suffix_in_base(self, tmp_path):
+        fs = self._fs(tmp_path)
+        n = fs.suggest_import_name("readme.txt", {"README.TXT"})
+        assert n == "READM1.TXT"
+        n = fs.suggest_import_name("readme.txt", {"README.TXT", "READM1.TXT"})
+        assert n == "READM2.TXT"
+
+    def test_uniqueness_survives_many_collisions(self, tmp_path):
+        fs = self._fs(tmp_path)
+        existing = {"README.TXT"}
+        for _ in range(30):
+            n = fs.suggest_import_name("readme.txt", existing)
+            assert n.upper() not in existing
+            base, _, ext = n.partition(".")
+            assert len(base) <= 6 and len(ext) <= 3, n
+            existing.add(n.upper())
+
+    def test_never_raises_on_hostile_input(self, tmp_path):
+        fs = self._fs(tmp_path)
+        for hostile in ["", "...", "中文文件.dat", "a" * 300, "x/y\\z", "🙂.txt"]:
+            n = fs.suggest_import_name(hostile, set())
+            assert n
+            base, _, ext = n.partition(".")
+            assert len(base) <= 6 and len(ext) <= 3
+
+    def test_every_suggestion_is_valid_and_writable(self, tmp_path):
+        fs = self._fs(tmp_path)
+        existing = set()
+        for hostile in HOSTILE_HOST_NAMES:
+            n = fs.suggest_import_name(hostile, existing)
+            # Must pass strict write validation (raises on a bad name).
+            fs._parse_write_name(n)
+            fs.write_file("/" + n, b"x")
+            assert fs.read_file("/" + n)[:1] == b"x", (hostile, n)
+            assert n in {fi.name for fi in fs.list_directory("/")}, (hostile, n)
+            existing.add(n)
+
+    def test_suggest_host_name_keeps_rad50_specials(self, tmp_path):
+        # RT-11 names (A-Z, 0-9, $, ., %) are host-safe on POSIX: the
+        # default export policy must pass '$' and '%' through unchanged.
+        fs = self._fs(tmp_path)
+        assert fs.suggest_host_name("A$B%C0.99$") == "A$B%C0.99$"
+        assert fs.suggest_host_name("SWAP.SYS") == "SWAP.SYS"
+
+
 HOSTILE_HOST_NAMES = [
     "readme.txt",
     ".gitignore",
@@ -553,12 +647,12 @@ HOSTILE_HOST_NAMES = [
     "  spaces  ",
 ]
 
-# CP/M stores file sizes in 128-byte records: reads of non-text extensions
-# return whole records, so only a record-aligned payload round-trips
-# byte-exact on every filesystem.  Must contain no 0x1A (CP/M text EOF),
-# which text-extension reads strip.
-_PAYLOAD = b"data" * 32
-assert len(_PAYLOAD) == 128 and b"\x1a" not in _PAYLOAD
+# CP/M stores file sizes in 128-byte records and RT-11 in whole 512-byte
+# blocks: reads return whole records/blocks, so only a payload aligned to
+# both (LCM 512) round-trips byte-exact on every filesystem.  Must contain
+# no 0x1A (CP/M text EOF), which text-extension reads strip.
+_PAYLOAD = b"data" * 128
+assert len(_PAYLOAD) == 512 and b"\x1a" not in _PAYLOAD
 
 
 def _fresh_each_filesystem(tmp_path):
@@ -570,6 +664,7 @@ def _fresh_each_filesystem(tmp_path):
     hdos.delete("/H47LIB.ACM")
     yield "HDOS", hdos
     yield "CBM", _fresh_cbm()
+    yield "RT11", _fresh_rt11(tmp_path)
 
 
 def test_every_suggestion_is_writable_everywhere(tmp_path):

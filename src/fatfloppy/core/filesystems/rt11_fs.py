@@ -43,6 +43,7 @@ mutate), and all writes go through the same view mapper as reads.
 """
 
 import datetime
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Optional
 
@@ -85,6 +86,12 @@ NO_DATE = datetime.datetime(1972, 1, 1)  # epoch of the RT-11 date word
 # Characters allowed in the 6.3 name fields: RAD50 minus the space (padding)
 # and the dot (the name/type separator).
 _NAME_CHARS = frozenset(RAD50_CHARSET) - {" ", "."}
+
+# Characters EMITTED by suggest_import_name: deliberately narrower than
+# _NAME_CHARS -- '%' is RAD50-encodable (write_file accepts it) but several
+# vintage tools mishandle it (PUTR prints it as '?'), so suggestions stay
+# on the conservative A-Z / 0-9 / $ subset.
+_SUGGEST_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789$")
 
 # (sectors_per_track, bytes_per_sector) -> raw physical view candidate.
 _PHYSICAL_VIEW_FOR = {(26, 128): "rx01", (26, 256): "rx02", (10, 512): "rx50"}
@@ -388,20 +395,22 @@ class RT11Filesystem(Filesystem):
     def _entries(self) -> list[DirEntry]:
         return [entry for segment in self._segments() for entry in segment.entries]
 
+    def _entry_is_live(self, entry: DirEntry) -> bool:
+        """Listable and addressable: permanent or tentative, not an empty
+        run, with decodable RAD50 names (junk names warn and are skipped)."""
+        if entry.is_empty or not (entry.is_permanent or entry.is_tentative):
+            return False
+        if entry.name is None or entry.file_type is None:
+            self.logger.warning(
+                f"Skipping live entry with junk RAD50 name words {entry.name_words}"
+            )
+            return False
+        return True
+
     def _live_entries(self) -> list[DirEntry]:
         """Permanent and tentative entries (empty runs hidden), with junk
         RAD50 names skipped defensively."""
-        live = []
-        for entry in self._entries():
-            if entry.is_empty or not (entry.is_permanent or entry.is_tentative):
-                continue
-            if entry.name is None or entry.file_type is None:
-                self.logger.warning(
-                    f"Skipping live entry with junk RAD50 name words {entry.name_words}"
-                )
-                continue
-            live.append(entry)
-        return live
+        return [entry for entry in self._entries() if self._entry_is_live(entry)]
 
     @staticmethod
     def _entry_filename(entry: DirEntry) -> str:
@@ -534,23 +543,50 @@ class RT11Filesystem(Filesystem):
         label = self.config.volume_id.strip()
         return label or None
 
+    @staticmethod
+    def _fragmentation(entries: list[DirEntry]) -> int:
+        """Count of E.MPTY runs lying between live entries in linked order.
+
+        Adjacent empties count separately: RT-11 never coalesces them
+        (only SQUEEZE does), so each one costs a directory slot and splits
+        the free space a contiguous file could use. Trailing empties (after
+        the last live entry) are normal free space, not fragmentation.
+        """
+        last_live = -1
+        for index, entry in enumerate(entries):
+            if not entry.is_empty and (entry.is_permanent or entry.is_tentative):
+                last_live = index
+        if last_live < 0:
+            return 0
+        return sum(1 for entry in entries[:last_live] if entry.is_empty)
+
     def get_display_info(self) -> dict[str, str]:
         try:
             self._initialize()
             segments = self._segments()
         except (OSError, ValueError) as exc:
             return {"Error": f"Not a recognizable RT-11 volume: {exc}"}
-        files = self._live_entries()
+        entries = self._entries()
+        permanent = sum(1 for e in entries if e.is_permanent and not e.is_empty)
+        tentative = sum(1 for e in entries if e.is_tentative and not e.is_empty)
         free_bytes, _total = self.get_free_space()
         header = segments[0].header
+        view_label = (
+            "logical (block order)"
+            if self._view == "logical"
+            else f"{self._view} (physical sector order)"
+        )
         info = {
             "Filesystem": "RT-11",
-            "View": self._view,
+            "View": view_label,
             "Total Blocks": str(self._total_blocks),
             "Directory Start Block": str(self._dir_start),
             "Directory Segments": f"{header.highest_in_use}/{header.total_segments}",
-            "Files": str(len(files)),
+            "Files": str(permanent),
+            "Tentative Files": str(tentative),
             "Free Blocks": str(free_bytes // BLOCK_SIZE),
+            "Fragmentation": f"{self._fragmentation(entries)} free run(s)"
+            " between files",
             "Volume ID": self.config.volume_id.strip(),
             "Owner": self.config.owner.strip(),
             "System ID": self.config.system_id.strip(),
@@ -613,12 +649,105 @@ class RT11Filesystem(Filesystem):
             ],
             "get_sector_type": get_sector_type,
             "allocation_unit_size_sectors": sectors_per_block,
-            # Nominal: under the interleaved views the data area is not
-            # LBA-contiguous; per-sector coloring stays exact regardless.
+            # Nominal: the disk map's FILE-HIGHLIGHT/tooltip unit math
+            # ((lba - first_data_sector) // unit_size) assumes the data area
+            # is LBA-contiguous, which the interleaved rx01/rx02/rx50 views
+            # violate -- the same known limitation skewed CP/M profiles ship
+            # with (their first_data_sector is in logical-sector terms).
+            # Per-sector type COLORING goes through get_sector_type and
+            # stays exact regardless.
             "first_data_sector": segments[0].header.data_start_block
             * sectors_per_block,
             "type_color_map": dict(_MAP_COLORS),
         }
+
+    def check(self) -> bool:
+        """Directory-walk consistency check (read-only, CBM-check style).
+
+        RT-11 entry start blocks are implicit (segment data start plus
+        cumulative lengths), so block-level consistency reduces to the
+        directory itself: each chained segment must carry an end-of-segment
+        marker, its data start must equal the previous segment's cumulative
+        end (a lower start makes file runs OVERLAP -- data-loss risk; a
+        higher one only strands unreachable blocks), the runs must not
+        overrun the device, and segment 1's data area must not overlap the
+        directory blocks. Fragmentation (E.MPTY runs between files) and
+        tentative entries are reported as findings, never failures.
+
+        Verdict rule:
+        - FAILURE (False): unwalkable directory, missing end-of-segment
+          marker, overlapping runs, runs overrunning the device, data area
+          overlapping the directory.
+        - WARNING only: unreachable gap blocks between segments.
+        - INFO only: a data area ending short of the container (normal for
+          logical dumps in oversized containers), fragmentation and
+          tentative counts.
+
+        Corrupt volumes produce findings, not raises.
+        """
+        try:
+            self._initialize()
+            chain = self._linked_segments()
+        except (OSError, ValueError) as exc:
+            self.logger.warning(f"check(): unwalkable directory: {exc}")
+            return False
+        ok = True
+        head = chain[0][1].header
+        directory_end = self._dir_start + SEGMENT_BLOCKS * head.total_segments
+        if head.data_start_block < directory_end:
+            self.logger.warning(
+                f"check(): data area starts at block {head.data_start_block}, "
+                f"inside the directory (blocks {self._dir_start}-"
+                f"{directory_end - 1})"
+            )
+            ok = False
+        expected_start: Optional[int] = None
+        for number, segment in chain:
+            if not segment.eos_found:
+                self.logger.warning(
+                    f"check(): segment {number} has no end-of-segment marker"
+                )
+                ok = False
+            start = segment.header.data_start_block
+            if expected_start is not None and start != expected_start:
+                if start < expected_start:
+                    self.logger.warning(
+                        f"check(): segment {number} data start {start} is "
+                        f"before the previous chain end {expected_start}: "
+                        f"file runs overlap (data-loss risk)"
+                    )
+                    ok = False
+                else:
+                    self.logger.warning(
+                        f"check(): segment {number} data start {start} leaves "
+                        f"{start - expected_start} unreachable block(s) after "
+                        f"the previous chain end {expected_start}"
+                    )
+            cursor = start
+            for entry in segment.entries:
+                cursor += entry.length
+            if cursor > self._total_blocks:
+                self.logger.warning(
+                    f"check(): segment {number} entry runs end at block "
+                    f"{cursor}, overrunning the {self._total_blocks}-block "
+                    f"device"
+                )
+                ok = False
+            expected_start = cursor
+        if expected_start is not None and expected_start < self._total_blocks:
+            self.logger.info(
+                f"check(): directory covers blocks up to {expected_start} of "
+                f"{self._total_blocks} (normal for a logical dump in an "
+                f"oversized container)"
+            )
+        entries = [entry for _number, segment in chain for entry in segment.entries]
+        tentative = sum(1 for e in entries if e.is_tentative and not e.is_empty)
+        self.logger.info(
+            f"check(): {sum(1 for e in entries if e.is_empty)} free run(s), "
+            f"{self._fragmentation(entries)} between files (fragmentation), "
+            f"{tentative} tentative entries"
+        )
+        return ok
 
     # -- write interface -------------------------------------------------------
 
@@ -707,13 +836,26 @@ class RT11Filesystem(Filesystem):
         """(segment, entry index) of the live entry named ``filename``."""
         for segment in model:
             for index, entry in enumerate(segment.entries):
-                if entry.is_empty or not (entry.is_permanent or entry.is_tentative):
-                    continue
-                if entry.name is None or entry.file_type is None:
+                if not self._entry_is_live(entry):
                     continue
                 if self._entry_filename(entry) == filename:
                     return segment, index
         return None
+
+    def _model_mark_empty(
+        self, segment: _MutableSegment, index: int, action: str
+    ) -> DirEntry:
+        """Flip a live entry to E.MPTY in place (authentic RT-11 delete
+        semantics), refusing protected files. Returns the old entry."""
+        entry = segment.entries[index]
+        if entry.status & E_PROT:
+            raise PermissionError(
+                f"{self._entry_filename(entry)} is a protected (E.PROT) "
+                f"file; refusing to {action}"
+            )
+        segment.entries[index] = replace(entry, status=E_MPTY)
+        segment.dirty = True
+        return entry
 
     @staticmethod
     def _split_index(entries: list[DirEntry]) -> int:
@@ -788,12 +930,19 @@ class RT11Filesystem(Filesystem):
         skipped (not empty) but their blocks stay allocated. NOTE: real
         RT-11 .ENTER uses best-fit (manual section 1.1.3); first-fit is this
         implementation's pinned, deterministic policy (PUTR does the same).
+        NOTE: segments are filled to the structural 72-entry capacity
+        (manual section 1.1.4) and split only on demand; real RT-11 INIT
+        reserves ~3 slots per segment (69 usable) and splits earlier, so
+        our directories split later than the monitor's would.
         """
         today = datetime.date.today()
         try:
             date_word = encode_date_word(today.year, today.month, today.day)
         except ValueError:  # host clock outside the representable 1972-2099
             date_word = 0
+        # Termination: every `continue` follows a split that either raises
+        # (directory full) or strictly grows the chain, which is capped at
+        # MAX_SEGMENTS (31) segments.
         while True:
             found = None
             for segment in model:
@@ -876,14 +1025,7 @@ class RT11Filesystem(Filesystem):
         model = self._load_directory_model()
         existing = self._model_find_live(model, filename)
         if existing is not None:
-            segment, index = existing
-            old = segment.entries[index]
-            if old.status & E_PROT:
-                raise PermissionError(
-                    f"{filename} is a protected (E.PROT) file; refusing to replace"
-                )
-            segment.entries[index] = replace(old, status=E_MPTY)
-            segment.dirty = True
+            self._model_mark_empty(*existing, action="replace")
         start_block = self._plan_allocation(model, filename, name_words, length)
 
         # Plan complete -- only now touch the disk: data blocks first, the
@@ -906,14 +1048,7 @@ class RT11Filesystem(Filesystem):
         found = self._model_find_live(model, filename)
         if found is None:
             raise FileNotFoundError(f"No such file: {path}")
-        segment, index = found
-        entry = segment.entries[index]
-        if entry.status & E_PROT:
-            raise PermissionError(
-                f"{filename} is a protected (E.PROT) file; refusing to delete"
-            )
-        segment.entries[index] = replace(entry, status=E_MPTY)
-        segment.dirty = True
+        entry = self._model_mark_empty(*found, action="delete")
         self._store_directory_model(model)
         self.disk.flush()
         self.logger.info(f"Deleted {filename} ({entry.length} block(s) freed)")
@@ -927,6 +1062,70 @@ class RT11Filesystem(Filesystem):
 
     def create_directory(self, path: str) -> None:
         raise NotImplementedError("RT-11 has no directories")
+
+    # -- name policy -------------------------------------------------------------
+
+    def suggest_import_name(
+        self,
+        host_name: str,
+        existing_names: Iterable[str],
+        is_dir: bool = False,
+    ) -> str:
+        """
+        Derives a valid, unique RT-11 6.3 name from a host filename.
+
+        Characters outside the conservative suggestion charset (A-Z, 0-9,
+        '$') are MAPPED to '$' rather than dropped -- dropping would
+        silently merge distinct host names and could empty the base
+        entirely; '$' is the placeholder convention here, mirroring the
+        siblings' '_'/'-' (which are not RAD50-encodable). Note the
+        asymmetry with write_file: writes accept the full RAD50 name
+        charset including '%', but suggestions never emit it (several
+        vintage tools mishandle '%'; PUTR prints it as '?'). Uniqueness
+        uses plain digit suffixes within the 6-char base (NAME1, NAME2,
+        ...) because '~' is not in RAD50. The result always passes
+        _parse_write_name().
+
+        Args:
+            host_name: The filename from the host filesystem.
+            existing_names: Names already present on the disk.
+            is_dir: True when importing a directory entry (RT-11 has none,
+                but the base contract is preserved).
+
+        Returns:
+            A valid, unique on-disk 6.3 name.
+
+        Raises:
+            ValueError: If a unique name cannot be generated after 999
+                attempts.
+        """
+        existing = {n.upper() for n in existing_names}
+        cleaned = "".join(
+            ch if (ch in _SUGGEST_CHARS or ch == ".") else "$"
+            for ch in host_name.upper()
+        )
+        if "." in cleaned.strip(".") and not is_dir:
+            base, _dot, ext = cleaned.rpartition(".")
+            base = base.replace(".", "$")[:6]
+            ext = ext[:3]
+        else:
+            base, ext = cleaned.replace(".", "$")[:6], ""
+        if not base:
+            base = "$FILE"
+        candidate = f"{base}.{ext}" if ext else base
+        if candidate.upper() not in existing:
+            return candidate
+        for counter in range(1, 1000):
+            suffix = str(counter)
+            new_base = base[: 6 - len(suffix)] + suffix
+            candidate = f"{new_base}.{ext}" if ext else new_base
+            if candidate.upper() not in existing:
+                return candidate
+        raise ValueError(f"Cannot generate unique RT-11 name for {host_name!r}")
+
+    def name_hint(self) -> str:
+        """Short description of RT-11 naming rules, for dialogs."""
+        return "6.3 RAD50 (A-Z, 0-9, $)"
 
     def format_fs(
         self, profile: FormatProfile, volume_label: Optional[str] = None

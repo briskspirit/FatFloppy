@@ -29,20 +29,28 @@ import copy
 import datetime
 import hashlib
 import json
+import logging
+import os
+import random
 import re
 import struct
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
-import pytest
+# Must be set before any Qt import (GUI smoke tests at the bottom).
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from fatfloppy.core.controller import DiskController
-from fatfloppy.core.disk import Disk
-from fatfloppy.core.drivers.img import IMGImageDriver
-from fatfloppy.core.filesystems.cpm_fs import CPMFilesystem
-from fatfloppy.core.filesystems.formats.cpm_formats import CPM_FORMATS
-from fatfloppy.core.filesystems.formats.rt11_formats import RT11_FORMATS
-from fatfloppy.core.filesystems.rt11_fs import RT11Filesystem
-from fatfloppy.core.rt11_layout import (
+import pytest  # noqa: E402
+
+from fatfloppy.core.controller import DiskController  # noqa: E402
+from fatfloppy.core.disk import Disk  # noqa: E402
+from fatfloppy.core.drivers.img import IMGImageDriver  # noqa: E402
+from fatfloppy.core.filesystems.cpm_fs import CPMFilesystem  # noqa: E402
+from fatfloppy.core.filesystems.formats.cpm_formats import CPM_FORMATS  # noqa: E402
+from fatfloppy.core.filesystems.formats.rt11_formats import RT11_FORMATS  # noqa: E402
+from fatfloppy.core.filesystems.rt11_fs import RT11Filesystem  # noqa: E402
+from fatfloppy.core.rt11_layout import (  # noqa: E402
     DEFAULT_DIR_START,
     E_EOS,
     E_MPTY,
@@ -56,7 +64,10 @@ from fatfloppy.core.rt11_layout import (
     SEGMENT_SIZE,
     VIEW_GEOMETRY,
     VIEWS,
+    DirEntry,
+    ParsedSegment,
     RT11Config,
+    SegmentHeader,
     decode_date_word,
     default_segment_count,
     encode_date_word,
@@ -830,13 +841,18 @@ def _corpus_entries():
         return json.load(fh)
 
 
+# Materialized with eager ids: a callable `ids=` over an EMPTY parametrize
+# list breaks collection of the whole file when local_images/ is absent.
+_CORPUS = _corpus_entries()
+
+
 @pytest.mark.skipif(
     not (LOCAL_RT11.is_dir() and CORPUS_INVENTORY.is_file()),
     reason="local RT-11 corpus not present",
 )
 class TestCorpusSweep:
     @pytest.mark.parametrize(
-        "entry", _corpus_entries(), ids=lambda e: Path(e["path"]).name
+        "entry", _CORPUS, ids=[Path(e["path"]).name for e in _CORPUS]
     )
     def test_scorer_agrees_with_inventory_view(self, entry):
         path = CORPUS_INVENTORY.parent.parent / entry["path"]
@@ -1381,10 +1397,18 @@ class TestFilesystemSurface:
         try:
             info = controller.filesystem.get_display_info()
             assert info["Filesystem"] == "RT-11"
-            assert info["View"] == "rx01"
+            assert info["View"] == "rx01 (physical sector order)"
             assert info["Total Blocks"] == "494"
             assert info["Volume ID"] == "AS-5777C-BC"
+            assert info["Owner"] == "DX1 DISTRIB"
             assert info["System ID"] == "DECRT11A"
+            assert info["System Version"] == "V3A"
+            assert info["Directory Segments"] == "1/4"
+            assert info["Files"] == "33"
+            assert info["Tentative Files"] == "0"
+            assert info["Free Blocks"] == "43"
+            # Single trailing empty run: free space, not fragmentation.
+            assert info["Fragmentation"] == "0 free run(s) between files"
             assert controller.filesystem.get_volume_label() == "AS-5777C-BC"
         finally:
             controller.close_disk()
@@ -1635,8 +1659,6 @@ class TestExplicitViewContract:
 # delete. All on fresh tmp images or tmp COPIES of the committed resources
 # (the committed images are read-only oracles).
 # ---------------------------------------------------------------------------
-
-import random  # noqa: E402
 
 # profile -> (resolved view, container blocks, directory segments)
 FORMAT_CASES = {
@@ -2281,3 +2303,343 @@ class TestWritePairAcid:
                 assert verifier.filesystem.read_file("ACID.DAT") == read_rx02
             finally:
                 verifier.close_disk()
+
+
+# ---------------------------------------------------------------------------
+# Task 5: check(), display-info completeness, GUI smoke (offscreen).
+# ---------------------------------------------------------------------------
+
+
+def _two_segment_volume(tmp_path, shift=0):
+    """Synthetic logical-order volume with a two-segment chain.
+
+    Segment 1 holds one 5-block permanent file; segment 2 holds the
+    trailing empty. Segment 2's data start is shifted by ``shift`` blocks
+    from the true chain end: 0 = consistent, negative = overlapping runs
+    (data-loss risk), positive = unreachable gap blocks (benign).
+    """
+    total = 494
+    data_start = 6 + 2 * 2  # dir_start + 2 segments of 2 blocks
+    file_length = 5
+    seg1 = serialize_segment(
+        ParsedSegment(
+            header=SegmentHeader(
+                total_segments=2,
+                next_segment=2,
+                highest_in_use=2,
+                extra_bytes=0,
+                data_start_block=data_start,
+            ),
+            entries=(
+                DirEntry(
+                    status=E_PERM,
+                    name_words=(
+                        rad50_encode("FIL"),
+                        rad50_encode("E1"),
+                        rad50_encode("DAT"),
+                    ),
+                    length=file_length,
+                    job_channel=0,
+                    date_word=0,
+                    start_block=data_start,
+                ),
+            ),
+            eos_found=True,
+        )
+    )
+    start2 = data_start + file_length + shift
+    seg2 = serialize_segment(
+        ParsedSegment(
+            header=SegmentHeader(
+                total_segments=2,
+                next_segment=0,
+                highest_in_use=0,
+                extra_bytes=0,
+                data_start_block=start2,
+            ),
+            entries=(
+                DirEntry(
+                    status=E_MPTY,
+                    name_words=(0, 0, 0),
+                    length=total - start2,
+                    job_channel=0,
+                    date_word=0,
+                    start_block=start2,
+                ),
+            ),
+            eos_found=True,
+        )
+    )
+    data = bytearray(total * BLOCK)
+    data[1 * BLOCK : 2 * BLOCK] = encode_home_block(volume_id="CHKVOL")
+    data[6 * BLOCK : 8 * BLOCK] = seg1
+    data[8 * BLOCK : 10 * BLOCK] = seg2
+    path = tmp_path / f"twoseg_{shift}.img"
+    path.write_bytes(bytes(data))
+    return path
+
+
+class TestCheck:
+    @pytest.mark.parametrize(
+        "path",
+        [RX01_V03B, V0501_DSK, V0501_IMG, BASIC11_RX02],
+        ids=lambda p: p.name,
+    )
+    def test_committed_real_images_pass(self, path):
+        controller = _open(path)
+        try:
+            assert controller.filesystem.check() is True
+        finally:
+            controller.close_disk()
+
+    def test_fresh_format_and_churn_pass(self, tmp_path):
+        controller, _img = _format_new(tmp_path, "rt11_rx02")
+        try:
+            fs = controller.filesystem
+            assert fs.check() is True
+            for index in range(6):
+                fs.write_file(f"W{index}.DAT", bytes(7) * index)
+            fs.delete("W2.DAT")
+            fs.delete("W4.DAT")
+            assert fs.check() is True
+        finally:
+            controller.close_disk()
+
+    def test_consistent_two_segment_chain_passes(self, tmp_path):
+        controller = _open(_two_segment_volume(tmp_path, shift=0))
+        try:
+            assert controller.filesystem.check() is True
+        finally:
+            controller.close_disk()
+
+    def test_overlapping_runs_fail(self, tmp_path):
+        # Segment 2's data start lands BEFORE segment 1's chain end: the
+        # trailing empty overlaps FILE1.DAT's run -- data-loss risk.
+        controller = _open(_two_segment_volume(tmp_path, shift=-2))
+        try:
+            assert controller.filesystem.check() is False
+        finally:
+            controller.close_disk()
+
+    def test_gap_blocks_warn_only(self, tmp_path, caplog):
+        # A higher-than-expected data start only strands blocks (lost
+        # space, no overlap): finding logged, verdict still True.
+        controller = _open(_two_segment_volume(tmp_path, shift=2))
+        try:
+            with caplog.at_level(logging.WARNING):
+                assert controller.filesystem.check() is True
+            assert "unreachable block" in caplog.text
+        finally:
+            controller.close_disk()
+
+    def test_missing_eos_marker_fails(self, tmp_path):
+        # Zero segment 2's end-of-segment word: the entry list can no
+        # longer be trusted (parse runs to the structural end).
+        path = _two_segment_volume(tmp_path, shift=0)
+        data = bytearray(path.read_bytes())
+        eos_off = 8 * BLOCK + 10 + 14  # segment 2: header + one entry
+        assert struct.unpack_from("<H", data, eos_off)[0] == E_EOS
+        struct.pack_into("<H", data, eos_off, 0)
+        path.write_bytes(bytes(data))
+        controller = _open(path)
+        try:
+            assert controller.filesystem.check() is False
+        finally:
+            controller.close_disk()
+
+    def test_device_overrun_fails_without_raising(self, tmp_path):
+        # The insane-length corruption from TestSyntheticCorruption: the
+        # runs overrun the device; check() must report, not raise.
+        def mutate(data):
+            struct.pack_into("<H", data, ENTRY0_OFF + 8, 0xFFFF)
+
+        controller = _open(_patched_v0501(tmp_path, mutate))
+        try:
+            assert controller.filesystem.check() is False
+        finally:
+            controller.close_disk()
+
+    def test_non_rt11_volume_fails_without_raising(self):
+        profile = RT11_FORMATS["rt11_rx01"]
+        driver = IMGImageDriver(str(CPM_8IN_IMG))
+        disk = Disk(driver)
+        disk.set_geometry(copy.deepcopy(profile.physical_format))
+        assert RT11Filesystem(disk).check() is False
+
+
+class TestDisplayInfoCompleteness:
+    def test_basic11_counts_tentative_separately(self):
+        controller = _open(BASIC11_RX02)
+        try:
+            info = controller.filesystem.get_display_info()
+            assert info["View"] == "rx02 (physical sector order)"
+            assert info["Files"] == "121"  # permanent only, like DEC DIR
+            assert info["Tentative Files"] == "1"  # TEST.DAT
+        finally:
+            controller.close_disk()
+
+    def test_logical_view_label(self):
+        controller = _open(V0501_IMG)
+        try:
+            info = controller.filesystem.get_display_info()
+            assert info["View"] == "logical (block order)"
+        finally:
+            controller.close_disk()
+
+    def test_fragmentation_counts_interior_empties_only(self, tmp_path):
+        controller, _img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+
+            def fragmentation():
+                return fs.get_display_info()["Fragmentation"]
+
+            for name in ("A.DAT", "B.DAT", "C.DAT"):
+                fs.write_file(name, name.encode())
+            assert fragmentation() == "0 free run(s) between files"
+            fs.delete("B.DAT")
+            assert fragmentation() == "1 free run(s) between files"
+            # Adjacent empties stay separate entries (no coalescing): each
+            # one is a fragment costing a directory slot.
+            fs.delete("A.DAT")
+            assert fragmentation() == "2 free run(s) between files"
+            # With the last live entry gone everything is trailing free
+            # space again.
+            fs.delete("C.DAT")
+            assert fragmentation() == "0 free run(s) between files"
+        finally:
+            controller.close_disk()
+
+
+# ---------------------------------------------------------------------------
+# GUI smoke (offscreen): the committed RX01 through the real GUI stack, and
+# write+delete through the FileManager paths on a fresh formatted volume.
+# Style follows test_55_td0's TestTD0GuiSmoke.
+# ---------------------------------------------------------------------------
+
+
+class TestRT11GuiSmoke:
+    def _disk_manager(self, controller, **panel_labels):
+        from fatfloppy.gui.managers.disk_manager import DiskManager
+
+        manager = DiskManager.__new__(DiskManager)
+        manager.logger = logging.getLogger("test_rt11_gui_smoke")
+        manager.parent = SimpleNamespace(controller=controller, **panel_labels)
+        return manager
+
+    def test_detected_format_panel_names_rt11_profile(self):
+        controller = _open(RX01_V03B)
+        try:
+            label = MagicMock()
+            manager = self._disk_manager(controller, detected_format_info=label)
+            manager.update_detected_format_info()
+            assert label.setText.called
+            text = label.setText.call_args[0][0]
+            assert "rt11_rx01" in text
+            assert "Container: IMG" in text
+        finally:
+            controller.close_disk()
+
+    def test_listing_populates_with_real_dates(self):
+        # RT-11's real per-file timestamps are a feature headline: the GUI
+        # tree must carry them, not a placeholder epoch.
+        from fatfloppy.gui.main_window import FileBrowserApp
+
+        controller = _open(RX01_V03B)
+        try:
+            fake = MagicMock()
+            fake.controller = controller
+            root = FileBrowserApp._build_fs_tree(fake)
+            assert root is not None
+            assert len(root.children) == 33
+            by_name = {child.name: child for child in root.children}
+            assert by_name["SWAP.SYS"].modified == "1979-03-27 00:00:00"
+            assert by_name["SWAP.SYS"].size == 24 * BLOCK
+            assert all(
+                child.modified.startswith("1979-03-27") for child in root.children
+            )
+        finally:
+            controller.close_disk()
+
+    def test_space_info_and_disk_map_render(self):
+        from PyQt6.QtGui import QColor, QFont
+        from PyQt6.QtWidgets import QApplication, QWidget
+
+        from fatfloppy.gui.disk_map import DiskMapView
+
+        app = QApplication.instance() or QApplication([])  # noqa: F841
+        controller = _open(RX01_V03B)
+        try:
+            manager = self._disk_manager(controller)
+            manager.busy_units = []
+            manager.free_space = 0
+            manager.total_space = 0
+            manager.update_space_info()
+            assert len(manager.busy_units) == 451  # blocks 0-450 allocated
+            assert manager.free_space == 43
+            assert manager.total_space == 480
+
+            view = DiskMapView(QWidget())
+            view.draw_disk_map(
+                controller=controller,
+                current_head=0,
+                _busy_units=manager.busy_units,
+                free_space=manager.free_space,
+                total_space=manager.total_space,
+                app_font=QFont(),
+                text_color=QColor("black"),
+            )
+        finally:
+            controller.close_disk()
+
+    def test_write_and_delete_through_file_manager(self, tmp_path, monkeypatch):
+        from PyQt6.QtCore import QObject
+        from PyQt6.QtWidgets import QMessageBox
+
+        from fatfloppy.gui.managers.file_manager import FileManager
+
+        controller, _img = _format_new(tmp_path, "rt11_rx02", label="GUI")
+        try:
+            manager = FileManager.__new__(FileManager)
+            QObject.__init__(manager)  # bind signals without a QMainWindow
+            manager.logger = logging.getLogger("test_rt11_gui_smoke")
+            parent = SimpleNamespace(
+                controller=controller,
+                current_node=object(),
+                current_path="/",
+                _build_full_path=lambda name: "/" + name,
+            )
+            manager.parent = parent
+
+            warnings = []
+            monkeypatch.setattr(
+                QMessageBox,
+                "warning",
+                staticmethod(lambda *args, **_k: warnings.append(args)),
+            )
+
+            # Auto-named import: the host name needs the RT-11 name policy
+            # ("hello world.txt" is not 6.3 and holds non-RAD50 chars).
+            host = tmp_path / "hello world.txt"
+            host.write_bytes(b"payload from host")
+            manager.import_multiple_paths([str(host)], "/", auto_name=True)
+            assert not warnings, f"import failed: {warnings}"
+            listing = controller.list_directory("/")
+            assert [item["name"] for item in listing] == ["HELLO$.TXT"]
+            assert controller.read_file("/HELLO$.TXT")[:17] == b"payload from host"
+
+            # Delete through the manager path (confirmation auto-accepted).
+            monkeypatch.setattr(
+                QMessageBox,
+                "question",
+                staticmethod(lambda *_a, **_k: QMessageBox.StandardButton.Yes),
+            )
+            item = SimpleNamespace(
+                node=SimpleNamespace(name="HELLO$.TXT", is_dir=False)
+            )
+            parent.file_list = SimpleNamespace(selectedItems=lambda: [item])
+            manager.delete_selected_items()
+            assert not warnings, f"delete failed: {warnings}"
+            assert controller.list_directory("/") == []
+        finally:
+            controller.close_disk()
