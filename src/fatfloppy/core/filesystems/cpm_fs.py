@@ -28,6 +28,11 @@ CPM_DELETED_ENTRY_MARKER = 0xE5
 CPM_ZERO_ENTRY_PENALTY = 3
 # Characters the CP/M CCP/BDOS treat as delimiters; illegal inside file names.
 CPM_ILLEGAL_NAME_CHARS = set("<>,;:=?*[] ")
+# Bytes that may appear in a plain ASCII text file: TAB, LF, FF, CR, the
+# printable range 0x20-0x7E, and SUB (0x1A) - the CP/M text-EOF marker, which
+# CP/M-era text files end with, so it must count as text for the pure-text
+# rejection in _scan_for_cpm_dpb to catch them.
+CPM_TEXT_FILE_BYTES = bytes((0x09, 0x0A, 0x0C, 0x0D, 0x1A)) + bytes(range(0x20, 0x7F))
 
 
 @dataclass
@@ -1015,6 +1020,15 @@ class CPMFilesystem(Filesystem):
         if pf.has_variable_bps or pf.bytes_per_sector % CPM_SECTOR_SIZE != 0:
             return None
 
+        # Runs once per inference attempt, before the layout sweep: a 100%
+        # printable-text byte stream is a text file, not a disk image, and
+        # must not be claimed (see _image_is_pure_text).
+        if self._image_is_pure_text():
+            self.logger.debug(
+                "DPB inference rejected: image content is 100% printable text"
+            )
+            return None
+
         best_score = 0
         best_dpb: Optional[CPMDiskParameterBlock] = None
         # off: reserved system tracks; bsh: block shift (1K/2K/4K/8K);
@@ -1048,6 +1062,40 @@ class CPMFilesystem(Filesystem):
                             if best_score >= 95:
                                 return best_dpb
         return best_dpb
+
+    def _image_is_pure_text(self) -> bool:
+        """True if every readable byte of the image is ASCII text
+        (CPM_TEXT_FILE_BYTES). Used only by DPB *inference* as a rejection
+        signal; profile-based and explicit-DPB paths never call it.
+
+        A real CP/M volume always contains non-text bytes: 0xE5 or 0x00
+        directory fill in unused slots, allocation/block-pointer bytes below
+        0x20 in directory extents, binary system tracks. A byte stream that
+        is 100% printable text is therefore a text file - e.g. a DIR listing
+        saved alongside disk images - which the layout sweep would otherwise
+        claim: newline bytes (0x0A/0x0D) are valid CP/M user numbers and the
+        printable words after them parse as plausible filenames. The check
+        is exact (a single non-text byte disables it), so it can never block
+        a real disk image, and it scans the whole image - floppy-sized
+        inputs, and real disks exit on their first non-text byte anyway.
+        """
+        pf = self.disk.physical_format
+        saw_data = False
+        for cylinder in range(pf.cylinders):
+            for head in range(pf.heads):
+                for sector in range(pf.get_sectors_per_track(cylinder, head)):
+                    try:
+                        data = self.disk.read_sector(cylinder, head, sector)
+                    except Exception:
+                        # Partial image (e.g. a small text file under a
+                        # synthesized geometry): an unreadable tail is not
+                        # evidence either way.
+                        continue
+                    if data:
+                        saw_data = True
+                        if data.translate(None, CPM_TEXT_FILE_BYTES):
+                            return False
+        return saw_data
 
     @staticmethod
     def _plausible_inferred_filename(name: str) -> bool:
