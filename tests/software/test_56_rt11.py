@@ -2447,6 +2447,27 @@ class TestCheck:
         finally:
             controller.close_disk()
 
+    @pytest.mark.parametrize(
+        "segment_block",
+        [8, 6],
+        ids=["seg2_links_back_to_seg1", "seg1_links_to_itself"],
+    )
+    def test_cyclic_chain_fails(self, tmp_path, caplog, segment_block):
+        # Re-point a segment's next-segment link back at segment 1: the
+        # chain never terminates (a real RT-11 DIR would loop forever) --
+        # severe structural corruption, not a clean truncation.
+        path = _two_segment_volume(tmp_path, shift=0)
+        data = bytearray(path.read_bytes())
+        struct.pack_into("<H", data, segment_block * BLOCK + 2, 1)
+        path.write_bytes(bytes(data))
+        controller = _open(path)
+        try:
+            with caplog.at_level(logging.WARNING):
+                assert controller.filesystem.check() is False
+            assert "does not terminate" in caplog.text
+        finally:
+            controller.close_disk()
+
     def test_device_overrun_fails_without_raising(self, tmp_path):
         # The insane-length corruption from TestSyntheticCorruption: the
         # runs overrun the device; check() must report, not raise.

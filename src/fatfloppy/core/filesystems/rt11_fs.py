@@ -545,7 +545,9 @@ class RT11Filesystem(Filesystem):
 
     @staticmethod
     def _fragmentation(entries: list[DirEntry]) -> int:
-        """Count of E.MPTY runs lying between live entries in linked order.
+        """Count of E.MPTY runs preceding the last live entry in linked
+        order (between live entries, plus any leading hole before the
+        first one).
 
         Adjacent empties count separately: RT-11 never coalesces them
         (only SQUEEZE does), so each one costs a directory slot and splits
@@ -554,6 +556,8 @@ class RT11Filesystem(Filesystem):
         """
         last_live = -1
         for index, entry in enumerate(entries):
+            # Deliberately NOT _entry_is_live: junk-named permanent entries
+            # still occupy blocks, and counting must not log skip warnings.
             if not entry.is_empty and (entry.is_permanent or entry.is_tentative):
                 last_live = index
         if last_live < 0:
@@ -570,6 +574,7 @@ class RT11Filesystem(Filesystem):
         permanent = sum(1 for e in entries if e.is_permanent and not e.is_empty)
         tentative = sum(1 for e in entries if e.is_tentative and not e.is_empty)
         free_bytes, _total = self.get_free_space()
+        fragmentation = self._fragmentation(entries)
         header = segments[0].header
         view_label = (
             "logical (block order)"
@@ -585,8 +590,7 @@ class RT11Filesystem(Filesystem):
             "Files": str(permanent),
             "Tentative Files": str(tentative),
             "Free Blocks": str(free_bytes // BLOCK_SIZE),
-            "Fragmentation": f"{self._fragmentation(entries)} free run(s)"
-            " between files",
+            "Fragmentation": f"{fragmentation} free run(s) between files",
             "Volume ID": self.config.volume_id.strip(),
             "Owner": self.config.owner.strip(),
             "System ID": self.config.system_id.strip(),
@@ -675,7 +679,8 @@ class RT11Filesystem(Filesystem):
         tentative entries are reported as findings, never failures.
 
         Verdict rule:
-        - FAILURE (False): unwalkable directory, missing end-of-segment
+        - FAILURE (False): unwalkable directory, a segment chain that never
+          terminates (cyclic or out-of-range link), missing end-of-segment
           marker, overlapping runs, runs overrunning the device, data area
           overlapping the directory.
         - WARNING only: unreachable gap blocks between segments.
@@ -734,6 +739,17 @@ class RT11Filesystem(Filesystem):
                 )
                 ok = False
             expected_start = cursor
+        # _linked_segments only exits cleanly on a zero link; anything else
+        # means it truncated a cyclic or out-of-range chain.
+        tail_number, tail_segment = chain[-1]
+        tail_link = tail_segment.header.next_segment
+        if tail_link != 0:
+            self.logger.warning(
+                f"check(): directory chain does not terminate: segment "
+                f"{tail_number} links to segment {tail_link} (cyclic or "
+                f"out-of-range; RT-11 DIR would loop forever)"
+            )
+            ok = False
         if expected_start is not None and expected_start < self._total_blocks:
             self.logger.info(
                 f"check(): directory covers blocks up to {expected_start} of "
