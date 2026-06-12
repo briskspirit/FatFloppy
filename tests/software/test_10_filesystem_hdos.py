@@ -675,6 +675,54 @@ def test_read_only_operations_no_modification(
     hdos_controller.close_disk()
 
 
+def test_filename_charset_strictness(
+    hdos_controller: DiskController, tmp_path: Path
+) -> None:
+    """Writes enforce the HDOS charset; lookups and replaces stay usable.
+
+    HDOS 2.0 file specification: name and extension each start with a
+    letter and continue with letters or digits only. Every name on every
+    real HDOS 1.0-3.02 image surveyed obeys this, so write-side strictness
+    cannot lock out a legitimate replace-by-same-name.
+    """
+    profile_name = "hdos_5.25_100k"
+    profile = hdos_controller.get_format_by_name(profile_name)
+    blank_img_path = tmp_path / "charset_test.h8d"
+    blank_img_path.write_bytes(b"\x00" * profile.physical_format.total_bytes)
+    assert hdos_controller.open_disk(
+        str(blank_img_path), disk_type="IMG", format_info={"format_name": profile_name}
+    )
+    assert hdos_controller.format_disk_media(profile_name)
+
+    content = b"charset test content"
+    baseline_listing = hdos_controller.list_directory("/")
+
+    # Charset violations are rejected up front with the rule in the message.
+    for bad in ("/1ABC.DEF", "/AB-C.DEF", "/ABC.1EF", "/A B.DEF"):
+        with pytest.raises(ValueError, match="letter"):
+            hdos_controller.write_file(bad, content)
+        assert hdos_controller.list_directory("/") == baseline_listing
+
+    # Lowercase input is uppercase-normalized BEFORE validation...
+    assert hdos_controller.write_file("/valid1.txt", content)
+    assert any(f["name"] == "VALID1.TXT" for f in hdos_controller.list_directory("/"))
+    # ...so a charset violation is still caught regardless of case.
+    with pytest.raises(ValueError, match="letter"):
+        hdos_controller.write_file("/1abc.def", content)
+
+    # Legal names (incl. single-letter and no-extension) write and read back.
+    for good in ("/ABC.DEF", "/A1B2C3D4.X2Z", "/A", "/NOEXT2"):
+        assert hdos_controller.write_file(good, content)
+        assert hdos_controller.read_file(good) == content
+
+    # Replace-by-same-name goes through the same validator and still works.
+    replacement = b"replacement content!"
+    assert hdos_controller.write_file("/ABC.DEF", replacement)
+    assert hdos_controller.read_file("/ABC.DEF") == replacement
+
+    hdos_controller.close_disk()
+
+
 def test_80_track_dssd_format_and_autodetect(
     hdos_controller: DiskController, tmp_path: Path
 ) -> None:

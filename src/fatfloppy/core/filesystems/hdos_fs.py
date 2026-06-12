@@ -1,5 +1,6 @@
 import contextlib
 import datetime
+import re
 import struct
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -34,6 +35,14 @@ HDOS_RGT_SECTOR_LBA = 10
 HDOS_PLAUSIBLE_SHAPES = frozenset({(40, 10), (80, 10), (77, 26)})
 HDOS_SYSTEM_FILES = {"RGT.SYS", "GRT.SYS", "HDOS.SYS"}
 HDOS_DIRECT_SYS = {"DIRECT.SYS"}
+
+# HDOS 2.0 file specification: a name (and a non-empty extension) starts
+# with a letter and continues with letters or digits only. Every name on
+# every real HDOS 1.0-3.02 image surveyed (committed resources + corpus)
+# obeys this, so enforcing it on write cannot lock out a legitimate
+# replace-by-same-name of an existing on-disk file.
+HDOS_NAME_PART_RE = re.compile(r"[A-Z][A-Z0-9]*\Z")
+HDOS_NAME_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
 FLAGS_SYSTEM_CORE = 0xF0
 FLAGS_DIRECT = 0xE0
@@ -1150,8 +1159,16 @@ class HDOSFilesystem(Filesystem):
         """
         Derives a valid, unique HDOS 8.3 name from a host filename.
 
-        HDOS directory names are ASCII, so non-ASCII characters are replaced
-        with '_' before applying the base 8.3 policy. The result always passes
+        HDOS names are letters and digits only with a leading letter (name
+        and extension alike), so unlike the siblings there is no legal
+        punctuation to use as a placeholder: characters outside the charset
+        are MAPPED to the letter 'X' (mapping rather than dropping keeps
+        distinct host names distinct and cannot empty the base, mirroring
+        RT-11's '$' policy), and a leading digit gets an 'F' ("file")
+        prefix so the first character is a letter. Uniqueness uses plain
+        digit suffixes within the 8-char base (NAME1, NAME2, ...) -- a
+        digit is fine in any non-first position, while the base default's
+        '~NN' suffix is outside the charset. The result always passes
         _validate_filename(strict=True).
 
         Args:
@@ -1162,9 +1179,43 @@ class HDOSFilesystem(Filesystem):
 
         Returns:
             A valid, unique on-disk 8.3 name.
+
+        Raises:
+            ValueError: If a unique name cannot be generated after 999
+                attempts.
         """
-        cleaned = "".join("_" if not c.isascii() else c for c in host_name)
-        return super().suggest_import_name(cleaned, existing_names, is_dir)
+        existing = {n.upper() for n in existing_names}
+        cleaned = "".join(
+            ch if (ch in HDOS_NAME_CHARS or ch == ".") else "X"
+            for ch in host_name.upper()
+        )
+        if "." in cleaned.strip(".") and not is_dir:
+            base, _dot, ext = cleaned.rpartition(".")
+            base = base.replace(".", "X")
+            ext = ext[:3]
+        else:
+            base, ext = cleaned.replace(".", "X"), ""
+        if not base:
+            base = "FILE"
+        if base[0].isdigit():
+            base = "F" + base
+        base = base[:8]
+        if ext and ext[0].isdigit():
+            ext = ("F" + ext)[:3]
+        candidate = f"{base}.{ext}" if ext else base
+        if candidate not in existing:
+            return candidate
+        for counter in range(1, 1000):
+            suffix = str(counter)
+            new_base = base[: 8 - len(suffix)] + suffix
+            candidate = f"{new_base}.{ext}" if ext else new_base
+            if candidate not in existing:
+                return candidate
+        raise ValueError(f"Cannot generate unique HDOS name for {host_name!r}")
+
+    def name_hint(self) -> str:
+        """Short description of HDOS naming rules, for dialogs."""
+        return "8.3, letters and digits, first character a letter (HDOS)"
 
     def write_file(self, path: str, data: bytes) -> None:
         """
@@ -1272,15 +1323,22 @@ class HDOSFilesystem(Filesystem):
 
         Strict mode (used by the only production caller, write_file):
         additionally rejects over-length names instead of silently
-        truncating them.
+        truncating them, and enforces the HDOS 2.0 charset on the
+        uppercase-normalized name (write_file stores names uppercased, so
+        lowercase input is normalized before validation, matching the
+        CP/M/RT-11 philosophy): name and extension each start with a
+        letter and continue with letters or digits only
+        (HDOS_NAME_PART_RE).
 
         Args:
             path: The file path to validate (e.g. "/NAME.EXT").
-            strict: When True, enforce the 8.3 length limits.
+            strict: When True, enforce the 8.3 length limits and the
+                letters/digits charset.
 
         Raises:
             ValueError: If the name is empty or contains non-ASCII characters,
-                or (in strict mode) exceeds the 8.3 length limits.
+                or (in strict mode) exceeds the 8.3 length limits or violates
+                the HDOS charset.
         """
         raw = path.strip("/")
         name_part = raw.split(".", 1)[0]
@@ -1289,11 +1347,18 @@ class HDOSFilesystem(Filesystem):
         if not raw.isascii():
             raise ValueError(f"HDOS filename must be ASCII: '{raw}'")
         if strict:
-            base, _, ext = raw.partition(".")
+            base, _, ext = raw.upper().partition(".")
             if len(base) > 8 or len(ext) > 3:
                 raise ValueError(
                     f"HDOS filenames must be 8.3 format (base <= 8 chars, "
                     f"extension <= 3 chars): '{raw}'"
+                )
+            if not HDOS_NAME_PART_RE.match(base) or (
+                ext and not HDOS_NAME_PART_RE.match(ext)
+            ):
+                raise ValueError(
+                    f"HDOS filenames must start with a letter and contain "
+                    f"only letters and digits (name and extension): '{raw}'"
                 )
 
     def _calculate_file_size(self, entry: HDOSDirectoryEntry) -> int:

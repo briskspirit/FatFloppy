@@ -446,6 +446,46 @@ class TestHdosNames:
         n = fs.suggest_import_name("naïve£.txt", set())
         assert n.isascii()
 
+    def test_hdos_write_rejects_charset_violations(self, tmp_path):
+        # HDOS 2.0 file specification: name and extension each start with
+        # a letter and continue with letters or digits only.
+        fs = self._fs(tmp_path)
+        for bad in ("1ABC.DEF", "AB-C.DEF", "ABC.1EF", "A B.DEF"):
+            with pytest.raises(ValueError, match="letter"):
+                fs.write_file("/" + bad, b"x")
+
+    def test_hdos_suggestion_stays_in_charset(self, tmp_path):
+        # The base 8.3 suggester emits '_' and '~NN' dedup suffixes, both
+        # outside the HDOS charset; the HDOS override must avoid them.
+        fs = self._fs(tmp_path)
+        assert fs.suggest_import_name("name~01.txt", set()) == "NAMEX01.TXT"
+        assert fs.suggest_import_name("my file.txt", set()) == "MYXFILE.TXT"
+        # Leading digits (name or extension) get an 'F' prefix.
+        assert fs.suggest_import_name("1file.txt", set()) == "F1FILE.TXT"
+        assert fs.suggest_import_name("abc.1ef", set()) == "ABC.F1E"
+
+    def test_hdos_suggestion_dedup_uses_digit_suffix(self, tmp_path):
+        fs = self._fs(tmp_path)
+        assert fs.suggest_import_name("data.bin", set()) == "DATA.BIN"
+        n = fs.suggest_import_name("data.bin", {"DATA.BIN"})
+        assert n == "DATA1.BIN"
+        n = fs.suggest_import_name("longname8.bin", {"LONGNAME.BIN"})
+        assert n == "LONGNAM1.BIN"
+
+    def test_hdos_every_suggestion_passes_strict_validation(self, tmp_path):
+        fs = self._fs(tmp_path)
+        existing = set()
+        for hostile in HOSTILE_HOST_NAMES:
+            n = fs.suggest_import_name(hostile, existing)
+            fs._validate_filename("/" + n, strict=True)  # raises on a bad name
+            existing.add(n)
+        assert len(existing) == len(HOSTILE_HOST_NAMES)
+
+    def test_hdos_name_hint_mentions_charset(self, tmp_path):
+        fs = self._fs(tmp_path)
+        hint = fs.name_hint()
+        assert "letter" in hint and "8.3" in hint
+
     def test_hdos_delete_of_existing_truncated_entry_unaffected(self, tmp_path):
         # Strict 8.3 applies to write_file only; delete/read lookups stay
         # lenient, so an over-long path still resolves (by truncation) to an
