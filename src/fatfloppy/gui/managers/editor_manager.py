@@ -48,6 +48,9 @@ class EditorManager(QObject):
         self.parent.text_viewer.blockSignals(True)
         self.parent.text_viewer.clear()
         self.parent.text_viewer.blockSignals(False)
+        # Restore the default editable state (a binary preview may have
+        # switched the widget to read-only).
+        self.parent.text_viewer.setReadOnly(False)
         self.original_text_content = None
         self.current_file_path = None
         self.text_editor_modified = False
@@ -248,12 +251,7 @@ class EditorManager(QObject):
         if is_physical:
 
             def on_read_success(content_bytes):
-                if self._is_text_file(content_bytes):
-                    self.clear_hex_viewer_state()
-                    self._load_text_editor(file_path, node.name, content_bytes)
-                else:
-                    self.clear_text_viewer_state()
-                    self._load_hex_viewer(file_path, node.name, content_bytes)
+                self._display_in_viewers(file_path, node.name, content_bytes)
 
             self.parent.file_manager.read_file_threaded(file_path, on_read_success)
         else:
@@ -265,14 +263,43 @@ class EditorManager(QObject):
                     )
                     return
 
-                if self._is_text_file(content_bytes):
-                    self.clear_hex_viewer_state()
-                    self._load_text_editor(file_path, node.name, content_bytes)
-                else:
-                    self.clear_text_viewer_state()
-                    self._load_hex_viewer(file_path, node.name, content_bytes)
+                self._display_in_viewers(file_path, node.name, content_bytes)
             except Exception as e:
                 self.error_occurred.emit("Error", f"Error reading file: {str(e)}")
+
+    def _display_in_viewers(
+        self, file_path: str, filename: str, content_bytes: bytes
+    ) -> None:
+        """
+        Loads the file into BOTH the text and hex viewers.
+
+        The text/binary guess from _is_text_file() only decides which dock is
+        raised; the other viewer is populated all the same (exactly as if it
+        had been opened directly, just not popped in front), so the user can
+        simply switch tabs when the guess is wrong.
+
+        Save-path safety: for a binary (hex-guessed) file the text view is a
+        lossy decoded-with-replacement rendering, so it is loaded READ-ONLY
+        with the save path disabled -- writing that text back would corrupt
+        the file. For a text-guessed file the editor behaves exactly as
+        before, and the hex viewer is read-only by construction.
+
+        Args:
+            file_path: Path to the file on the disk image.
+            filename: Display name of the file.
+            content_bytes: File content as bytes.
+        """
+        is_text = self._is_text_file(content_bytes)
+        self._load_hex_viewer(
+            file_path, filename, content_bytes, raise_dock=not is_text
+        )
+        self._load_text_editor(
+            file_path,
+            filename,
+            content_bytes,
+            read_only=not is_text,
+            raise_dock=is_text,
+        )
 
     def _is_text_file(self, content: bytes, check_bytes: int = 4096) -> bool:
         """
@@ -309,7 +336,11 @@ class EditorManager(QObject):
             return False
 
     def _load_hex_viewer(
-        self, file_path: str, filename: str, content_bytes: bytes
+        self,
+        file_path: str,
+        filename: str,
+        content_bytes: bytes,
+        raise_dock: bool = True,
     ) -> None:
         """
         Loads file content into the hex viewer.
@@ -318,6 +349,7 @@ class EditorManager(QObject):
             file_path: Path to the file on disk image.
             filename: Display name of the file.
             content_bytes: File content as bytes.
+            raise_dock: Whether to raise the hex viewer dock after loading.
         """
         try:
             hex_lines = []
@@ -355,7 +387,8 @@ class EditorManager(QObject):
             self.parent.hex_viewer_dock.setWindowTitle(
                 f"Hex Viewer - {filename} ({len(content_bytes)} bytes)"
             )
-            self.parent.hex_viewer_dock.raise_()
+            if raise_dock:
+                self.parent.hex_viewer_dock.raise_()
             self.logger.info(f"Loaded '{filename}' into hex viewer.")
         except Exception as e:
             self.logger.error(f"Error loading hex viewer: {e}", exc_info=True)
@@ -364,7 +397,12 @@ class EditorManager(QObject):
             )
 
     def _load_text_editor(
-        self, file_path: str, filename: str, content_bytes: bytes
+        self,
+        file_path: str,
+        filename: str,
+        content_bytes: bytes,
+        read_only: bool = False,
+        raise_dock: bool = True,
     ) -> None:
         """
         Loads file content into the text editor.
@@ -373,6 +411,10 @@ class EditorManager(QObject):
             file_path: Path to the file on disk image.
             filename: Display name of the file.
             content_bytes: File content as bytes.
+            read_only: Load as a read-only preview with the save path
+                disabled. Used for binary (hex-guessed) files whose text
+                rendering is lossy and must never be written back.
+            raise_dock: Whether to raise the text editor dock after loading.
         """
         try:
             fs_type = "Unknown"
@@ -397,14 +439,28 @@ class EditorManager(QObject):
             self.parent.text_viewer.blockSignals(True)
             self.parent.text_viewer.setPlainText(content_text)
             self.parent.text_viewer.blockSignals(False)
-            self.original_text_content = content_text
+            self.parent.text_viewer.setReadOnly(read_only)
+            if read_only:
+                # Binary preview: keep the save path inert. With no original
+                # content recorded, on_text_editor_changed() can never mark
+                # the editor modified, and save_file() refuses to write.
+                self.original_text_content = None
+                self.parent.text_viewer_dock.setWindowTitle(
+                    f"Text Viewer - {filename} (read-only)"
+                )
+            else:
+                self.original_text_content = content_text
+                self.parent.text_viewer_dock.setWindowTitle(f"Text Editor - {filename}")
             self.current_file_path = file_path
             self.text_editor_modified = False
             self.parent.save_button.setEnabled(False)
             self.parent.discard_button.setEnabled(False)
-            self.parent.text_viewer_dock.setWindowTitle(f"Text Editor - {filename}")
-            self.parent.text_viewer_dock.raise_()
-            self.logger.info(f"Loaded '{filename}' into text editor.")
+            if raise_dock:
+                self.parent.text_viewer_dock.raise_()
+            self.logger.info(
+                f"Loaded '{filename}' into text editor"
+                f"{' (read-only preview)' if read_only else ''}."
+            )
         except Exception as e:
             self.logger.error(f"Error loading text editor: {e}", exc_info=True)
             QMessageBox.warning(
