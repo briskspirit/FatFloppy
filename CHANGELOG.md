@@ -105,6 +105,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   placeholder. Recovers names the original reference extractor cannot.
 - Files cut at end-of-volume (PARTIAL) or damaged on the medium (DMG) are
   now color-coded in the file browser with explanatory tooltips.
+- wbak entries whose size field was destroyed on the medium (overwritten by
+  text debris) now report their actual recoverable size instead of the
+  garbage value; the raw declared size stays available in the entry details.
+- The wbak "insert next volume" prompt now names exactly what it needs —
+  backup tree, sequence, section, and set uid — using the same wording as
+  the wrong-volume rejection message.
 
 ### Fixed
 - Raw RX01 disk images are no longer misdetected as FAT12: directory-entry
