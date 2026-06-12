@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import (
     QAction,
+    QColor,
     QFont,
     QFontDatabase,
     QIcon,
@@ -71,6 +72,51 @@ def _get_platform_font_size() -> int:
 
 
 DEFAULT_FONT_SIZE = _get_platform_font_size()
+
+# Damage-marker row colors: fixed mid-tones rather than palette roles.  The
+# QSS themes (themes.py) swap white-on-#3c3c3c and black-on-#ffffff at
+# runtime, and an item's setForeground brush overrides the QSS text color,
+# so a single color must stay readable on both backgrounds.
+PARTIAL_ROW_COLOR = QColor(200, 120, 0)
+DMG_ROW_COLOR = QColor(200, 60, 60)
+PARTIAL_TOOLTIP = (
+    "Cut at end of volume — extracting will prompt for the next volume "
+    "of the backup set."
+)
+DMG_TOOLTIP = "Damaged on the medium — unreadable parts are zero-filled on extraction."
+
+
+def _mark_damaged_row(item: QTreeWidgetItem, attributes: str) -> None:
+    """
+    Makes PARTIAL/DMG entries visually obvious in the browser widgets.
+
+    Filesystem-agnostic: any filesystem whose attribute string carries the
+    ``PARTIAL`` (cut at end of volume) or ``DMG`` (damaged on the medium)
+    token gets the treatment — a word match on the space-separated marker
+    string, never a substring.  Every column of the row is colored (orange
+    for PARTIAL, red for DMG, with DMG outranking PARTIAL when both are
+    present) and the name cell's tooltip explains the marker(s).
+
+    Args:
+        item: The row item to decorate.
+        attributes: The entry's attribute string ("" / "-" for none).
+    """
+    tokens = (attributes or "").split()
+    damaged = "DMG" in tokens
+    partial = "PARTIAL" in tokens
+    if not (damaged or partial):
+        return
+
+    color = DMG_ROW_COLOR if damaged else PARTIAL_ROW_COLOR
+    for column in range(item.columnCount()):
+        item.setForeground(column, color)
+
+    tips = []
+    if damaged:
+        tips.append(DMG_TOOLTIP)
+    if partial:
+        tips.append(PARTIAL_TOOLTIP)
+    item.setToolTip(0, "\n".join(tips))
 
 
 class FileBrowserApp(QMainWindow):
@@ -349,6 +395,7 @@ class FileBrowserApp(QMainWindow):
                     ],
                 )
                 item.node = child
+                _mark_damaged_row(item, child.attributes)
         self.logger.debug(f"File list updated for path: {self.current_path}")
 
     @pyqtSlot()
@@ -1120,6 +1167,7 @@ class FileBrowserApp(QMainWindow):
             if child.is_dir:
                 child_item = QTreeWidgetItem(parent_item, [child.name])
                 child_item.node = child
+                _mark_damaged_row(child_item, child.attributes)
                 self._recursive_populate_tree_widget(child, child_item)
 
     def _reset_layout(self) -> None:
