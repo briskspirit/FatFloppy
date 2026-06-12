@@ -611,8 +611,8 @@ class ApolloWbakFilesystem(Filesystem):
             if not self._geometry_is_apollo():
                 return 0
             if self.disk.read_sector(0, 0, 0)[: len(APOLLO_MAGIC)] == APOLLO_MAGIC:
-                # +25, deliberately below the global auto-detection floor
-                # (MINIMUM_VALIDITY_SCORE == 30, inclusive): a bare APOLLO
+                # +25, deliberately below this filesystem's own
+                # validity_threshold (40), the claim floor: a bare APOLLO
                 # container without a wbak tape stream (AEGIS-native disks
                 # like disk5) must never be claimed as a wbak filesystem.
                 score += 25

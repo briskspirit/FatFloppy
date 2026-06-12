@@ -14,12 +14,13 @@ from .utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-MINIMUM_VALIDITY_SCORE = 30
-
 
 def create_filesystem(disk: Disk) -> Optional[Filesystem]:
     """
     Detects and instantiates the most appropriate filesystem for a given disk.
+
+    A filesystem is only claimed when its score reaches its own
+    ``validity_threshold``; among claimable candidates, the highest score wins.
 
     Args:
         disk: The Disk object for which to create a filesystem handler
@@ -58,7 +59,7 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
             score = fs_instance.get_validity_score()
             all_scores[fs_class.__name__] = score
 
-            if score > highest_score:
+            if score >= fs_class.validity_threshold and score > highest_score:
                 highest_score = score
                 best_fs_instance = fs_instance
 
@@ -73,7 +74,7 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
 
     logger.debug(f"Filesystem scores: {all_scores}")
 
-    if highest_score >= MINIMUM_VALIDITY_SCORE and best_fs_instance:
+    if best_fs_instance:
         logger.info(
             f"Selected best match: {best_fs_instance.__class__.__name__} "
             f"with score {highest_score}."
@@ -84,8 +85,7 @@ def create_filesystem(disk: Disk) -> Optional[Filesystem]:
         return best_fs_instance
 
     logger.warning(
-        f"No valid filesystem detected (highest score {highest_score} < "
-        f"threshold {MINIMUM_VALIDITY_SCORE})."
+        f"No filesystem reached its own validity threshold (scores: {all_scores})."
     )
     return None
 

@@ -112,6 +112,11 @@ class MITSDSKDetector(FormatDetector):
                     score = fs.get_validity_score()
                     logger.debug(f"Profile {profile.name}: score={score}")
 
+                    if score < fs.validity_threshold:
+                        # A filesystem is only claimable at its OWN threshold;
+                        # the global floor alone is not sufficient.
+                        continue
+
                     if score > best_score:
                         best_score = score
                         best_match = (

@@ -170,3 +170,91 @@ def test_uniform_fill_fat_region_not_synthesized(tmp_path):
     assert fs.get_validity_score() < fs.validity_threshold, (
         "all-0xFF image wrongly scored as valid FAT12"
     )
+
+
+# --- Claim-threshold alignment ---------------------------------------------
+#
+# Content detection must only claim a filesystem when its score reaches that
+# filesystem's OWN validity_threshold, not just the global floor of 30. This
+# is the structural complement of the RX01 scoring fix above: any filesystem
+# scoring in [30, validity_threshold) used to be claimable by the detector
+# even though the filesystem itself would refuse every operation.
+#
+# The positive direction (a real resource scoring >= its threshold still
+# claims) is already pinned by test_bpb_fat12_detection_still_works above and
+# by the MITS detection tests in test_34/test_35.
+
+FAT12_RES_144M = Path(__file__).parent.parent / "resources" / "empty_formatted_144m.img"
+
+
+def test_factory_does_not_claim_below_fs_own_threshold(monkeypatch):
+    """create_filesystem must not claim a fs scoring in [30, own threshold)."""
+    from fatfloppy.core.disk import Disk
+    from fatfloppy.core.drivers.img import IMGImageDriver
+    from fatfloppy.core.filesystem_factory import create_filesystem
+    from fatfloppy.core.filesystems.formats.fat12_formats import FAT12_FORMATS
+
+    if not FAT12_RES_144M.exists():
+        pytest.skip(f"resource missing: {FAT12_RES_144M}")
+
+    # Force FAT12 (validity_threshold=40) into the gap above the old global
+    # floor (30) but below its own threshold. Every other filesystem scores 0
+    # on this image, so any claim can only be the sub-threshold FAT12.
+    monkeypatch.setattr(FATFilesystem, "get_validity_score", lambda _self: 35)
+
+    driver = IMGImageDriver(str(FAT12_RES_144M))
+    disk = Disk(driver)
+    disk.set_geometry(FAT12_FORMATS["ibm_3.5_1.44m"].physical_format)
+
+    assert create_filesystem(disk) is None, (
+        "create_filesystem claimed a filesystem scoring below its own "
+        "validity_threshold"
+    )
+
+
+def test_img_phase2_does_not_claim_below_fs_own_threshold(monkeypatch):
+    """IMG Phase 2 variant testing must not claim below the fs's threshold."""
+    from fatfloppy.core.disk import Disk
+    from fatfloppy.core.drivers.detectors.img_detector import IMGFormatDetector
+    from fatfloppy.core.drivers.img import IMGImageDriver
+    from fatfloppy.core.filesystem_registry import FilesystemRegistry
+
+    if not FAT12_RES_144M.exists():
+        pytest.skip(f"resource missing: {FAT12_RES_144M}")
+
+    monkeypatch.setattr(FATFilesystem, "get_validity_score", lambda _self: 35)
+
+    driver = IMGImageDriver(str(FAT12_RES_144M))
+    disk = Disk(driver)
+    detector = IMGFormatDetector(disk, driver, FilesystemRegistry.get_all_formats())
+
+    assert detector._try_variant_testing() == (None, None, None), (
+        "Phase 2 claimed a profile whose filesystem scored below its own "
+        "validity_threshold"
+    )
+
+
+def test_mits_detector_does_not_claim_below_fs_own_threshold(monkeypatch):
+    """The MITS profile loop must not claim below the fs's threshold."""
+    from fatfloppy.core.disk import Disk
+    from fatfloppy.core.drivers.detectors.mits_dsk_detector import MITSDSKDetector
+    from fatfloppy.core.drivers.mits_dsk import MITSDSKDriver
+    from fatfloppy.core.filesystem_registry import FilesystemRegistry
+    from fatfloppy.core.filesystems.cpm_fs import CPMFilesystem
+
+    path = Path(__file__).parent.parent / "resources" / "mits"
+    path = path / "lifeboat_cpm22_8inch.dsk"
+    if not path.exists():
+        pytest.skip(f"resource missing: {path}")
+
+    # CP/M declares validity_threshold=50; a forced 35 sits in [30, 50).
+    monkeypatch.setattr(CPMFilesystem, "get_validity_score", lambda _self: 35)
+
+    driver = MITSDSKDriver(str(path))
+    disk = Disk(driver)
+    detector = MITSDSKDetector(disk, driver, FilesystemRegistry.get_all_formats())
+
+    assert detector.detect() == (None, None, None), (
+        "MITS detector claimed a profile whose filesystem scored below its "
+        "own validity_threshold"
+    )

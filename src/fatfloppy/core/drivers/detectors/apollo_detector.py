@@ -13,9 +13,9 @@ class ApolloDetector(MetadataBasedDetector):
     Detection outcome depends on content:
     - Images whose first sector begins with the Apollo PV-label magic and
       carry a parseable wbak tape stream are claimed by
-      ``ApolloWbakFilesystem`` (validity score ≥ 30).
+      ``ApolloWbakFilesystem`` (validity score >= its validity_threshold).
     - Bare AEGIS-native containers (PV label present but no wbak stream)
-      score below the auto-detection floor and yield
+      score below that threshold and yield
       ``(None, None, physical_format)`` — the controller opens them with
       geometry only, leaving filesystem access undefined.
     """
