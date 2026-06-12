@@ -885,7 +885,10 @@ class RT11Filesystem(Filesystem):
     ) -> DirEntry:
         """Mark a specific ``entry`` E.MPTY, locating it by object identity:
         planning steps between lookup and deletion (allocation insertions,
-        segment splits) may have moved it to another index or segment."""
+        segment splits) may have moved it to another index or segment, and
+        on a replace the freshly allocated entry shares the name -- with
+        TWO live same-named entries a name-based lookup is ambiguous and
+        could mark the NEW entry empty, losing the write."""
         for segment in model:
             for index, candidate in enumerate(segment.entries):
                 if candidate is entry:
@@ -1071,8 +1074,8 @@ class RT11Filesystem(Filesystem):
         existing = self._model_find_live(model, filename)
         old_entry: Optional[DirEntry] = None
         if existing is not None:
-            segment, index = existing
-            old_entry = segment.entries[index]
+            found_segment, found_index = existing
+            old_entry = found_segment.entries[found_index]
             self._check_unprotected(old_entry, action="replace")
         start_block = self._plan_allocation(model, filename, name_words, length)
         if old_entry is not None:

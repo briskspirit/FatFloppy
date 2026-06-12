@@ -2171,6 +2171,51 @@ class TestReplaceOnSameName:
         finally:
             controller.close_disk()
 
+    def test_replace_when_freed_run_precedes_old_entry(self, tmp_path):
+        # Pins identity-based old-entry removal (_model_mark_empty_entry)
+        # on replace. When a freed run sits EARLIER in the directory than
+        # the file being replaced, first-fit splices the NEW entry BEFORE
+        # the old one -- after allocation TWO live entries share the name.
+        # A name-based relocation ("find first live B.DAT, mark it empty")
+        # would mark the NEW entry, leave the OLD one live, and the write
+        # would "succeed" while B.DAT silently reads back the old content.
+        controller, img = _format_new(tmp_path, "rt11_logical_494")
+        v1 = bytes((i * 3) % 256 for i in range(2 * BLOCK))
+        v2 = bytes((i * 5 + 1) % 256 for i in range(2 * BLOCK))
+        try:
+            fs = controller.filesystem
+            fs.write_file("A.DAT", b"A" * (2 * BLOCK))  # blocks 8-9
+            fs.write_file("B.DAT", v1)  # blocks 10-11
+            assert fs.get_file_allocation_units("B.DAT") == [10, 11]
+            fs.delete("A.DAT")  # frees 8-9, EARLIER than B's entry
+            fs.write_file("B.DAT", v2)  # first-fit -> A's freed run
+            # The data-loss signal: B must read back the NEW content.
+            assert fs.read_file("B.DAT") == v2
+            # The new copy landed in A's old run, ahead of the old entry.
+            assert fs.get_file_allocation_units("B.DAT") == [8, 9]
+            # Old B run freed: only the new 2-block copy is allocated.
+            assert fs.get_free_space()[0] == (494 - 8 - 2) * BLOCK
+            controller.flush()
+        finally:
+            controller.close_disk()
+
+        # Raw proof: exactly one live B.DAT remains, it is the EARLIER
+        # entry (in A's freed run), and the old run at 10-11 is E.MPTY.
+        ((_n, seg),) = _parse_linked_segments(img.read_bytes(), "logical")
+        live_b = [
+            e
+            for e in seg.entries
+            if not e.is_empty
+            and (e.name or "").strip() == "B"
+            and (e.file_type or "").strip() == "DAT"
+        ]
+        assert len(live_b) == 1
+        assert [(e.status, e.length, e.start_block) for e in seg.entries] == [
+            (E_PERM, 2, 8),  # NEW B.DAT in A's freed run
+            (E_MPTY, 2, 10),  # OLD B run, freed by the replace
+            (E_MPTY, 494 - 12, 12),
+        ]
+
     def test_replace_needs_room_for_old_and_new_together(self, tmp_path):
         # 486 data blocks; OLD takes 480, leaving a 6-block trailing run.
         # 100 new blocks would fit ONLY if OLD's run were freed first --
