@@ -72,30 +72,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against it with zero regressions in per-file content hashes.
 
 ### Fixed
-- GUI crash when importing files onto a read-only filesystem: the synchronous
-  import path let the filesystem's error escape a Qt slot (fatal in PyQt);
-  failures are now collected and shown in a dialog.
-- Extensive safety/correctness hardening across physical-disk access,
-  archival-image parsing (IMD/H17), write ordering, hostile-input handling,
-  and the filesystem/driver/core/GUI layers (audit remediation, Groups 1-10).
-- MITS Altair minifloppy writes/creates reframing data tracks as system tracks
-  and corrupting the directory.
-- CP/M writes overwriting existing files on disks with all-zero directory slots.
-- HDOS claiming disks whose geometry no HDOS controller can produce: detection
-  is now gated to the H17/H37/H47 shapes (40/80 tracks x 10, 77 x 26, 256-byte
-  sectors), so variable-zone disks (e.g. D64) are never misdetected as HDOS.
-- CP/M DPB inference claiming non-CP/M disks: the heuristic sweep now requires
-  plausible directory filenames before accepting an inferred layout.
-- Space/usage display showing every sector free on CBM disks (the filesystem
-  did not expose its allocation unit size to the GUI).
-- GUI applying FAT 8.3 name mangling to every filesystem on import, so CBM
-  names were truncated and `,s`-style type suffixes destroyed.
-- Exports of names containing path separators losing everything before the
-  separator (CBM `COPY/ALL` exported as `ALL`); host-illegal characters are
-  now sanitized instead.
-- CP/M extension-less files being undeletable and duplicating directory
-  entries on overwrite (the listed name and the path parser disagreed).
-- Root-level import paths with special characters being mis-normalized.
+- Detection over-claiming: HDOS and inferred-DPB CP/M no longer claim disks of
+  other formats (detection is now gated on plausible geometry and directory
+  contents), and the new drivers cannot shadow existing ones — all verified
+  with zero content-level regressions across the real-image corpus.
+- Filename handling throughout: import/export naming bugs across the GUI and
+  filesystems (FAT 8.3 mangling applied to non-FAT disks, export names losing
+  path-separator prefixes, CP/M extension-less files being undeletable,
+  mis-normalized import paths).
+- GUI robustness: crashes and wrong displays around read-only filesystems,
+  dialogs on worker threads, and the space/usage panel.
+- Write-path correctness on MITS Altair minifloppies and CP/M disks with
+  all-zero directory slots, plus broad safety/correctness hardening across
+  physical-disk access, image parsing, write ordering, and hostile-input
+  handling (audit remediation, Groups 1-10).
 
 ### Changed
 - `open_disk` now defaults to content-based `auto` driver detection.

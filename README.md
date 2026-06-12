@@ -22,6 +22,22 @@ FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage f
   format from the file's contents (not just its extension), or allows custom
   parameters
 
+## What's Supported
+
+| Filesystem | Read | Write | Image formats | Notes |
+|---|:-:|:-:|---|---|
+| **FAT12** (DOS 1.x–3.x) | ✓ | ✓ | IMG, IMD | incl. no-BPB DOS 1.x, DEC Rainbow RX50, 86-DOS |
+| **CP/M 2.2** | ✓ | ✓ | IMG, IMD, H17, MITS DSK | many OEM layouts; unknown DPBs inferred from the disk |
+| **HDOS** (Heath/Zenith) | ✓ | ✓ | IMG (H8D), H17 | H17/H37/H47 controller geometries |
+| **CBM DOS** (Commodore 1541/1571/1581) | ✓ | ✓ | D64, D71, D81 | REL files, 1581 partitions; error-byte variants preserved; 42-track D64 read-only |
+| **Apollo DOMAIN wbak** backups | ✓ | — | Apollo IMG | split backup sets reassembled across volumes ("insert next floppy") |
+| **Apollo AEGIS** native (SR9) | ✓ | — | Apollo IMG | boot/utility floppies; SR10 recognized but not claimed |
+
+Physical disks: FAT12, CP/M, and HDOS media (FM/MFM) can be read and written
+directly through Greaseweazle hardware. Commodore 5.25" GCR media and Apollo
+floppies are currently image-only. New blank images can be created and
+formatted for the writable filesystems' profiles.
+
 ## Installation
 
 ### Windows
