@@ -95,6 +95,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (set `FATFLOPPY_TEST_IMAGES`); the CBM and detection changes were verified
   against it with zero regressions in per-file content hashes.
 
+- The file viewer now loads BOTH the text and hex views on every open; the
+  text-vs-binary guess only decides which tab is raised, so a wrong guess
+  just means switching tabs. Binary files get a read-only text view that
+  can never be saved back.
+- Apollo wbak objects whose NAME record was clipped on the medium are now
+  recovered when provable (the surviving name remnant is matched against
+  the adjacent file record's UID); unprovable cases keep the faithful `?`
+  placeholder. Recovers names the original reference extractor cannot.
+- Files cut at end-of-volume (PARTIAL) or damaged on the medium (DMG) are
+  now color-coded in the file browser with explanatory tooltips.
+
 ### Fixed
 - Raw RX01 disk images are no longer misdetected as FAT12: directory-entry
   scoring now requires plausible 8.3 entries (DEC's EBCDIC label track no
