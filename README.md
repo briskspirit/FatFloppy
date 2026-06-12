@@ -134,9 +134,10 @@ fatfloppy
   together; picking an image from the wrong set (or the wrong volume of the
   right set) is detected and re-prompted, and chains of any length are
   followed volume by volume (N-volume sets prompt once per missing volume).
-  Declining extracts the available prefix as before, and drag-out to the host
-  always extracts the available prefix without prompting (a modal dialog
-  cannot interrupt a drag).
+  Declining extracts the available prefix as before; drag-out to the host and
+  extraction from physical media (Greaseweazle) always extract the available
+  prefix without prompting (a modal dialog cannot interrupt a drag or a
+  worker-thread read).
 - **AEGIS disks**: AEGIS-filesystem (native) Apollo floppies are recognized
   as Apollo containers but their filesystem cannot be browsed yet.
 

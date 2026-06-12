@@ -873,16 +873,29 @@ class FileManager(QObject):
         The loop keys on the entry being PARTIAL **and** its tree having a
         matching pending continuation -- never on the PARTIAL flag alone:
         a stitched tree can complete while the file stays short (bytes were
-        never written to the set), and prompting must stop then.  Every
-        filesystem without the capability flag returns immediately, which
-        also keeps the physical-disk worker threads dialog-free (only the
-        image-backed Apollo filesystem sets the flag).
+        never written to the set), and prompting must stop then.
+        Filesystems without the capability flag return immediately.
+
+        Physical-category drivers also return immediately: _extract_file
+        runs on a worker thread for physical disks (see the audit note in
+        its body) and modal dialogs are GUI-thread-only.  The Apollo wbak
+        filesystem mounts over the Greaseweazle driver too (the
+        apollo_1.2m_wbak profile), so the capability flag alone cannot
+        gate this; a cut entry read from physical media extracts the
+        available prefix silently, exactly like drag-out.
 
         Args:
             source_path: The full on-disk path of the entry about to be read.
         """
         fs = _active_filesystem(self)
         if not getattr(fs, "supports_volume_attach", False):
+            return
+        driver = getattr(self.parent.controller, "driver", None)
+        if driver is not None and driver.driver_category == "physical":
+            self.logger.info(
+                f"Physical disk: skipping the next-volume prompt for "
+                f"{source_path} (worker thread); extracting the available prefix"
+            )
             return
         parent_path, _, name = source_path.rstrip("/").rpartition("/")
         key = name.lower()

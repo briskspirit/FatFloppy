@@ -288,6 +288,34 @@ class TestGuiVolumeAttach:
         finally:
             fm.parent.controller.close_disk()
 
+    def test_physical_disk_never_prompts(self, two_vol, tmp_path, monkeypatch):
+        # _extract_file runs on a WORKER thread for physical-category
+        # drivers (see the audit note in _extract_file): modal dialogs are
+        # GUI-thread-only, so the attach prompt must never fire there --
+        # the cut entry extracts the available prefix silently, exactly
+        # like drag-out.  The Apollo wbak filesystem itself mounts over
+        # the Greaseweazle driver too (apollo_1.2m_wbak profile), so the
+        # capability flag alone cannot gate this.
+        s, fm = two_vol.s, two_vol.fm
+        monkeypatch.setattr(fm.parent.controller.driver, "driver_category", "physical")
+        # mirror the worker invocation: run the op synchronously
+        fm.parent._run_threaded_operation = lambda op, _name, **_k: op()
+        dest = tmp_path / "bigfile.out"
+        monkeypatch.setattr(
+            QFileDialog,
+            "getSaveFileName",
+            staticmethod(lambda *_a, **_k: (str(dest), "")),
+        )
+        questions = patch_question(monkeypatch, [])  # any prompt fails
+        dialogs = patch_open_dialog(monkeypatch, [])
+        select(fm, "bigfile")
+
+        fm.extract_selected_items()
+
+        assert dest.read_bytes() == s.prefix  # silent prefix, like drag-out
+        assert questions == [] and dialogs == []
+        assert fm.parent.controller.filesystem.pending_continuations() != []
+
     def test_non_apollo_fs_never_prompts(self, tmp_path, monkeypatch):
         # CBM splat file (PRG never closed): a "cut-like" entry on a
         # filesystem without supports_volume_attach must never touch the
