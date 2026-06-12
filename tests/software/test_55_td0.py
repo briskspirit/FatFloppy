@@ -1,4 +1,4 @@
-"""Teledisk TD0 tests: LZHUF decompression (driver/detection tests follow later).
+"""Teledisk TD0 tests: LZHUF decompression, TD0ImageDriver, detection.
 
 The load-bearing test is the oracle byte-equality sweep: every "advanced"
 (``'td'``-signature) sample in the local corpus must decompress byte-identical
@@ -22,13 +22,25 @@ Synthetic tests pin the documented edge contracts:
   bits (upper 6 bits 0 -> 3-bit prefix ``000`` + 6 verbatim bits).
 """
 
+import datetime
+import hashlib
+import shutil
+import struct
 from pathlib import Path
 
+import crcmod.predefined
 import pytest
 
 from fatfloppy.core.td0_compression import lzhuf_decompress
 
 LOCAL_TD0 = Path(__file__).parent.parent.parent / "local_images" / "TD0"
+RES = Path(__file__).parent.parent / "resources"
+TD0_RES = RES / "TD0"
+
+# Independent CRC reference for building/patching test files (the same
+# predefined polynomial 0xA097 the driver must use, but invoked here directly
+# so the tests do not trust the production module's constants).
+_CRC16 = crcmod.predefined.mkCrcFun("crc-16-teledisk")
 
 # LZHUF tree constants (fixed by the format; duplicated here independently so
 # the tests do not trust the production module's own constants).
@@ -172,3 +184,488 @@ class TestLzhufSynthetic:
         out = lzhuf_decompress(stream)
         assert out[:3] == b"\x20\x20\x20"
         assert len(out) == 4
+
+    def test_max_output_ceiling_enforced(self):
+        # LZHUF output is unbounded relative to input, so callers must be
+        # able to pass a hard ceiling.  A real advanced stream decompressing
+        # far beyond a tiny ceiling must raise (ValueError family), and the
+        # same call without a ceiling must still succeed.
+        sample = TD0_RES / "cpm22dri.td0"
+        raw = sample.read_bytes()[12:]
+        full = lzhuf_decompress(raw)
+        assert len(full) > 4096
+        with pytest.raises(ValueError):
+            lzhuf_decompress(raw, max_output=4096)
+        # Ceiling exactly at the output size must not raise.
+        assert lzhuf_decompress(raw, max_output=len(full)) == full
+
+
+# ===========================================================================
+# TD0ImageDriver tests
+# ===========================================================================
+#
+# Oracle: docs/superpowers/research/td0/samples/INVENTORY.tsv — every
+# geometry/hash literal below is copied from the named row of that file plus
+# the per-track table produced by docs/superpowers/research/td0/imd_flatten.py
+# over the gw-decoded IMD twins.  imd_flatten.py flattens tracks sorted by
+# (cyl, head) and sectors sorted by ascending sector ID within each track;
+# the driver maps logical index n to the n-th smallest sector ID (mirroring
+# the IMD driver), so concatenating read_sector(cyl, head, logical) in
+# (cyl, head, logical) order reproduces exactly that flattening.
+
+
+def _make_driver(path):
+    from fatfloppy.core.drivers.teledisk import TD0ImageDriver
+
+    return TD0ImageDriver(file_path=str(path))
+
+
+def _flatten_driver(driver) -> bytes:
+    """Flatten with the same rule as the research imd_flatten.py oracle.
+
+    Tracks in ascending (cyl, head) order; within a track, logical index
+    order — which the driver defines as ascending sector ID.  Tracks absent
+    from the image (zero-sector tracks are skipped at parse, like the IMD
+    driver does) have no TrackFormat and contribute nothing.
+    """
+    pf = driver.physical_format
+    out = bytearray()
+    for cyl in range(pf.cylinders):
+        for head in range(pf.heads):
+            try:
+                tf = pf.get_track_format(cyl, head)
+            except ValueError:
+                continue  # uncovered (e.g. zero-sector) track
+            for logical in range(tf.sectors_per_track):
+                out += driver.read_sector(cyl, head, logical)
+    return bytes(out)
+
+
+def _flatten_parsed_tracks(driver) -> bytes:
+    """Flatten straight from the parsed track map (same sorted-ID rule).
+
+    Needed where the IMD-mirrored geometry derivation leaves a coverage
+    hole: when a cylinder has no head-0 track (e.g. CPM22.TD0's zero-sector
+    C0H0), no TrackFormat covers that cylinder and read_sector cannot reach
+    its head-1 twin — exactly like the IMD driver on the same disk.  The
+    parse itself still holds every sector, which this helper proves.
+    """
+    out = bytearray()
+    for key in sorted(driver.tracks):
+        ti = driver.tracks[key]
+        for sector_id in sorted(ti.sector_data):
+            out += ti.sector_data[sector_id]
+    return bytes(out)
+
+
+def _patched_header(src: Path, tmp_path: Path, **fields) -> Path:
+    """Copy a sample, patch named header bytes, recompute the header CRC."""
+    offsets = {
+        "sig": 0,
+        "sequence": 2,
+        "check_sequence": 3,
+        "version": 4,
+        "rate": 5,
+        "drive": 6,
+        "stepping": 7,
+        "dos": 8,
+        "sides": 9,
+    }
+    data = bytearray(src.read_bytes())
+    for name, value in fields.items():
+        off = offsets[name]
+        if isinstance(value, bytes):
+            data[off : off + len(value)] = value
+        else:
+            data[off] = value
+    struct.pack_into("<H", data, 10, _CRC16(bytes(data[:10])))
+    dst = tmp_path / f"patched_{src.name}"
+    dst.write_bytes(bytes(data))
+    return dst
+
+
+class TestTD0DriverGeometry:
+    """Per-sample geometry pins (literals from INVENTORY.tsv + imd_flatten)."""
+
+    def test_alts8cpm_geometry(self):
+        # INVENTORY row ALTS8CPM.TD0: sig TD (normal), rate 0x82 (FM, 500),
+        # sides 1; imd_flatten: 77 cyls, 1 head, 26 sec/trk, 128 bytes/sec.
+        d = _make_driver(TD0_RES / "ALTS8CPM.TD0")
+        pf = d.physical_format
+        assert (pf.cylinders, pf.heads) == (77, 1)
+        tf = pf.get_track_format(0, 0)
+        assert tf.sectors_per_track == 26
+        assert tf.bytes_per_sector == 128
+        assert tf.encoding == "FM"
+        assert tf.sector_translation_table == list(range(1, 27))
+
+    def test_cpm22dri_geometry(self):
+        # INVENTORY row cpm22dri.td0: sig td (advanced LZHUF), rate 0x82,
+        # sides 1; imd_flatten: 77 cyls, 1 head, 26 sec/trk, 128 bytes/sec.
+        d = _make_driver(TD0_RES / "cpm22dri.td0")
+        pf = d.physical_format
+        assert (pf.cylinders, pf.heads) == (77, 1)
+        tf = pf.get_track_format(76, 0)
+        assert tf.sectors_per_track == 26
+        assert tf.bytes_per_sector == 128
+        assert tf.encoding == "FM"
+
+    def test_mbc775_geometry(self):
+        # INVENTORY row mbc775.td0: sig td, rate 0x00 (MFM 250), sides 2;
+        # imd_flatten: 40 cyls, 2 heads, 9 sec/trk, 512 bytes/sec (360K).
+        d = _make_driver(TD0_RES / "mbc775.td0")
+        pf = d.physical_format
+        assert (pf.cylinders, pf.heads) == (40, 2)
+        tf = pf.get_track_format(0, 0)
+        assert tf.sectors_per_track == 9
+        assert tf.bytes_per_sector == 512
+        assert tf.encoding == "MFM"
+
+    def test_cdos236_mixed_density_geometry(self):
+        # INVENTORY row cdos236.td0: sig td, version 0x14, comment-less;
+        # imd_flatten: 77 cyls, 1 head, modes 0,3 (mixed FM/MFM),
+        # 26x128 FM on track 0 and 16x512 MFM on tracks 1-76.
+        d = _make_driver(TD0_RES / "cdos236.td0")
+        pf = d.physical_format
+        assert (pf.cylinders, pf.heads) == (77, 1)
+        tf0 = pf.get_track_format(0, 0)
+        assert (tf0.sectors_per_track, tf0.bytes_per_sector) == (26, 128)
+        assert tf0.encoding == "FM"
+        tf40 = pf.get_track_format(40, 0)
+        assert (tf40.sectors_per_track, tf40.bytes_per_sector) == (16, 512)
+        assert tf40.encoding == "MFM"
+        assert pf.has_variable_bps
+
+    def test_osmos_dd_tiny_edge_geometry(self):
+        # INVENTORY row OSMOS-DD.TD0 (834-byte file, 768-byte payload):
+        # C0H0 holds 2 sectors (ids 9 and bogus 101, 256 bytes each),
+        # C1H0 holds 1 sector (bogus id 100, 256 bytes), C2H0 holds zero
+        # sectors and is skipped at parse exactly like the IMD driver skips
+        # zero-sector tracks — so the derived geometry is 2 cylinders.
+        d = _make_driver(TD0_RES / "OSMOS-DD.TD0")
+        pf = d.physical_format
+        assert (pf.cylinders, pf.heads) == (2, 1)
+        tf0 = pf.get_track_format(0, 0)
+        assert tf0.sectors_per_track == 2
+        assert tf0.bytes_per_sector == 256
+        # Logical order is ascending sector ID, bogus ids included.
+        assert tf0.sector_translation_table == [9, 101]
+        tf1 = pf.get_track_format(1, 0)
+        assert tf1.sectors_per_track == 1
+        assert tf1.sector_translation_table == [100]
+
+
+class TestTD0DriverOracle:
+    """Flattened raw content equals the gw-decoded oracle, byte for byte."""
+
+    # (file, flat_raw_bytes, sha256_flat_raw) from the INVENTORY.tsv rows of
+    # the same names.
+    CASES = [
+        (
+            "ALTS8CPM.TD0",
+            256256,
+            "5b19e57391f0a4b0f91d7d103d125bc1678df3e5b4c0b5b19ac87daa7c1a092d",
+        ),
+        (
+            "cpm22dri.td0",
+            256256,
+            "99670565b63d244f41caf89ab723a6ec479e294824f243a0d6bac6dc356e2415",
+        ),
+        (
+            "mbc775.td0",
+            368640,
+            "d1324565e4bf4135c3fe1ae6af7a01d756dcf9210a27a9fc58d6d3a82c62fcdd",
+        ),
+        (
+            "cdos236.td0",
+            625920,
+            "e6a2d6aed280e7fff6e49ce1c806ad2947119796147f5d99d91bcb9fd173e520",
+        ),
+        (
+            "OSMOS-DD.TD0",
+            768,
+            "99c06d12101432a5f9e919963a99f18e4e2e53cbdeb512d8e48d88e5a4d4126c",
+        ),
+    ]
+
+    @pytest.mark.parametrize("name,size,sha", CASES, ids=[c[0] for c in CASES])
+    def test_flat_content_matches_oracle(self, name, size, sha):
+        d = _make_driver(TD0_RES / name)
+        flat = _flatten_driver(d)
+        assert len(flat) == size
+        assert hashlib.sha256(flat).hexdigest() == sha
+
+
+class TestTD0DriverComment:
+    def test_alts8cpm_comment_and_timestamp(self):
+        # Decoded comment block of ALTS8CPM.TD0: NUL-separated lines, padded
+        # with trailing NULs; timestamp 1900+110 = 2010, month 0-based.
+        d = _make_driver(TD0_RES / "ALTS8CPM.TD0")
+        assert d.comment == (
+            "Altos series 8000 CP/M, version 2.21, Non-DMA, Single Density, "
+            'from orig\ninal Altos 8" disk'
+        )
+        assert d.creation_date == datetime.datetime(2010, 2, 5, 22, 4, 58)
+
+    def test_cdos236_has_no_comment(self):
+        # cdos236.td0 stepping byte is 0x00: no comment block at all.
+        d = _make_driver(TD0_RES / "cdos236.td0")
+        assert d.comment == ""
+        assert d.creation_date is None
+
+
+class TestTD0DriverReadOnly:
+    def test_write_sector_raises(self):
+        d = _make_driver(TD0_RES / "ALTS8CPM.TD0")
+        with pytest.raises(OSError):
+            d.write_sector(0, 0, 0, b"\x00" * 128)
+
+    def test_no_creation_or_formatting(self):
+        d = _make_driver(TD0_RES / "ALTS8CPM.TD0")
+        assert d.supports_new_image_creation is False
+        assert d.supports_in_place_formatting is False
+        with pytest.raises(NotImplementedError):
+            d.initialize_new_image(d.physical_format)
+
+    def test_flush_is_noop_and_file_untouched(self, tmp_path):
+        src = TD0_RES / "ALTS8CPM.TD0"
+        work = tmp_path / "copy.td0"
+        shutil.copy(src, work)
+        d = _make_driver(work)
+        d.flush()  # must not raise
+        assert work.read_bytes() == src.read_bytes()
+
+
+class TestTD0DriverRejection:
+    def test_nonzero_sequence_rejected(self, tmp_path):
+        # sequence != 0 means a multi-volume sequel (.TD1...) — rejected with
+        # a message naming the limitation, at validate AND at open.
+        from fatfloppy.core.drivers.teledisk import TD0ImageDriver
+
+        bad = _patched_header(TD0_RES / "ALTS8CPM.TD0", tmp_path, sequence=1)
+        d = TD0ImageDriver.__new__(TD0ImageDriver)
+        ok, msg = TD0ImageDriver.validate_for_opening(d, str(bad))
+        assert not ok
+        assert "multi-volume" in msg.lower()
+        with pytest.raises(ValueError, match="(?i)multi-volume"):
+            TD0ImageDriver(file_path=str(bad))
+
+    def test_old_advanced_lzw_rejected(self, tmp_path):
+        # 'td' signature with version < 0x14 is Teledisk 1.x LZW "old
+        # advanced" — no open implementation exists; reject by name.
+        from fatfloppy.core.drivers.teledisk import TD0ImageDriver
+
+        bad = _patched_header(TD0_RES / "cpm22dri.td0", tmp_path, version=0x10)
+        d = TD0ImageDriver.__new__(TD0ImageDriver)
+        ok, msg = TD0ImageDriver.validate_for_opening(d, str(bad))
+        assert not ok
+        assert "lzw" in msg.lower()
+        with pytest.raises(ValueError, match="(?i)lzw"):
+            TD0ImageDriver(file_path=str(bad))
+
+    def test_bad_header_crc_rejected(self, tmp_path):
+        from fatfloppy.core.drivers.teledisk import TD0ImageDriver
+
+        data = bytearray((TD0_RES / "ALTS8CPM.TD0").read_bytes())
+        data[10] ^= 0xFF  # corrupt stored header CRC
+        bad = tmp_path / "badcrc.td0"
+        bad.write_bytes(bytes(data))
+        d = TD0ImageDriver.__new__(TD0ImageDriver)
+        ok, msg = TD0ImageDriver.validate_for_opening(d, str(bad))
+        assert not ok
+        assert "crc" in msg.lower()
+        with pytest.raises(ValueError, match="(?i)crc"):
+            TD0ImageDriver(file_path=str(bad))
+
+    def test_truncated_file_rejected(self, tmp_path):
+        from fatfloppy.core.drivers.teledisk import TD0ImageDriver
+
+        full = (TD0_RES / "ALTS8CPM.TD0").read_bytes()
+
+        # Shorter than the 12-byte header: rejected at validate.
+        stub = tmp_path / "stub.td0"
+        stub.write_bytes(full[:8])
+        d = TD0ImageDriver.__new__(TD0ImageDriver)
+        ok, _msg = TD0ImageDriver.validate_for_opening(d, str(stub))
+        assert not ok
+
+        # Valid header but body cut mid-track: validate passes (it is only
+        # the cheap magic gate), open raises a parse error.
+        cut = tmp_path / "cut.td0"
+        cut.write_bytes(full[:200])
+        ok, _msg = TD0ImageDriver.validate_for_opening(d, str(cut))
+        assert ok
+        with pytest.raises(ValueError):
+            TD0ImageDriver(file_path=str(cut))
+
+    def test_decompression_bomb_ceiling(self, monkeypatch):
+        # The driver must enforce a decompressed-output ceiling so a crafted
+        # 'td' stream cannot balloon without bound (LZHUF output is unbounded
+        # relative to input).  Lower the ceiling below a real sample's
+        # decompressed size and the open must fail with a clear error.
+        from fatfloppy.core.drivers import teledisk
+
+        monkeypatch.setattr(teledisk, "TD0_MAX_DECOMPRESSED", 4096)
+        with pytest.raises(ValueError, match="(?i)exceed"):
+            teledisk.TD0ImageDriver(file_path=str(TD0_RES / "cpm22dri.td0"))
+
+
+def _synthetic_td0_with_skipped_sector() -> bytes:
+    """Build a minimal normal-compression TD0 exercising flags & 0x30.
+
+    Track 0/head 0 with two 256-byte sectors: id 1 carries flag 0x10
+    (data skipped per DOS allocation — NO data block follows), id 2 is a
+    normal method-0 sector filled with 0xA5.  No corpus sample sets these
+    flags, hence the synthetic image (layout per td0notes.txt sections 5-7).
+    """
+    header = struct.pack("<2sBBBBBBBB", b"TD", 0, 0, 0x15, 0, 1, 0, 0, 1)
+    header += struct.pack("<H", _CRC16(header))
+
+    track = struct.pack("<BBB", 2, 0, 0)
+    track += bytes([_CRC16(track) & 0xFF])
+
+    payload = bytearray(track)
+    # Sector id 1: flags 0x10 -> no data header, no data block.
+    sec1 = struct.pack("<BBBBB", 0, 0, 1, 1, 0x10)
+    payload += sec1 + bytes([_CRC16(b"\x00" * 256) & 0xFF])
+    # Sector id 2: normal raw (method 0) data block.
+    data2 = b"\xa5" * 256
+    sec2 = struct.pack("<BBBBB", 0, 0, 2, 1, 0x00)
+    payload += sec2 + bytes([_CRC16(data2) & 0xFF])
+    payload += struct.pack("<HB", len(data2) + 1, 0) + data2
+    payload += b"\xff"  # track-list terminator
+    return header + bytes(payload)
+
+
+class TestTD0DriverQuirks:
+    """Corpus quirks (local_images, skip-guarded) + synthetic no-data flags."""
+
+    def test_skipped_sector_flags_zero_filled(self, tmp_path):
+        img = tmp_path / "skipflag.td0"
+        img.write_bytes(_synthetic_td0_with_skipped_sector())
+        d = _make_driver(img)
+        pf = d.physical_format
+        assert (pf.cylinders, pf.heads) == (1, 1)
+        assert pf.get_track_format(0, 0).sectors_per_track == 2
+        assert d.read_sector(0, 0, 0) == b"\x00" * 256  # flags 0x10: zero-fill
+        assert d.read_sector(0, 0, 1) == b"\xa5" * 256
+
+    @pytest.mark.skipif(not LOCAL_TD0.is_dir(), reason="local TD0 corpus not present")
+    def test_zero_sector_track_skipped_cpm22(self):
+        # CPM22.TD0 records a zero-sector track at C0H0 (a real artefact;
+        # the disk's first track held no readable sectors).  Like the IMD
+        # driver, the track is skipped: not in .tracks, no TrackFormat,
+        # while every other track stays readable.
+        d = _make_driver(LOCAL_TD0 / "CPM22.TD0")
+        pf = d.physical_format
+        assert (0, 0) not in d.tracks
+        assert (0, 1) in d.tracks
+        assert (pf.cylinders, pf.heads) == (80, 2)
+        # 16 x 256-byte sectors per track (imd_flatten over CPM22.imd).
+        assert len(d.read_sector(1, 0, 0)) == 256
+        # Cylinder 0 has no head-0 track, so no TrackFormat covers it and
+        # C0H1 is unreachable via read_sector — the IMD driver behaves
+        # identically on the gw-decoded twin.  The parse still holds every
+        # sector: flattening the track map matches the INVENTORY oracle row
+        # CPM22.TD0 in full.
+        flat = _flatten_parsed_tracks(d)
+        assert len(flat) == 651264
+        assert (
+            hashlib.sha256(flat).hexdigest()
+            == "e88e1dbf8b1965b04aeb04d9022f97e9d764efb81014c9003aeae58d174ac228"
+        )
+
+    @pytest.mark.skipif(not LOCAL_TD0.is_dir(), reason="local TD0 corpus not present")
+    def test_msdos20t_duplicates_and_tail_zero_tracks(self):
+        # MSDOS20T.TD0 contains 10 duplicate-ID sector records (first valid
+        # occurrence wins) and zero-sector tracks at cylinder 77 (skipped, so
+        # the geometry stays 77 cylinders).  INVENTORY row MSDOS20T.TD0 pins
+        # the flattened oracle, which proves both behaviors byte-exactly.
+        d = _make_driver(LOCAL_TD0 / "MSDOS20T.TD0")
+        pf = d.physical_format
+        assert (pf.cylinders, pf.heads) == (77, 2)
+        flat = _flatten_driver(d)
+        assert len(flat) == 1261568
+        assert (
+            hashlib.sha256(flat).hexdigest()
+            == "418d00d2f6b69aba3ca7d6193e7fc94b9ce86e6dbbe42946dc53a9c809afac62"
+        )
+
+    @pytest.mark.skipif(not LOCAL_TD0.is_dir(), reason="local TD0 corpus not present")
+    def test_sb180sys_non_one_based_ids_all_readable(self):
+        # SB180SYS.TD0 numbers its sectors 17-26 (CP/M 2:1 skew table on
+        # 512-byte sectors).  Logical index 0 must map to id 17 and every
+        # sector must be readable; INVENTORY row SB180SYS.TD0 pins content.
+        d = _make_driver(LOCAL_TD0 / "SB180SYS.TD0")
+        pf = d.physical_format
+        tf = pf.get_track_format(0, 0)
+        assert tf.sector_translation_table == list(range(17, 27))
+        flat = _flatten_driver(d)
+        assert len(flat) == 409600
+        assert (
+            hashlib.sha256(flat).hexdigest()
+            == "013bfd205e1d93b7e8932d5a6829f177fcac6a7f9c3d8adad727a431de73e8b6"
+        )
+
+
+class TestTD0AutoDetection:
+    def test_factory_auto_selects_td0(self):
+        from fatfloppy.core.driver_factory import DriverFactory
+
+        for name in ("ALTS8CPM.TD0", "mbc775.td0"):
+            driver = DriverFactory.create("auto", str(TD0_RES / name))
+            assert driver.driver_type == "TD0", name
+
+    def test_non_td0_named_td0_falls_through(self, tmp_path):
+        # A raw FAT12 image renamed to .td0 must NOT be claimed by the TD0
+        # driver (magic + header CRC gate); it falls through to the raw IMG
+        # fallback.
+        from fatfloppy.core.driver_factory import DriverFactory
+
+        fake = tmp_path / "fake.td0"
+        shutil.copy(RES / "empty_formatted_360k.img", fake)
+        driver = DriverFactory.create("auto", str(fake))
+        assert driver.driver_type == "IMG"
+
+    def test_existing_resources_not_shadowed(self):
+        # Spot pins: the TD0 driver joining auto-detection must not steal
+        # any existing resource from its rightful driver.
+        from fatfloppy.core.driver_factory import DriverFactory
+
+        pins = [
+            (RES / "imd_720k.imd", "IMD"),
+            (RES / "empty_formatted_360k.img", "IMG"),
+            (RES / "mits" / "lifeboat_cpm22_8inch.dsk", "MITS_DSK"),
+        ]
+        for path, expected in pins:
+            if not path.exists():
+                pytest.skip(f"resource missing: {path}")
+            driver = DriverFactory.create("auto", str(path))
+            assert driver.driver_type == expected, path.name
+
+    def test_controller_detects_cpm_on_td0(self):
+        # The detector must run filesystem scoring over TD0 geometry exactly
+        # as for IMD: a DRI CP/M 2.2 8" SSSD disk inside a TD0 container
+        # detects as CP/M (DPB inference over the container's geometry).
+        from fatfloppy.core.controller import DiskController
+        from fatfloppy.core.filesystems.cpm_fs import CPMFilesystem
+
+        controller = DiskController()
+        assert controller.open_disk(str(TD0_RES / "cpm22dri.td0"))
+        try:
+            assert type(controller.driver).__name__ == "TD0ImageDriver"
+            assert isinstance(controller.filesystem, CPMFilesystem)
+        finally:
+            controller.close_disk()
+
+    def test_controller_detects_fat12_on_td0(self):
+        from fatfloppy.core.controller import DiskController
+        from fatfloppy.core.filesystems.fat12_fs import FATFilesystem
+
+        controller = DiskController()
+        assert controller.open_disk(str(TD0_RES / "mbc775.td0"))
+        try:
+            assert type(controller.driver).__name__ == "TD0ImageDriver"
+            assert isinstance(controller.filesystem, FATFilesystem)
+        finally:
+            controller.close_disk()

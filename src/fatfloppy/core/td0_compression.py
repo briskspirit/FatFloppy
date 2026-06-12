@@ -33,6 +33,13 @@ raises — it yields the bytes decoded so far plus that one zero-completed
 byte.  Empty input returns ``b""`` (deliberate divergence: the C
 reference fabricates one byte out of nothing but fake zero bits).
 
+OUTPUT IS UNBOUNDED relative to input: one match code can emit up to 60
+bytes from as few as ~10 input bits (a worst case of roughly 48 output
+bytes per input byte), so a small crafted stream can balloon without
+limit.  Callers MUST size-gate by passing ``max_output`` (the TD0 driver
+enforces a floppy-scale ceiling); decompression raises ``ValueError`` as
+soon as the ceiling would be exceeded.
+
 Test oracle: byte-equality against ``greaseweazle.optimised.td0_unpack``
 over the real-image corpus (tests only; this module is pure stdlib).
 """
@@ -147,13 +154,15 @@ _EXPAND = [
 ]
 
 # Zero-bit padding appended after the real input bits.  Once end-of-input is
-# flagged, at most one code (Huffman walk + position) is still completed; the
-# sibling property bounds Huffman code length well below 64 bits, so 4096
-# zero bits is a >100x safety margin against ever indexing past the buffer.
+# flagged, at most one code (Huffman walk + position) is still completed.  A
+# Huffman walk visits at most N_CHAR - 1 = 313 internal nodes (tree depth for
+# 314 leaves), and a position adds at most 8 + 6 = 14 bits, so the in-flight
+# code consumes at most 327 padding bits; 4096 zero bits is a ~12.5x safety
+# margin against ever indexing past the buffer.
 _ZERO_PAD = 4096
 
 
-def lzhuf_decompress(data: bytes) -> bytes:
+def lzhuf_decompress(data: bytes, max_output: "int | None" = None) -> bytes:
     """Decompress a Teledisk advanced (LZHUF) stream.
 
     `data` is everything after the 12-byte TD0 file header.  Returns the
@@ -161,9 +170,18 @@ def lzhuf_decompress(data: bytes) -> bytes:
     any non-empty input.  Never raises on truncated/garbage input (see
     module docstring for the exact end-of-input contract); `LzhufError`
     is reserved for impossible internal states.
+
+    `max_output` is the caller's size gate against decompression bombs:
+    output is unbounded relative to input (see module docstring), so when
+    the decoded size would exceed `max_output` a `ValueError` is raised
+    immediately instead of ballooning further.
     """
     if not data:
         return b""
+
+    # Effectively-unbounded sentinel keeps the hot loop branch-cheap (a
+    # plain int comparison) when no ceiling was requested.
+    ceiling = max_output if max_output is not None else 1 << 62
 
     # --- bit reader setup -------------------------------------------------
     # The reference decoder's GetChar() reads the final byte as zero while
@@ -278,6 +296,11 @@ def lzhuf_decompress(data: bytes) -> bytes:
 
         if c < 256:
             out_append(c)
+            if len(out) > ceiling:
+                raise ValueError(
+                    f"LZHUF output exceeds the {ceiling}-byte ceiling "
+                    "(decompression bomb?)"
+                )
             window[r] = c
             r = (r + 1) & nmask
             if pos > limit:
@@ -306,6 +329,11 @@ def lzhuf_decompress(data: bytes) -> bytes:
                 # byte of the in-flight match, then stops.
                 b = window[ppos]
                 out_append(b)
+                if len(out) > ceiling:
+                    raise ValueError(
+                        f"LZHUF output exceeds the {ceiling}-byte ceiling "
+                        "(decompression bomb?)"
+                    )
                 break
             count = c - 255 + THRESHOLD
             if (
@@ -325,5 +353,10 @@ def lzhuf_decompress(data: bytes) -> bytes:
                     out_append(b)
                     window[r] = b
                     r = (r + 1) & nmask
+            if len(out) > ceiling:
+                raise ValueError(
+                    f"LZHUF output exceeds the {ceiling}-byte ceiling "
+                    "(decompression bomb?)"
+                )
 
     return bytes(out)
