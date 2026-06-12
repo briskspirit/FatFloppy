@@ -961,6 +961,10 @@ class FileManager(QObject):
                 QMessageBox.warning(self.parent, "Wrong Volume", str(e))
                 continue  # re-prompt: the user can pick another image
             self.logger.info(f"Attached volume image '{volume_path}'")
+            # The attach changed what the browser shows (continuation files
+            # join the listing, PARTIAL flags can clear): rebuild the view,
+            # same as imports/deletions do, preserving the user's place.
+            self.refresh_needed.emit(self.parent.current_path)
             # Loop: the entry is usually complete now; a 3+ volume chain
             # still has a pending continuation and prompts for the next one.
 

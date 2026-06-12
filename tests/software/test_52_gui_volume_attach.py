@@ -119,6 +119,24 @@ def patch_warning(monkeypatch):
     return calls
 
 
+def record_refresh(fm):
+    """Records refresh_needed emissions (the signal main_window connects to
+    refresh_filesystem_ui) as (path, /com listing AT EMIT TIME): capturing the
+    listing when the signal fires proves the rebuilt view would already show
+    the post-attach state, not the stale pre-attach one."""
+    calls = []
+
+    def on_refresh(path):
+        fs = fm.parent.controller.filesystem
+        names = sorted(
+            (info.name, info.attributes) for info in fs.list_directory("/com")
+        )
+        calls.append((path, names))
+
+    fm.refresh_needed.connect(on_refresh)
+    return calls
+
+
 @pytest.fixture
 def two_vol(tmp_path):
     """Synthetic 2-volume set opened as volume A, volume B on tmp disk."""
@@ -382,6 +400,58 @@ class TestGuiVolumeAttach:
             assert questions == [] and dialogs == []
         finally:
             fm.parent.controller.close_disk()
+
+    def test_successful_attach_refreshes_browser(self, two_vol, tmp_path, monkeypatch):
+        # attach_volume changes what the browser shows ('followon' joins the
+        # listing, bigfile's PARTIAL flag clears), so a successful attach
+        # must emit refresh_needed -- the same signal imports and deletions
+        # emit, which main_window connects to refresh_filesystem_ui.
+        # Before the fix the view kept the pre-attach state until a manual
+        # reopen.
+        s, fm = two_vol.s, two_vol.fm
+        fs = fm.parent.controller.filesystem
+        pre = sorted((i.name, i.attributes) for i in fs.list_directory("/com"))
+        assert pre == [("bigfile", "PARTIAL")]  # the stale view's content
+        refreshes = record_refresh(fm)
+        dest = tmp_path / "bigfile.out"
+        monkeypatch.setattr(
+            QFileDialog,
+            "getSaveFileName",
+            staticmethod(lambda *_a, **_k: (str(dest), "")),
+        )
+        patch_question(monkeypatch, [YES])
+        patch_open_dialog(monkeypatch, [str(two_vol.vol_b_path)])
+        select(fm, "bigfile")
+
+        fm.extract_selected_items()
+
+        assert dest.read_bytes() == s.content
+        assert len(refreshes) == 1  # one refresh for the one attached volume
+        path, listing_at_emit = refreshes[0]
+        assert path == "/com"  # preserve the user's place, like import does
+        # emitted AFTER the fs mutated: the rebuild shows the attached state
+        assert listing_at_emit == [("bigfile", ""), ("followon", "")]
+
+    def test_decline_does_not_refresh(self, two_vol, tmp_path, monkeypatch):
+        # No attach happened, nothing changed: declining the prompt must not
+        # trigger a rebuild (same for the physical/drag-out early returns,
+        # which never reach the attach call at all).
+        s, fm = two_vol.s, two_vol.fm
+        refreshes = record_refresh(fm)
+        dest = tmp_path / "bigfile.out"
+        monkeypatch.setattr(
+            QFileDialog,
+            "getSaveFileName",
+            staticmethod(lambda *_a, **_k: (str(dest), "")),
+        )
+        patch_question(monkeypatch, [NO])
+        patch_open_dialog(monkeypatch, [])
+        select(fm, "bigfile")
+
+        fm.extract_selected_items()
+
+        assert dest.read_bytes() == s.prefix
+        assert refreshes == []
 
     def test_attach_that_leaves_file_short_stops_prompting(self, tmp_path, monkeypatch):
         # The corrected loop condition, end to end: the user attaches the
