@@ -8,10 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apollo AEGIS native floppy support (read-only):
+  - browsing and extraction of SR9-era AEGIS boot/utility floppies: the
+    volume's real directory tree (PV/LV labels, VTOC, file maps) with the
+    genuine Apollo timestamps and object types; managed objects
+    (text/record/hdru) read back with their 32-byte storage headers
+    stripped, the same view AEGIS itself presents
+  - filesystem check reconciling block ownership (labels, BAT, VTOC, index
+    blocks, directory and file pages) against the volume's BAT bitmap
+    (clean volumes reconcile perfectly)
+  - entries with missing VTOCEs or out-of-range file maps are flagged
+    damaged and read back with holes zero-filled instead of failing the
+    volume
+  - SR10-or-later volumes (a different VTOCE layout) are recognized but
+    deliberately never claimed, so they cannot be misread
 - Apollo DOMAIN wbak backup floppy support (read-only):
   - Apollo floppy image driver for the 77x2x8x1024 physical-volume container
-    (`.img`, exactly 1,261,568 bytes with the `APOLLO` signature; AEGIS-native
-    disks are recognized as Apollo containers but not yet browsable)
+    (`.img`, exactly 1,261,568 bytes with the `APOLLO` signature)
   - wbak "tape-on-floppy" stream parser covering all four layers of the format
     (segment framing, ANSI X3.27 labels, backup blocks, object records), with
     recovery of the wbak writer's pathologies on real media (stale sectors,

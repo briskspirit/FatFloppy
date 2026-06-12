@@ -1,15 +1,15 @@
 # FatFloppy
 
-FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, HDOS, Commodore CBM DOS, and Apollo DOMAIN wbak filesystems across multiple disk image formats (IMG, IMD, H17, MITS DSK, D64/D71/D81, Apollo floppy). This is an **alpha version**, with core features working but more to come.
+FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, HDOS, Commodore CBM DOS, and Apollo DOMAIN filesystems (wbak backups and native AEGIS volumes) across multiple disk image formats (IMG, IMD, H17, MITS DSK, D64/D71/D81, Apollo floppy). This is an **alpha version**, with core features working but more to come.
 
 [![License: Unlicense](https://img.shields.io/badge/License-Unlicense-yellow.svg)](https://unlicense.org)
 
 ## Key Features
 
 - **Multiple Filesystems**: FAT12, CP/M, HDOS, CBM DOS, and Apollo DOMAIN
-  wbak (read-only) support, including many non-standard vintage layouts
-  (no-BPB DOS, DEC Rainbow, 86-DOS, hard-sectored Heath H17 / MITS Altair
-  CP/M, and more)
+  wbak and AEGIS (read-only) support, including many non-standard vintage
+  layouts (no-BPB DOS, DEC Rainbow, 86-DOS, hard-sectored Heath H17 / MITS
+  Altair CP/M, and more)
 - **Multiple Formats**: IMG, IMD, H17, MITS DSK, Commodore D64/D71/D81, and
   Apollo DOMAIN floppy image formats (including error-byte D64/D71 variants;
   42-track D64 images open read-only)
@@ -138,8 +138,27 @@ fatfloppy
   extraction from physical media (Greaseweazle) always extract the available
   prefix without prompting (a modal dialog cannot interrupt a drag or a
   worker-thread read).
-- **AEGIS disks**: AEGIS-filesystem (native) Apollo floppies are recognized
-  as Apollo containers but their filesystem cannot be browsed yet.
+- **AEGIS disks**: AEGIS-filesystem (native) Apollo floppies are detected
+  separately and browse as native volumes — see the next section.
+
+### Apollo AEGIS Notes
+
+- **Read-only**: native AEGIS volumes open read-only, like the wbak media.
+- **Browsing**: SR9-era AEGIS boot/utility floppies mount as the volume's
+  real directory tree with the genuine Apollo timestamps and object types
+  (`TEXT`, `OBJ`, `SYSBOOT`, ...); managed objects (text/record/hdru) read
+  back with their 32-byte storage headers stripped, the same view AEGIS
+  itself presents.
+- **Verified structures**: detection and the filesystem check walk the real
+  on-disk structures — PV/LV labels, the VTOC and its index blocks, and
+  every file map — and reconcile the resulting block ownership against the
+  volume's BAT bitmap (clean volumes reconcile perfectly).
+- **Damage handling**: entries whose VTOCE is missing or whose file map
+  points off-volume are flagged `DMG` and read back with holes zero-filled
+  instead of failing the volume.
+- **SR10 disks**: SR10-or-later volumes (a different VTOCE layout) are
+  recognized as AEGIS but deliberately not claimed, so they are never
+  misread; they open as raw Apollo containers only.
 
 ### Filenames on Import/Export
 
