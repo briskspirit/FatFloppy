@@ -49,13 +49,18 @@ from fatfloppy.core.rt11_layout import (
     E_PERM,
     E_PROT,
     E_READ,
+    E_TENT,
+    MAX_SEGMENTS,
     RAD50_MAX_WORD,
     SCORE_THRESHOLD,
+    SEGMENT_SIZE,
     VIEW_GEOMETRY,
     VIEWS,
     RT11Config,
     decode_date_word,
+    default_segment_count,
     encode_date_word,
+    encode_home_block,
     logical_block_to_chs,
     parse_home_block,
     parse_segment,
@@ -63,6 +68,8 @@ from fatfloppy.core.rt11_layout import (
     rad50_encode,
     rad50_is_valid,
     score_directory_structure,
+    segment_max_entries,
+    serialize_segment,
 )
 
 RES = Path(__file__).parent.parent / "resources" / "RT11"
@@ -514,6 +521,129 @@ class TestSegmentParsing:
         assert home.owner == "RX2 AUTO    "  # matches the DEC DIR listing
         assert home.system_id == "DECRT11A    "
         assert home.system_version == "V05"
+
+
+# ---------------------------------------------------------------------------
+# Segment serialization (inverse of parse_segment) and home block encoding
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentSerialization:
+    @pytest.mark.parametrize(
+        "path,view",
+        [(RX01_V03B, "rx01"), (V0501_IMG, "logical"), (BASIC11_RX02, "rx02")],
+        ids=["v03b-0x20-tail", "v0501-0x88-tail", "basic11-full-segment"],
+    )
+    def test_real_segment_round_trips_byte_identically(self, path, view):
+        # Lossless-edit pin: the three committed images carry three distinct
+        # post-EOS tails (spaces, 0x88 fill, zeros) and BASIC-11 segment 1 is
+        # a completely full 72-entry segment. parse -> serialize must
+        # reproduce every byte.
+        data = path.read_bytes()
+        original = _read_block(data, view, 6) + _read_block(data, view, 7)
+        assert serialize_segment(parse_segment(original)) == original
+
+    def test_extra_bytes_round_trip(self):
+        # A volume initialized with extra bytes per entry must survive a
+        # parse -> serialize cycle losslessly, including the extra payload.
+        hdr = struct.pack("<5H", 1, 0, 1, 2, 100)
+        entry = (
+            struct.pack(
+                "<7H",
+                E_PERM,
+                rad50_encode("FOO"),
+                rad50_encode("   "),
+                rad50_encode("TXT"),
+                5,
+                0,
+                encode_date_word(1985, 1, 2),
+            )
+            + b"\xaa\xbb"
+        )
+        seg = hdr + entry + struct.pack("<H", E_EOS)
+        seg += b"\xcc" * (SEGMENT_SIZE - len(seg))  # junk tail, must survive
+        assert serialize_segment(parse_segment(seg)) == seg
+
+    def test_serializer_rejects_unterminated_segment(self):
+        # We only ever write EOS-terminated segments; a parse without an EOS
+        # marker is not serializable.
+        seg = struct.pack("<5H", 1, 0, 1, 0, 50) + b"\x00" * (SEGMENT_SIZE - 10)
+        parsed = parse_segment(seg)
+        assert not parsed.eos_found
+        with pytest.raises(ValueError):
+            serialize_segment(parsed)
+
+    def test_serializer_rejects_overflow(self):
+        # 73 entries (extra_bytes 0) cannot fit with the EOS word.
+        base = _read_block(BASIC11_RX02.read_bytes(), "rx02", 6) + _read_block(
+            BASIC11_RX02.read_bytes(), "rx02", 7
+        )
+        parsed = parse_segment(base)  # exactly 72 entries: at capacity
+        assert len(parsed.entries) == 72
+        import dataclasses
+
+        overfull = dataclasses.replace(
+            parsed, entries=parsed.entries + (parsed.entries[0],)
+        )
+        with pytest.raises(ValueError):
+            serialize_segment(overfull)
+
+    def test_segment_max_entries(self):
+        # (1024 - 10 header - 2 EOS) // entry size; 72 for plain entries,
+        # matching the manual's S = (512-5)/(7+N) integer formula (sec 1.1.4).
+        assert segment_max_entries(0) == 72
+        assert segment_max_entries(2) == 63
+        assert segment_max_entries(64) == 12
+
+    def test_default_segment_counts(self):
+        # RT-11 V5.4D DUP defaults (PUTR.ASM rtnseg table, cross-checked
+        # against the RT-11 V04.00 SUG device table quoted there): RX01
+        # (494 blocks) -> 1, RX02 (988) and RX50 (800) -> 4. The V&FF manual
+        # (sec 1.1.2) defers per-device defaults to DUP, so the DUP table is
+        # the authority.
+        assert default_segment_count(494) == 1
+        assert default_segment_count(512) == 1
+        assert default_segment_count(513) == 4
+        assert default_segment_count(800) == 4
+        assert default_segment_count(988) == 4
+        assert default_segment_count(2048) == 4
+        assert default_segment_count(2049) == 16
+        assert default_segment_count(12288) == 16
+        assert default_segment_count(12289) == MAX_SEGMENTS
+        assert default_segment_count(65535) == MAX_SEGMENTS
+
+
+class TestHomeBlockEncoding:
+    def test_round_trip_through_parser(self):
+        block = encode_home_block(volume_id="MYVOLUME", owner="ME")
+        home = parse_home_block(block)
+        assert home.pack_cluster_size == 1
+        assert home.dir_start == 6
+        assert home.system_version == "V05"
+        assert home.volume_id == "MYVOLUME    "
+        assert home.owner == "ME          "
+        assert home.system_id == "DECRT11A    "
+        # Unlike real DEC factory disks, OUR home blocks carry a correct
+        # checksum (manual sec 1.1.1: simple additive sum of the other 255
+        # words, FILES-11 ODS style).
+        assert home.checksum_stored == home.checksum_computed
+
+    def test_checksum_algorithm_pinned_independently(self):
+        # Independent transcription of the manual's algorithm:
+        #   CLR R1; MOV #255.,R2; 10$: ADD (R0)+,R1; SOB R2,10$; MOV R1,@R0
+        block = encode_home_block(volume_id="CHKSUM")
+        words = struct.unpack("<256H", block)
+        assert words[255] == sum(words[:255]) & 0xFFFF
+
+    def test_defaults_and_field_truncation(self):
+        block = encode_home_block()
+        home = parse_home_block(block)
+        assert home.volume_id == "RT11A       "  # manual table 1-1 default
+        assert home.owner == " " * 12
+        block = encode_home_block(volume_id="ABCDEFGHIJKLMNOP", dir_start=10)
+        home = parse_home_block(block)
+        assert home.volume_id == "ABCDEFGHIJKL"  # truncated to the 12-byte field
+        assert home.dir_start == 10
 
 
 # ---------------------------------------------------------------------------
@@ -1259,16 +1389,115 @@ class TestFilesystemSurface:
         finally:
             controller.close_disk()
 
-    def test_write_side_not_implemented_yet(self):
+    def test_create_directory_not_supported(self):
         controller = _open(RX01_V03B)
         try:
-            fs = controller.filesystem
             with pytest.raises(NotImplementedError):
-                fs.write_file("NEW.DAT", b"x")
-            with pytest.raises(NotImplementedError):
-                fs.delete("SWAP.SYS")
-            with pytest.raises(NotImplementedError):
-                fs.create_directory("/SUB")
+                controller.filesystem.create_directory("/SUB")
+        finally:
+            controller.close_disk()
+
+
+# ---------------------------------------------------------------------------
+# Synthetic corruption: defensive read-path branches pinned against patched
+# copies of the committed V5.01 logical image (block N == byte offset N*512).
+# A header-valid volume with broken entries/links scores 65 (50 header + 15
+# DECRT11A) which is >= the 40 threshold, so these branches are all live.
+# ---------------------------------------------------------------------------
+
+SEG1_OFF = 6 * BLOCK  # segment 1 byte offset under the logical view
+ENTRY0_OFF = SEG1_OFF + 10  # first entry after the five-word header
+
+
+def _patched_v0501(tmp_path, mutate):
+    """Copy the committed logical IMG to tmp and apply ``mutate`` to it."""
+    data = bytearray(V0501_IMG.read_bytes())
+    mutate(data)
+    path = tmp_path / "patched.img"
+    path.write_bytes(bytes(data))
+    return path
+
+
+class TestSyntheticCorruption:
+    def test_insane_length_word_lists_but_read_is_bounded(self, tmp_path):
+        # Entry length word (5th word) -> 0xFFFF: the listing must survive
+        # (no bounds check needed there) while read_file hits the overrun
+        # guard with a bounded ValueError instead of reading wild blocks.
+        def mutate(data):
+            struct.pack_into("<H", data, ENTRY0_OFF + 8, 0xFFFF)
+
+        controller = _open(_patched_v0501(tmp_path, mutate))
+        try:
+            items = controller.filesystem.list_directory("/")
+            assert items[0].name == "SWAP.SYS"
+            assert items[0].size == 0xFFFF * BLOCK
+            assert len(items) == 28  # nothing else dropped
+            with pytest.raises(ValueError, match="overrun"):
+                controller.filesystem.read_file("SWAP.SYS")
+        finally:
+            controller.close_disk()
+
+    def test_insane_length_word_blocks_writes_too(self, tmp_path):
+        # The shifted start blocks push every free run past the device end;
+        # the allocator must refuse (OSError) rather than scribble blocks,
+        # leaving the image byte-identical.
+        def mutate(data):
+            struct.pack_into("<H", data, ENTRY0_OFF + 8, 0xFFFF)
+
+        path = _patched_v0501(tmp_path, mutate)
+        before = path.read_bytes()
+        controller = _open(path)
+        try:
+            with pytest.raises(OSError):
+                controller.filesystem.write_file("NEW.DAT", b"x" * BLOCK)
+            controller.flush()
+        finally:
+            controller.close_disk()
+        assert path.read_bytes() == before
+
+    def test_broken_segment_link_truncates_chain(self, tmp_path):
+        # Segment 1's link word -> 3 (header-valid: <= total_segments 4) but
+        # segment 3 is 0x88 fill garbage: its first status word has the EOS
+        # bit, and its own link (0x8888) is out of range. The chain walk must
+        # truncate with no hang and no raise.
+        def mutate(data):
+            assert struct.unpack_from("<H", data, SEG1_OFF)[0] == 4
+            struct.pack_into("<H", data, SEG1_OFF + 2, 3)
+
+        controller = _open(_patched_v0501(tmp_path, mutate))
+        try:
+            items = controller.filesystem.list_directory("/")
+            assert len(items) == 28  # segment 1 intact, garbage chain dropped
+            assert items[0].name == "SWAP.SYS"
+        finally:
+            controller.close_disk()
+
+    def test_self_linked_segment_chain_terminates(self, tmp_path):
+        # Link word -> 1 (self-cycle): the visited-set guard must stop the
+        # walk after one pass instead of looping forever.
+        def mutate(data):
+            struct.pack_into("<H", data, SEG1_OFF + 2, 1)
+
+        controller = _open(_patched_v0501(tmp_path, mutate))
+        try:
+            items = controller.filesystem.list_directory("/")
+            assert len(items) == 28
+        finally:
+            controller.close_disk()
+
+    def test_calendar_invalid_date_falls_back_to_epoch(self, tmp_path):
+        # Date word -> Feb 30 1984: field-wise in range, calendar-invalid.
+        # The file must stay listed with the epoch fallback datetime.
+        def mutate(data):
+            struct.pack_into(
+                "<H", data, ENTRY0_OFF + 12, (2 << 10) | (30 << 5) | (1984 - 1972)
+            )
+
+        controller = _open(_patched_v0501(tmp_path, mutate))
+        try:
+            items = controller.filesystem.list_directory("/")
+            assert items[0].name == "SWAP.SYS"
+            assert items[0].datetime == NO_DATE
         finally:
             controller.close_disk()
 
@@ -1309,3 +1538,746 @@ class TestConfigPlumbing:
             track_formats=[TrackFormat(0, 76, 0, 0, 8, "MFM", 500, 1)],
         )
         assert RT11Filesystem.create_config_from_params({}, pf) is None
+
+
+def _rx02_geometry_fs(path_or_bytes, tmp_path=None, config=None):
+    """Open bytes/path under the rx02 profile geometry with an optional
+    explicit config (the constructor-injection path the controller uses)."""
+    if isinstance(path_or_bytes, (bytes, bytearray)):
+        path = tmp_path / "volume.img"
+        path.write_bytes(bytes(path_or_bytes))
+    else:
+        path = path_or_bytes
+    driver = IMGImageDriver(str(path))
+    disk = Disk(driver)
+    disk.set_geometry(copy.deepcopy(RT11_FORMATS["rt11_rx02"].physical_format))
+    return RT11Filesystem(disk, config=config)
+
+
+class TestExplicitViewContract:
+    """An explicit config view is honored when it scores >= threshold and
+    falls back to full content resolution otherwise (the override used to be
+    silently discarded -- dead plumbing)."""
+
+    def _dual_view_volume(self):
+        """One 512,512-byte container holding a valid RT-11 directory under
+        BOTH the rx02 and the logical view: physical track 0 (bytes 0-6655,
+        where the logical view's home block and segment live) is invisible
+        to the rx02 view, so the two structures never collide. Both views
+        score 90; only an explicit view can disambiguate deterministically.
+        """
+        data = bytearray(VIEW_GEOMETRY["rx02"].image_size)
+
+        def write_block(view, block, payload):
+            if view == "logical":
+                data[block * BLOCK : (block + 1) * BLOCK] = payload
+                return
+            geom = VIEW_GEOMETRY[view]
+            for index, (cyl, _head, sec) in enumerate(
+                logical_block_to_chs(view, block)
+            ):
+                pos = (cyl * geom.sectors_per_track + sec) * geom.bytes_per_sector
+                chunk = payload[
+                    index * geom.bytes_per_sector : (index + 1) * geom.bytes_per_sector
+                ]
+                data[pos : pos + geom.bytes_per_sector] = chunk
+
+        entry = struct.pack(
+            "<7H", E_PERM, rad50_encode("DUA"), 0, rad50_encode("TST"), 5, 0, 0
+        )
+        segment = struct.pack("<5H", 1, 0, 1, 0, 8) + entry
+        segment += struct.pack("<H", E_EOS)
+        segment += b"\x00" * (SEGMENT_SIZE - len(segment))
+        for view in ("rx02", "logical"):
+            write_block(view, 1, encode_home_block(volume_id=view.upper()))
+            write_block(view, 6, segment[:BLOCK])
+            write_block(view, 7, segment[BLOCK:])
+        return bytes(data)
+
+    def test_explicit_view_wins_on_ambiguous_volume(self, tmp_path):
+        volume = self._dual_view_volume()
+        for view, blocks in (("rx02", 988), ("logical", 1001)):
+            fs = _rx02_geometry_fs(
+                volume, tmp_path, config=RT11Config(view=view, total_blocks=blocks)
+            )
+            cfg = fs.get_specific_config()
+            assert (cfg.view, cfg.total_blocks) == (view, blocks), view
+            assert fs.get_volume_label() == view.upper()
+
+    def test_without_explicit_view_physical_candidate_wins_tie(self, tmp_path):
+        # Documented tie-break: physical candidate first.
+        fs = _rx02_geometry_fs(self._dual_view_volume(), tmp_path)
+        assert fs.get_specific_config().view == "rx02"
+
+    def test_explicit_view_below_threshold_falls_back(self):
+        # The raw .DSK twin scores ~0 under "logical"; an explicit logical
+        # view must NOT be trusted blindly -- resolution falls back and
+        # finds rx02 from the contents.
+        fs = _rx02_geometry_fs(
+            V0501_DSK, config=RT11Config(view="logical", total_blocks=1001)
+        )
+        cfg = fs.get_specific_config()
+        assert (cfg.view, cfg.total_blocks) == ("rx02", 988)
+
+    def test_explicit_matching_view_adopted_on_real_pair(self):
+        fs = _rx02_geometry_fs(
+            V0501_IMG, config=RT11Config(view="logical", total_blocks=1001)
+        )
+        assert fs.get_specific_config().view == "logical"
+        fs = _rx02_geometry_fs(
+            V0501_DSK, config=RT11Config(view="rx02", total_blocks=988)
+        )
+        assert fs.get_specific_config().view == "rx02"
+
+
+# ---------------------------------------------------------------------------
+# Task 4: write path -- format, first-fit allocation, segment splitting,
+# delete. All on fresh tmp images or tmp COPIES of the committed resources
+# (the committed images are read-only oracles).
+# ---------------------------------------------------------------------------
+
+import random  # noqa: E402
+
+# profile -> (resolved view, container blocks, directory segments)
+FORMAT_CASES = {
+    "rt11_rx01": ("rx01", 494, 1),
+    "rt11_rx02": ("rx02", 988, 4),
+    "rt11_rx50": ("rx50", 800, 4),
+    "rt11_logical_494": ("logical", 494, 1),
+    "rt11_logical_500": ("logical", 500, 1),
+    "rt11_logical_800": ("logical", 800, 4),
+    "rt11_logical_988": ("logical", 988, 4),
+}
+
+
+def _format_new(tmp_path, profile_name, label="TEST", name="vol"):
+    """Create + format a new image; returns (controller, image path)."""
+    img = tmp_path / f"{name}.img"
+    controller = DiskController()
+    assert controller.format_disk_media(
+        format_name=profile_name,
+        volume_label=label,
+        file_path=str(img),
+        disk_type="IMG",
+    ), f"create/format failed for {profile_name}"
+    return controller, img
+
+
+def _copy_resource(tmp_path, src):
+    dst = tmp_path / src.name
+    dst.write_bytes(src.read_bytes())
+    return dst
+
+
+def _parse_linked_segments(data, view, dir_start=6):
+    """Raw [(segment_number, ParsedSegment), ...] walk in linked order."""
+    out = []
+    number = 1
+    seen = set()
+    while number and number not in seen:
+        seen.add(number)
+        first = dir_start + (number - 1) * 2
+        seg = parse_segment(
+            _read_block(data, view, first) + _read_block(data, view, first + 1)
+        )
+        out.append((number, seg))
+        number = seg.header.next_segment
+    return out
+
+
+class TestFormatFS:
+    @pytest.mark.parametrize(
+        "profile", sorted(FORMAT_CASES), ids=lambda p: p.removeprefix("rt11_")
+    )
+    def test_fresh_format_layout_and_reopen(self, tmp_path, profile):
+        view, total, segments = FORMAT_CASES[profile]
+        data_start = 6 + 2 * segments
+        controller, img = _format_new(tmp_path, profile, label="FRESH")
+        try:
+            assert isinstance(controller.filesystem, RT11Filesystem)
+            assert controller.filesystem.list_directory("/") == []
+            free, fs_total = controller.filesystem.get_free_space()
+            # The whole data area is free: device - dir_start - 2*segments.
+            assert free == (total - data_start) * BLOCK
+            assert fs_total == (total - data_start) * BLOCK
+            cfg = controller.filesystem.get_specific_config()
+            assert (cfg.view, cfg.total_blocks) == (view, total)
+        finally:
+            controller.close_disk()
+
+        raw = img.read_bytes()
+        assert _read_block(raw, view, 0) == b"\x00" * BLOCK  # boot block
+        home = parse_home_block(_read_block(raw, view, 1))
+        assert home.volume_id == "FRESH       "
+        assert home.system_id == "DECRT11A    "
+        assert home.dir_start == 6
+        assert home.pack_cluster_size == 1
+        assert home.checksum_stored == home.checksum_computed
+        chain = _parse_linked_segments(raw, view)
+        assert [number for number, _seg in chain] == [1]
+        seg = chain[0][1]
+        assert seg.header.total_segments == segments  # INIT default for size
+        assert seg.header.highest_in_use == 1
+        assert seg.header.extra_bytes == 0
+        assert seg.header.data_start_block == data_start
+        assert seg.eos_found
+        assert len(seg.entries) == 1
+        empty = seg.entries[0]
+        assert empty.status == E_MPTY
+        assert (empty.start_block, empty.length) == (data_start, total - data_start)
+
+        # Reopen by auto-detection: the formatted volume must detect as
+        # RT-11 with the view that was written.
+        verifier = _open(img)
+        try:
+            assert isinstance(verifier.filesystem, RT11Filesystem)
+            cfg = verifier.filesystem.get_specific_config()
+            assert (cfg.view, cfg.total_blocks) == (view, total)
+            assert verifier.filesystem.get_volume_label() == "FRESH"
+            assert verifier.filesystem.list_directory("/") == []
+        finally:
+            verifier.close_disk()
+
+
+class TestWriteReadRoundTrip:
+    # Zero-length entries are valid RT-11: V&FF manual sec 1.1.3 -- after
+    # .CLOSE "the length of the file is the actual size of the data that
+    # was written" (zero when nothing was), Figure 1-11 shows a legitimate
+    # 0-block empty area, and the length word (5th entry word, sec 1.1.2.2)
+    # has no minimum. So an empty write creates a 0-block permanent entry.
+    SIZES = [0, 1, BLOCK, BLOCK + 700, 4 * BLOCK]
+
+    @pytest.mark.parametrize("profile", ["rt11_rx02", "rt11_logical_494"])
+    def test_sizes_round_trip_and_persist(self, tmp_path, profile):
+        controller, img = _format_new(tmp_path, profile)
+        names = []
+        try:
+            fs = controller.filesystem
+            for index, size in enumerate(self.SIZES):
+                name = f"RT{index}.DAT"
+                payload = bytes((index + j) % 251 for j in range(size))
+                fs.write_file(name, payload)
+                names.append((name, payload))
+            for name, payload in names:
+                blocks = (len(payload) + BLOCK - 1) // BLOCK
+                data = fs.read_file(name)
+                assert len(data) == blocks * BLOCK, name
+                assert data[: len(payload)] == payload, name
+                assert data[len(payload) :] == b"\x00" * (len(data) - len(payload))
+            listing = {i.name: i for i in fs.list_directory("/")}
+            assert set(listing) == {name for name, _p in names}
+            assert listing["RT0.DAT"].size == 0
+            assert fs.read_file("RT0.DAT") == b""
+            controller.flush()
+        finally:
+            controller.close_disk()
+
+        verifier = _open(img)
+        try:
+            for name, payload in names:
+                data = verifier.filesystem.read_file(name)
+                assert data[: len(payload)] == payload, name
+        finally:
+            verifier.close_disk()
+
+    def test_date_stamped_today(self, tmp_path):
+        controller, _img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            fs.write_file("TODAY.DAT", b"dated")
+            (item,) = fs.list_directory("/")
+            today = datetime.date.today()
+            assert item.datetime.date() == today
+            # And the on-disk word really is the RT-11 encoding of today.
+            raw_word = struct.unpack_from(
+                "<H",
+                fs._read_block(6),
+                10 + 12,  # first entry's date word
+            )[0]
+            assert raw_word == encode_date_word(today.year, today.month, today.day)
+        finally:
+            controller.close_disk()
+
+    def test_write_rejects_non_rt11_volume(self):
+        profile = RT11_FORMATS["rt11_rx01"]
+        driver = IMGImageDriver(str(CPM_8IN_IMG))
+        disk = Disk(driver)
+        disk.set_geometry(copy.deepcopy(profile.physical_format))
+        fs = RT11Filesystem(disk)
+        with pytest.raises(ValueError):
+            fs.write_file("X.DAT", b"x")
+
+
+class TestWriteNameValidation:
+    def test_lowercase_is_uppercased(self, tmp_path):
+        # CP/M precedent: case is normalized, structure is validated
+        # strictly (no silent truncation).
+        controller, _img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            fs.write_file("hello.dat", b"hi")
+            assert [i.name for i in fs.list_directory("/")] == ["HELLO.DAT"]
+            assert fs.read_file("hello.dat")[:2] == b"hi"
+        finally:
+            controller.close_disk()
+
+    def test_rad50_specials_accepted(self, tmp_path):
+        controller, _img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            for name in ("A$B%C0.99$", "X", "NOEXT", "/SLASH.DAT"):
+                fs.write_file(name, b"ok")
+            names = {i.name for i in fs.list_directory("/")}
+            assert names == {"A$B%C0.99$", "X", "NOEXT", "SLASH.DAT"}
+        finally:
+            controller.close_disk()
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "TOOLONG7.DAT",  # base > 6
+            "GOOD.LONG",  # type > 3
+            "TWO.DO.TS",  # more than one dot
+            ".DAT",  # empty base
+            "",  # empty
+            "BAD-1.DAT",  # '-' not in RAD50
+            "SP CE.DAT",  # embedded space
+            "UNIé.DAT",  # non-ASCII
+        ],
+    )
+    def test_invalid_names_rejected_without_mutation(self, tmp_path, bad):
+        controller, img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            controller.flush()
+            before = img.read_bytes()
+            with pytest.raises(ValueError):
+                controller.filesystem.write_file(bad, b"x")
+            controller.flush()
+            assert img.read_bytes() == before
+        finally:
+            controller.close_disk()
+
+
+class TestFirstFitAllocation:
+    def _carve_two_runs(self, fs):
+        """A(4) B(1) C(4) D(1) then delete A and C -> two free runs of 4
+        at blocks 8 and 13 ahead of the big trailing run."""
+        fs.write_file("A.DAT", b"A" * (4 * BLOCK))
+        fs.write_file("B.DAT", b"B" * BLOCK)
+        fs.write_file("C.DAT", b"C" * (4 * BLOCK))
+        fs.write_file("D.DAT", b"D" * BLOCK)
+        assert fs.get_file_allocation_units("A.DAT") == [8, 9, 10, 11]
+        assert fs.get_file_allocation_units("C.DAT") == [13, 14, 15, 16]
+        fs.delete("A.DAT")
+        fs.delete("C.DAT")
+
+    def test_first_fit_takes_the_first_run(self, tmp_path):
+        controller, _img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            self._carve_two_runs(fs)
+            # E fits BOTH free runs -> must take the FIRST (block 8).
+            fs.write_file("E.DAT", b"E" * (2 * BLOCK))
+            assert fs.get_file_allocation_units("E.DAT") == [8, 9]
+        finally:
+            controller.close_disk()
+
+    def test_exact_fit_consumes_empty_entirely(self, tmp_path):
+        controller, img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            self._carve_two_runs(fs)
+            fs.write_file("E.DAT", b"E" * (2 * BLOCK))
+            # F fits the 2-block residual at block 10 exactly.
+            fs.write_file("F.DAT", b"F" * (2 * BLOCK))
+            assert fs.get_file_allocation_units("F.DAT") == [10, 11]
+            # G no longer fits ahead of C's old run.
+            fs.write_file("G.DAT", b"G" * (4 * BLOCK))
+            assert fs.get_file_allocation_units("G.DAT") == [13, 14, 15, 16]
+            controller.flush()
+        finally:
+            controller.close_disk()
+
+        # Exact fits replace the empty entry instead of leaving 0-block
+        # empties behind.
+        ((_n, seg),) = _parse_linked_segments(img.read_bytes(), "logical")
+        assert [(e.status, e.length) for e in seg.entries] == [
+            (E_PERM, 2),  # E at 8
+            (E_PERM, 2),  # F at 10
+            (E_PERM, 1),  # B at 12
+            (E_PERM, 4),  # G at 13
+            (E_PERM, 1),  # D at 17
+            (E_MPTY, 494 - 18),
+        ]
+
+    def test_no_single_run_large_enough_raises_oserror(self, tmp_path):
+        controller, img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            self._carve_two_runs(fs)
+            fs.write_file("HUGE.DAT", b"H" * ((494 - 18) * BLOCK))  # big run
+            controller.flush()
+            before = img.read_bytes()
+            # 8 free blocks total but no contiguous run >= 5 (authentic
+            # RT-11: contiguous files, no coalescing without SQUEEZE).
+            with pytest.raises(OSError):
+                fs.write_file("NOFIT.DAT", b"x" * (5 * BLOCK))
+            controller.flush()
+            assert img.read_bytes() == before  # validate-before-mutate
+        finally:
+            controller.close_disk()
+
+
+class TestReplaceOnSameName:
+    def test_replace_deletes_old_and_creates_new(self, tmp_path):
+        controller, _img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            fs.write_file("FOO.DAT", b"v1" * 600)  # 3 blocks at 8
+            free_after_v1 = fs.get_free_space()[0]
+            fs.write_file("FOO.DAT", b"v2")  # 1 block
+            items = fs.list_directory("/")
+            assert [i.name for i in items] == ["FOO.DAT"]
+            assert items[0].size == BLOCK
+            assert fs.read_file("FOO.DAT")[:2] == b"v2"
+            # Old 3-block run freed, new 1-block run used.
+            assert fs.get_free_space()[0] == free_after_v1 + 2 * BLOCK
+            # First-fit puts the replacement into the freed run itself.
+            assert fs.get_file_allocation_units("FOO.DAT") == [8]
+        finally:
+            controller.close_disk()
+
+    def test_failed_replace_leaves_old_file_intact(self, tmp_path):
+        controller, img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            fs.write_file("KEEP.DAT", b"precious " * 100)  # 2 blocks
+            fs.write_file("BIG.DAT", b"B" * ((494 - 10) * BLOCK))  # fill rest
+            controller.flush()
+            before = img.read_bytes()
+            # No run can hold 5 blocks even after KEEP's 2 are freed; the
+            # plan must fail BEFORE any byte is written.
+            with pytest.raises(OSError):
+                fs.write_file("KEEP.DAT", b"x" * (5 * BLOCK))
+            controller.flush()
+            assert img.read_bytes() == before
+            assert fs.read_file("KEEP.DAT")[:9] == b"precious "
+        finally:
+            controller.close_disk()
+
+    def test_replacing_protected_file_is_refused(self, tmp_path):
+        path = _copy_resource(tmp_path, V0501_IMG)
+        controller = _open(path)
+        try:
+            before = controller.filesystem.read_file("SWAP.SYS")
+            with pytest.raises(PermissionError):
+                controller.filesystem.write_file("SWAP.SYS", b"clobber")
+            assert controller.filesystem.read_file("SWAP.SYS") == before
+        finally:
+            controller.close_disk()
+
+
+class TestDelete:
+    def test_delete_marks_empty_no_coalescing(self, tmp_path):
+        controller, img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            for name in ("A.DAT", "B.DAT", "C.DAT"):
+                fs.write_file(name, name.encode())
+            fs.delete("A.DAT")
+            fs.delete("B.DAT")
+            assert [i.name for i in fs.list_directory("/")] == ["C.DAT"]
+            free, _total = fs.get_free_space()
+            assert free == (494 - 8 - 1) * BLOCK
+            controller.flush()
+        finally:
+            controller.close_disk()
+
+        # Authentic RT-11: adjacent empties stay SEPARATE entries (only
+        # SQUEEZE consolidates, and SQUEEZE is a non-goal).
+        ((_n, seg),) = _parse_linked_segments(img.read_bytes(), "logical")
+        assert [(e.status, e.length) for e in seg.entries] == [
+            (E_MPTY, 1),
+            (E_MPTY, 1),
+            (E_PERM, 1),
+            (E_MPTY, 494 - 11),
+        ]
+
+    def test_delete_missing_and_recursive(self, tmp_path):
+        controller, _img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            with pytest.raises(FileNotFoundError):
+                fs.delete("GHOST.DAT")
+            fs.write_file("REAL.DAT", b"x")
+            assert fs.delete_recursive("REAL.DAT") is True
+            assert fs.delete_recursive("REAL.DAT") is False
+            assert fs.list_directory("/") == []
+        finally:
+            controller.close_disk()
+
+    def test_delete_protected_refused(self, tmp_path):
+        path = _copy_resource(tmp_path, V0501_IMG)
+        controller = _open(path)
+        try:
+            with pytest.raises(PermissionError):
+                controller.filesystem.delete("SWAP.SYS")
+            names = {i.name for i in controller.filesystem.list_directory("/")}
+            assert "SWAP.SYS" in names
+        finally:
+            controller.close_disk()
+
+    def test_delete_on_real_volume_preserves_other_files(self, tmp_path):
+        # Content-level no-regression on a REAL raw RX01: deleting one file
+        # must leave every other file's bytes untouched.
+        path = _copy_resource(tmp_path, RX01_V03B)
+        controller = _open(path)
+        try:
+            fs = controller.filesystem
+            before = {
+                i.name: hashlib.sha256(fs.read_file(i.name)).hexdigest()
+                for i in fs.list_directory("/")
+            }
+            free_before = fs.get_free_space()[0]
+            fs.delete("SWAP.SYS")
+            items = fs.list_directory("/")
+            assert len(items) == 32
+            assert "SWAP.SYS" not in {i.name for i in items}
+            assert fs.get_free_space()[0] == free_before + 24 * BLOCK
+            for item in items:
+                data = fs.read_file(item.name)
+                assert hashlib.sha256(data).hexdigest() == before[item.name]
+        finally:
+            controller.close_disk()
+
+    def test_delete_real_tentative_file(self, tmp_path):
+        path = _copy_resource(tmp_path, BASIC11_RX02)
+        controller = _open(path)
+        try:
+            fs = controller.filesystem
+            fs.delete("TEST.DAT")  # the genuine tentative entry
+            names = {i.name for i in fs.list_directory("/")}
+            assert "TEST.DAT" not in names
+            assert len(names) == 121
+        finally:
+            controller.close_disk()
+
+
+class TestTentativeRespectedByAllocator:
+    def test_tentative_blocks_not_reallocated(self, tmp_path):
+        controller, img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            controller.filesystem.write_file("T.TMP", b"t" * (3 * BLOCK))
+            controller.flush()
+        finally:
+            controller.close_disk()
+        # Turn the permanent entry tentative (status word at block 6 + 10).
+        data = bytearray(img.read_bytes())
+        assert struct.unpack_from("<H", data, ENTRY0_OFF)[0] == E_PERM
+        struct.pack_into("<H", data, ENTRY0_OFF, E_TENT)
+        img.write_bytes(bytes(data))
+
+        controller = _open(img)
+        try:
+            fs = controller.filesystem
+            (tent,) = [i for i in fs.list_directory("/") if "TENT" in i.attributes]
+            assert tent.name == "T.TMP"
+            fs.write_file("NEW.DAT", b"n" * (2 * BLOCK))
+            # Tentative runs are never allocation targets, but their blocks
+            # are respected: NEW lands after T.TMP's 3 blocks at 8-10.
+            assert fs.get_file_allocation_units("NEW.DAT") == [11, 12]
+        finally:
+            controller.close_disk()
+
+
+class TestPrefixBlocks:
+    def test_e_pre_attribute_and_raw_read(self, tmp_path):
+        payload = b"P" * BLOCK + b"DATA" * 300
+        controller, img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            controller.filesystem.write_file("PRE.DAT", payload)
+            controller.flush()
+        finally:
+            controller.close_disk()
+        data = bytearray(img.read_bytes())
+        struct.pack_into("<H", data, ENTRY0_OFF, E_PERM | 0o20)  # set E.PRE
+        img.write_bytes(bytes(data))
+
+        controller = _open(img)
+        try:
+            (item,) = controller.filesystem.list_directory("/")
+            assert "PRE" in item.attributes
+            # Prefix blocks are part of the run and come back raw.
+            blocks = (len(payload) + BLOCK - 1) // BLOCK
+            data = controller.filesystem.read_file("PRE.DAT")
+            assert len(data) == blocks * BLOCK
+            assert data[: len(payload)] == payload
+        finally:
+            controller.close_disk()
+
+
+class TestSegmentSplit:
+    def _invariants(self, fs, total_blocks):
+        allocated = fs.get_allocated_units()
+        assert len(allocated) == len(set(allocated))
+        free_blocks = fs.get_free_space()[0] // BLOCK
+        # free + used + system covers the device exactly, no overlaps.
+        assert len(allocated) + free_blocks == total_blocks
+        unit_lists = [
+            fs.get_file_allocation_units(i.name) for i in fs.list_directory("/")
+        ]
+        flat = [u for units in unit_lists for u in units]
+        assert len(flat) == len(set(flat))  # no overlapping file runs
+
+    def test_split_listing_order_and_full_recovery(self, tmp_path):
+        controller, img = _format_new(tmp_path, "rt11_rx02")
+        files = {}
+        try:
+            fs = controller.filesystem
+            for index in range(75):  # > 72-entry segment capacity
+                name = f"F{index:03d}.DAT"
+                payload = f"file {index} ".encode() * 20
+                fs.write_file(name, payload)
+                files[name] = payload
+            listing = fs.list_directory("/")
+            assert len(listing) == 75
+            for name, payload in files.items():
+                assert fs.read_file(name)[: len(payload)] == payload, name
+            self._invariants(fs, 988)
+            controller.flush()
+        finally:
+            controller.close_disk()
+
+        raw = img.read_bytes()
+        chain = _parse_linked_segments(raw, "rx02")
+        numbers = [number for number, _seg in chain]
+        assert len(numbers) >= 2, "no split happened"
+        assert numbers[0] == 1
+        head = chain[0][1].header
+        assert head.total_segments == 4
+        assert head.highest_in_use == len(numbers)
+        # DEC-style linked order: each segment's data area starts where the
+        # previous one ends; entry capacity is never exceeded.
+        expected_start = chain[0][1].header.data_start_block
+        all_names = []
+        for _number, seg in chain:
+            assert seg.eos_found
+            assert len(seg.entries) <= segment_max_entries(seg.header.extra_bytes)
+            assert seg.header.data_start_block == expected_start
+            expected_start += sum(e.length for e in seg.entries)
+            all_names += [
+                (e.name or "") + "." + (e.file_type or "")
+                for e in seg.entries
+                if e.is_permanent
+            ]
+        assert expected_start == 988  # runs tile the device exactly
+        # Linked order preserves creation order across the split.
+        assert all_names == [f"F{i:03d}".ljust(6) + ".DAT" for i in range(75)]
+
+        # Delete everything: all space must be recoverable.
+        controller = _open(img)
+        try:
+            fs = controller.filesystem
+            for name in files:
+                fs.delete(name)
+            assert fs.list_directory("/") == []
+            assert fs.get_free_space()[0] == (988 - 14) * BLOCK
+            self._invariants(fs, 988)
+            # And the volume is still writable after the churn.
+            fs.write_file("AFTER.DAT", b"alive")
+            assert fs.read_file("AFTER.DAT")[:5] == b"alive"
+        finally:
+            controller.close_disk()
+
+    def test_directory_full_when_no_segment_available(self, tmp_path):
+        # rx01 formats with ONE segment: filling it must raise a directory
+        # full error (no segment to split into), leaving the disk valid.
+        controller, img = _format_new(tmp_path, "rt11_rx01")
+        try:
+            fs = controller.filesystem
+            written = 0
+            with pytest.raises(OSError, match="[Dd]irectory"):
+                for index in range(80):
+                    fs.write_file(f"D{index:03d}.DAT", b"x")
+                    written += 1
+            assert written >= 69  # manual sec 1.1.4: 72 less reserved slots
+            listing = fs.list_directory("/")
+            assert len(listing) == written
+            for item in listing:
+                assert fs.read_file(item.name)[:1] == b"x"
+        finally:
+            controller.close_disk()
+
+
+class TestChurn:
+    def test_eighty_iterations_create_delete_with_invariants(self, tmp_path):
+        controller, _img = _format_new(tmp_path, "rt11_rx50")
+        rng = random.Random(56)
+        shadow = {}
+        try:
+            fs = controller.filesystem
+            for iteration in range(80):
+                name = f"C{iteration:03d}.DAT"
+                payload = rng.randbytes(rng.randint(0, 4 * BLOCK))
+                fs.write_file(name, payload)
+                shadow[name] = payload
+                if len(shadow) > 12:
+                    victim = rng.choice(sorted(shadow))
+                    fs.delete(victim)
+                    del shadow[victim]
+                # Full content verification + structural invariants each
+                # iteration.
+                listing = {i.name: i for i in fs.list_directory("/")}
+                assert set(listing) == set(shadow), f"iteration {iteration}"
+                for fname, fdata in shadow.items():
+                    blocks = (len(fdata) + BLOCK - 1) // BLOCK
+                    back = fs.read_file(fname)
+                    assert len(back) == blocks * BLOCK, fname
+                    assert back[: len(fdata)] == fdata, fname
+                allocated = fs.get_allocated_units()
+                assert len(allocated) == len(set(allocated))
+                free_blocks = fs.get_free_space()[0] // BLOCK
+                assert len(allocated) + free_blocks == 800, f"iteration {iteration}"
+                flat = [
+                    unit
+                    for fname in shadow
+                    for unit in fs.get_file_allocation_units(fname)
+                ]
+                assert len(flat) == len(set(flat)), f"iteration {iteration}"
+        finally:
+            controller.close_disk()
+
+
+class TestWritePairAcid:
+    def test_same_content_via_rx02_and_logical_views(self, tmp_path):
+        # The write-side twin of the view-resolver acid test: the same file
+        # written through the raw rx02 mapping and the logical mapping must
+        # read back identically from both volumes.
+        payload = bytes((i * 7) % 256 for i in range(3 * BLOCK + 100))
+        results = {}
+        for profile in ("rt11_rx02", "rt11_logical_988"):
+            controller, img = _format_new(tmp_path, profile, name=profile)
+            try:
+                controller.filesystem.write_file("ACID.DAT", payload)
+                controller.flush()
+                results[profile] = (
+                    controller.filesystem.read_file("ACID.DAT"),
+                    img.read_bytes(),
+                )
+            finally:
+                controller.close_disk()
+        read_rx02, raw_rx02 = results["rt11_rx02"]
+        read_logical, raw_logical = results["rt11_logical_988"]
+        assert read_rx02 == read_logical
+        assert read_rx02[: len(payload)] == payload
+        # Same logical content, different physical layouts.
+        assert raw_rx02 != raw_logical
+
+        for profile, view in (("rt11_rx02", "rx02"), ("rt11_logical_988", "logical")):
+            verifier = _open(tmp_path / f"{profile}.img")
+            try:
+                cfg = verifier.filesystem.get_specific_config()
+                assert cfg.view == view
+                assert verifier.filesystem.read_file("ACID.DAT") == read_rx02
+            finally:
+                verifier.close_disk()

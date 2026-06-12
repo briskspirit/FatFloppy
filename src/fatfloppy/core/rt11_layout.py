@@ -357,6 +357,10 @@ class ParsedSegment:
     header: SegmentHeader
     entries: tuple[DirEntry, ...]
     eos_found: bool
+    # Lossless round-trip fields: the exact end-of-segment marker word and
+    # the (undefined, often non-zero on real disks) bytes following it.
+    eos_word: int = E_EOS
+    tail: bytes = b""
 
 
 def parse_segment(data: bytes) -> ParsedSegment:
@@ -365,7 +369,9 @@ def parse_segment(data: bytes) -> ParsedSegment:
     Entries are returned in directory order with computed start blocks; the
     end-of-segment marker (which may be a bare final status word) terminates
     the list and is reported via ``eos_found``. Never raises on entry
-    contents -- junk RAD50 name words simply decode to None.
+    contents -- junk RAD50 name words simply decode to None. The marker word
+    and the undefined bytes after it are preserved (``eos_word``/``tail``)
+    so ``serialize_segment`` can round-trip real disks byte-identically.
     """
     if len(data) < SEGMENT_SIZE:
         raise ValueError(f"Segment needs {SEGMENT_SIZE} bytes, got {len(data)}")
@@ -373,12 +379,16 @@ def parse_segment(data: bytes) -> ParsedSegment:
     entry_size = ENTRY_BASE_BYTES + max(header.extra_bytes, 0)
     entries = []
     eos_found = False
+    eos_word = E_EOS
+    tail = b""
     start_block = header.data_start_block
     offset = SEGMENT_HEADER_WORDS * 2
     while offset + 2 <= SEGMENT_SIZE:
         status = struct.unpack_from("<H", data, offset)[0]
         if status & E_EOS:
             eos_found = True
+            eos_word = status
+            tail = bytes(data[offset + 2 : SEGMENT_SIZE])
             break
         if offset + ENTRY_BASE_BYTES > SEGMENT_SIZE:
             break
@@ -407,7 +417,137 @@ def parse_segment(data: bytes) -> ParsedSegment:
         )
         start_block += length
         offset += entry_size
-    return ParsedSegment(header=header, entries=tuple(entries), eos_found=eos_found)
+    return ParsedSegment(
+        header=header,
+        entries=tuple(entries),
+        eos_found=eos_found,
+        eos_word=eos_word,
+        tail=tail,
+    )
+
+
+def segment_max_entries(extra_bytes: int) -> int:
+    """Maximum entries one segment can hold alongside its EOS marker word.
+
+    For plain entries this is 72, matching the manual's integer formula
+    S = (512 - 5) / (7 + N) (section 1.1.4) -- and the committed BASIC-11
+    disk really does carry a full 72-entry segment.
+    """
+    if extra_bytes < 0 or extra_bytes % 2:
+        raise ValueError(f"extra_bytes must be even and >= 0, got {extra_bytes}")
+    overhead = SEGMENT_HEADER_WORDS * 2 + 2  # header + EOS marker word
+    return (SEGMENT_SIZE - overhead) // (ENTRY_BASE_BYTES + extra_bytes)
+
+
+def serialize_segment(segment: ParsedSegment) -> bytes:
+    """Serialize one directory segment back to its 1024-byte on-disk form.
+
+    Exact inverse of ``parse_segment`` for EOS-terminated segments: per-entry
+    ``extra`` bytes, the marker word and the undefined tail bytes after it
+    all round-trip, so editing a real volume is lossless. ``start_block`` is
+    implicit on disk and therefore ignored here.
+
+    Raises ValueError for segments without an end-of-segment marker or with
+    more entries than fit ahead of the marker.
+    """
+    header = segment.header
+    if not segment.eos_found:
+        raise ValueError("Segment has no end-of-segment marker; refusing to write")
+    if not segment.eos_word & E_EOS:
+        raise ValueError(f"EOS word {segment.eos_word:#o} lacks the E.EOS bit")
+    extra_bytes = header.extra_bytes
+    if len(segment.entries) > segment_max_entries(extra_bytes):
+        raise ValueError(
+            f"{len(segment.entries)} entries overflow a segment with "
+            f"{extra_bytes} extra bytes per entry "
+            f"(max {segment_max_entries(extra_bytes)})"
+        )
+    out = bytearray(
+        struct.pack(
+            "<5H",
+            header.total_segments,
+            header.next_segment,
+            header.highest_in_use,
+            extra_bytes,
+            header.data_start_block,
+        )
+    )
+    for entry in segment.entries:
+        out += struct.pack(
+            "<7H",
+            entry.status,
+            *entry.name_words,
+            entry.length,
+            entry.job_channel,
+            entry.date_word,
+        )
+        out += entry.extra[:extra_bytes].ljust(extra_bytes, b"\x00")
+    out += struct.pack("<H", segment.eos_word)
+    out += segment.tail[: SEGMENT_SIZE - len(out)]
+    out += b"\x00" * (SEGMENT_SIZE - len(out))
+    return bytes(out)
+
+
+# ---------------------------------------------------------------------------
+# Volume initialization helpers
+# ---------------------------------------------------------------------------
+
+# Default directory segment counts by device capacity, from RT-11 V5.4D
+# DUP.SAV (via the rtnseg table in PUTR.ASM, confirmed there against the
+# RT-11 V04.00 SUG device table: RX01 -> 1, RX02 -> 4, RK05 -> 16, ...).
+# The V&FF manual (section 1.1.2) defers the per-device defaults to DUP.
+_DEFAULT_SEGMENT_TABLE = ((512, 1), (2048, 4), (12288, 16))
+
+
+def default_segment_count(total_blocks: int) -> int:
+    """RT-11 INIT's default directory segment count for a device size."""
+    for limit, segments in _DEFAULT_SEGMENT_TABLE:
+        if total_blocks <= limit:
+            return segments
+    return MAX_SEGMENTS
+
+
+_HOME_PACK_CLUSTER_OFFSET = 0o722
+_HOME_DIR_START_OFFSET = 0o724
+_HOME_VERSION_OFFSET = 0o726
+_HOME_VOLUME_ID_OFFSET = 0o730
+_HOME_OWNER_OFFSET = 0o744
+_HOME_SYSTEM_ID_OFFSET = 0o760  # also probed by the structure scorer below
+_HOME_CHECKSUM_OFFSET = 0o776
+
+
+def _home_text_field(value: str, length: int) -> bytes:
+    return value.ljust(length)[:length].encode("ascii", "replace")
+
+
+def encode_home_block(
+    volume_id: str = "RT11A",
+    owner: str = "",
+    dir_start: int = DEFAULT_DIR_START,
+    system_version: str = "V05",
+) -> bytes:
+    """Build a home block (logical block 1) for a freshly initialized volume.
+
+    Field defaults follow the V&FF manual table 1-1 (pack cluster size 1,
+    directory at block 6, system id "DECRT11A"). Unlike many real DEC
+    factory disks, the stored checksum is CORRECT: per section 1.1.1 it is
+    the simple additive (FILES-11 ODS style) sum of the other 255 words,
+    stored in the final word at offset 0o776. Detection never trusts it.
+    """
+    block = bytearray(BLOCK_SIZE)
+    struct.pack_into("<H", block, _HOME_PACK_CLUSTER_OFFSET, 1)
+    struct.pack_into("<H", block, _HOME_DIR_START_OFFSET, dir_start)
+    struct.pack_into("<H", block, _HOME_VERSION_OFFSET, rad50_encode(system_version))
+    block[_HOME_VOLUME_ID_OFFSET : _HOME_VOLUME_ID_OFFSET + 12] = _home_text_field(
+        volume_id, 12
+    )
+    block[_HOME_OWNER_OFFSET : _HOME_OWNER_OFFSET + 12] = _home_text_field(owner, 12)
+    block[_HOME_SYSTEM_ID_OFFSET : _HOME_SYSTEM_ID_OFFSET + 12] = _home_text_field(
+        "DECRT11A", 12
+    )
+    checksum = sum(struct.unpack_from("<255H", block, 0)) & 0xFFFF
+    struct.pack_into("<H", block, _HOME_CHECKSUM_OFFSET, checksum)
+    return bytes(block)
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +587,6 @@ SCORE_THRESHOLD = 40
 _SCORE_HEADER = 50
 _SCORE_ENTRY_CHAIN = 25
 _SCORE_SYSTEM_ID = 15
-_HOME_SYSTEM_ID_OFFSET = 0o760
 _MAX_EXTRA_BYTES = 64  # sane upper bound for extra bytes per entry
 
 

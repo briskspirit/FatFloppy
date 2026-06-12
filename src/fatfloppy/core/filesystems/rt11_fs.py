@@ -1,4 +1,4 @@
-"""DEC RT-11 filesystem (read side).
+"""DEC RT-11 filesystem.
 
 RT-11 always addresses the volume in 512-byte logical blocks: block 0 is
 the boot block, block 1 the home block, blocks 2-5 are reserved, and the
@@ -29,10 +29,21 @@ form the free list. Prefix (E.PRE) blocks are part of the file's run and
 are returned raw by read_file (PUTR behaves the same); the entry carries a
 PRE attribute so callers can tell.
 
-Write support is not implemented yet (read-only milestone).
+Writes follow authentic RT-11 monitor behavior (V&FF manual section 1.1.5):
+``write_file`` finds an E.MPTY area, slides the directory entries down to
+insert the new permanent entry in front of the (shrunken) empty, splits a
+full segment in half into the next available one, and stamps today's date
+word. ``delete`` flips the status word to E.MPTY in place -- adjacent
+empties are never coalesced (only SQUEEZE does that, and SQUEEZE is a
+non-goal). ``format_fs`` lays down a boot block, a home block with a
+correct additive checksum, and an empty segment chain sized by the RT-11
+DUP defaults. All planning happens on an in-memory copy of the directory;
+nothing touches the disk until the plan is complete (validate-before-
+mutate), and all writes go through the same view mapper as reads.
 """
 
 import datetime
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Optional
 
 from ..disk import Disk
@@ -41,25 +52,39 @@ from ..physical_format import PhysicalFormat
 from ..rt11_layout import (
     BLOCK_SIZE,
     DEFAULT_DIR_START,
+    E_MPTY,
+    E_PERM,
     E_PRE,
     E_PROT,
     E_TENT,
     MAX_SEGMENTS,
+    RAD50_CHARSET,
     SCORE_THRESHOLD,
     SEGMENT_BLOCKS,
     VIEW_GEOMETRY,
     DirEntry,
     ParsedSegment,
     RT11Config,
+    SegmentHeader,
     decode_date_word,
+    default_segment_count,
+    encode_date_word,
+    encode_home_block,
     logical_block_to_chs,
     parse_home_block,
     parse_segment,
+    rad50_encode,
     score_directory_structure,
+    segment_max_entries,
+    serialize_segment,
 )
 from .fs_base import FileInfo, Filesystem
 
 NO_DATE = datetime.datetime(1972, 1, 1)  # epoch of the RT-11 date word
+
+# Characters allowed in the 6.3 name fields: RAD50 minus the space (padding)
+# and the dot (the name/type separator).
+_NAME_CHARS = frozenset(RAD50_CHARSET) - {" ", "."}
 
 # (sectors_per_track, bytes_per_sector) -> raw physical view candidate.
 _PHYSICAL_VIEW_FOR = {(26, 128): "rx01", (26, 256): "rx02", (10, 512): "rx50"}
@@ -75,8 +100,33 @@ _MAP_COLORS = {
 }
 
 
+@dataclass
+class _MutableSegment:
+    """In-memory working copy of one directory segment for write planning.
+
+    All directory mutations happen on a list of these; only segments marked
+    ``dirty`` are serialized back, and only after the whole plan succeeded.
+    """
+
+    number: int
+    total_segments: int
+    next_segment: int
+    highest_in_use: int
+    extra_bytes: int
+    data_start_block: int
+    entries: list[DirEntry]
+    eos_word: int
+    tail: bytes
+    dirty: bool = False
+
+    def entry_start(self, index: int) -> int:
+        """Start block of entry ``index`` (implicit on disk: data start plus
+        the cumulative lengths of prior entries)."""
+        return self.data_start_block + sum(e.length for e in self.entries[:index])
+
+
 class RT11Filesystem(Filesystem):
-    """Read-only DEC RT-11 filesystem with physical/logical view resolution."""
+    """DEC RT-11 filesystem with physical/logical view resolution."""
 
     filesystem_type: ClassVar[str] = "RT11"
     filesystem_aliases: ClassVar[list[str]] = ["RT-11"]
@@ -113,7 +163,11 @@ class RT11Filesystem(Filesystem):
         The view defaults to the raw physical view canonical for the
         geometry (rx01/rx02/rx50) and falls back to "logical" for any other
         uniform 128/256/512-byte-sector layout. ``format_info`` may carry
-        explicit "view"/"dir_start" keys (custom profile dialogs).
+        explicit "view"/"dir_start" keys (custom profile dialogs). Both are
+        live: an explicit view is honored on open when it scores >= the
+        detection threshold (see ``_resolve``) and selects the write mapping
+        in ``format_fs``; dir_start is written to the home block at format
+        time (on open, the home block content always wins).
         """
         geometry = _uniform_geometry(physical_format)
         if geometry is None:
@@ -196,6 +250,20 @@ class RT11Filesystem(Filesystem):
     def _read_block(self, block: int) -> bytes:
         return self._read_block_view(self._view, block)
 
+    def _write_block_view(self, view: str, block: int, data: bytes) -> None:
+        """Write one 512-byte logical block through a view's sector map."""
+        if len(data) != BLOCK_SIZE:
+            raise ValueError(f"Block write needs {BLOCK_SIZE} bytes, got {len(data)}")
+        chs_list = self._block_chs_list(view, block)
+        chunk = BLOCK_SIZE // len(chs_list)
+        for index, (cylinder, head, sector) in enumerate(chs_list):
+            self.disk.write_sector(
+                cylinder, head, sector, data[index * chunk : (index + 1) * chunk]
+            )
+
+    def _write_block(self, block: int, data: bytes) -> None:
+        self._write_block_view(self._view, block, data)
+
     def _dir_start_for(self, view: str, total_blocks: int) -> int:
         """Directory start from the home block, defaulting to 6 on junk."""
         try:
@@ -206,31 +274,50 @@ class RT11Filesystem(Filesystem):
             return home.dir_start
         return DEFAULT_DIR_START
 
+    def _score_view(self, view: str) -> Optional[tuple[str, int, int, int]]:
+        """(view, total_blocks, dir_start, score) for one candidate view,
+        or None when the view cannot be scored at all."""
+        try:
+            total_blocks = self._view_total_blocks(view)
+            if total_blocks < DEFAULT_DIR_START + SEGMENT_BLOCKS:
+                return None
+            dir_start = self._dir_start_for(view, total_blocks)
+            score = score_directory_structure(
+                lambda block, _v=view: self._read_block_view(_v, block),
+                total_blocks,
+                dir_start,
+            )
+        except Exception:  # the scorer never raises, but stay paranoid
+            return None
+        return (view, total_blocks, dir_start, score)
+
     def _resolve(self) -> tuple[str, int, int, int]:
-        """Scores every candidate view and returns the best
-        (view, total_blocks, dir_start, score). Never raises."""
+        """Scores candidate views and returns the winning
+        (view, total_blocks, dir_start, score). Never raises.
+
+        An explicit view carried by an injected config (format profiles,
+        custom profile dialogs) is honored when it scores >= threshold --
+        this is what disambiguates a genuinely ambiguous container.
+        Otherwise every candidate is scored and the best wins, physical
+        candidate first on a tie.
+        """
         if self._resolved is not None:
             return self._resolved
-        best = ("", 0, DEFAULT_DIR_START, 0)
         try:
             candidates = self._candidate_views()
         except Exception:
             candidates = []
+        explicit = self.config.view if isinstance(self.config, RT11Config) else None
+        if explicit in candidates:
+            scored = self._score_view(explicit)
+            if scored is not None and scored[3] >= self.validity_threshold:
+                self._resolved = scored
+                return scored
+        best = ("", 0, DEFAULT_DIR_START, 0)
         for view in candidates:
-            try:
-                total_blocks = self._view_total_blocks(view)
-                if total_blocks < DEFAULT_DIR_START + SEGMENT_BLOCKS:
-                    continue
-                dir_start = self._dir_start_for(view, total_blocks)
-                score = score_directory_structure(
-                    lambda block, _v=view: self._read_block_view(_v, block),
-                    total_blocks,
-                    dir_start,
-                )
-            except Exception:  # the scorer never raises, but stay paranoid
-                continue
-            if score > best[3]:
-                best = (view, total_blocks, dir_start, score)
+            scored = self._score_view(view)
+            if scored is not None and scored[3] > best[3]:
+                best = scored
         self._resolved = best
         return best
 
@@ -272,18 +359,18 @@ class RT11Filesystem(Filesystem):
         first = self._dir_start + (segment_number - 1) * SEGMENT_BLOCKS
         return parse_segment(self._read_block(first) + self._read_block(first + 1))
 
-    def _segments(self) -> list[ParsedSegment]:
-        """Directory segments in LINKED order (start blocks are implicit in
-        this order, NOT in physical segment order), cycle-safe."""
+    def _linked_segments(self) -> list[tuple[int, ParsedSegment]]:
+        """(segment_number, segment) pairs in LINKED order (start blocks are
+        implicit in this order, NOT in physical segment order), cycle-safe."""
         self._initialize()
-        segments: list[ParsedSegment] = []
+        segments: list[tuple[int, ParsedSegment]] = []
         segment_number = 1
         total_segments = MAX_SEGMENTS
         visited: set[int] = set()
         while segment_number and segment_number not in visited:
             visited.add(segment_number)
             segment = self._read_segment(segment_number)
-            segments.append(segment)
+            segments.append((segment_number, segment))
             if segment_number == 1:
                 total_segments = min(segment.header.total_segments, MAX_SEGMENTS)
             segment_number = segment.header.next_segment
@@ -294,6 +381,9 @@ class RT11Filesystem(Filesystem):
                 )
                 break
         return segments
+
+    def _segments(self) -> list[ParsedSegment]:
+        return [segment for _number, segment in self._linked_segments()]
 
     def _entries(self) -> list[DirEntry]:
         return [entry for segment in self._segments() for entry in segment.entries]
@@ -530,16 +620,310 @@ class RT11Filesystem(Filesystem):
             "type_color_map": dict(_MAP_COLORS),
         }
 
-    # -- write interface (Task 4) --------------------------------------------------
+    # -- write interface -------------------------------------------------------
+
+    @staticmethod
+    def _parse_write_name(path: str) -> tuple[str, str]:
+        """Validates a write path into (name, type), 6.3 format.
+
+        Case is normalized to uppercase, structure is validated strictly
+        with clear errors and no silent truncation (the CP/M write-name
+        philosophy; lookups stay lenient).
+        """
+        name = path.lstrip("/").upper()
+        base, _dot, file_type = name.partition(".")
+        if not base:
+            raise ValueError(f"RT-11 file name must not be empty: {path!r}")
+        if len(base) > 6 or len(file_type) > 3 or "." in file_type:
+            raise ValueError(
+                f"RT-11 names are 6.3 format (name <= 6 chars, type <= 3 "
+                f"chars, one dot): {path!r}"
+            )
+        bad = set(base + file_type) - _NAME_CHARS
+        if bad:
+            raise ValueError(
+                f"Character(s) {''.join(sorted(bad))!r} not encodable in an "
+                f"RT-11 name (RAD50: A-Z, 0-9, $, %): {path!r}"
+            )
+        return base, file_type
+
+    def _load_directory_model(self) -> list[_MutableSegment]:
+        """The directory as mutable working copies, in linked order."""
+        model = []
+        for number, segment in self._linked_segments():
+            if not segment.eos_found:
+                raise ValueError(
+                    f"Directory segment {number} has no end-of-segment "
+                    "marker; refusing to write to a damaged directory"
+                )
+            model.append(
+                _MutableSegment(
+                    number=number,
+                    total_segments=segment.header.total_segments,
+                    next_segment=segment.header.next_segment,
+                    highest_in_use=segment.header.highest_in_use,
+                    extra_bytes=segment.header.extra_bytes,
+                    data_start_block=segment.header.data_start_block,
+                    entries=list(segment.entries),
+                    eos_word=segment.eos_word,
+                    tail=segment.tail,
+                )
+            )
+        return model
+
+    def _store_directory_model(self, model: list[_MutableSegment]) -> None:
+        """Serialize every dirty segment back to its on-disk slot.
+
+        Written in REVERSE linked order: after a split that is the new
+        segment first, then the segment now linking to it, then segment 1's
+        header -- so an interrupted write never leaves a link pointing at a
+        stale segment slot.
+        """
+        for segment in reversed(model):
+            if not segment.dirty:
+                continue
+            data = serialize_segment(
+                ParsedSegment(
+                    header=SegmentHeader(
+                        total_segments=segment.total_segments,
+                        next_segment=segment.next_segment,
+                        highest_in_use=segment.highest_in_use,
+                        extra_bytes=segment.extra_bytes,
+                        data_start_block=segment.data_start_block,
+                    ),
+                    entries=tuple(segment.entries),
+                    eos_found=True,
+                    eos_word=segment.eos_word,
+                    tail=segment.tail,
+                )
+            )
+            first = self._dir_start + (segment.number - 1) * SEGMENT_BLOCKS
+            self._write_block(first, data[:BLOCK_SIZE])
+            self._write_block(first + 1, data[BLOCK_SIZE:])
+
+    def _model_find_live(
+        self, model: list[_MutableSegment], filename: str
+    ) -> Optional[tuple[_MutableSegment, int]]:
+        """(segment, entry index) of the live entry named ``filename``."""
+        for segment in model:
+            for index, entry in enumerate(segment.entries):
+                if entry.is_empty or not (entry.is_permanent or entry.is_tentative):
+                    continue
+                if entry.name is None or entry.file_type is None:
+                    continue
+                if self._entry_filename(entry) == filename:
+                    return segment, index
+        return None
+
+    @staticmethod
+    def _split_index(entries: list[DirEntry]) -> int:
+        """Index of the first entry that moves to the new segment: a
+        permanent or tentative entry near the middle (manual section 1.1.5),
+        keeping both halves non-empty."""
+        mid = len(entries) // 2
+        for index in sorted(range(1, len(entries)), key=lambda i: (abs(i - mid), i)):
+            if entries[index].status & (E_PERM | E_TENT):
+                return index
+        return mid  # no live entries at all: split at the structural middle
+
+    def _split_segment(
+        self, model: list[_MutableSegment], segment: _MutableSegment
+    ) -> None:
+        """Split a full ``segment`` in half per manual section 1.1.5.
+
+        The lowest segment number not yet in the chain is opened; the upper
+        half of the entries moves to it; the new segment inherits the old
+        link while the old segment links to the new one (this is what makes
+        the chain order diverge from numeric order on real volumes); segment
+        1's highest-in-use counter is updated.
+        """
+        head = model[0]  # the chain always starts at segment 1
+        in_use = {seg.number for seg in model}
+        available = [
+            number
+            for number in range(1, min(head.total_segments, MAX_SEGMENTS) + 1)
+            if number not in in_use
+        ]
+        if not available:
+            raise OSError(
+                f"Directory full: all {head.total_segments} segments are in "
+                "use (RT-11 needs a SQUEEZE or more segments at INIT time)"
+            )
+        new_number = available[0]
+        if len(segment.entries) < 2:
+            raise OSError("Directory full: cannot split a near-empty segment")
+        mid = self._split_index(segment.entries)
+        new_segment = _MutableSegment(
+            number=new_number,
+            total_segments=head.total_segments,
+            # The new segment inherits the old segment's link...
+            next_segment=segment.next_segment,
+            highest_in_use=0,  # maintained in segment 1 only (manual 1.1.2.1)
+            extra_bytes=segment.extra_bytes,
+            data_start_block=segment.entry_start(mid),
+            entries=segment.entries[mid:],
+            eos_word=segment.eos_word,
+            tail=b"",
+            dirty=True,
+        )
+        # ...and the old segment links to the new one.
+        segment.entries = segment.entries[:mid]
+        segment.next_segment = new_number
+        segment.dirty = True
+        head.highest_in_use = max(head.highest_in_use, new_number)
+        head.dirty = True
+        model.insert(model.index(segment) + 1, new_segment)
+
+    def _plan_allocation(
+        self,
+        model: list[_MutableSegment],
+        filename: str,
+        name_words: tuple[int, int, int],
+        length: int,
+    ) -> int:
+        """First-fit allocation: inserts the new permanent entry into the
+        model and returns its start block. Splits full segments as needed.
+
+        Only E.MPTY runs are allocation targets; tentative entries are
+        skipped (not empty) but their blocks stay allocated. NOTE: real
+        RT-11 .ENTER uses best-fit (manual section 1.1.3); first-fit is this
+        implementation's pinned, deterministic policy (PUTR does the same).
+        """
+        today = datetime.date.today()
+        try:
+            date_word = encode_date_word(today.year, today.month, today.day)
+        except ValueError:  # host clock outside the representable 1972-2099
+            date_word = 0
+        while True:
+            found = None
+            for segment in model:
+                for index, entry in enumerate(segment.entries):
+                    if (
+                        entry.is_empty
+                        and entry.length >= length
+                        # Distrust runs overrunning the device (possible on
+                        # damaged-but-detected volumes): never scribble past
+                        # the block space or over unrelated sectors.
+                        and segment.entry_start(index) + entry.length
+                        <= self._total_blocks
+                    ):
+                        found = (segment, index)
+                        break
+                if found:
+                    break
+            if found is None:
+                largest = max(
+                    (e.length for s in model for e in s.entries if e.is_empty),
+                    default=0,
+                )
+                raise OSError(
+                    f"Not enough contiguous free space for {filename}: need "
+                    f"{length} block(s), largest free area is {largest} "
+                    "(RT-11 files are contiguous; free runs never coalesce "
+                    "without a SQUEEZE)"
+                )
+            segment, index = found
+            empty = segment.entries[index]
+            leftover = empty.length - length
+            added_entries = 1 if leftover else 0
+            if len(segment.entries) + added_entries > segment_max_entries(
+                segment.extra_bytes
+            ):
+                self._split_segment(model, segment)
+                continue  # re-run the search against the split directory
+            start_block = segment.entry_start(index)
+            new_entry = DirEntry(
+                status=E_PERM,
+                name_words=name_words,
+                length=length,
+                job_channel=0,
+                date_word=date_word,
+                start_block=start_block,
+                extra=b"\x00" * segment.extra_bytes,
+                name=filename.partition(".")[0].ljust(6),
+                file_type=filename.partition(".")[2].ljust(3),
+            )
+            replacement = [new_entry]
+            if leftover:
+                # The found empty slides down behind the new file, shrunk.
+                replacement.append(
+                    replace(empty, length=leftover, start_block=start_block + length)
+                )
+            segment.entries[index : index + 1] = replacement
+            segment.dirty = True
+            return start_block
 
     def write_file(self, path: str, data: bytes) -> None:
-        raise NotImplementedError("RT-11 write support is not implemented yet")
+        """Write ``data`` as a permanent file, replacing any same-named one.
+
+        RT-11 replace semantics: the old entry is deleted and a new one is
+        created via first-fit allocation over the E.MPTY runs, with today's
+        date stamped. The whole plan (delete + allocation + any segment
+        split) is computed on an in-memory directory copy first; a plan
+        failure (OSError for no fitting run or full directory) leaves the
+        disk byte-identical.
+        """
+        base, file_type = self._parse_write_name(path)
+        filename = f"{base}.{file_type}" if file_type else base
+        self._initialize()
+        name_words = (
+            rad50_encode(base[:3]),
+            rad50_encode(base[3:6]),
+            rad50_encode(file_type),
+        )
+        length = (len(data) + BLOCK_SIZE - 1) // BLOCK_SIZE
+
+        model = self._load_directory_model()
+        existing = self._model_find_live(model, filename)
+        if existing is not None:
+            segment, index = existing
+            old = segment.entries[index]
+            if old.status & E_PROT:
+                raise PermissionError(
+                    f"{filename} is a protected (E.PROT) file; refusing to replace"
+                )
+            segment.entries[index] = replace(old, status=E_MPTY)
+            segment.dirty = True
+        start_block = self._plan_allocation(model, filename, name_words, length)
+
+        # Plan complete -- only now touch the disk: data blocks first, the
+        # directory last, so a failed data write never orphans an entry.
+        for index in range(length):
+            chunk = data[index * BLOCK_SIZE : (index + 1) * BLOCK_SIZE]
+            self._write_block(start_block + index, chunk.ljust(BLOCK_SIZE, b"\x00"))
+        self._store_directory_model(model)
+        self.disk.flush()
+        self.logger.info(f"Wrote {filename}: {length} block(s) at block {start_block}")
 
     def delete(self, path: str) -> None:
-        raise NotImplementedError("RT-11 write support is not implemented yet")
+        """Authentic RT-11 delete: the entry's status word flips to E.MPTY
+        in place. Name, length and date remain (DIR /DELETED lists them);
+        adjacent empties are deliberately NOT coalesced -- only the SQUEEZE
+        operation consolidates free space, and SQUEEZE is a non-goal."""
+        self._initialize()
+        filename = path.lstrip("/").upper()
+        model = self._load_directory_model()
+        found = self._model_find_live(model, filename)
+        if found is None:
+            raise FileNotFoundError(f"No such file: {path}")
+        segment, index = found
+        entry = segment.entries[index]
+        if entry.status & E_PROT:
+            raise PermissionError(
+                f"{filename} is a protected (E.PROT) file; refusing to delete"
+            )
+        segment.entries[index] = replace(entry, status=E_MPTY)
+        segment.dirty = True
+        self._store_directory_model(model)
+        self.disk.flush()
+        self.logger.info(f"Deleted {filename} ({entry.length} block(s) freed)")
 
     def delete_recursive(self, path: str) -> bool:
-        raise NotImplementedError("RT-11 write support is not implemented yet")
+        try:
+            self.delete(path)
+            return True
+        except (OSError, ValueError):
+            return False
 
     def create_directory(self, path: str) -> None:
         raise NotImplementedError("RT-11 has no directories")
@@ -547,7 +931,100 @@ class RT11Filesystem(Filesystem):
     def format_fs(
         self, profile: FormatProfile, volume_label: Optional[str] = None
     ) -> None:
-        raise NotImplementedError("RT-11 formatting is not implemented yet")
+        """Initialize the volume: boot block, home block, empty directory.
+
+        The view to write through comes from the profile's RT11Config (or
+        is derived from the geometry). The directory gets the RT-11 DUP
+        default segment count for the device size (RX01 1, RX02/RX50 4; see
+        rt11_layout.default_segment_count) and a single E.MPTY entry
+        covering the whole data area. The home block checksum is written
+        CORRECTLY (manual section 1.1.1) even though detection never trusts
+        it. ``volume_label`` lands in the 12-byte volume ID field.
+        """
+        config = profile.filesystem_config
+        if not isinstance(config, RT11Config):
+            physical = profile.physical_format or self.disk.physical_format
+            config = self.create_config_from_params({}, physical)
+        if config is None:
+            raise ValueError(
+                "FormatProfile for RT-11 must carry an RT11Config or a "
+                "uniform 128/256/512-byte-sector geometry"
+            )
+        view = config.view
+        candidates = self._candidate_views()
+        if view not in candidates:
+            raise ValueError(
+                f"View {view!r} is not addressable on the open geometry "
+                f"(candidates: {candidates or 'none'})"
+            )
+        total_blocks = self._view_total_blocks(view)
+        dir_start = config.dir_start
+        if dir_start < 2:  # blocks 0/1 are the boot and home blocks
+            raise ValueError(f"Directory cannot start before block 2: {dir_start}")
+        segments = default_segment_count(total_blocks)
+        data_start = dir_start + SEGMENT_BLOCKS * segments
+        if data_start >= total_blocks:
+            raise ValueError(
+                f"Device of {total_blocks} blocks cannot hold a directory "
+                f"of {segments} segment(s) at block {dir_start}"
+            )
+        label = (volume_label or "").strip() or "RT11A"
+
+        zero = b"\x00" * BLOCK_SIZE
+        for block in range(dir_start):  # boot block + reserved blocks
+            if block != 1:
+                self._write_block_view(view, block, zero)
+        self._write_block_view(
+            view, 1, encode_home_block(volume_id=label, dir_start=dir_start)
+        )
+        for block in range(dir_start, data_start):
+            self._write_block_view(view, block, zero)
+        segment_one = serialize_segment(
+            ParsedSegment(
+                header=SegmentHeader(
+                    total_segments=segments,
+                    next_segment=0,
+                    highest_in_use=1,
+                    extra_bytes=0,
+                    data_start_block=data_start,
+                ),
+                entries=(
+                    DirEntry(
+                        status=E_MPTY,
+                        # Names on empties are ignored by RT-11; "EMPTY.FIL"
+                        # keeps DIR /DELETED output tidy (xferx convention).
+                        name_words=(
+                            rad50_encode("EMP"),
+                            rad50_encode("TY"),
+                            rad50_encode("FIL"),
+                        ),
+                        length=total_blocks - data_start,
+                        job_channel=0,
+                        date_word=0,
+                        start_block=data_start,
+                    ),
+                ),
+                eos_found=True,
+            )
+        )
+        self._write_block_view(view, dir_start, segment_one[:BLOCK_SIZE])
+        self._write_block_view(view, dir_start + 1, segment_one[BLOCK_SIZE:])
+
+        # Re-resolve from the freshly written content; the explicit config
+        # view pins the resolution for the (rare) ambiguous container.
+        self._resolved = None
+        self._initialized = False
+        self.config = RT11Config(
+            view=view,
+            total_blocks=total_blocks,
+            dir_start=dir_start,
+            volume_id=label,
+        )
+        self.disk.flush()
+        self.logger.info(
+            f"Formatted RT-11 volume: view={view}, {total_blocks} blocks, "
+            f"{segments} directory segment(s), volume ID {label!r}"
+        )
 
 
 def _uniform_geometry(
