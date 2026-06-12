@@ -23,6 +23,11 @@ Serves the object tree parsed by :mod:`fatfloppy.core.apollo_aegis` (spec
   panel shows the medium capacity.  The BAT's free-block count is a
   volume statistic, reported in ``get_display_info`` under
   "Free Blocks (BAT)" instead.
+- Catalog degradations (``build_catalog`` warnings, e.g. an unreadable root
+  directory on a still-claimed volume that would otherwise browse as merely
+  empty) are surfaced: logged at warning level during initialization and
+  shown in ``get_display_info`` as a "Volume Damage" row, present only when
+  damage was detected.
 - ``check()`` reconciles block ownership (labels, BAT, VTOC, index blocks,
   every in-use VTOCE's pages) against the BAT bitmap: 0 mismatches expected
   on clean volumes (disk5 reconciles perfectly); any mismatch is logged;
@@ -137,7 +142,23 @@ class ApolloAegisFilesystem(Filesystem):
         if not self._geometry_is_apollo():
             raise ValueError("Disk geometry is not the Apollo 77x2x8x1024 layout")
         self._catalog = build_catalog(self._read_image())
+        if self._catalog.warnings:
+            # The catalog flags-and-continues past damage (a broken root
+            # directory still claims and browses, possibly empty); surface
+            # the degradation here so the volume never looks merely empty.
+            self.logger.warning(
+                f"Volume {self._catalog.lv.name!r} has structural damage: "
+                f"{self._damage_summary()}"
+            )
         self._initialized = True
+
+    def _damage_summary(self) -> str:
+        """First catalog degradation message, plus a count of the rest."""
+        warnings = self._catalog.warnings
+        summary = warnings[0]
+        if len(warnings) > 1:
+            summary += f" (+{len(warnings) - 1} more)"
+        return summary
 
     def _geometry_is_apollo(self) -> bool:
         pf = self.disk.physical_format
@@ -445,7 +466,7 @@ class ApolloAegisFilesystem(Filesystem):
     def get_display_info(self) -> dict[str, str]:
         self._initialize()
         cat = self._catalog
-        return {
+        info = {
             "Filesystem": "Apollo AEGIS (read-only)",
             "Volume": cat.lv.name,
             "Node": cat.node_entry_name or "",
@@ -460,8 +481,13 @@ class ApolloAegisFilesystem(Filesystem):
             "Unreferenced Objects": str(cat.unreferenced),
             "VTOC": (f"{cat.vtoc.bucket_count} buckets, {cat.vtoc.block_count} blocks"),
             "Free Blocks (BAT)": str(cat.lv.bat_free_count),
-            "Read-Only": "yes",
         }
+        if cat.warnings:
+            # Only on damaged volumes: tells "broken disk" apart from
+            # "empty disk" when the structure degraded past detection.
+            info["Volume Damage"] = self._damage_summary()
+        info["Read-Only"] = "yes"
+        return info
 
     def get_specific_config(self) -> Optional[AegisConfig]:
         self._initialize()

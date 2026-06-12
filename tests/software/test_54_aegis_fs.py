@@ -482,3 +482,75 @@ class TestMapDisplayCheck:
             assert fs.check() is False
         finally:
             controller.close_disk()
+
+
+def corrupt_root_dir(disk5_bytes: bytes) -> bytes:
+    """disk5 with the root directory's only data page (abs block 618,
+    pinned above) zeroed.
+
+    Detection still claims AEGIS: the PV magic (+25) and the sane LV label
+    (+25) survive, score 50 >= threshold 40; only the +50 root-header bonus
+    is lost.  The root VTOCE itself is intact, so ``build_catalog`` succeeds
+    -- ``parse_directory`` sees an all-zero header, warns, decodes zero
+    entries (every slot reads entry type 0 = free), and the whole object
+    tree dangles: the volume browses EMPTY despite holding 52 files.
+    """
+    img = bytearray(disk5_bytes)
+    img[618 * 1024 : 619 * 1024] = bytes(1024)
+    return bytes(img)
+
+
+class TestStructuralDamageSurfaced:
+    """A claimed volume whose root directory walk degrades must say so:
+    catalog warnings surface as a "Volume Damage" display row plus a
+    filesystem-level log warning (flag-and-continue; nothing raises)."""
+
+    @pytest.fixture()
+    def broken_root(self, tmp_path, disk5_bytes):
+        controller = open_image(
+            tmp_path, corrupt_root_dir(disk5_bytes), "brokenroot.img"
+        )
+        yield controller
+        controller.close_disk()
+
+    def test_still_claimed_as_aegis(self, broken_root):
+        assert broken_root.filesystem.filesystem_type == "APOLLO_AEGIS"
+        fs = ApolloAegisFilesystem(broken_root.disk)
+        assert fs.get_validity_score() == 50  # PV magic + sane LV label
+
+    def test_listing_stays_empty_without_raising(self, broken_root):
+        assert broken_root.filesystem.list_directory("/") == []
+
+    def test_display_info_carries_damage_row(self, broken_root):
+        info = broken_root.filesystem.get_display_info()
+        # First structural reason + a count of the further degradations
+        # (the unreachable-VTOCEs follow-on warning).
+        assert "non-standard directory header" in info["Volume Damage"]
+        assert "(+1 more)" in info["Volume Damage"]
+
+    def test_initialize_logs_structural_damage_warning(
+        self, tmp_path, disk5_bytes, caplog
+    ):
+        with caplog.at_level(logging.WARNING):
+            controller = open_image(
+                tmp_path, corrupt_root_dir(disk5_bytes), "brokenroot2.img"
+            )
+        try:
+            assert any(
+                "structural damage" in r.message
+                and "non-standard directory header" in r.message
+                for r in caplog.records
+                if r.name == "ApolloAegisFilesystem"
+            )
+        finally:
+            controller.close_disk()
+
+    def test_check_still_passes_bat_reconciliation(self, broken_root):
+        # check() reconciles block ownership against the BAT, which walks
+        # the VTOC directly -- it never reads directory CONTENT, so the
+        # zeroed root page leaves 0 mismatches.  Pinned: damage surfacing
+        # is the display row's job, not check()'s.
+        assert broken_root.filesystem.check() is True
+
+    def test_clean_disk5_has_no_damage_row(self, disk5):
+        assert "Volume Damage" not in disk5.filesystem.get_display_info()
