@@ -1020,12 +1020,14 @@ class CPMFilesystem(Filesystem):
         if pf.has_variable_bps or pf.bytes_per_sector % CPM_SECTOR_SIZE != 0:
             return None
 
-        # Runs once per inference attempt, before the layout sweep: a 100%
-        # printable-text byte stream is a text file, not a disk image, and
-        # must not be claimed (see _image_is_pure_text).
+        # Runs once per inference attempt, before the layout sweep: a byte
+        # stream that is all printable text (apart from trailing 0x00
+        # padding) is a text file, not a disk image, and must not be
+        # claimed (see _image_is_pure_text).
         if self._image_is_pure_text():
             self.logger.debug(
-                "DPB inference rejected: image content is 100% printable text"
+                "DPB inference rejected: image content is printable text"
+                " (plus optional trailing NUL padding)"
             )
             return None
 
@@ -1064,23 +1066,32 @@ class CPMFilesystem(Filesystem):
         return best_dpb
 
     def _image_is_pure_text(self) -> bool:
-        """True if every readable byte of the image is ASCII text
-        (CPM_TEXT_FILE_BYTES). Used only by DPB *inference* as a rejection
-        signal; profile-based and explicit-DPB paths never call it.
+        """True if the image is a text file: every readable byte is ASCII
+        text (CPM_TEXT_FILE_BYTES), except an optional trailing-only run of
+        0x00 padding. Used only by DPB *inference* as a rejection signal;
+        profile-based and explicit-DPB paths never call it.
 
-        A real CP/M volume always contains non-text bytes: 0xE5 or 0x00
-        directory fill in unused slots, allocation/block-pointer bytes below
-        0x20 in directory extents, binary system tracks. A byte stream that
-        is 100% printable text is therefore a text file - e.g. a DIR listing
-        saved alongside disk images - which the layout sweep would otherwise
-        claim: newline bytes (0x0A/0x0D) are valid CP/M user numbers and the
-        printable words after them parse as plausible filenames. The check
-        is exact (a single non-text byte disables it), so it can never block
-        a real disk image, and it scans the whole image - floppy-sized
-        inputs, and real disks exit on their first non-text byte anyway.
+        A real CP/M volume always contains non-text bytes *mid-image*: every
+        valid directory entry's EX byte is 0x00 for the first extent, unused
+        slots are 0xE5 or 0x00 fill, and the directory sits before the data
+        area - so "text plus trailing NULs only" can never describe a
+        claimable CP/M disk (inference additionally requires at least one
+        plausibly-named listed file, which an empty disk cannot supply). A
+        byte stream of that shape is therefore a text file - e.g. a DIR
+        listing saved alongside disk images - which the layout sweep would
+        otherwise claim: newline bytes (0x0A/0x0D) are valid CP/M user
+        numbers and the printable words after them parse as plausible
+        filenames. The trailing-NUL tolerance matters because text files
+        extracted from block-oriented filesystems (e.g. the RT-11 listing
+        p732i.dir.txt) commonly end in NUL padding from a block-padded
+        transfer. Any other non-text byte - a 0x00 followed later by data,
+        or a 0xE5 anywhere - disables the gate, so it can never block a
+        real disk image. The scan covers the whole image (floppy-sized
+        inputs) and exits on the first disqualifying byte.
         """
         pf = self.disk.physical_format
-        saw_data = False
+        saw_text = False
+        in_nul_tail = False  # inside what must be a trailing 0x00 run
         for cylinder in range(pf.cylinders):
             for head in range(pf.heads):
                 for sector in range(pf.get_sectors_per_track(cylinder, head)):
@@ -1091,11 +1102,20 @@ class CPMFilesystem(Filesystem):
                         # synthesized geometry): an unreadable tail is not
                         # evidence either way.
                         continue
-                    if data:
-                        saw_data = True
-                        if data.translate(None, CPM_TEXT_FILE_BYTES):
-                            return False
-        return saw_data
+                    if not data:
+                        continue
+                    if in_nul_tail:
+                        if any(data):
+                            return False  # the 0x00 run was not trailing
+                        continue
+                    text = data.rstrip(b"\x00")
+                    if text.translate(None, CPM_TEXT_FILE_BYTES):
+                        return False  # incl. any mid-sector 0x00
+                    if text:
+                        saw_text = True
+                    if len(text) < len(data):
+                        in_nul_tail = True
+        return saw_text
 
     @staticmethod
     def _plausible_inferred_filename(name: str) -> bool:

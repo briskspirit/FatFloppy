@@ -123,17 +123,20 @@ def test_nodpb_scan_still_accepts_plausible_entry(tmp_path):
 
 
 def _listing_text(size: int) -> bytes:
-    """Realistic DIR-listing text: uppercase filenames, CRLF lines, ending in
-    a CP/M ^Z text-EOF marker (0x1A counts as text - CP/M-era text files end
-    with it). Newline bytes (0x0A/0x0D) are valid CP/M user numbers and the
-    uppercase words after them parse as plausible filenames, which is exactly
-    how the DPB sweep latched onto such files."""
+    """Realistic DIR-listing text of exactly `size` bytes: uppercase
+    filenames, CRLF lines, ending in a CP/M ^Z text-EOF marker (0x1A counts
+    as text - CP/M-era text files end with it). Newline bytes (0x0A/0x0D)
+    are valid CP/M user numbers and the uppercase words after them parse as
+    plausible filenames, which is exactly how the DPB sweep latched onto
+    such files."""
     lines = []
     for i in range(4000):
         sz = (i * 7) % 200 + 1
         letter = chr(65 + i % 26)
         lines.append(f"RT11{letter}{letter}.SYS   {sz:3d}P 04-May-87")
-    return ("\r\n".join(lines)).encode("ascii")[: size - 1] + b"\x1a"
+    body = ("\r\n".join(lines) + "\r\n").encode("ascii")
+    body = body * (size // len(body) + 1)  # tile to fill the full image
+    return body[: size - 1] + b"\x1a"
 
 
 def test_nodpb_scan_rejects_pure_text_image(tmp_path):
@@ -151,19 +154,21 @@ def test_nodpb_scan_rejects_pure_text_image(tmp_path):
     controller.close_disk()
 
 
-def test_nodpb_scan_rejects_real_rt11_listing():
-    """Real-world case: RT-11 distribution listing .TXT files (100% printable
-    text) misdetected as CP/M with phantom entries before the pure-text gate.
-    (p732i.dir.txt, another real victim, carries 77 trailing 0x00 padding
-    bytes, so the deliberately-exact gate does not fire for it - see
-    test_pure_text_gate_requires_every_byte_text.)"""
-    path = (
-        Path(__file__).parent.parent.parent
-        / "local_images"
-        / "RT11"
-        / "RT11-V05.01.d"
-        / "BA-P727B-BC.TXT"
-    )
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        "RT11-V05.01.d/BA-P727B-BC.TXT",
+        "p732i.dir.txt",
+    ],
+    ids=["pure-text", "trailing-nul-padded"],
+)
+def test_nodpb_scan_rejects_real_rt11_listing(relpath):
+    """Real-world case: RT-11 distribution listing .TXT files misdetected as
+    CP/M with phantom entries before the text-image gate. BA-P727B-BC.TXT is
+    100% printable text; p732i.dir.txt carries 77 trailing 0x00 padding bytes
+    from a block-padded transfer (it scored 73 while the gate was exact), so
+    it pins the trailing-NUL tolerance against the motivating exemplar."""
+    path = Path(__file__).parent.parent.parent / "local_images" / "RT11" / relpath
     if not path.exists():
         pytest.skip(f"local image missing: {path}")
 
@@ -175,33 +180,54 @@ def test_nodpb_scan_rejects_real_rt11_listing():
     controller.close_disk()
 
 
-@pytest.mark.parametrize("non_text_byte", [0x00, 0xE5], ids=["0x00", "0xE5"])
-def test_pure_text_gate_requires_every_byte_text(tmp_path, non_text_byte):
-    """The pure-text gate is exact: a single non-text byte (even a 0x00 or
-    0xE5 that could be directory fill) disables it, so it can never block a
-    real disk image. Inference may still reject such an image for other
-    reasons - this pins the gate itself."""
+@pytest.mark.parametrize(
+    "mutation,gate_fires",
+    [
+        ("none", True),
+        ("mid_nul", False),
+        ("mid_e5", False),
+        ("trailing_e5", False),
+        ("trailing_nul_1", True),
+        ("trailing_nul_100", True),
+        ("all_nul", False),
+    ],
+)
+def test_pure_text_gate_tolerates_only_trailing_nul_padding(
+    tmp_path, mutation, gate_fires
+):
+    """The text-image gate is exact apart from trailing 0x00 padding:
+    block-padded text transfers (e.g. RT-11's p732i.dir.txt) end in a NUL
+    run, but a 0x00 followed later by any data, or a 0xE5 anywhere (0xE5 is
+    directory fill, never padding), disables it - so it can never block a
+    real disk image. An all-NUL (blank) image is not text either. Inference
+    may still reject such images for other reasons - this pins the gate."""
     from fatfloppy.core.disk import Disk
     from fatfloppy.core.drivers import IMGImageDriver
     from fatfloppy.core.filesystem_registry import FilesystemRegistry
 
-    img = bytearray(_listing_text(40 * 2 * 9 * 512))
+    size = 40 * 2 * 9 * 512
+    img = bytearray(_listing_text(size))
+    if mutation == "mid_nul":
+        img[len(img) // 2] = 0x00
+    elif mutation == "mid_e5":
+        img[len(img) // 2] = 0xE5
+    elif mutation == "trailing_e5":
+        img[-1] = 0xE5
+    elif mutation == "trailing_nul_1":
+        img[-1] = 0x00
+    elif mutation == "trailing_nul_100":
+        img[-100:] = b"\x00" * 100
+    elif mutation == "all_nul":
+        img = bytearray(size)
+
     fmt = FilesystemRegistry.get_all_formats()["ibm_5.25_360k"]
-
-    def _gate(data: bytes) -> bool:
-        path = tmp_path / f"gate_{non_text_byte:02x}_{len(data)}.img"
-        path.write_bytes(data)
-        drv = IMGImageDriver(str(path))
-        drv.set_physical_format(fmt.physical_format)
-        disk = Disk(drv)
-        disk.set_geometry(fmt.physical_format)
-        return CPMFilesystem(disk)._image_is_pure_text()
-
-    assert _gate(bytes(img)) is True, "all-text image must trip the gate"
-    img[len(img) // 2] = non_text_byte
-    assert _gate(bytes(img)) is False, (
-        f"one 0x{non_text_byte:02X} byte must disable the pure-text gate"
-    )
+    path = tmp_path / f"gate_{mutation}.img"
+    path.write_bytes(img)
+    drv = IMGImageDriver(str(path))
+    drv.set_physical_format(fmt.physical_format)
+    disk = Disk(drv)
+    disk.set_geometry(fmt.physical_format)
+    assert CPMFilesystem(disk)._image_is_pure_text() is gate_fires
 
 
 @pytest.mark.parametrize(
