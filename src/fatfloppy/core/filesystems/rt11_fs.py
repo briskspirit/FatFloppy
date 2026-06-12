@@ -33,13 +33,16 @@ Writes follow authentic RT-11 monitor behavior (V&FF manual section 1.1.5):
 ``write_file`` finds an E.MPTY area, slides the directory entries down to
 insert the new permanent entry in front of the (shrunken) empty, splits a
 full segment in half into the next available one, and stamps today's date
-word. ``delete`` flips the status word to E.MPTY in place -- adjacent
-empties are never coalesced (only SQUEEZE does that, and SQUEEZE is a
-non-goal). ``format_fs`` lays down a boot block, a home block with a
-correct additive checksum, and an empty segment chain sized by the RT-11
-DUP defaults. All planning happens on an in-memory copy of the directory;
-nothing touches the disk until the plan is complete (validate-before-
-mutate), and all writes go through the same view mapper as reads.
+word. A replace allocates the new copy BEFORE freeing the old entry
+(authentic .ENTER ordering: old and new must coexist, so a mid-write
+failure never harms the old file). ``delete`` flips the status word to
+E.MPTY in place -- adjacent empties are never coalesced (only SQUEEZE does
+that, and SQUEEZE is a non-goal). ``format_fs`` lays down a boot block, a
+home block with a correct additive checksum, and an empty segment chain
+sized by the RT-11 DUP defaults. All planning happens on an in-memory copy
+of the directory; nothing touches the disk until the plan is complete
+(validate-before-mutate), and all writes go through the same view mapper
+as reads.
 """
 
 import datetime
@@ -858,20 +861,39 @@ class RT11Filesystem(Filesystem):
                     return segment, index
         return None
 
+    def _check_unprotected(self, entry: DirEntry, action: str) -> None:
+        """Refuse to touch protected (E.PROT) files."""
+        if entry.status & E_PROT:
+            raise PermissionError(
+                f"{self._entry_filename(entry)} is a protected (E.PROT) "
+                f"file; refusing to {action}"
+            )
+
     def _model_mark_empty(
         self, segment: _MutableSegment, index: int, action: str
     ) -> DirEntry:
         """Flip a live entry to E.MPTY in place (authentic RT-11 delete
         semantics), refusing protected files. Returns the old entry."""
         entry = segment.entries[index]
-        if entry.status & E_PROT:
-            raise PermissionError(
-                f"{self._entry_filename(entry)} is a protected (E.PROT) "
-                f"file; refusing to {action}"
-            )
+        self._check_unprotected(entry, action)
         segment.entries[index] = replace(entry, status=E_MPTY)
         segment.dirty = True
         return entry
+
+    def _model_mark_empty_entry(
+        self, model: list[_MutableSegment], entry: DirEntry, action: str
+    ) -> DirEntry:
+        """Mark a specific ``entry`` E.MPTY, locating it by object identity:
+        planning steps between lookup and deletion (allocation insertions,
+        segment splits) may have moved it to another index or segment."""
+        for segment in model:
+            for index, candidate in enumerate(segment.entries):
+                if candidate is entry:
+                    return self._model_mark_empty(segment, index, action)
+        raise ValueError(
+            f"Directory entry {self._entry_filename(entry)} vanished from "
+            "the write plan"
+        )
 
     @staticmethod
     def _split_index(entries: list[DirEntry]) -> int:
@@ -943,7 +965,10 @@ class RT11Filesystem(Filesystem):
         model and returns its start block. Splits full segments as needed.
 
         Only E.MPTY runs are allocation targets; tentative entries are
-        skipped (not empty) but their blocks stay allocated. NOTE: real
+        skipped (not empty) but their blocks stay allocated. On a replace,
+        ``write_file`` calls this while the OLD entry is still live in the
+        model (authentic .ENTER ordering), so the old file's run is never a
+        candidate and its blocks are never overwritten mid-plan. NOTE: real
         RT-11 .ENTER uses best-fit (manual section 1.1.3); first-fit is this
         implementation's pinned, deterministic policy (PUTR does the same).
         NOTE: segments are filled to the structural 72-entry capacity
@@ -1021,12 +1046,16 @@ class RT11Filesystem(Filesystem):
     def write_file(self, path: str, data: bytes) -> None:
         """Write ``data`` as a permanent file, replacing any same-named one.
 
-        RT-11 replace semantics: the old entry is deleted and a new one is
-        created via first-fit allocation over the E.MPTY runs, with today's
-        date stamped. The whole plan (delete + allocation + any segment
-        split) is computed on an in-memory directory copy first; a plan
-        failure (OSError for no fitting run or full directory) leaves the
-        disk byte-identical.
+        Replace follows authentic .ENTER ordering: the NEW allocation is
+        planned while the old entry is still live (its blocks are therefore
+        never allocation candidates), and only after allocation succeeds
+        does the old entry flip to E.MPTY -- so a replace needs room for
+        old and new simultaneously, and a mid-write I/O failure can never
+        corrupt the old file (real RT-11 likewise .ENTERs a tentative file
+        in NEW space and deletes the old at close). The whole plan
+        (allocation + any segment split + delete-old) is computed on an
+        in-memory directory copy first; a plan failure (OSError for no
+        fitting run or full directory) leaves the disk byte-identical.
         """
         base, file_type = self._parse_write_name(path)
         filename = f"{base}.{file_type}" if file_type else base
@@ -1040,9 +1069,17 @@ class RT11Filesystem(Filesystem):
 
         model = self._load_directory_model()
         existing = self._model_find_live(model, filename)
+        old_entry: Optional[DirEntry] = None
         if existing is not None:
-            self._model_mark_empty(*existing, action="replace")
+            segment, index = existing
+            old_entry = segment.entries[index]
+            self._check_unprotected(old_entry, action="replace")
         start_block = self._plan_allocation(model, filename, name_words, length)
+        if old_entry is not None:
+            # Allocation succeeded with the old entry still live; NOW the
+            # old copy is deleted, by identity (allocation insertions or a
+            # segment split may have moved it).
+            self._model_mark_empty_entry(model, old_entry, action="replace")
 
         # Plan complete -- only now touch the disk: data blocks first, the
         # directory last, so a failed data write never orphans an entry.

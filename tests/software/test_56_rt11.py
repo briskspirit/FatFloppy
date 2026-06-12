@@ -2110,8 +2110,10 @@ class TestReplaceOnSameName:
             assert fs.read_file("FOO.DAT")[:2] == b"v2"
             # Old 3-block run freed, new 1-block run used.
             assert fs.get_free_space()[0] == free_after_v1 + 2 * BLOCK
-            # First-fit puts the replacement into the freed run itself.
-            assert fs.get_file_allocation_units("FOO.DAT") == [8]
+            # Allocate-before-free (.ENTER ordering): the replacement is
+            # planned while the old entry at 8-10 is still live, so
+            # first-fit lands AFTER the old run, never inside it.
+            assert fs.get_file_allocation_units("FOO.DAT") == [11]
         finally:
             controller.close_disk()
 
@@ -2123,8 +2125,9 @@ class TestReplaceOnSameName:
             fs.write_file("BIG.DAT", b"B" * ((494 - 10) * BLOCK))  # fill rest
             controller.flush()
             before = img.read_bytes()
-            # No run can hold 5 blocks even after KEEP's 2 are freed; the
-            # plan must fail BEFORE any byte is written.
+            # KEEP's old blocks are not even a candidate (allocate-before-
+            # free), and no run can hold 5 blocks anyway; the plan must
+            # fail BEFORE any byte is written.
             with pytest.raises(OSError):
                 fs.write_file("KEEP.DAT", b"x" * (5 * BLOCK))
             controller.flush()
@@ -2141,6 +2144,125 @@ class TestReplaceOnSameName:
             with pytest.raises(PermissionError):
                 controller.filesystem.write_file("SWAP.SYS", b"clobber")
             assert controller.filesystem.read_file("SWAP.SYS") == before
+        finally:
+            controller.close_disk()
+
+    def test_replace_allocates_outside_old_run(self, tmp_path):
+        # Authentic .ENTER ordering: the new copy is allocated while the
+        # old entry is still live, so the old run's blocks are never
+        # allocation candidates -- a mid-write I/O failure can no longer
+        # corrupt the old file (real RT-11 .ENTERs a tentative file in NEW
+        # space and deletes the old at close).
+        controller, _img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            fs.write_file("FILE.DAT", b"v1" * BLOCK)  # 2 blocks
+            (item,) = fs.list_directory("/")
+            old_start = item.extra_data["start_block"]
+            old_run = set(range(old_start, old_start + 2))
+            # Ample space elsewhere: the replacement must land OUTSIDE the
+            # old run, not first-fit back into it.
+            fs.write_file("FILE.DAT", b"v2" * BLOCK)  # 2 blocks
+            (item,) = fs.list_directory("/")
+            assert item.extra_data["start_block"] != old_start
+            new_units = fs.get_file_allocation_units("FILE.DAT")
+            assert not set(new_units) & old_run
+            assert fs.read_file("FILE.DAT") == b"v2" * BLOCK
+        finally:
+            controller.close_disk()
+
+    def test_replace_needs_room_for_old_and_new_together(self, tmp_path):
+        # 486 data blocks; OLD takes 480, leaving a 6-block trailing run.
+        # 100 new blocks would fit ONLY if OLD's run were freed first --
+        # authentic .ENTER needs old and new to coexist, so the plan must
+        # fail with the whole image byte-identical and OLD untouched.
+        controller, img = _format_new(tmp_path, "rt11_logical_494")
+        try:
+            fs = controller.filesystem
+            payload = bytes(255 - (i % 251) for i in range(480 * BLOCK))
+            fs.write_file("OLD.DAT", payload)
+            controller.flush()
+            before = img.read_bytes()
+            free_before = fs.get_free_space()
+            with pytest.raises(OSError, match="contiguous"):
+                fs.write_file("OLD.DAT", b"n" * (100 * BLOCK))
+            controller.flush()
+            assert img.read_bytes() == before
+            assert fs.get_free_space() == free_before
+            assert fs.read_file("OLD.DAT") == payload
+        finally:
+            controller.close_disk()
+
+    @pytest.mark.parametrize(
+        "profile,view", [("rt11_rx02", "rx02"), ("rt11_logical_988", "logical")]
+    )
+    def test_replace_fits_single_entry_both_views(self, tmp_path, profile, view):
+        # Replace-when-it-fits end to end, through a raw physical view and
+        # the logical view: exactly one live entry remains (no duplicate
+        # names) and the new content persists across a reopen.
+        v1 = b"first version " * 100  # 3 blocks
+        v2 = bytes((i * 7) % 256 for i in range(2 * BLOCK))  # 2 blocks
+        controller, img = _format_new(tmp_path, profile)
+        try:
+            fs = controller.filesystem
+            fs.write_file("FILE.DAT", v1)
+            fs.write_file("FILE.DAT", v2)
+            assert [i.name for i in fs.list_directory("/")] == ["FILE.DAT"]
+            assert fs.read_file("FILE.DAT") == v2
+            controller.flush()
+        finally:
+            controller.close_disk()
+
+        # Prove it on the raw bytes through the view in question.
+        chain = _parse_linked_segments(img.read_bytes(), view)
+        live = [
+            entry
+            for _number, seg in chain
+            for entry in seg.entries
+            if entry.is_permanent and not entry.is_empty
+        ]
+        assert len(live) == 1
+
+        verifier = _open(img)
+        try:
+            assert verifier.filesystem.read_file("FILE.DAT") == v2
+        finally:
+            verifier.close_disk()
+
+    @pytest.mark.parametrize("victim_index", [0, 70])
+    def test_replace_into_full_segment_splits_correctly(self, tmp_path, victim_index):
+        # 71 one-block files plus the trailing empty fill segment 1 to its
+        # 72-entry capacity. A replace then needs one extra entry (new
+        # entry + shrunken empty) and must split; with allocate-before-free
+        # the old entry may have MOVED to the new segment (victim 70)
+        # before it is marked E.MPTY.
+        controller, _img = _format_new(tmp_path, "rt11_rx02")
+        files = {}
+        try:
+            fs = controller.filesystem
+            for index in range(71):
+                name = f"F{index:03d}.DAT"
+                payload = f"file {index} ".encode() * 30
+                fs.write_file(name, payload)
+                files[name] = payload
+            victim = f"F{victim_index:03d}.DAT"
+            new_payload = b"REPLACED" * (2 * BLOCK // 8)  # 2 blocks
+            fs.write_file(victim, new_payload)
+            files[victim] = new_payload
+
+            listing = {i.name for i in fs.list_directory("/")}
+            assert listing == set(files)  # still 71 names, no duplicates
+            for name, payload in files.items():
+                assert fs.read_file(name)[: len(payload)] == payload, name
+            # Structural invariants after the split-during-replace.
+            allocated = fs.get_allocated_units()
+            assert len(allocated) == len(set(allocated))
+            free_blocks = fs.get_free_space()[0] // BLOCK
+            assert len(allocated) + free_blocks == 988
+            flat = [
+                unit for name in files for unit in fs.get_file_allocation_units(name)
+            ]
+            assert len(flat) == len(set(flat))
         finally:
             controller.close_disk()
 
