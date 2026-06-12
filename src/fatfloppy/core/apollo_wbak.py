@@ -1569,6 +1569,20 @@ class ContinuationSpec:
     backup_uid: Optional[str]
     volume_id: Optional[str]
 
+    def expectation(self) -> str:
+        """Human-readable identity of the expected continuation.
+
+        The SINGLE formatting source for everything that names what the
+        next volume must hold -- the GUI's insert-next-volume prompt and
+        file-picker caption AND :meth:`attach_volume`'s wrong-volume
+        rejection -- so the prompt and the rejection can never drift:
+        the user is told up front exactly what a rejection would demand.
+        """
+        return (
+            f"section {self.next_section} of {self.file_id!r} "
+            f"seq {self.sequence} (uid {self.backup_uid})"
+        )
+
 
 def expected_continuation(
     tree: WbakTree, catalog: WbakCatalog

@@ -928,12 +928,17 @@ class FileManager(QObject):
             )
             if spec is None:
                 return  # tree complete: the short prefix is all the set holds
+            # spec.expectation() is the same helper attach_volume's
+            # wrong-volume rejection uses, so the prompt names exactly
+            # what a rejection would demand (tree, seq, section, set uid)
+            # and the two texts can never drift.
             reply = QMessageBox.question(
                 self.parent,
                 "Insert Next Volume",
-                f"'{entry.name}' continues on the next volume of backup set "
-                f"{spec.volume_id} (section {spec.next_section} of "
-                f"'{spec.file_id}'). Open the next volume image?",
+                f"'{entry.name}' is cut at the end of volume "
+                f"{spec.volume_id}. The backup set continues with "
+                f"{spec.expectation()} on the next volume. "
+                f"Open the next volume image?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -944,7 +949,7 @@ class FileManager(QObject):
                 return
             volume_path, _ = QFileDialog.getOpenFileName(
                 self.parent,
-                "Open Next Volume Image",
+                f"Open Next Volume: {spec.expectation()}",
                 "",
                 "Volume images (*.img *.afd)",
             )

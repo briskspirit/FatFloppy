@@ -167,14 +167,60 @@ class TestGuiVolumeAttach:
         assert len(questions) == 1  # exactly ONE prompt for the one volume
         _title, text = questions[0]
         assert text == (
-            "'bigfile' continues on the next volume of backup set SYNVA0 "
-            "(section 2 of 'COM'). Open the next volume image?"
+            "'bigfile' is cut at the end of volume SYNVA0. The backup set "
+            "continues with section 2 of 'COM' seq 2 "
+            "(uid 31F49BD4.200071FA) on the next volume. "
+            "Open the next volume image?"
         )
         assert len(dialogs) == 1
         assert "*.img" in dialogs[0][1] and "*.afd" in dialogs[0][1]
         # the attach is visible filesystem-wide (the follow-on file joined)
         fs = fm.parent.controller.filesystem
         assert fs.read_file("/com/followon") == s.follow_content
+
+    def test_prompt_and_rejection_share_expectation(
+        self, two_vol, tmp_path, monkeypatch
+    ):
+        # The user pain this guards (FT0003's ftn_sr9.2): the prompt used
+        # to omit WHICH volume the set expects, so unrelated disks from
+        # the same machine looked plausible and the rejection message was
+        # the first place the identity appeared.  The prompt, the file-
+        # picker title and the wrong-volume rejection must all name the
+        # expectation via the SAME helper (ContinuationSpec.expectation),
+        # so the texts can never drift apart.
+        s, fm = two_vol.s, two_vol.fm
+        fs = fm.parent.controller.filesystem
+        (spec,) = fs.pending_continuations()
+        expectation = spec.expectation()
+        # the shared helper names tree, seq, section and the set uid
+        assert expectation == "section 2 of 'COM' seq 2 (uid 31F49BD4.200071FA)"
+        wrong_path = tmp_path / "wrong.img"
+        wrong_path.write_bytes(
+            build_continuation_volume(
+                volume_id="SYNVC9", sequence=7, section=4, tail=s.tail
+            )
+        )
+        dest = tmp_path / "bigfile.out"
+        monkeypatch.setattr(
+            QFileDialog,
+            "getSaveFileName",
+            staticmethod(lambda *_a, **_k: (str(dest), "")),
+        )
+        questions = patch_question(monkeypatch, [YES, NO])  # wrong pick, give up
+        dialogs = patch_open_dialog(monkeypatch, [str(wrong_path)])
+        warnings = patch_warning(monkeypatch)
+        select(fm, "bigfile")
+
+        fm.extract_selected_items()
+
+        assert len(questions) == 2 and len(warnings) == 1
+        # the initial prompt and the rejection carry the IDENTICAL substring
+        assert expectation in questions[0][1]
+        assert expectation in warnings[0][1]
+        assert expectation in questions[1][1]  # the re-prompt names it too
+        # the file picker's caption is enriched the same way
+        assert len(dialogs) == 1
+        assert expectation in dialogs[0][0]
 
     def test_decline_extracts_prefix(self, two_vol, tmp_path, monkeypatch):
         s, fm = two_vol.s, two_vol.fm

@@ -393,12 +393,11 @@ class ApolloWbakFilesystem(Filesystem):
             )
             stitched_ids.append(prev.file_id)
         if not stitched:
+            # expectation() is the same helper the GUI's insert-next-volume
+            # prompt uses: the rejection and the prompt can never drift.
             expected = "; ".join(
-                f"section {spec.next_section} of {spec.file_id!r} "
-                f"seq {spec.sequence} (uid {spec.backup_uid})"
-                for spec in (
-                    expected_continuation(tree, self._catalog) for tree in pending
-                )
+                expected_continuation(tree, self._catalog).expectation()
+                for tree in pending
             )
             found = "; ".join(
                 f"{tree.file_id!r} seq {tree.sequence} section {tree.section} "
