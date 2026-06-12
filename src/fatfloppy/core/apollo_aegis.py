@@ -1,13 +1,16 @@
-"""Apollo AEGIS native-volume parser: PV/LV labels, VTOC and VTOCEs.
+"""Apollo AEGIS native-volume parser: labels, VTOC, directories, catalog.
 
 Parses the on-disk structures of AEGIS-native (SR9) Apollo floppies --
-77x2x8x1024 (1,261,568-byte) images such as bootable utility disks.  The
-normative format description lives in
+77x2x8x1024 (1,261,568-byte) images such as bootable utility disks -- from
+the PV/LV labels through the VTOC/VTOCEs and directories up to the fully
+walked :class:`AegisCatalog` (:func:`build_catalog`).  The normative format
+description lives in
 ``docs/superpowers/specs/2026-06-11-aegis-fs-design.md`` section 2; primary
 sources are the *Domain Engineering Handbook Rev 4* (``eng_handbook_rev4.pdf``,
 exact Pascal record layouts) and *AEGIS Internals and Data Structures*
-(``aegis_internals.pdf``), cross-checked against the empirical dissection of
-disk5 in ``docs/superpowers/research/apollo/aegis_empirical/``.
+(``aegis_internals.pdf``, ch. 8 for directories), cross-checked against the
+empirical dissection of disk5 in
+``docs/superpowers/research/apollo/aegis_empirical/``.
 
 On-disk layout (all multi-byte fields big-endian; blocks are 1024 bytes;
 daddrs inside LV structures are LV-relative, absolute byte offset =
@@ -63,7 +66,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from .apollo_wbak import apollo_time_to_datetime
+from .apollo_wbak import STORAGE_HEADER_SIZE, apollo_time_to_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -410,4 +413,514 @@ def read_vtoc(data: bytes, lv_base: int) -> Vtoc:
         block_count=len(visited),
         entries=entries,
         block_bucket=block_bucket,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Directories (AEGIS Internals ch. 8)
+# ---------------------------------------------------------------------------
+
+DIR_HEADER_SIZE = 0x1A
+DIR_ENTRY_SIZE = 48
+DIR_LINEAR_OFFSET = 0x1A
+DIR_POOL_OFFSET = 0x400  # entry-block pool starts after the header page
+DIR_POOL_BLOCK_SIZE = 150  # u16 next + u16 prev + u8 type + u8 used + 3 x 48
+DIR_POOL_ENTRIES_PER_BLOCK = 3
+# Header constants: version 1, hash prime 43, linear list size 18,
+# entry-block pool size 429, entries per pool block 3 (Internals table 8-1).
+DIR_EXPECTED_HEAD = (1, 43, 18, 429, 3)
+DIR_ENTRY_TYPE_FREE = 0
+DIR_ENTRY_TYPE_UID = 1  # "a UID" -- a normal catalogued object
+DIR_ENTRY_TYPE_LINK = 3  # a link descriptor (unobserved on disk5)
+
+# Managed-file storage header (spec section 2): types uasc/rec/hdru carry a
+# 32-byte header whose length the VTOCE length includes; reads hide it.
+# 0x302 (obj) files also start with the magic on disk5 but are deliberately
+# NOT in the strip set -- executables keep their object stream intact.
+MANAGED_TYPE_HIS = frozenset({0x311, 0x300, 0x301})
+STORAGE_HEADER_MAGIC = b"\x00\x20\x00\x01"
+
+_CATALOG_WARN_CAP = 8  # max individual warning-level log records per catalog
+
+
+def _warn(warnings: list, message: str) -> None:
+    """Collect a degradation message; log the first few at warning level."""
+    warnings.append(message)
+    if len(warnings) <= _CATALOG_WARN_CAP:
+        logger.warning("AEGIS: %s", message)
+    else:
+        logger.debug("AEGIS: %s", message)
+
+
+@dataclass
+class DirEntry:
+    """One 48-byte directory entry (name[32] space-padded + 6 reserved bytes
+    [the network-number hint in the network root] + u8 name length + u8 entry
+    type + 8 bytes of entry data -- the object UID for type 1)."""
+
+    name: str
+    entry_type: int
+    uid: bytes  # object UID for type 1; raw entry data otherwise
+
+
+def parse_directory(data: bytes, warnings: Optional[list] = None) -> list:
+    """Decode a directory object's content into its entries.
+
+    Layout per AEGIS Internals ch. 8, verified byte-exact against disk5
+    (header 26 B + 18 x 48 B linear list + 48 B information block at +0x37A
+    + 43 u16 hash threads at +0x3AA == 1024 exactly):
+
+    - header: +0 version (1), +2 hash prime (43), +4 linear list size (18),
+      +6 pool size (429), +8 entries per pool block (3), +0xA high block,
+      +0xC free chain, +0xE parent UID (zero on disk5), +0x16 entry count,
+      +0x18 maximum count (1300 = 0x0514);
+    - the linear list holds the first 18 entries;
+    - **multi-block continuation (doc-interpreted; unobserved on real
+      media, pinned by the synthetic builder)**: further entries live in
+      the entry-block pool -- 150-byte blocks (u16 next / u16 prev hash
+      chain links, u8 block type [0 free, 1 entry array, 3 link text],
+      u8 used count, then 3 x 48-byte entries), numbered from 1 and packed
+      as a flat array from file offset 0x400.  Directories are mapped
+      memory on AEGIS, so pool blocks crossing 1024-byte page boundaries
+      is harmless.  A full listing scans pool blocks 1..high-block by
+      block type; the hash threads are only a search optimization.
+
+    Unexpected header constants are tolerated with a warning; truncated
+    data yields the entries that did parse plus a warning (graceful
+    degradation, spec section 4).
+    """
+    if warnings is None:
+        warnings = []
+    entries: list = []
+    if len(data) < DIR_HEADER_SIZE:
+        _warn(warnings, f"directory data too short ({len(data)} bytes); no entries")
+        return entries
+    head = struct.unpack_from(">5H", data, 0)
+    if head != DIR_EXPECTED_HEAD:
+        _warn(
+            warnings,
+            f"non-standard directory header constants {head} "
+            f"(expected {DIR_EXPECTED_HEAD}); decoding anyway",
+        )
+    list_size = head[2] if 0 < head[2] <= DIR_EXPECTED_HEAD[2] else DIR_EXPECTED_HEAD[2]
+    high_block = _be16(data, 0x0A)
+    declared_count = _be16(data, 0x16)
+
+    def decode_slot(offset: int) -> Optional[DirEntry]:
+        entry_type = data[offset + 0x27]
+        if entry_type == DIR_ENTRY_TYPE_FREE:
+            return None
+        name_length = data[offset + 0x26]
+        raw_name = data[offset : offset + 32]
+        if 0 < name_length <= 32:
+            name = raw_name[:name_length].decode("ascii", "replace")
+        else:
+            name = raw_name.decode("ascii", "replace").rstrip(" \x00")
+            _warn(warnings, f"directory entry {name!r}: bad name length {name_length}")
+        if entry_type != DIR_ENTRY_TYPE_UID:
+            kind = " (link)" if entry_type == DIR_ENTRY_TYPE_LINK else ""
+            _warn(
+                warnings,
+                f"directory entry {name!r}: unhandled entry type "
+                f"{entry_type}{kind}; listed without an object",
+            )
+        return DirEntry(
+            name=name,
+            entry_type=entry_type,
+            uid=bytes(data[offset + 0x28 : offset + 0x30]),
+        )
+
+    for slot in range(list_size):
+        offset = DIR_LINEAR_OFFSET + DIR_ENTRY_SIZE * slot
+        if offset + DIR_ENTRY_SIZE > len(data):
+            _warn(warnings, "directory linear list truncated; partial listing")
+            break
+        entry = decode_slot(offset)
+        if entry is not None:
+            entries.append(entry)
+    for block in range(1, high_block + 1):
+        offset = DIR_POOL_OFFSET + (block - 1) * DIR_POOL_BLOCK_SIZE
+        if offset + DIR_POOL_BLOCK_SIZE > len(data):
+            _warn(
+                warnings,
+                f"directory entry-block pool truncated at block {block}; "
+                "partial listing",
+            )
+            break
+        block_type = data[offset + 4]
+        if block_type == 0:  # free block
+            continue
+        if block_type == 3:  # link text storage; consumed via link entries
+            continue
+        if block_type != 1:
+            _warn(
+                warnings, f"directory pool block {block}: unhandled type {block_type}"
+            )
+            continue
+        for i in range(DIR_POOL_ENTRIES_PER_BLOCK):
+            entry = decode_slot(offset + 6 + DIR_ENTRY_SIZE * i)
+            if entry is not None:
+                entries.append(entry)
+    if len(entries) != declared_count:
+        _warn(
+            warnings,
+            f"directory declares {declared_count} entries but {len(entries)} decoded",
+        )
+    return entries
+
+
+# ---------------------------------------------------------------------------
+# File maps and the catalog
+# ---------------------------------------------------------------------------
+
+_L1_SPAN = 256  # daddrs per indirect block
+_DIRECT_PAGES = 32
+_ZERO_BLOCK = bytes(BLOCK)
+
+
+def _collect_page_daddrs(
+    data: bytes, lv_base: int, vtoce: Vtoce, warnings: list
+) -> "tuple[list[int], bool]":
+    """Resolve a VTOCE's file map to one daddr per page (0 = sparse zeros).
+
+    Pages 0-31 come from the direct map; pages 32-287 from the L1 indirect
+    block; then L2 (256 L1 pointers) and L3 (256 L2 pointers).  A zero
+    daddr at any level means a sparse zero page (or a whole sparse
+    subtree).  Out-of-range daddrs are defensive-replaced by zero pages
+    and flag the map as damaged.
+    """
+    max_daddr = len(data) // BLOCK - lv_base
+    pages_needed = -(-vtoce.length // BLOCK)
+    damaged = False
+    if pages_needed > max_daddr:  # cannot exceed the volume; corrupt length
+        _warn(
+            warnings,
+            f"object {vtoce.uid_text}: length {vtoce.length} exceeds the "
+            "volume; map truncated",
+        )
+        pages_needed = max_daddr
+        damaged = True
+
+    index_cache: dict = {}
+
+    def check(daddr: int) -> int:
+        nonlocal damaged
+        if daddr and not 0 < daddr < max_daddr:
+            if not damaged:
+                _warn(
+                    warnings,
+                    f"object {vtoce.uid_text}: file map references "
+                    f"out-of-range daddr 0x{daddr:X}",
+                )
+            damaged = True
+            return 0
+        return daddr
+
+    def index_words(daddr: int) -> "tuple[int, ...]":
+        if daddr not in index_cache:
+            start = (daddr + lv_base) * BLOCK
+            index_cache[daddr] = struct.unpack(">256I", data[start : start + BLOCK])
+        return index_cache[daddr]
+
+    l2_base = _DIRECT_PAGES + _L1_SPAN
+    l3_base = l2_base + _L1_SPAN * _L1_SPAN
+    daddrs: list = []
+    for page in range(pages_needed):
+        if page < _DIRECT_PAGES:
+            daddr = vtoce.direct_daddrs[page]
+        elif page < l2_base:
+            l1 = check(vtoce.l1_daddr)
+            daddr = index_words(l1)[page - _DIRECT_PAGES] if l1 else 0
+        elif page < l3_base:
+            index = page - l2_base
+            l2 = check(vtoce.l2_daddr)
+            l1 = check(index_words(l2)[index // _L1_SPAN]) if l2 else 0
+            daddr = index_words(l1)[index % _L1_SPAN] if l1 else 0
+        else:
+            index = page - l3_base
+            l3 = check(vtoce.l3_daddr)
+            l2 = check(index_words(l3)[index // (_L1_SPAN * _L1_SPAN)]) if l3 else 0
+            l1 = check(index_words(l2)[(index // _L1_SPAN) % _L1_SPAN]) if l2 else 0
+            daddr = index_words(l1)[index % _L1_SPAN] if l1 else 0
+        daddrs.append(check(daddr))
+    return daddrs, damaged
+
+
+def _read_pages(data: bytes, lv_base: int, daddrs: list, length: int) -> bytes:
+    """Assemble pages (sparse zero pages for daddr 0), truncated to length."""
+    parts = []
+    for daddr in daddrs:
+        if daddr == 0:
+            parts.append(_ZERO_BLOCK)
+        else:
+            start = (daddr + lv_base) * BLOCK
+            parts.append(data[start : start + BLOCK])
+    return b"".join(parts)[:length]
+
+
+@dataclass
+class AegisNode:
+    """One catalogued object (or dangling directory entry) in the tree.
+
+    A directory entry whose VTOCE cannot be found (damaged volume) is still
+    listed: ``vtoce`` is None, ``missing`` is True and ``size`` is 0 -- the
+    filesystem layer maps ``missing``/``map_damaged`` to the DMG attribute.
+    """
+
+    name: str
+    path: str
+    entry_type: int  # raw directory entry type (1 = normal UID entry)
+    vtoce: Optional[Vtoce]
+    page_daddrs: list = field(default_factory=list, repr=False)
+    map_damaged: bool = False
+    header_stripped: bool = False  # 32-byte storage header hidden from reads
+    children: list = field(default_factory=list, repr=False)
+
+    @property
+    def missing(self) -> bool:
+        """True when the directory entry's VTOCE was not found."""
+        return self.vtoce is None
+
+    @property
+    def is_dir(self) -> bool:
+        return self.vtoce is not None and self.vtoce.kind_is_dir
+
+    @property
+    def size(self) -> int:
+        """Object size in bytes, minus the storage header when hidden."""
+        if self.vtoce is None:
+            return 0
+        if self.header_stripped:
+            return max(0, self.vtoce.length - STORAGE_HEADER_SIZE)
+        return self.vtoce.length
+
+
+@dataclass
+class AegisCatalog:
+    """The fully-walked object catalog of one AEGIS volume.
+
+    ``root`` is the volume entry directory (vtoc_hdr.root_dir_vtocx); the
+    network-root wrapper directory ``//`` is kept aside as
+    ``network_root``/``node_entry_name`` metadata, never a path component
+    (spec section 4).  ACL objects are hidden from children but counted;
+    VTOCEs reachable neither from the tree nor as ACLs are counted as
+    ``unreferenced``.
+    """
+
+    pv: PvLabel
+    lv: LvLabel
+    vtoc: Vtoc = field(repr=False)
+    lv_base: int = 1
+    root: AegisNode = None
+    network_root: Optional[AegisNode] = None
+    node_entry_name: Optional[str] = None
+    objects: dict = field(default_factory=dict, repr=False)  # uid bytes -> Vtoce
+    counts: dict = field(default_factory=dict)  # {"files", "dirs", "acl"}
+    reachable_objects: int = 0
+    unreferenced: int = 0
+    warnings: list = field(default_factory=list)
+    _data: bytes = field(default=b"", repr=False)
+    _by_path: dict = field(default_factory=dict, repr=False)
+    _by_path_ci: dict = field(default_factory=dict, repr=False)
+
+    def lookup(self, path: str) -> AegisNode:
+        """Resolve a catalog path, case-sensitively first, then
+        case-insensitively (AEGIS names are case-sensitive ASCII but SR9
+        volumes are conventionally uppercase)."""
+        norm = "/" + "/".join(part for part in path.split("/") if part)
+        node = self._by_path.get(norm)
+        if node is None:
+            node = self._by_path_ci.get(norm.casefold())
+        if node is None:
+            raise FileNotFoundError(path)
+        return node
+
+    def read(self, entry: AegisNode) -> bytes:
+        """Assemble a file's content; storage header stripped when hidden."""
+        if entry.is_dir:
+            raise IsADirectoryError(entry.path)
+        if entry.vtoce is None:
+            return b""
+        raw = _read_pages(
+            self._data, self.lv_base, entry.page_daddrs, entry.vtoce.length
+        )
+        if entry.header_stripped:
+            return raw[STORAGE_HEADER_SIZE:]
+        return raw
+
+
+def build_catalog(data: bytes) -> AegisCatalog:
+    """Walk a whole AEGIS volume image into an :class:`AegisCatalog`.
+
+    Raises :class:`AegisError` only on structural failure (no PV/LV label,
+    no VTOC, missing volume entry directory); everything else degrades
+    gracefully into ``catalog.warnings``.
+    """
+    pv = parse_pv_label(data)
+    lv_base = pv.lv_daddr
+    lv = parse_lv_label(data, lv_base)
+    vtoc = read_vtoc(data, lv_base)
+
+    warnings: list = []
+    by_uid: dict = {}
+    for vtocx in sorted(vtoc.entries):
+        vtoce = vtoc.entries[vtocx]
+        if vtoce.uid in by_uid:
+            _warn(warnings, f"duplicate UID {vtoce.uid_text} in the VTOC; first wins")
+            continue
+        by_uid[vtoce.uid] = vtoce
+
+    root_vtoce = vtoc.entries.get(lv.root_dir_vtocx)
+    if root_vtoce is None or not root_vtoce.kind_is_dir:
+        raise AegisError(
+            f"volume entry directory (vtocx 0x{lv.root_dir_vtocx:X}) missing "
+            "or not a directory"
+        )
+
+    visited: set = set()
+    by_path: dict = {}
+    by_path_ci: dict = {}
+
+    def register(node: AegisNode) -> None:
+        if node.path in by_path:
+            _warn(warnings, f"duplicate path {node.path}; first wins")
+        else:
+            by_path[node.path] = node
+        by_path_ci.setdefault(node.path.casefold(), node)
+
+    def make_node(vtoce: Vtoce, name: str, path: str, entry_type: int) -> AegisNode:
+        visited.add(vtoce.uid)
+        pages, damaged = _collect_page_daddrs(data, lv_base, vtoce, warnings)
+        node = AegisNode(
+            name=name,
+            path=path,
+            entry_type=entry_type,
+            vtoce=vtoce,
+            page_daddrs=pages,
+            map_damaged=damaged,
+        )
+        if vtoce.kind_is_dir:
+            content = _read_pages(data, lv_base, pages, vtoce.length)
+            for entry in parse_directory(content, warnings):
+                child = build_child(entry, path)
+                if child is not None:
+                    node.children.append(child)
+                    register(child)
+        elif (
+            vtoce.type_uid_hi in MANAGED_TYPE_HIS
+            and vtoce.length >= STORAGE_HEADER_SIZE
+            and pages
+            and pages[0]
+        ):
+            start = (pages[0] + lv_base) * BLOCK
+            if data[start : start + 4] == STORAGE_HEADER_MAGIC:
+                node.header_stripped = True
+        return node
+
+    def build_child(entry: DirEntry, parent_path: str) -> Optional[AegisNode]:
+        child_path = parent_path.rstrip("/") + "/" + entry.name
+        if entry.entry_type != DIR_ENTRY_TYPE_UID:  # link or unknown: no object
+            return AegisNode(entry.name, child_path, entry.entry_type, None)
+        child_vtoce = by_uid.get(entry.uid)
+        if child_vtoce is None:
+            _warn(
+                warnings,
+                f"{child_path}: no VTOCE for UID {_uid_text(entry.uid)}; "
+                "listed as damaged",
+            )
+            return AegisNode(entry.name, child_path, entry.entry_type, None)
+        if child_vtoce.kind == KIND_ACL:  # hidden from listings, counted
+            return None
+        if child_vtoce.kind_is_dir and child_vtoce.uid in visited:
+            _warn(
+                warnings,
+                f"{child_path}: directory {child_vtoce.uid_text} already "
+                "catalogued elsewhere; not re-walked",
+            )
+            pages, damaged = _collect_page_daddrs(data, lv_base, child_vtoce, warnings)
+            return AegisNode(
+                entry.name,
+                child_path,
+                entry.entry_type,
+                child_vtoce,
+                page_daddrs=pages,
+                map_damaged=damaged,
+            )
+        return make_node(child_vtoce, entry.name, child_path, entry.entry_type)
+
+    root_node = make_node(root_vtoce, "/", "/", DIR_ENTRY_TYPE_UID)
+    register(root_node)
+
+    # Reachability-only walk for unexpected extra network-root entries.
+    def visit_only(vtoce: Vtoce) -> None:
+        if vtoce.uid in visited or vtoce.kind == KIND_ACL:
+            return
+        visited.add(vtoce.uid)
+        if not vtoce.kind_is_dir:
+            return
+        pages, _ = _collect_page_daddrs(data, lv_base, vtoce, warnings)
+        content = _read_pages(data, lv_base, pages, vtoce.length)
+        for entry in parse_directory(content, warnings):
+            if entry.entry_type == DIR_ENTRY_TYPE_UID:
+                child = by_uid.get(entry.uid)
+                if child is not None:
+                    visit_only(child)
+
+    network_root = None
+    node_entry_name = None
+    net_vtoce = vtoc.entries.get(lv.net_root_vtocx)
+    if net_vtoce is not None and net_vtoce.uid != root_vtoce.uid:
+        if net_vtoce.kind_is_dir:
+            visited.add(net_vtoce.uid)
+            pages, damaged = _collect_page_daddrs(data, lv_base, net_vtoce, warnings)
+            network_root = AegisNode(
+                "//", "//", DIR_ENTRY_TYPE_UID, net_vtoce, pages, damaged
+            )
+            content = _read_pages(data, lv_base, pages, net_vtoce.length)
+            for entry in parse_directory(content, warnings):
+                if (
+                    entry.entry_type == DIR_ENTRY_TYPE_UID
+                    and entry.uid == root_vtoce.uid
+                ):
+                    node_entry_name = entry.name
+                    network_root.children.append(root_node)
+                else:
+                    _warn(
+                        warnings,
+                        f"network root entry {entry.name!r} is not the volume "
+                        "entry directory; counted but not catalogued",
+                    )
+                    extra = by_uid.get(entry.uid)
+                    if extra is not None:
+                        visit_only(extra)
+        else:
+            _warn(warnings, "network root vtocx does not resolve to a directory")
+
+    acl_count = sum(1 for e in vtoc.entries.values() if e.kind == KIND_ACL)
+    dir_count = sum(1 for uid in visited if by_uid[uid].kind_is_dir)
+    counts = {
+        "files": len(visited) - dir_count,
+        "dirs": dir_count,
+        "acl": acl_count,
+    }
+    unreferenced = max(0, len(vtoc.entries) - len(visited) - acl_count)
+    if unreferenced:
+        _warn(warnings, f"{unreferenced} VTOCEs unreachable from the root walk")
+
+    return AegisCatalog(
+        pv=pv,
+        lv=lv,
+        vtoc=vtoc,
+        lv_base=lv_base,
+        root=root_node,
+        network_root=network_root,
+        node_entry_name=node_entry_name,
+        objects=by_uid,
+        counts=counts,
+        reachable_objects=len(visited),
+        unreferenced=unreferenced,
+        warnings=warnings,
+        _data=data,
+        _by_path=by_path,
+        _by_path_ci=by_path_ci,
     )
