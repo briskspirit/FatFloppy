@@ -13,6 +13,7 @@ requires-python = ">=3.9"
 dependencies = [
   "greaseweazle @ git+https://github.com/keirf/greaseweazle@latest",
   "PyQt6",
+  "crcmod",  # CRC-16/TELEDISK for the TD0 driver (also a greaseweazle dependency)
 ]
 
 # Optional, but keeps your trove classifiers
