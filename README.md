@@ -1,6 +1,6 @@
 # FatFloppy
 
-FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, HDOS, Commodore CBM DOS, and Apollo DOMAIN filesystems (wbak backups and native AEGIS volumes) across multiple disk image formats (IMG, IMD, H17, MITS DSK, D64/D71/D81, Apollo floppy). This is an **alpha version**, with core features working but more to come.
+FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, HDOS, Commodore CBM DOS, and Apollo DOMAIN filesystems (wbak backups and native AEGIS volumes) across multiple disk image formats (IMG, IMD, H17, MITS DSK, D64/D71/D81, Apollo floppy, and Teledisk TD0 archives). This is an **alpha version**, with core features working but more to come.
 
 [![License: Unlicense](https://img.shields.io/badge/License-Unlicense-yellow.svg)](https://unlicense.org)
 
@@ -10,9 +10,10 @@ FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage f
   wbak and AEGIS (read-only) support, including many non-standard vintage
   layouts (no-BPB DOS, DEC Rainbow, 86-DOS, hard-sectored Heath H17 / MITS
   Altair CP/M, and more)
-- **Multiple Formats**: IMG, IMD, H17, MITS DSK, Commodore D64/D71/D81, and
-  Apollo DOMAIN floppy image formats (including error-byte D64/D71 variants;
-  42-track D64 images open read-only)
+- **Multiple Formats**: IMG, IMD, H17, MITS DSK, Commodore D64/D71/D81,
+  Apollo DOMAIN floppy, and Teledisk TD0 archives (read-only, including
+  "advanced"-compressed files); error-byte D64/D71 variants preserved;
+  42-track D64 images open read-only
 - **Physical Disk Access**: Greaseweazle hardware integration
 - **File Operations**: Read, write, delete files, and create directories
 - **Create & Format**: Make new blank images and format them to a chosen profile
@@ -26,12 +27,16 @@ FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage f
 
 | Filesystem | Read | Write | Image formats | Notes |
 |---|:-:|:-:|---|---|
-| **FAT12** (DOS 1.x–3.x) | ✓ | ✓ | IMG, IMD | incl. no-BPB DOS 1.x, DEC Rainbow RX50, 86-DOS |
-| **CP/M 2.2** | ✓ | ✓ | IMG, IMD, H17, MITS DSK | many OEM layouts; unknown DPBs inferred from the disk |
+| **FAT12** (DOS 1.x–3.x) | ✓ | ✓ | IMG, IMD, TD0 | incl. no-BPB DOS 1.x, DEC Rainbow RX50, 86-DOS |
+| **CP/M 2.2** | ✓ | ✓ | IMG, IMD, H17, MITS DSK, TD0 | many OEM layouts; unknown DPBs inferred from the disk |
 | **HDOS** (Heath/Zenith) | ✓ | ✓ | IMG (H8D), H17 | H17/H37/H47 controller geometries |
 | **CBM DOS** (Commodore 1541/1571/1581) | ✓ | ✓ | D64, D71, D81 | REL files, 1581 partitions; error-byte variants preserved; 42-track D64 read-only |
 | **Apollo DOMAIN wbak** backups | ✓ | — | Apollo IMG | split backup sets reassembled across volumes ("insert next floppy") |
 | **Apollo AEGIS** native (SR9) | ✓ | — | Apollo IMG | boot/utility floppies; SR10 recognized but not claimed |
+
+TD0 is a read-only container: any filesystem that fits in a Teledisk archive
+(FAT12, CP/M, and others) is auto-detected and browsable in the same way as
+an IMG or IMD of the same disk.
 
 Physical disks: FAT12, CP/M, and HDOS media (FM/MFM) can be read and written
 directly through Greaseweazle hardware. Commodore 5.25" GCR media and Apollo

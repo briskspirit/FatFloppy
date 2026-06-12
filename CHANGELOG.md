@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Teledisk TD0 container driver (read-only): both normal and
+  "advanced"-compressed TD0 archives open transparently; any filesystem
+  auto-detected inside (FAT12, CP/M, and others) is browsable without any
+  manual format selection. Byte-exact sector data verified against an
+  independent Greaseweazle-decoded IMD twin across a 19-image public-domain
+  corpus (zero mismatches).
 - Apollo AEGIS native floppy support (read-only):
   - browsing and extraction of SR9-era AEGIS boot/utility floppies: the
     volume's real directory tree (PV/LV labels, VTOC, file maps) with the
