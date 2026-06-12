@@ -46,6 +46,24 @@ CBM_RESOURCES = Path(__file__).parent.parent / "resources" / "CBM"
 # is removable); populated from /Volumes/EXTERNAL/BACKUPS/ZED/VINTAGE_STUFF_70s/.
 REAL_VOLUMES = Path(__file__).parent.parent.parent / "local_images" / "APOLLO"
 
+# local_images/APOLLO is organized by backup SET (see its README.md); the
+# tests keep using the historical dump-order names.  This table is the ONE
+# place mapping logical name -> current location; a future re-layout only
+# needs this dict (tests/resources/APOLLO keeps the original names).
+REAL_VOLUME_PATHS = {
+    "disk1.img": "set_FT0003_1986-12/vol2_FT0003__disk1.img",
+    "disk2.img": "set_5ETC_1987-01/vol1_5ETC__disk2.img",
+    "disk3.img": "set_5BIN-5BIO_1987-01/vol2_5BIO__disk3.img",
+    "disk4.img": "set_5BIN-5BIO_1987-01/vol1_5BIN__disk4.img",
+    "disk5.img": "aegis/disk5.img",
+    "disk6.img": "set_DS0008_1987-05/vol2_DS0008__disk6.img",
+    "disk7.img": "set_DS0008_1987-05/vol3_DS0008__disk7.img",
+    "disk7-1.img": "duplicates/disk7-1.img",
+    "disk8.img": "set_FT0003_1986-12/vol1_FT0003__disk8.img",
+    "disk9.img": "set_FT0006_1987-06/vol1_FT0006__disk9.img",
+    "disk10.img": "set_FT0006_1987-06/vol2_FT0006__disk10.img",
+}
+
 CLEANUP_SHA256 = "3e4f699d17b9b08936e1f1d501bec3c3a56c4d2e978eb64134a32ac4186539e1"
 # Stitched-content pins, derived from the reference cross-volume extraction
 # (docs/superpowers/research/apollo/empirical/extracted/): sha256 of the
@@ -69,11 +87,16 @@ FT0006_FTN_SR92_SHA256 = (
 FT0006_FTN_SHA256 = "544b1164a9e73fd72638fffbcba8546b41102ca64b98c18bf3d36b20a51d4c20"
 
 
-def real_volume_bytes(name: str) -> bytes:
-    path = REAL_VOLUMES / name
+def real_volume_path(name: str) -> Path:
+    """Resolve a logical dump-order name to its set-layout path, or skip."""
+    path = REAL_VOLUMES / REAL_VOLUME_PATHS[name]
     if not path.exists():
         pytest.skip(f"real volume {name} not present under {REAL_VOLUMES}")
-    return path.read_bytes()
+    return path
+
+
+def real_volume_bytes(name: str) -> bytes:
+    return real_volume_path(name).read_bytes()
 
 
 def open_volume(tmp_path: Path, data: bytes, name: str = "primary.img"):
@@ -332,9 +355,10 @@ class TestDebrisSizes:
         # 0x019A0038 (26,869,816 -- the smallest debris size corpus-wide,
         # 21.3x the volume capacity).  Pre-change sizes: 1,279,346,432 and
         # 26,869,784.
-        real_volume_bytes("disk4.img")  # skip guard
         controller = DiskController()
-        assert controller.open_disk(str(REAL_VOLUMES / "disk4.img"), disk_type="auto")
+        assert controller.open_disk(
+            str(real_volume_path("disk4.img")), disk_type="auto"
+        )
         try:
             fs = controller.filesystem
             infos = fs.list_directory("/sys5/bin")
@@ -357,9 +381,10 @@ class TestDebrisSizes:
         # the size must report those, and reading must still return them
         # (read_file slices data[:size] -- naturally correct now).
         # Pre-change size: 1,818,321,739.
-        real_volume_bytes("disk10.img")  # skip guard
         controller = DiskController()
-        assert controller.open_disk(str(REAL_VOLUMES / "disk10.img"), disk_type="auto")
+        assert controller.open_disk(
+            str(real_volume_path("disk10.img")), disk_type="auto"
+        )
         try:
             fs = controller.filesystem
             infos = fs.list_directory("/domain_examples/ftn_examples")
@@ -379,9 +404,10 @@ class TestDebrisSizes:
         # 1.12x one volume's 1,261,568-byte capacity (a multi-volume file
         # legitimately exceeds one volume).  It must NOT be flagged; its
         # size stays as-declared (pinned pre-change: 1,417,846 displayed).
-        real_volume_bytes("disk6.img")  # skip guard
         controller = DiskController()
-        assert controller.open_disk(str(REAL_VOLUMES / "disk6.img"), disk_type="auto")
+        assert controller.open_disk(
+            str(real_volume_path("disk6.img")), disk_type="auto"
+        )
         try:
             fs = controller.filesystem
             info = next(i for i in fs.list_directory("/lib") if i.name == "dseelib")
@@ -850,10 +876,11 @@ class TestAttachVolume:
         # 'cc' is the EOV-cut file itself: 15,664 raw bytes on disk4 +
         # disk3's 14,044-byte tail = 29,708 of 30,500 declared (792 never
         # written -> stays PARTIAL); content pins against the reference.
-        real_volume_bytes("disk4.img")  # skip guard
         disk3 = real_volume_bytes("disk3.img")
         controller = DiskController()
-        assert controller.open_disk(str(REAL_VOLUMES / "disk4.img"), disk_type="auto")
+        assert controller.open_disk(
+            str(real_volume_path("disk4.img")), disk_type="auto"
+        )
         try:
             fs = controller.filesystem
             result = fs.attach_volume(disk3)
@@ -876,9 +903,10 @@ class TestAttachVolume:
         # entirely on disk9 and must survive the stitch untouched.  Both
         # pin against the reference stitched extraction.
         disk10 = real_volume_bytes("disk10.img")
-        real_volume_bytes("disk9.img")  # skip guard
         controller = DiskController()
-        assert controller.open_disk(str(REAL_VOLUMES / "disk9.img"), disk_type="auto")
+        assert controller.open_disk(
+            str(real_volume_path("disk9.img")), disk_type="auto"
+        )
         try:
             fs = controller.filesystem
             pending = fs.pending_continuations()
