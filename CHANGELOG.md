@@ -96,8 +96,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against it with zero regressions in per-file content hashes.
 
 ### Fixed
-- Raw RX01 disk images are no longer misdetected as FAT12: uniform-fill FAT
-  candidates are rejected during no-BPB boot-sector synthesis.
+- Raw RX01 disk images are no longer misdetected as FAT12: directory-entry
+  scoring now requires plausible 8.3 entries (DEC's EBCDIC label track no
+  longer counts), and uniform-fill FAT candidates are rejected during no-BPB
+  boot-sector synthesis.
 - Detection over-claiming: HDOS and inferred-DPB CP/M no longer claim disks of
   other formats (detection is now gated on plausible geometry and directory
   contents), and the new drivers cannot shadow existing ones — all verified
