@@ -180,17 +180,20 @@ def test_nodpb_scan_rejects_real_rt11_listing(relpath):
     controller.close_disk()
 
 
+GATE_CASES = [
+    ("none", True),
+    ("mid_nul", False),
+    ("nul_gap", False),
+    ("mid_e5", False),
+    ("trailing_e5", False),
+    ("trailing_nul_1", True),
+    ("trailing_nul_100", True),
+    ("all_nul", False),
+]
+
+
 @pytest.mark.parametrize(
-    "mutation,gate_fires",
-    [
-        ("none", True),
-        ("mid_nul", False),
-        ("mid_e5", False),
-        ("trailing_e5", False),
-        ("trailing_nul_1", True),
-        ("trailing_nul_100", True),
-        ("all_nul", False),
-    ],
+    "mutation,gate_fires", GATE_CASES, ids=[c[0] for c in GATE_CASES]
 )
 def test_pure_text_gate_tolerates_only_trailing_nul_padding(
     tmp_path, mutation, gate_fires
@@ -209,6 +212,13 @@ def test_pure_text_gate_tolerates_only_trailing_nul_padding(
     img = bytearray(_listing_text(size))
     if mutation == "mid_nul":
         img[len(img) // 2] = 0x00
+    elif mutation == "nul_gap":
+        # Zero the TAIL of a mid-image sector (len//2 is a sector boundary),
+        # so the scan enters its trailing-NUL state and then meets data in
+        # the next sector - the resumption branch the plain mid_nul case
+        # (a leading NUL within a sector) never reaches.
+        mid = len(img) // 2
+        img[mid - 100 : mid] = b"\x00" * 100
     elif mutation == "mid_e5":
         img[len(img) // 2] = 0xE5
     elif mutation == "trailing_e5":
@@ -228,6 +238,30 @@ def test_pure_text_gate_tolerates_only_trailing_nul_padding(
     disk = Disk(drv)
     disk.set_geometry(fmt.physical_format)
     assert CPMFilesystem(disk)._image_is_pure_text() is gate_fires
+
+
+def test_pure_text_gate_skipped_on_physical_media(tmp_path, monkeypatch):
+    """The text-image gate must never run against physical media: a host
+    text file can never be a physical floppy, and the whole-image scan
+    would force full-disk reads/retries on real hardware. The same image
+    that fires the gate on a file driver must be skipped (False) once the
+    driver reports driver_category == "physical"."""
+    from fatfloppy.core.disk import Disk
+    from fatfloppy.core.drivers import IMGImageDriver
+    from fatfloppy.core.filesystem_registry import FilesystemRegistry
+
+    size = 40 * 2 * 9 * 512
+    fmt = FilesystemRegistry.get_all_formats()["ibm_5.25_360k"]
+    path = tmp_path / "gate_physical.img"
+    path.write_bytes(_listing_text(size))
+    drv = IMGImageDriver(str(path))
+    drv.set_physical_format(fmt.physical_format)
+    disk = Disk(drv)
+    disk.set_geometry(fmt.physical_format)
+    fs = CPMFilesystem(disk)
+    assert fs._image_is_pure_text() is True  # gate fires on a file driver
+    monkeypatch.setattr(disk.driver, "driver_category", "physical")
+    assert fs._image_is_pure_text() is False
 
 
 @pytest.mark.parametrize(

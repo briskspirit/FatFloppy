@@ -32,7 +32,9 @@ CPM_ILLEGAL_NAME_CHARS = set("<>,;:=?*[] ")
 # printable range 0x20-0x7E, and SUB (0x1A) - the CP/M text-EOF marker, which
 # CP/M-era text files end with, so it must count as text for the pure-text
 # rejection in _scan_for_cpm_dpb to catch them.
-CPM_TEXT_FILE_BYTES = bytes((0x09, 0x0A, 0x0C, 0x0D, 0x1A)) + bytes(range(0x20, 0x7F))
+CPM_TEXT_FILE_BYTES = bytes((0x09, 0x0A, 0x0C, 0x0D, CPM_EOF_CHAR)) + bytes(
+    range(0x20, 0x7F)
+)
 
 
 @dataclass
@@ -1020,10 +1022,7 @@ class CPMFilesystem(Filesystem):
         if pf.has_variable_bps or pf.bytes_per_sector % CPM_SECTOR_SIZE != 0:
             return None
 
-        # Runs once per inference attempt, before the layout sweep: a byte
-        # stream that is all printable text (apart from trailing 0x00
-        # padding) is a text file, not a disk image, and must not be
-        # claimed (see _image_is_pure_text).
+        # An all-printable-text byte stream is a text file, not a disk image.
         if self._image_is_pure_text():
             self.logger.debug(
                 "DPB inference rejected: image content is printable text"
@@ -1089,6 +1088,9 @@ class CPMFilesystem(Filesystem):
         real disk image. The scan covers the whole image (floppy-sized
         inputs) and exits on the first disqualifying byte.
         """
+        # A text file is never physical media; never force a full-disk hardware scan.
+        if self.disk.driver.driver_category == "physical":
+            return False
         pf = self.disk.physical_format
         saw_text = False
         in_nul_tail = False  # inside what must be a trailing 0x00 run
