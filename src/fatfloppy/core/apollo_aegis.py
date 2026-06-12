@@ -31,7 +31,7 @@ daddrs inside LV structures are LV-relative, absolute byte offset =
                  +004/+0D0/+19C/+268/+334; vtocx = (daddr << 4) | slot
     VTOCE     := +00 version:u8 kind:u8 flags:u16 (0x8000 = in use),
                  +04 object uid, +0C type uid, +14 ACL uid, +1C length,
-                 +20 blocks used, +24 dtu, +28 dtm, +2C parent-dir uid,
+                 +20 blocks used, +24 dtm, +28 dtu, +2C parent-dir uid,
                  +34 extdtm|ref_cnt, +38 lock_key, +3C pad,
                  +40 direct daddrs[32], +C0/+C4/+C8 L1/L2/L3 indirect
 
@@ -41,7 +41,7 @@ section 2; throwaway verification scripts ran at implementation time):
 - **vtoc_hdr offset**: the handbook (``lv_label_t`` p.2-18, ``vtoc_hdr_t``
   p.2-23, "Offsets given are from the start of the label") places the VTOC
   header at LV label +0x4C, immediately after the 0x20-byte ``bat_hdr_t``
-  (+0x2C..+0x4B, p.2-3).  The empirical script ``01_labels.py`` used a
+  (+0x2C..+0x4B, p.2-3).  The empirical script ``02_vtoc.py`` used a
   +0x40 origin with intra-header offsets shifted +0xC -- the *same
   absolute bytes* -- and misread ``bat_hdr.bat_step`` (+0x40, value 2 on
   disk5) as a header version.  disk5 block 1 confirms the handbook
@@ -74,6 +74,7 @@ VTOCE_SIZE = 0xCC  # 204 bytes
 VTOCE_SLOT_OFFSETS = (0x004, 0x0D0, 0x19C, 0x268, 0x334)
 VTOCE_FLAG_IN_USE = 0x8000  # handbook p.2-22: U bit of the VTOCE header word
 VTOC_MAP_ENTRIES = 8  # handbook p.2-23: vtoc_hdr.map[8]
+_VTOC_CHAIN_WARN_CAP = 3  # max individual "chain broken" warnings per read_vtoc call
 
 # VTOCE kind (sys_type byte; spec section 2 / empirical disk5 census)
 KIND_FILE = 0
@@ -330,8 +331,8 @@ def _parse_vtoce(block: bytes, slot_offset: int, vtocx: int) -> Optional[Vtoce]:
         acl_uid=bytes(entry[0x14:0x1C]),
         length=_be32(entry, 0x1C),
         blocks_used=_be32(entry, 0x20),
-        dtu=_time_or_none(_be32(entry, 0x24)),
-        dtm=_time_or_none(_be32(entry, 0x28)),
+        dtm=_time_or_none(_be32(entry, 0x24)),
+        dtu=_time_or_none(_be32(entry, 0x28)),
         parent_uid=parent_uid,
         parent_uid_text=_uid_text(parent_uid),
         ref_info=_be32(entry, 0x34),
@@ -368,15 +369,24 @@ def read_vtoc(data: bytes, lv_base: int) -> Vtoc:
     entries: dict[int, Vtoce] = {}
     block_bucket: dict[int, int] = {}
     visited: set[int] = set()
+    _chain_warn_count = 0
     for bucket, head in enumerate(mapped[: lv.vtoc_bucket_count]):
         daddr = head
         while daddr:
             if daddr in visited or not 0 < daddr < max_daddr:
-                logger.warning(
-                    "AEGIS: VTOC bucket %d chain broken at daddr 0x%X",
-                    bucket,
-                    daddr,
-                )
+                if _chain_warn_count < _VTOC_CHAIN_WARN_CAP:
+                    logger.warning(
+                        "AEGIS: VTOC bucket %d chain broken at daddr 0x%X",
+                        bucket,
+                        daddr,
+                    )
+                else:
+                    logger.debug(
+                        "AEGIS: VTOC bucket %d chain broken at daddr 0x%X (suppressed)",
+                        bucket,
+                        daddr,
+                    )
+                _chain_warn_count += 1
                 break
             visited.add(daddr)
             block_bucket[daddr] = bucket
@@ -388,6 +398,12 @@ def read_vtoc(data: bytes, lv_base: int) -> Vtoc:
                 if vtoce is not None:
                     entries[vtocx] = vtoce
             daddr = _be32(block, 0)
+    if _chain_warn_count > _VTOC_CHAIN_WARN_CAP:
+        logger.warning(
+            "AEGIS: VTOC chain broken in %d buckets total (%d further suppressed)",
+            _chain_warn_count,
+            _chain_warn_count - _VTOC_CHAIN_WARN_CAP,
+        )
 
     return Vtoc(
         bucket_count=lv.vtoc_bucket_count,
