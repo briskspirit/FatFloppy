@@ -1193,6 +1193,18 @@ class TestClippedNameRecovery:
         assert entry.path == "?"
         assert entry.name_recovered is False
 
+    def test_uid_tail_not_at_start_stays_placeholder(self):
+        # the remnant must BEGIN with the uid tail (a clipped NAME loses
+        # leading bytes only); a tail merely embedded after garbage --
+        # [garbage][tail][zero word][path] -- proves nothing and must not
+        # be recovered, whatever the garbage bytes are
+        for garbage in (b"\xde\xad", b"\x00\x00"):
+            remnant = garbage + RECOV_UID[2:] + bytes(4) + b"TREER/SECOND"
+            entry = self.second_entry(build_clipped_name_image(remnant))
+            assert entry.path == "?"
+            assert entry.raw_name == b"?"
+            assert entry.name_recovered is False
+
     def test_odd_path_pad_byte_stripped(self):
         # odd-length path: the writer pads records to even with one NUL
         remnant = RECOV_UID[2:] + bytes(4) + b"TREER/SEVEN7S" + b"\x00"
