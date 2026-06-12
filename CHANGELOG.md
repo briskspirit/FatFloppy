@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - VALIDATE-style filesystem check walking the directory segment chain
     (overlapping runs, device overruns, cyclic or broken chains)
   - verified file-content-exact against an independent extractor across a
-    97-file local corpus of real DEC distribution media (V03B through
+    234-file local corpus of real DEC distribution media (V03B through
     V5.4B), with zero regressions elsewhere in the real-image corpus
 - Teledisk TD0 container driver (read-only): both normal and
   "advanced"-compressed TD0 archives open transparently; any filesystem

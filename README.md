@@ -215,8 +215,9 @@ FAT, CP/M, and HDOS get 8.3 names with `~NN` de-duplication; CBM keeps up to
 so type suffixes like `,s` stay deliberate rather than accidental; RT-11 gets
 6.3 RAD50 names (characters outside the set become `$`) with digit-suffix
 de-duplication. Names you type yourself are validated by the filesystem and
-rejected with a clear error instead of being silently truncated. On export, characters illegal on the
-host are sanitized (e.g. CBM `COPY/ALL` becomes `COPY_ALL`) and collisions
+rejected with a clear error instead of being silently truncated. On export,
+characters illegal on the host are sanitized (e.g. CBM `COPY/ALL` becomes
+`COPY_ALL`) and collisions
 within the same batch are uniquified.
 
 ## Building from Source
