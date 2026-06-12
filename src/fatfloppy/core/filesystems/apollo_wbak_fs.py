@@ -668,9 +668,11 @@ class ApolloWbakFilesystem(Filesystem):
 
     @classmethod
     def get_format_definitions(cls) -> dict[str, FormatProfile]:
-        from .formats.apollo_formats import APOLLO_FORMATS
+        # Only this plugin's slice: the AEGIS filesystem registers the
+        # AEGIS profile, so each shows up in the registry exactly once.
+        from .formats.apollo_formats import APOLLO_WBAK_FORMATS
 
-        return APOLLO_FORMATS
+        return APOLLO_WBAK_FORMATS
 
     @staticmethod
     def configs_match(config1: Any, config2: Any) -> bool:

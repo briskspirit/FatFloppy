@@ -137,8 +137,14 @@ class LvLabel:
     BAT-header fields come from label +0x2C..+0x4B (``bat_hdr_t``), VTOC
     header fields from +0x4C..+0xAF (``vtoc_hdr_t``) -- see the module
     docstring for the resolved +0x4C-vs-+0x40 framing conflict.
+
+    ``version`` is the label-format revision (u16 at +0): 0 on every
+    pre-SR10 (SR9-class) volume, 1 on SR10+ volumes whose VTOCE layout
+    differs (apollofs ``pkg/fs/logical_volume.go``; disk5 reads 0).  The
+    filesystem's validity scoring refuses to claim non-zero versions.
     """
 
+    version: int
     name: str
     uid: bytes
     uid_text: str
@@ -290,6 +296,7 @@ def parse_lv_label(data: bytes, lv_base: int) -> LvLabel:
         if n_blocks or daddr:
             vtoc_map.append((n_blocks, daddr))
     return LvLabel(
+        version=_be16(label, 0x00),
         name=_name32(label[0x04:0x24]),
         uid=uid,
         uid_text=_uid_text(uid),
@@ -656,6 +663,57 @@ def _read_pages(data: bytes, lv_base: int, daddrs: list, length: int) -> bytes:
             start = (daddr + lv_base) * BLOCK
             parts.append(data[start : start + BLOCK])
     return b"".join(parts)[:length]
+
+
+def object_daddrs(data: bytes, lv_base: int, vtoce: Vtoce) -> "tuple[list, list]":
+    """Resolve one in-use VTOCE's file map to ``(page_daddrs, index_daddrs)``.
+
+    ``page_daddrs`` are the per-page LV daddrs the catalog walk records on
+    :attr:`AegisNode.page_daddrs` (0 = sparse zero page); ``index_daddrs``
+    are the L1/L2/L3 indirect blocks the map traverses for the object's
+    length -- allocated volume blocks that ``page_daddrs`` deliberately
+    omits.  The filesystem's disk map and BAT-reconciling ``check()`` need
+    both, for EVERY in-use VTOCE (ACL objects and unreferenced orphans own
+    blocks too, not just the catalogued tree).
+
+    Index enumeration is bounded by the object's length, mirroring the
+    page resolution: a stale nonzero pointer beyond the file's reach is
+    not an allocated block.  L3 trees cannot occur on a 1232-block floppy
+    (capacity exceeds the volume) but are walked for completeness.
+    """
+    pages, _damaged = _collect_page_daddrs(data, lv_base, vtoce, [])
+    max_daddr = len(data) // BLOCK - lv_base
+    pages_needed = min(-(-vtoce.length // BLOCK), max_daddr)
+
+    def ok(daddr: int) -> bool:
+        return 0 < daddr < max_daddr
+
+    def words(daddr: int) -> "tuple[int, ...]":
+        start = (daddr + lv_base) * BLOCK
+        return struct.unpack(">256I", data[start : start + BLOCK])
+
+    index: list = []
+    if pages_needed > _DIRECT_PAGES and ok(vtoce.l1_daddr):
+        index.append(vtoce.l1_daddr)
+    l2_pages = pages_needed - _DIRECT_PAGES - _L1_SPAN
+    if l2_pages > 0 and ok(vtoce.l2_daddr):
+        index.append(vtoce.l2_daddr)
+        n_l1 = -(-min(l2_pages, _L1_SPAN * _L1_SPAN) // _L1_SPAN)
+        for daddr in words(vtoce.l2_daddr)[:n_l1]:
+            if ok(daddr):
+                index.append(daddr)
+    l3_pages = pages_needed - _DIRECT_PAGES - _L1_SPAN - _L1_SPAN * _L1_SPAN
+    if l3_pages > 0 and ok(vtoce.l3_daddr):
+        index.append(vtoce.l3_daddr)
+        n_l2 = min(_L1_SPAN, -(-l3_pages // (_L1_SPAN * _L1_SPAN)))
+        for l2_daddr in words(vtoce.l3_daddr)[:n_l2]:
+            if not ok(l2_daddr):
+                continue
+            index.append(l2_daddr)
+            for l1_daddr in words(l2_daddr):
+                if ok(l1_daddr):
+                    index.append(l1_daddr)
+    return pages, index
 
 
 @dataclass
