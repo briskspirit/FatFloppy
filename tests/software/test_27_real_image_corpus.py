@@ -52,6 +52,11 @@ def _candidate_driver_types(path: Path) -> list[str]:
         return ["H17", "IMG"]
     if suffix in (".d64", ".d71", ".d81"):
         return ["CBM"]
+    # Teledisk archives: the TD0 driver validates the magic header, so TD0
+    # must be tried first; non-TD0 files with this extension are implausible
+    # but would fall through to IMG.
+    if suffix in (".td0",):
+        return ["TD0", "IMG"]
     # Without this, Apollo images still pass via IMG + the shipped format
     # profile (the image is raw bytes), but the APOLLO driver path itself
     # is never exercised; the driver's magic validation rejects non-Apollo
