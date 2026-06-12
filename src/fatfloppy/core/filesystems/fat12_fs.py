@@ -1018,7 +1018,14 @@ class FATFilesystem(Filesystem):
                         if entry[0] == ENTRY_DELETED:
                             continue
                         parsed += 1
-                        if self._parse_single_directory_entry(entry):
+                        # Gate on structural plausibility, not just parseability:
+                        # cp437 decodes any byte, so foreign records (e.g. the
+                        # EBCDIC IBM 3740 label track on DEC RX01 factory media)
+                        # otherwise parse as "valid" 8.3 entries and score a
+                        # non-FAT disk up to the detection claim floor.
+                        if self._is_plausible_dir_entry(
+                            entry
+                        ) and self._parse_single_directory_entry(entry):
                             valid += 1
                     if parsed > 0:
                         score += int((valid / parsed) * 30)
@@ -1211,6 +1218,12 @@ class FATFilesystem(Filesystem):
         except Exception:
             return False
         if bytes(fat1) != bytes(fat2):
+            return False
+        # A genuine FAT is never uniform fill: it starts [media, 0xFF, 0xFF]
+        # and varies past the reserved entries. A region of one repeated byte
+        # (an all-0xFF fill passes the media/0xFF/0xFF header check and
+        # trivially matches its own second "copy") is fill, not a FAT.
+        if len(set(fat1)) <= 1:
             return False
 
         root_start_lba = reserved + bpb.num_fats * spf
