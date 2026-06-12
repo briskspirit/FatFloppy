@@ -25,12 +25,23 @@ docs/superpowers/research/rt11/notes/putr_interleave_excerpts.txt), not by
 importing the production module's mapping.
 """
 
+import copy
+import datetime
+import hashlib
 import json
+import re
 import struct
 from pathlib import Path
 
 import pytest
 
+from fatfloppy.core.controller import DiskController
+from fatfloppy.core.disk import Disk
+from fatfloppy.core.drivers.img import IMGImageDriver
+from fatfloppy.core.filesystems.cpm_fs import CPMFilesystem
+from fatfloppy.core.filesystems.formats.cpm_formats import CPM_FORMATS
+from fatfloppy.core.filesystems.formats.rt11_formats import RT11_FORMATS
+from fatfloppy.core.filesystems.rt11_fs import RT11Filesystem
 from fatfloppy.core.rt11_layout import (
     DEFAULT_DIR_START,
     E_EOS,
@@ -716,3 +727,585 @@ class TestCorpusSweep:
                 assert score >= SCORE_THRESHOLD, f"{path.name} under {view}: {score}"
             else:
                 assert score < SCORE_THRESHOLD, f"{path.name} under {view}: {score}"
+
+
+# ---------------------------------------------------------------------------
+# Task 3: filesystem plugin -- profiles, detection, controller read path
+# ---------------------------------------------------------------------------
+
+NO_DATE = datetime.datetime(1972, 1, 1)  # epoch of the RT-11 date word
+
+RT11_PROFILE_NAMES = (
+    "rt11_rx01",
+    "rt11_rx02",
+    "rt11_rx50",
+    "rt11_logical_494",
+    "rt11_logical_500",
+    "rt11_logical_800",
+    "rt11_logical_988",
+)
+
+CPM_8IN_IMG = RES.parent / "CPM" / "disk1.img"
+FAT_144M_IMG = RES.parent / "populated_read_test_144m.img"
+
+
+def _open(path):
+    controller = DiskController()
+    assert controller.open_disk(str(path), disk_type="auto"), (
+        f"failed to open {Path(path).name}"
+    )
+    return controller
+
+
+class TestRT11Profiles:
+    def test_each_profile_registered_exactly_once(self):
+        controller = DiskController()
+        names = [name for name, _desc in controller.list_formats()]
+        for expected in RT11_PROFILE_NAMES:
+            assert names.count(expected) == 1, expected
+
+    def test_raw_profile_geometries_and_configs(self):
+        cases = [
+            ("rt11_rx01", 77, 26, 128, 256256, "rx01", 494),
+            ("rt11_rx02", 77, 26, 256, 512512, "rx02", 988),
+            ("rt11_rx50", 80, 10, 512, 409600, "rx50", 800),
+        ]
+        for name, cyls, spt, bps, size, view, blocks in cases:
+            profile = RT11_FORMATS[name]
+            pf = profile.physical_format
+            assert (pf.cylinders, pf.heads) == (cyls, 1), name
+            tf = pf.track_formats[0]
+            assert (tf.sectors_per_track, tf.bytes_per_sector) == (spt, bps), name
+            assert pf.total_bytes == size, name
+            cfg = profile.filesystem_config
+            assert isinstance(cfg, RT11Config), name
+            assert (cfg.view, cfg.total_blocks) == (view, blocks), name
+            assert profile.get_filesystem_type() == "RT11", name
+
+    def test_logical_profiles_use_synthetic_uniform_geometry(self):
+        # cylinders = total_blocks x heads=1 x spt=1 x 512 bytes: a pure
+        # 1:1 byte-offset container for logical-block-order images.
+        cases = [
+            ("rt11_logical_494", 494, 252928),
+            ("rt11_logical_500", 500, 256000),
+            ("rt11_logical_800", 800, 409600),
+            ("rt11_logical_988", 988, 505856),
+        ]
+        for name, blocks, size in cases:
+            profile = RT11_FORMATS[name]
+            pf = profile.physical_format
+            assert (pf.cylinders, pf.heads) == (blocks, 1), name
+            tf = pf.track_formats[0]
+            assert (tf.sectors_per_track, tf.bytes_per_sector) == (1, 512), name
+            assert pf.total_bytes == size, name
+            cfg = profile.filesystem_config
+            assert (cfg.view, cfg.total_blocks) == ("logical", blocks), name
+
+
+CONTROLLER_CASES = [
+    # (path, profile, resolved view, container blocks)
+    (RX01_V03B, "rt11_rx01", "rx01", 494),
+    (V0501_DSK, "rt11_rx02", "rx02", 988),
+    # A logical-order image at exactly raw-RX02 size opens under the rx02
+    # profile geometry; the view resolver picks "logical" from the contents.
+    (V0501_IMG, "rt11_rx02", "logical", 1001),
+    (BASIC11_RX02, "rt11_rx02", "rx02", 988),
+]
+
+
+class TestControllerEndToEnd:
+    @pytest.mark.parametrize(
+        "path,profile,view,total", CONTROLLER_CASES, ids=lambda c: getattr(c, "name", c)
+    )
+    def test_auto_detects_rt11_with_resolved_view(self, path, profile, view, total):
+        controller = _open(path)
+        try:
+            assert isinstance(controller.filesystem, RT11Filesystem)
+            assert controller.filesystem.filesystem_type == "RT11"
+            name, _config, _pf = controller.detect_format()
+            assert name == profile
+            cfg = controller.filesystem.get_specific_config()
+            assert isinstance(cfg, RT11Config)
+            assert (cfg.view, cfg.total_blocks) == (view, total)
+            assert controller.filesystem.list_directory("/")
+        finally:
+            controller.close_disk()
+
+    def test_v03b_listing_matches_dir(self):
+        # Per the disk's own DIR listing: 33 permanent files, SWAP.SYS first
+        # (24 blocks, 27-Mar-79, starts at block 14), STARTF.COM last.
+        controller = _open(RX01_V03B)
+        try:
+            items = controller.filesystem.list_directory("/")
+            assert len(items) == 33
+            first = items[0]
+            assert first.name == "SWAP.SYS"
+            assert first.size == 24 * BLOCK
+            assert first.datetime == datetime.datetime(1979, 3, 27)
+            assert first.starting_cluster == 14
+            assert not first.is_dir
+            assert items[-1].name == "STARTF.COM"
+        finally:
+            controller.close_disk()
+
+    def test_v0501_protected_permanent_attribute(self):
+        # Genuine DEC DIR listing pins "SWAP  .SYS    26P 01-Feb-84".
+        controller = _open(V0501_DSK)
+        try:
+            items = controller.filesystem.list_directory("/")
+            assert len(items) == 28
+            swap = items[0]
+            assert swap.name == "SWAP.SYS"
+            assert swap.size == 26 * BLOCK
+            assert swap.datetime == datetime.datetime(1984, 2, 1)
+            assert "PROT" in swap.attributes
+        finally:
+            controller.close_disk()
+
+
+class TestPhysicalLogicalPair:
+    """The view-resolver acid test: the SAME V05.01 floppy archived in raw
+    RX02 physical order (.DSK) and logical block order (.IMG), both 512,512
+    bytes, must produce byte-identical files and identical listings."""
+
+    def test_identical_listings_and_per_file_hashes(self):
+        c_dsk = _open(V0501_DSK)
+        c_img = _open(V0501_IMG)
+        try:
+            l_dsk = c_dsk.filesystem.list_directory("/")
+            l_img = c_img.filesystem.list_directory("/")
+            key = [(i.name, i.size, i.datetime, i.attributes) for i in l_dsk]
+            assert key == [(i.name, i.size, i.datetime, i.attributes) for i in l_img]
+            assert len(l_dsk) == 28
+            for info in l_dsk:
+                data_dsk = c_dsk.filesystem.read_file(info.name)
+                data_img = c_img.filesystem.read_file(info.name)
+                assert len(data_dsk) == info.size, info.name
+                assert (
+                    hashlib.sha256(data_dsk).hexdigest()
+                    == hashlib.sha256(data_img).hexdigest()
+                ), info.name
+        finally:
+            c_dsk.close_disk()
+            c_img.close_disk()
+
+
+# ---------------------------------------------------------------------------
+# read_file content oracles.
+#
+# Derivation: the sha256 literals below are pinned from the output of
+# docs/superpowers/research/rt11/oracles/rt11probe.py `extract` over the
+# committed images (manifests m_v03b1.json, m_dsk.json / m_img.json and
+# manifests/basic11_rx02_raw.manifest.json). rt11probe is an INDEPENDENT
+# reader written from the DEC V&FF manual (AA-PD6PA-TC), not from the
+# production module, so these are true content oracles. The corpus
+# inventory (corpus_inventory.json) manifests whole-image data only.
+# ---------------------------------------------------------------------------
+
+READ_ORACLES = [
+    (
+        RX01_V03B,
+        "SWAP.SYS",
+        24,
+        "038c4af99d4a5fd7014a30bff4aba41c1cf8647006dfe85d1a0844eb2a2b37ab",
+    ),
+    (
+        RX01_V03B,
+        "DXMNSJ.SYS",
+        63,
+        "8041c1a1e4a93fcc43bc0d9406d9e9da95132c975bf87e6ae338c24711013186",
+    ),
+    (
+        RX01_V03B,
+        "STARTF.COM",
+        1,
+        "8b3d0f838da7e799e50ca0ac035ac79d0ab2c8b451aa800e6d9afcea5708d9dd",
+    ),
+    (
+        V0501_DSK,
+        "SWAP.SYS",
+        26,
+        "e57887d05051817eff3b9e8ae1df2e0727c8d96fb2e4795dba313cf08581921a",
+    ),
+    (
+        V0501_DSK,
+        "QUEMAN.SAV",
+        15,
+        "dfe51784adf05805e6353eaf421658f86ea7b011f88c4a965ab3ffb73a4b3b23",
+    ),
+    (
+        V0501_DSK,
+        "V5NOTE.TXT",
+        29,
+        "1e0ff979205ebc181702e1a64dc401e87418faf1edcdde5cf057e0a8b9b10e1f",
+    ),
+    (
+        V0501_IMG,
+        "SWAP.SYS",
+        26,
+        "e57887d05051817eff3b9e8ae1df2e0727c8d96fb2e4795dba313cf08581921a",
+    ),
+    (
+        V0501_IMG,
+        "QUEMAN.SAV",
+        15,
+        "dfe51784adf05805e6353eaf421658f86ea7b011f88c4a965ab3ffb73a4b3b23",
+    ),
+    (
+        V0501_IMG,
+        "V5NOTE.TXT",
+        29,
+        "1e0ff979205ebc181702e1a64dc401e87418faf1edcdde5cf057e0a8b9b10e1f",
+    ),
+    (
+        BASIC11_RX02,
+        "BSOT0D.EAE",
+        12,
+        "f47fa8549073cb4b32354f3a35afd3909fafe24b03c8102d8b2ea1dfd43925af",
+    ),
+    # CNC.SAV lives in linked segment 2: exercises the segment-chain walk.
+    (
+        BASIC11_RX02,
+        "CNC.SAV",
+        58,
+        "8ce0c092d040197ff9ffaa27d22f6c595159a1dd9a2e10d303438825396c14d3",
+    ),
+    (
+        BASIC11_RX02,
+        "NULLPU.XYZ",
+        1,
+        "501384736d2398dc67a9ad4e9c442c7b7bd2047d1a0e8c143354370dee95bad8",
+    ),
+]
+
+
+class TestReadFileOracles:
+    @pytest.mark.parametrize(
+        "path,name,blocks,sha",
+        READ_ORACLES,
+        ids=[f"{p.name}:{n}" for p, n, _b, _s in READ_ORACLES],
+    )
+    def test_content_hash_matches_independent_extractor(self, path, name, blocks, sha):
+        controller = _open(path)
+        try:
+            data = controller.filesystem.read_file(name)
+            assert len(data) == blocks * BLOCK
+            assert hashlib.sha256(data).hexdigest() == sha
+        finally:
+            controller.close_disk()
+
+    def test_leading_slash_and_case_are_normalized(self):
+        controller = _open(RX01_V03B)
+        try:
+            direct = controller.filesystem.read_file("SWAP.SYS")
+            assert controller.filesystem.read_file("/SWAP.SYS") == direct
+            assert controller.filesystem.read_file("swap.sys") == direct
+        finally:
+            controller.close_disk()
+
+    def test_missing_file_raises(self):
+        controller = _open(RX01_V03B)
+        try:
+            with pytest.raises(FileNotFoundError):
+                controller.filesystem.read_file("NOSUCH.FIL")
+        finally:
+            controller.close_disk()
+
+
+class TestTentativeFiles:
+    def test_basic11_tentative_listed_with_tent_attribute(self):
+        # The committed BASIC-11 disk carries one tentative file (a file
+        # opened but never closed by the original system): TEST.DAT, 4
+        # blocks, no date word, starting at block 734 (per rt11probe).
+        controller = _open(BASIC11_RX02)
+        try:
+            items = controller.filesystem.list_directory("/")
+            assert len(items) == 122  # 121 permanent + 1 tentative
+            tent = [i for i in items if "TENT" in i.attributes]
+            assert [t.name for t in tent] == ["TEST.DAT"]
+            entry = tent[0]
+            assert entry.size == 4 * BLOCK
+            assert entry.datetime == NO_DATE  # date word 0 == no date
+            assert entry.starting_cluster == 734
+            data = controller.filesystem.read_file("TEST.DAT")
+            assert len(data) == 4 * BLOCK
+        finally:
+            controller.close_disk()
+
+    def test_permanent_file_without_date_gets_epoch(self):
+        controller = _open(BASIC11_RX02)
+        try:
+            items = {i.name: i for i in controller.filesystem.list_directory("/")}
+            assert items["T.BAS"].datetime == NO_DATE
+        finally:
+            controller.close_disk()
+
+
+class TestDetectionMatrix:
+    def test_cpm_8inch_disk_scores_zero_on_rt11(self):
+        # Cross-pin with a real committed CP/M 8" image, both with the
+        # rt11_rx01 profile config applied and with no config at all.
+        profile = RT11_FORMATS["rt11_rx01"]
+        for config in (profile.filesystem_config, None):
+            driver = IMGImageDriver(str(CPM_8IN_IMG))
+            disk = Disk(driver)
+            disk.set_geometry(copy.deepcopy(profile.physical_format))
+            fs = RT11Filesystem(disk, config=config)
+            assert fs.get_validity_score() == 0
+
+    def test_rt11_rx01_scores_zero_on_cpm(self):
+        # Truthful pin (verified empirically): CPMFilesystem scores exactly
+        # 0 on the committed RX01 under both 8" SSSD profile configs --
+        # below CP/M's own threshold (50) and the IMG claim floor (30).
+        for pname in ("cpm_8_sssd_250k_interleave6", "cpm_8_sssd_250k_sequential"):
+            profile = CPM_FORMATS[pname]
+            driver = IMGImageDriver(str(RX01_V03B))
+            disk = Disk(driver)
+            disk.set_geometry(copy.deepcopy(profile.physical_format))
+            fs = CPMFilesystem(disk, config=profile.filesystem_config)
+            assert fs.get_validity_score() == 0
+
+    def test_cpm_8inch_disk_still_detects_as_cpm(self):
+        # Adding RT-11 profiles at the same 256,256-byte size must not
+        # disturb CP/M detection of a real CP/M 8" disk.
+        controller = _open(CPM_8IN_IMG)
+        try:
+            assert isinstance(controller.filesystem, CPMFilesystem)
+            name, _config, _pf = controller.detect_format()
+            assert name == "cpm_8_sssd_250k_interleave6"
+        finally:
+            controller.close_disk()
+
+    def test_fat12_disk_scores_zero_on_rt11(self):
+        controller = _open(FAT_144M_IMG)
+        try:
+            assert not isinstance(controller.filesystem, RT11Filesystem)
+            fs = RT11Filesystem(controller.disk)
+            assert fs.get_validity_score() == 0
+        finally:
+            controller.close_disk()
+
+    def test_validity_score_never_raises_without_geometry(self):
+        driver = IMGImageDriver(str(RX01_V03B))
+        fs = RT11Filesystem(Disk(driver))  # no geometry set at all
+        assert fs.get_validity_score() == 0
+        assert fs.get_specific_config() is None
+        assert fs.get_allocated_units() == []
+        assert fs.get_free_space() == (0, 0)
+        assert fs.get_disk_map_layout() == {}
+
+
+RT11_IMD = LOCAL_RT11 / "RT11RX01.IMD"
+
+
+@pytest.mark.skipif(not RT11_IMD.is_file(), reason="local RT-11 corpus not present")
+class TestIMDPath:
+    def test_imd_rx01_detects_rt11(self):
+        controller = _open(RT11_IMD)
+        try:
+            assert isinstance(controller.filesystem, RT11Filesystem)
+            cfg = controller.filesystem.get_specific_config()
+            assert (cfg.view, cfg.total_blocks) == ("rx01", 494)
+            assert controller.filesystem.list_directory("/")
+        finally:
+            controller.close_disk()
+
+
+# ---------------------------------------------------------------------------
+# DEC DIR oracle: genuine DIR listings archived alongside the disks.
+# ---------------------------------------------------------------------------
+
+_DIR_ENTRY_RE = re.compile(
+    r"([A-Z0-9$%]{1,6}) *\.([A-Z0-9$%]{1,3}) +(\d+)(P?) +(\d{2})-([A-Za-z]{3})-(\d{2})"
+)
+_MONTHS = {
+    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+    "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+}  # fmt: skip
+
+
+def _parse_dec_dir(text):
+    """Parses a two-column RT-11 DIR listing into (entries, files, free)."""
+    entries = []
+    for match in _DIR_ENTRY_RE.finditer(text):
+        base, ext, blocks, prot, day, mon, yy = match.groups()
+        year = 1900 + int(yy) if int(yy) >= 72 else 2000 + int(yy)
+        entries.append(
+            {
+                "name": f"{base}.{ext}",
+                "blocks": int(blocks),
+                "protected": prot == "P",
+                "date": datetime.datetime(year, _MONTHS[mon.upper()], int(day)),
+            }
+        )
+    counts = re.search(r"(\d+) Files, (\d+) Blocks", text)
+    free = re.search(r"(\d+) Free blocks", text)
+    assert counts and free, "trailer lines missing from DIR listing"
+    return entries, int(counts.group(1)), int(free.group(1))
+
+
+@pytest.mark.skipif(not LOCAL_RT11.is_dir(), reason="local RT-11 corpus not present")
+class TestDECDirOracle:
+    @pytest.mark.parametrize(
+        "image,listing",
+        [
+            ("RT11-V05.01.d/BA-P732B-BC.DSK", "RT11-V05.01.d/BA-P732B-BC.TXT"),
+            ("BA-P732I-BC_RT-11_V5.4B_AUTO_87.DSK", "p732i.dir.txt"),
+        ],
+        ids=["BA-P732B-BC", "BA-P732I-BC"],
+    )
+    def test_matches_genuine_dec_dir_listing(self, image, listing):
+        img_path = LOCAL_RT11 / image
+        txt_path = LOCAL_RT11 / listing
+        if not (img_path.is_file() and txt_path.is_file()):
+            pytest.skip(f"missing corpus file {img_path.name} / {txt_path.name}")
+        expected, n_files, free_blocks = _parse_dec_dir(
+            txt_path.read_text(errors="replace")
+        )
+        assert len(expected) == n_files  # listing parser self-check
+        controller = _open(img_path)
+        try:
+            # DIR omits tentative files by default; ours flags them TENT.
+            ours = [
+                i
+                for i in controller.filesystem.list_directory("/")
+                if "TENT" not in i.attributes
+            ]
+            assert [i.name for i in ours] == [e["name"] for e in expected]
+            for mine, ref in zip(ours, expected):
+                assert mine.size == ref["blocks"] * BLOCK, mine.name
+                assert mine.datetime == ref["date"], mine.name
+                assert ("PROT" in mine.attributes) == ref["protected"], mine.name
+            free_bytes, _total = controller.filesystem.get_free_space()
+            assert free_bytes == free_blocks * BLOCK
+        finally:
+            controller.close_disk()
+
+
+class TestFilesystemSurface:
+    def test_allocation_unit_size_is_512(self):
+        controller = _open(RX01_V03B)
+        try:
+            assert controller.filesystem.allocation_unit_size == BLOCK
+        finally:
+            controller.close_disk()
+
+    def test_free_space_v03b(self):
+        controller = _open(RX01_V03B)
+        try:
+            free, total = controller.filesystem.get_free_space()
+            assert free == 43 * BLOCK  # single trailing empty run
+            # Total: the directory-covered data area (sum of all entry
+            # lengths) -- 494 device blocks minus boot/home/reserved/dir.
+            assert total == 480 * BLOCK
+        finally:
+            controller.close_disk()
+
+    def test_file_allocation_units_contiguous(self):
+        controller = _open(RX01_V03B)
+        try:
+            units = controller.filesystem.get_file_allocation_units("SWAP.SYS")
+            assert units == list(range(14, 38))  # 24 contiguous blocks
+        finally:
+            controller.close_disk()
+
+    def test_allocated_units(self):
+        controller = _open(RX01_V03B)
+        try:
+            units = set(controller.filesystem.get_allocated_units())
+            # Boot, home, reserved and directory blocks are always allocated.
+            assert set(range(0, 14)).issubset(units)
+            # The trailing 43-block empty run (451-493) is free.
+            assert units.isdisjoint(range(451, 494))
+            assert max(units) == 450
+        finally:
+            controller.close_disk()
+
+    def test_disk_map_layout_four_types(self):
+        controller = _open(RX01_V03B)
+        try:
+            layout = controller.filesystem.get_disk_map_layout()
+            assert len(layout["legend"]) == 4
+            assert layout["allocation_unit_size_sectors"] == 4  # 512 // 128
+            get_type = layout["get_sector_type"]
+            spt = 26
+
+            def lba_of(block):
+                cyl, _head, sec = logical_block_to_chs("rx01", block)[0]
+                return cyl * spt + sec
+
+            # Physical track 0 is outside the RT-11 block space entirely.
+            assert get_type(0) == "system"
+            assert get_type(lba_of(0)) == "system"  # boot block
+            assert get_type(lba_of(1)) == "system"  # home block
+            assert get_type(lba_of(6)) == "directory"
+            assert get_type(lba_of(14)) == "file"  # SWAP.SYS first block
+            assert get_type(lba_of(451)) == "free"  # empty run
+            legend_types = set(layout["type_color_map"])
+            assert {"system", "directory", "file", "free"} <= legend_types
+        finally:
+            controller.close_disk()
+
+    def test_display_info_and_volume_label(self):
+        controller = _open(RX01_V03B)
+        try:
+            info = controller.filesystem.get_display_info()
+            assert info["Filesystem"] == "RT-11"
+            assert info["View"] == "rx01"
+            assert info["Total Blocks"] == "494"
+            assert info["Volume ID"] == "AS-5777C-BC"
+            assert info["System ID"] == "DECRT11A"
+            assert controller.filesystem.get_volume_label() == "AS-5777C-BC"
+        finally:
+            controller.close_disk()
+
+    def test_write_side_not_implemented_yet(self):
+        controller = _open(RX01_V03B)
+        try:
+            fs = controller.filesystem
+            with pytest.raises(NotImplementedError):
+                fs.write_file("NEW.DAT", b"x")
+            with pytest.raises(NotImplementedError):
+                fs.delete("SWAP.SYS")
+            with pytest.raises(NotImplementedError):
+                fs.create_directory("/SUB")
+        finally:
+            controller.close_disk()
+
+
+class TestConfigPlumbing:
+    def test_configs_match_delegates_to_rt11config(self):
+        a = RT11Config(view="rx01", total_blocks=494)
+        b = RT11Config(view="rx01", total_blocks=494, volume_id="X", owner="Y")
+        assert RT11Filesystem.configs_match(a, b)
+        assert not RT11Filesystem.configs_match(
+            a, RT11Config(view="logical", total_blocks=494)
+        )
+        assert not RT11Filesystem.configs_match(a, None)
+        assert not RT11Filesystem.configs_match(a, object())
+
+    def test_create_config_from_params_infers_view_from_geometry(self):
+        cases = [
+            ("rt11_rx01", "rx01", 494),
+            ("rt11_rx02", "rx02", 988),
+            ("rt11_rx50", "rx50", 800),
+            ("rt11_logical_800", "logical", 800),
+        ]
+        for profile_name, view, blocks in cases:
+            pf = RT11_FORMATS[profile_name].physical_format
+            cfg = RT11Filesystem.create_config_from_params({}, pf)
+            assert isinstance(cfg, RT11Config), profile_name
+            assert (cfg.view, cfg.total_blocks) == (view, blocks), profile_name
+
+    def test_create_config_rejects_unusable_sector_size(self):
+        from fatfloppy.core.physical_format import PhysicalFormat, TrackFormat
+
+        pf = PhysicalFormat(
+            cylinders=77,
+            heads=1,
+            rpm=360,
+            heads_inverted=False,
+            bytes_per_sector=1024,
+            track_formats=[TrackFormat(0, 76, 0, 0, 8, "MFM", 500, 1)],
+        )
+        assert RT11Filesystem.create_config_from_params({}, pf) is None

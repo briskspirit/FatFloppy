@@ -133,12 +133,14 @@ def test_rt11_rx01_label_track_not_claimed_by_fat12():
         f"EBCDIC label track scored {score} as FAT12 under ibm_8_250k"
     )
 
-    # Controller-level: auto-detection must not yield FAT12 for this image.
+    # Controller-level: auto-detection must not yield FAT12 for this image,
+    # regardless of whether the open itself succeeds.
     controller = DiskController()
-    if controller.open_disk(str(path), disk_type="auto"):
-        assert not isinstance(controller.filesystem, FATFilesystem), (
-            "RT-11 RX01 image wrongly auto-detected as FAT12"
-        )
+    opened = controller.open_disk(str(path), disk_type="auto")
+    assert not isinstance(controller.filesystem, FATFilesystem), (
+        "RT-11 RX01 image wrongly auto-detected as FAT12"
+    )
+    if opened:
         controller.close_disk()
 
 
