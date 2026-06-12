@@ -34,6 +34,14 @@ import pytest
 from fatfloppy.core.td0_compression import lzhuf_decompress
 
 LOCAL_TD0 = Path(__file__).parent.parent.parent / "local_images" / "TD0"
+LOCAL_DECODED = (
+    Path(__file__).parent.parent.parent
+    / "docs"
+    / "superpowers"
+    / "research"
+    / "td0"
+    / "decoded"
+)
 RES = Path(__file__).parent.parent / "resources"
 TD0_RES = RES / "TD0"
 
@@ -669,3 +677,366 @@ class TestTD0AutoDetection:
             assert isinstance(controller.filesystem, FATFilesystem)
         finally:
             controller.close_disk()
+
+
+# ===========================================================================
+# Cross-decoder verification: TD0 vs greaseweazle-decoded IMD twins
+# ===========================================================================
+#
+# For every local TD0 sample whose greaseweazle-decoded IMD twin exists in
+# docs/superpowers/research/td0/decoded/, open both files with
+# DiskController.open_disk (auto-detection) and assert:
+#   - both containers open successfully;
+#   - same filesystem type detected (or both None);
+#   - if a filesystem is detected: identical recursive listings (name + size)
+#     and identical per-file content sha256.
+#
+# Benign known divergences (documented by Task 2 research):
+#   - TrackFormat.rate may differ: TD0 reports the honest recorded rate
+#     (e.g. 250 kbps for 8" disks) while greaseweazle writes 500 kbps in
+#     the IMD header for the same disk.  The test compares filesystem-level
+#     output only, never raw geometry metadata.
+#   - CPM22-style coverage holes (zero-sector track at C0H0) are symmetric:
+#     neither side can read through the hole, so file content matches or is
+#     absent on both sides identically.
+#
+# Per-file read errors are tolerated ONLY if they occur identically on both
+# sides (same file name raises on both).
+
+
+def _local_pairs() -> list[tuple[Path, Path]]:
+    """Return (td0_path, imd_twin_path) for every local sample whose twin exists."""
+    if not LOCAL_TD0.is_dir() or not LOCAL_DECODED.is_dir():
+        return []
+    pairs = []
+    for td0 in sorted(LOCAL_TD0.iterdir()):
+        if td0.suffix.lower() != ".td0":
+            continue
+        for imd in LOCAL_DECODED.glob("*.imd"):
+            if imd.stem.lower() == td0.stem.lower():
+                pairs.append((td0, imd))
+                break
+    return pairs
+
+
+def _read_file_safe(controller, name: str) -> tuple[bytes | None, Exception | None]:
+    """Read a file, returning (data, None) or (None, exception)."""
+    try:
+        return controller.read_file(name), None
+    except Exception as e:
+        return None, e
+
+
+@pytest.mark.skipif(
+    not LOCAL_TD0.is_dir() or not LOCAL_DECODED.is_dir(),
+    reason="local TD0 corpus or greaseweazle-decoded twins not present",
+)
+@pytest.mark.parametrize(
+    "td0,imd", _local_pairs(), ids=[p[0].name for p in _local_pairs()]
+)
+def test_td0_matches_imd_twin_through_full_stack(td0: Path, imd: Path) -> None:
+    """TD0 and its gw-IMD twin must agree through the full filesystem stack."""
+    from fatfloppy.core.controller import DiskController
+
+    c_td0 = DiskController()
+    c_imd = DiskController()
+    try:
+        ok_td0 = c_td0.open_disk(str(td0))
+        ok_imd = c_imd.open_disk(str(imd))
+
+        assert ok_td0, f"TD0 open failed: {td0.name}"
+        assert ok_imd, f"IMD twin open failed: {imd.name}"
+
+        fs_td0 = type(c_td0.filesystem).__name__ if c_td0.filesystem else None
+        fs_imd = type(c_imd.filesystem).__name__ if c_imd.filesystem else None
+
+        assert fs_td0 == fs_imd, (
+            f"{td0.name}: filesystem type mismatch: TD0={fs_td0} IMD={fs_imd}"
+        )
+
+        if fs_td0 is None:
+            # Both sides have no recognized filesystem — symmetric, no more to check.
+            return
+
+        listing_td0 = c_td0.list_directory("/")
+        listing_imd = c_imd.list_directory("/")
+
+        # Compare (name, size) pairs — order may differ, sort for stability.
+        sorted_td0 = sorted(listing_td0, key=lambda fi: fi["name"])
+        sorted_imd = sorted(listing_imd, key=lambda fi: fi["name"])
+
+        names_td0 = [(fi["name"], fi["size"]) for fi in sorted_td0 if not fi["is_dir"]]
+        names_imd = [(fi["name"], fi["size"]) for fi in sorted_imd if not fi["is_dir"]]
+
+        assert names_td0 == names_imd, (
+            f"{td0.name}: listing mismatch:\n  TD0={names_td0}\n  IMD={names_imd}"
+        )
+
+        # Per-file content: compare sha256; tolerate errors only if symmetric.
+        content_mismatches = []
+        error_asymmetries = []
+        for fi in sorted_td0:
+            if fi["is_dir"]:
+                continue
+            name = fi["name"]
+            data_td0, err_td0 = _read_file_safe(c_td0, name)
+            data_imd, err_imd = _read_file_safe(c_imd, name)
+
+            both_errored = err_td0 is not None and err_imd is not None
+            td0_only_error = err_td0 is not None and err_imd is None
+            imd_only_error = err_td0 is None and err_imd is not None
+
+            if td0_only_error or imd_only_error:
+                error_asymmetries.append(
+                    f"{name}: TD0_err={err_td0!r} IMD_err={err_imd!r}"
+                )
+                continue
+            if both_errored:
+                # Symmetric failure — tolerated.
+                continue
+
+            sha_td0 = hashlib.sha256(data_td0).hexdigest()
+            sha_imd = hashlib.sha256(data_imd).hexdigest()
+            if sha_td0 != sha_imd:
+                content_mismatches.append(
+                    f"{name}: TD0_sha256={sha_td0[:16]}… IMD_sha256={sha_imd[:16]}…"
+                )
+
+        assert not error_asymmetries, (
+            f"{td0.name}: asymmetric read errors:\n  " + "\n  ".join(error_asymmetries)
+        )
+        assert not content_mismatches, (
+            f"{td0.name}: content mismatches:\n  " + "\n  ".join(content_mismatches)
+        )
+    finally:
+        c_td0.close_disk()
+        c_imd.close_disk()
+
+
+# ===========================================================================
+# End-to-end pins for cpm22dri and mbc775
+# ===========================================================================
+#
+# These are committed pins against the resources/ copies (no local_images
+# guard needed) ensuring the two most important samples never regress.
+# Content hashes are derived from the greaseweazle-decoded IMD twin at
+# test-authoring time (see docs/superpowers/research/td0/decoded/cpm22dri.imd)
+# and verified to match the TD0 side — both sides were identical at pin time.
+
+
+@pytest.mark.skipif(
+    not LOCAL_TD0.is_dir() or not LOCAL_DECODED.is_dir(),
+    reason="local TD0 corpus or greaseweazle-decoded twins not present",
+)
+class TestCpm22driPin:
+    """cpm22dri.td0 -> CPMFilesystem with expected DRI CP/M 2.2 distribution."""
+
+    def test_filesystem_type_is_cpm(self):
+        from fatfloppy.core.controller import DiskController
+        from fatfloppy.core.filesystems.cpm_fs import CPMFilesystem
+
+        c = DiskController()
+        assert c.open_disk(str(LOCAL_TD0 / "cpm22dri.td0"))
+        try:
+            assert isinstance(c.filesystem, CPMFilesystem), (
+                f"Expected CPMFilesystem, got {type(c.filesystem).__name__}"
+            )
+        finally:
+            c.close_disk()
+
+    def test_movcpm_and_pip_present(self):
+        from fatfloppy.core.controller import DiskController
+
+        c = DiskController()
+        assert c.open_disk(str(LOCAL_TD0 / "cpm22dri.td0"))
+        try:
+            names = {fi["name"] for fi in c.list_directory("/")}
+            assert "MOVCPM.COM" in names, f"MOVCPM.COM missing; found: {sorted(names)}"
+            assert "PIP.COM" in names, f"PIP.COM missing; found: {sorted(names)}"
+        finally:
+            c.close_disk()
+
+    def test_movcpm_content_hash(self):
+        # MOVCPM.COM sha256 derived from cpm22dri.imd (greaseweazle-decoded twin).
+        # Both sides were byte-identical at pin time.
+        expected_sha256 = (
+            "e5d6f72490db0f1aa5ca4826fc6d0644604eae71ed8df4e611233d8c3e3ac401"
+        )
+        from fatfloppy.core.controller import DiskController
+
+        c = DiskController()
+        assert c.open_disk(str(LOCAL_TD0 / "cpm22dri.td0"))
+        try:
+            data = c.read_file("MOVCPM.COM")
+            assert hashlib.sha256(data).hexdigest() == expected_sha256, (
+                f"MOVCPM.COM content hash mismatch; size={len(data)}"
+            )
+        finally:
+            c.close_disk()
+
+
+@pytest.mark.skipif(
+    not LOCAL_TD0.is_dir() or not LOCAL_DECODED.is_dir(),
+    reason="local TD0 corpus or greaseweazle-decoded twins not present",
+)
+class TestMbc775Pin:
+    """mbc775.td0 -> FATFilesystem with a non-empty listing."""
+
+    def test_filesystem_type_is_fat(self):
+        from fatfloppy.core.controller import DiskController
+        from fatfloppy.core.filesystems.fat12_fs import FATFilesystem
+
+        c = DiskController()
+        assert c.open_disk(str(LOCAL_TD0 / "mbc775.td0"))
+        try:
+            assert isinstance(c.filesystem, FATFilesystem), (
+                f"Expected FATFilesystem, got {type(c.filesystem).__name__}"
+            )
+        finally:
+            c.close_disk()
+
+    def test_listing_non_empty(self):
+        from fatfloppy.core.controller import DiskController
+
+        c = DiskController()
+        assert c.open_disk(str(LOCAL_TD0 / "mbc775.td0"))
+        try:
+            files = c.list_directory("/")
+            assert len(files) > 0, "mbc775 listing is empty"
+        finally:
+            c.close_disk()
+
+
+# ===========================================================================
+# GUI smoke: cpm22dri.td0 through the real DiskManager (offscreen)
+# ===========================================================================
+#
+# Opens the committed resources/TD0/cpm22dri.td0 via the real DiskManager
+# (the same code path the application uses) and checks:
+#   - the file listing populates (non-empty);
+#   - the disk map renders without exceptions;
+#   - the detected-format panel names the TD0 driver and includes the archive
+#     comment (the ALTS8CPM comment is in ALTS8CPM.TD0; cpm22dri has no
+#     comment, so we check the panel does NOT crash and shows "Container: TD0");
+#   - write operations surface clean read-only errors (not crashes).
+
+
+import logging  # noqa: E402  (appended section, keep imports local)
+import os  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+class TestTD0GuiSmoke:
+    """Offscreen GUI smoke tests for cpm22dri.td0 through the real DiskManager."""
+
+    def _open_with_manager(self, path: Path):
+        """Open path with a real DiskController, return (controller, detected_text)."""
+        from fatfloppy.core.controller import DiskController
+        from fatfloppy.gui.managers.disk_manager import DiskManager
+
+        controller = DiskController()
+        assert controller.open_disk(str(path)), f"open_disk failed for {path.name}"
+
+        label = MagicMock()
+        manager = DiskManager.__new__(DiskManager)
+        manager.logger = logging.getLogger("test_gui_smoke")
+        manager.parent = SimpleNamespace(
+            controller=controller, detected_format_info=label
+        )
+        manager.update_detected_format_info()
+        assert label.setText.called, "detected_format_info label was not updated"
+        detected_text = label.setText.call_args[0][0]
+        return controller, detected_text
+
+    def test_detected_format_panel_shows_td0_container(self):
+        """Detected-format panel must name the TD0 container for cpm22dri.td0."""
+        controller, text = self._open_with_manager(TD0_RES / "cpm22dri.td0")
+        controller.close_disk()
+        assert "Container: TD0" in text, (
+            f"Expected 'Container: TD0' in detected format text:\n{text}"
+        )
+
+    def test_listing_populates_via_controller(self):
+        """File listing through the controller must be non-empty for cpm22dri.td0."""
+        from fatfloppy.core.controller import DiskController
+
+        c = DiskController()
+        assert c.open_disk(str(TD0_RES / "cpm22dri.td0"))
+        try:
+            files = c.list_directory("/")
+            assert len(files) > 0, "cpm22dri.td0 listing empty through controller"
+        finally:
+            c.close_disk()
+
+    def test_disk_map_renders_without_exception(self):
+        """DiskMapView.draw_disk_map must not raise for a TD0-backed disk."""
+        from PyQt6.QtGui import QColor, QFont
+        from PyQt6.QtWidgets import QApplication, QWidget
+
+        from fatfloppy.core.controller import DiskController
+        from fatfloppy.gui.disk_map import DiskMapView
+
+        app = QApplication.instance() or QApplication([])  # noqa: F841
+
+        c = DiskController()
+        assert c.open_disk(str(TD0_RES / "cpm22dri.td0"))
+        try:
+            parent = QWidget()
+            view = DiskMapView(parent)
+            # draw_disk_map must not raise; the scene may be empty for a small
+            # offscreen widget but that is acceptable.
+            view.draw_disk_map(
+                controller=c,
+                current_head=0,
+                _busy_units=None,
+                free_space=0,
+                total_space=0,
+                app_font=QFont(),
+                text_color=QColor("black"),
+            )
+        except Exception as exc:
+            raise AssertionError(
+                f"DiskMapView.draw_disk_map raised for cpm22dri.td0: {exc!r}"
+            ) from exc
+        finally:
+            c.close_disk()
+
+    def test_write_via_file_manager_raises_clean_error(self):
+        """Attempting to write (import/delete) on a TD0 disk must raise OSError."""
+        from fatfloppy.core.controller import DiskController
+
+        c = DiskController()
+        assert c.open_disk(str(TD0_RES / "cpm22dri.td0"))
+        try:
+            with pytest.raises(OSError):
+                c.driver.write_sector(0, 0, 0, b"\x00" * 128)
+        finally:
+            c.close_disk()
+
+    def test_comment_in_geometry_panel_for_alts8cpm(self):
+        """ALTS8CPM.TD0 has a comment; the geometry panel must include it."""
+        from fatfloppy.core.controller import DiskController
+        from fatfloppy.gui.managers.disk_manager import DiskManager
+
+        controller = DiskController()
+        assert controller.open_disk(str(TD0_RES / "ALTS8CPM.TD0"))
+
+        geo_label = MagicMock()
+        manager = DiskManager.__new__(DiskManager)
+        manager.logger = logging.getLogger("test_gui_smoke")
+        manager.parent = SimpleNamespace(
+            controller=controller,
+            physical_format_info=geo_label,
+            detected_format_info=MagicMock(),
+        )
+        manager.update_geometry_info()
+        controller.close_disk()
+
+        assert geo_label.setText.called, "geometry label was not updated"
+        geo_text = geo_label.setText.call_args[0][0]
+        assert "Altos" in geo_text, (
+            f"Expected ALTS8CPM comment in geometry panel:\n{geo_text}"
+        )

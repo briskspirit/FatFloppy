@@ -465,7 +465,8 @@ class DiskManager(QObject):
         ):
             comment = self.parent.controller.driver.comment
             display_comment = (comment[:60] + "...") if len(comment) > 63 else comment
-            imd_comment = f"IMD Comment: {display_comment}\n"
+            # Generic label used for both IMD and TD0 archive comments.
+            imd_comment = f"Archive Comment: {display_comment}\n"
 
         encoding_text, rate_text, spt_text = "N/A", "N/A", "N/A"
         if geometry.track_formats:
