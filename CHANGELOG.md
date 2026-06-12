@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- DEC RT-11 filesystem support (RX01/RX02/RX50 floppy volumes; raw images,
+  IMD, and TD0 containers):
+  - full read/write with 6.3 RAD50 file names, real RT-11 date words
+    (genuine dates on listing, today's date stamped on write), and
+    contiguous first-fit allocation with directory segment splitting;
+    deleted entries are left in place rather than coalesced, matching real
+    RT-11 (only SQUEEZE merges free space)
+  - both archival conventions for the same floppy — raw physical sector
+    order (the DEC handler interleave) and plain logical block order — are
+    auto-resolved by scoring the directory structure under each candidate
+    view, on read and write alike, even when the file sizes are identical
+  - creating and formatting new blank RT-11 images (INIT-style per-device
+    directory-segment defaults)
+  - VALIDATE-style filesystem check walking the directory segment chain
+    (overlapping runs, device overruns, cyclic or broken chains)
+  - verified file-content-exact against an independent extractor across a
+    97-file local corpus of real DEC distribution media (V03B through
+    V5.4B), with zero regressions elsewhere in the real-image corpus
 - Teledisk TD0 container driver (read-only): both normal and
   "advanced"-compressed TD0 archives open transparently; any filesystem
   auto-detected inside (FAT12, CP/M, and others) is browsable without any
@@ -78,6 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against it with zero regressions in per-file content hashes.
 
 ### Fixed
+- Raw RX01 disk images are no longer misdetected as FAT12: uniform-fill FAT
+  candidates are rejected during no-BPB boot-sector synthesis.
 - Detection over-claiming: HDOS and inferred-DPB CP/M no longer claim disks of
   other formats (detection is now gated on plausible geometry and directory
   contents), and the new drivers cannot shadow existing ones — all verified
@@ -105,8 +125,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verified with zero impact across the real-image corpus.
 - Import and export naming is delegated to per-filesystem policies: each
   filesystem suggests valid, de-duplicated import names (FAT/CP/M/HDOS 8.3
-  with `~NN`; CBM 16-character PETSCII with `-NN`) and sanitizes export
-  names for the host.
+  with `~NN`; CBM 16-character PETSCII with `-NN`; RT-11 6.3 RAD50 with
+  digit suffixes) and sanitizes export names for the host.
 
 ## [0.1.1] - 2026-06-10
 

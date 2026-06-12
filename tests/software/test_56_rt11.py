@@ -845,6 +845,25 @@ def _corpus_entries():
 # list breaks collection of the whole file when local_images/ is absent.
 _CORPUS = _corpus_entries()
 
+# Local-only oracle manifests (rt11probe.py extractions): these corpus images
+# are NOT committed as resources, so their per-file content oracles live next
+# to the corpus inventory instead of as pinned literals (READ_ORACLES below
+# pins the committed ones). The IMD entry exercises the container end-to-end.
+_MANIFEST_DIR = CORPUS_INVENTORY.parent / "manifests"
+_MANIFEST_CASES = [
+    (
+        "v40_disk1.manifest.json",
+        "images/RT-11_v4.0_ORIGINAL_DISKS.d"
+        "/RT-11 v4.0 BIN RX01 1-7 (ORIGINAL DISK)"
+        "/RT-11 v4.0 BIN RX01 1-7 (ORIGINAL DISK).img",
+    ),
+    ("v54_rx01_imd.manifest.json", "images/RT11RX01.IMD"),
+    (
+        "v54b_auto_logical.manifest.json",
+        "images/BA-P732I-BC_RT-11_V5.4B_AUTO_87.DSK",
+    ),
+]
+
 
 @pytest.mark.skipif(
     not (LOCAL_RT11.is_dir() and CORPUS_INVENTORY.is_file()),
@@ -873,6 +892,67 @@ class TestCorpusSweep:
                 assert score >= SCORE_THRESHOLD, f"{path.name} under {view}: {score}"
             else:
                 assert score < SCORE_THRESHOLD, f"{path.name} under {view}: {score}"
+
+    @pytest.mark.parametrize(
+        "entry", _CORPUS, ids=[Path(e["path"]).name for e in _CORPUS]
+    )
+    def test_controller_detects_inventory_image(self, entry):
+        # Full-stack detection over the same inventory: every image must
+        # auto-open as RT-11 with the inventory's view, permanent-file
+        # count, and volume id.
+        path = CORPUS_INVENTORY.parent.parent / entry["path"]
+        if not path.is_file():
+            pytest.skip(f"missing corpus file {path}")
+        controller = _open(path)
+        try:
+            fs = controller.filesystem
+            assert isinstance(fs, RT11Filesystem)
+            assert fs.filesystem_type == "RT11"
+            cfg = fs.get_specific_config()
+            assert isinstance(cfg, RT11Config)
+            expected = "logical" if entry["view"] == "flat" else entry["view"]
+            assert cfg.view == expected, f"{path.name}: {cfg.view} != {expected}"
+            items = fs.list_directory("/")
+            permanent = [i for i in items if "TENT" not in i.attributes]
+            assert len(permanent) == entry["perm_files"], path.name
+            assert fs.get_volume_label() == (entry["volume_id"].strip() or None)
+        finally:
+            controller.close_disk()
+
+    @pytest.mark.parametrize(
+        "manifest_name,rel_path",
+        _MANIFEST_CASES,
+        ids=[m.split(".")[0] for m, _p in _MANIFEST_CASES],
+    )
+    def test_extracted_content_matches_prototype_manifest(
+        self, manifest_name, rel_path
+    ):
+        # Content spot-check against the independent rt11probe extractor:
+        # the full listing (names, sizes, real dates) and every file's
+        # sha256 must match its manifest.
+        image = CORPUS_INVENTORY.parent.parent / rel_path
+        manifest_path = _MANIFEST_DIR / manifest_name
+        if not (image.is_file() and manifest_path.is_file()):
+            pytest.skip(f"missing corpus image or manifest for {manifest_name}")
+        with manifest_path.open() as fh:
+            manifest = json.load(fh)
+        assert manifest
+        controller = _open(image)
+        try:
+            fs = controller.filesystem
+            assert isinstance(fs, RT11Filesystem)
+            items = fs.list_directory("/")
+            assert [i.name for i in items] == [e["name"] for e in manifest]
+            for item, entry in zip(items, manifest):
+                assert item.size == entry["blocks"] * BLOCK, entry["name"]
+                assert item.datetime == datetime.datetime.strptime(
+                    entry["date"], "%d-%b-%Y"
+                ), entry["name"]
+                data = fs.read_file(entry["name"])
+                digest = hashlib.sha256(data).hexdigest()
+                assert digest == entry["sha256"], entry["name"]
+        finally:
+            controller.close_disk()
 
 
 # ---------------------------------------------------------------------------

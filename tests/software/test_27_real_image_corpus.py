@@ -63,6 +63,8 @@ def _candidate_driver_types(path: Path) -> list[str]:
     # files of this size, which then fall through to IMG.
     if size == _APOLLO_SIZE:
         return ["APOLLO", "IMG", "IMD"]
+    # Everything else (including RT-11 raw images: physical-order .rx01 and
+    # logical-order .img dumps) is a plain byte container for the IMG driver.
     return ["IMG", "IMD"]
 
 
@@ -74,7 +76,12 @@ def _image_files() -> list[Path]:
     )
 
 
-@pytest.mark.parametrize("image_path", _image_files(), ids=lambda p: p.name)
+# Materialized with eager ids: a callable `ids=` over an EMPTY parametrize
+# list breaks collection of the whole file when the corpus is absent.
+_IMAGES = _image_files()
+
+
+@pytest.mark.parametrize("image_path", _IMAGES, ids=[p.name for p in _IMAGES])
 def test_real_image_reads_all_files(image_path):
     """Any image whose filesystem is detected must read every file cleanly."""
     for driver_type in _candidate_driver_types(image_path):

@@ -1,15 +1,15 @@
 # FatFloppy
 
-FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, HDOS, Commodore CBM DOS, and Apollo DOMAIN filesystems (wbak backups and native AEGIS volumes) across multiple disk image formats (IMG, IMD, H17, MITS DSK, D64/D71/D81, Apollo floppy, and Teledisk TD0 archives). This is an **alpha version**, with core features working but more to come.
+FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage floppy disk images and physical disks via Greaseweazle hardware. It supports FAT12, CP/M, HDOS, Commodore CBM DOS, DEC RT-11, and Apollo DOMAIN filesystems (wbak backups and native AEGIS volumes) across multiple disk image formats (IMG, IMD, H17, MITS DSK, D64/D71/D81, Apollo floppy, and Teledisk TD0 archives). This is an **alpha version**, with core features working but more to come.
 
 [![License: Unlicense](https://img.shields.io/badge/License-Unlicense-yellow.svg)](https://unlicense.org)
 
 ## Key Features
 
-- **Multiple Filesystems**: FAT12, CP/M, HDOS, CBM DOS, and Apollo DOMAIN
-  wbak and AEGIS (read-only) support, including many non-standard vintage
-  layouts (no-BPB DOS, DEC Rainbow, 86-DOS, hard-sectored Heath H17 / MITS
-  Altair CP/M, and more)
+- **Multiple Filesystems**: FAT12, CP/M, HDOS, CBM DOS, DEC RT-11, and
+  Apollo DOMAIN wbak and AEGIS (read-only) support, including many
+  non-standard vintage layouts (no-BPB DOS, DEC Rainbow, 86-DOS,
+  hard-sectored Heath H17 / MITS Altair CP/M, and more)
 - **Multiple Formats**: IMG, IMD, H17, MITS DSK, Commodore D64/D71/D81,
   Apollo DOMAIN floppy, and Teledisk TD0 archives (read-only, including
   "advanced"-compressed files); error-byte D64/D71 variants preserved;
@@ -31,6 +31,7 @@ FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage f
 | **CP/M 2.2** | ✓ | ✓ | IMG, IMD, H17, MITS DSK, TD0 | many OEM layouts; unknown DPBs inferred from the disk |
 | **HDOS** (Heath/Zenith) | ✓ | ✓ | IMG (H8D), H17 | H17/H37/H47 controller geometries |
 | **CBM DOS** (Commodore 1541/1571/1581) | ✓ | ✓ | D64, D71, D81 | REL files, 1581 partitions; error-byte variants preserved; 42-track D64 read-only |
+| **RT-11** (DEC RX01/RX02/RX50) | ✓ | ✓ | IMG, IMD, TD0 | physical & logical sector-order conventions auto-resolved |
 | **Apollo DOMAIN wbak** backups | ✓ | — | Apollo IMG | split backup sets reassembled across volumes ("insert next floppy") |
 | **Apollo AEGIS** native (SR9) | ✓ | — | Apollo IMG | boot/utility floppies; SR10 recognized but not claimed |
 
@@ -39,9 +40,9 @@ TD0 is a read-only container: any filesystem that fits in a Teledisk archive
 an IMG or IMD of the same disk.
 
 Physical disks: FAT12, CP/M, and HDOS media (FM/MFM) can be read and written
-directly through Greaseweazle hardware. Commodore 5.25" GCR media and Apollo
-floppies are currently image-only. New blank images can be created and
-formatted for the writable filesystems' profiles.
+directly through Greaseweazle hardware. Commodore 5.25" GCR media, Apollo
+floppies, and RT-11 media are currently image-only. New blank images can be
+created and formatted for the writable filesystems' profiles.
 
 ## Installation
 
@@ -139,6 +140,31 @@ fatfloppy
   defaults to 120 sectors; the size must be at least 120 sectors and a
   multiple of 40, i.e. whole tracks).
 
+### RT-11 Notes
+
+- **Media**: DEC RX01, RX02, and RX50 floppy volumes, as raw images, IMD,
+  or TD0 archives.
+- **Sector order**: archives store the same RT-11 floppy in two conventions —
+  raw physical sectors (the DEC handler's 2:1 interleave with track skew and
+  an unused track 0) or a plain logical block stream. FatFloppy resolves the
+  actual convention by scoring the directory structure under each candidate
+  view, so both open correctly even when the file sizes are identical, and
+  writes go back through the same mapping.
+- **Names**: 6.3 file names in the RAD50 character set; typed names are
+  validated, imported host names are mapped into it with digit-suffix
+  de-duplication (see Filenames on Import/Export below).
+- **Timestamps**: real RT-11 date words — genuine dates on listing, today's
+  date stamped on import (RT-11 stores no time of day).
+- **Contiguous files**: RT-11 files are contiguous block runs. Writes use
+  first-fit allocation and split directory segments exactly as RT-11 does,
+  and deleting a file leaves its empty slot in place (real RT-11 only merges
+  free space when you run SQUEEZE) — so a churned disk can reject a file
+  that would fit in total free space; the disk info panel reports this
+  fragmentation.
+- **Check**: a VALIDATE-style filesystem check walks the directory segment
+  chain and flags overlapping file runs, runs past the end of the device,
+  broken or cyclic segment links, and missing end-of-segment markers.
+
 ### Apollo DOMAIN wbak Notes
 
 - **Read-only**: Apollo floppies are archival backup media; FatFloppy opens
@@ -186,9 +212,10 @@ fatfloppy
 Importing a host file auto-generates a name valid for the target filesystem:
 FAT, CP/M, and HDOS get 8.3 names with `~NN` de-duplication; CBM keeps up to
 16 PETSCII characters with `-NN` de-duplication, and commas are neutralized
-so type suffixes like `,s` stay deliberate rather than accidental. Names you
-type yourself are validated by the filesystem and rejected with a clear error
-instead of being silently truncated. On export, characters illegal on the
+so type suffixes like `,s` stay deliberate rather than accidental; RT-11 gets
+6.3 RAD50 names (characters outside the set become `$`) with digit-suffix
+de-duplication. Names you type yourself are validated by the filesystem and
+rejected with a clear error instead of being silently truncated. On export, characters illegal on the
 host are sanitized (e.g. CBM `COPY/ALL` becomes `COPY_ALL`) and collisions
 within the same batch are uniquified.
 

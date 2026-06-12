@@ -67,6 +67,11 @@ def _advanced_samples() -> list[Path]:
     )
 
 
+# Materialized with eager ids: a callable `ids=` over an EMPTY parametrize
+# list breaks collection of the whole file when local_images/ is absent.
+_ADVANCED = _advanced_samples()
+
+
 # ---------------------------------------------------------------------------
 # Test-local minimal encoder pieces (initial tree only)
 # ---------------------------------------------------------------------------
@@ -123,11 +128,11 @@ def _pack_bits(bits: list[int]) -> bytes:
 def test_local_corpus_has_advanced_samples():
     # Guard so the parametrized oracle sweep below can never silently shrink
     # to nothing on a machine that does have the corpus.
-    assert len(_advanced_samples()) >= 12
+    assert len(_ADVANCED) >= 12
 
 
 class TestLzhufOracle:
-    @pytest.mark.parametrize("sample", _advanced_samples(), ids=lambda p: p.name)
+    @pytest.mark.parametrize("sample", _ADVANCED, ids=[p.name for p in _ADVANCED])
     def test_byte_equal_to_greaseweazle(self, sample):
         from greaseweazle import optimised  # test oracle only, never production
 
@@ -148,10 +153,9 @@ class TestLzhufSynthetic:
         assert lzhuf_decompress(b"") == b""
 
     def test_truncated_stream_graceful(self):
-        samples = _advanced_samples()
-        if not samples:
+        if not _ADVANCED:
             pytest.skip("no local TD0 samples")
-        raw = samples[0].read_bytes()[12:]
+        raw = _ADVANCED[0].read_bytes()[12:]
         full = lzhuf_decompress(raw)
         for frac in (0.25, 0.5, 0.75):
             cut = lzhuf_decompress(raw[: int(len(raw) * frac)])  # must not raise
