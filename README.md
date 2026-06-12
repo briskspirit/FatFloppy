@@ -217,8 +217,7 @@ so type suffixes like `,s` stay deliberate rather than accidental; RT-11 gets
 de-duplication. Names you type yourself are validated by the filesystem and
 rejected with a clear error instead of being silently truncated. On export,
 characters illegal on the host are sanitized (e.g. CBM `COPY/ALL` becomes
-`COPY_ALL`) and collisions
-within the same batch are uniquified.
+`COPY_ALL`) and collisions within the same batch are uniquified.
 
 ## Building from Source
 
@@ -244,6 +243,17 @@ make appimage  # Creates AppImage (requires linuxdeploy and linuxdeploy-plugin-q
 
 - No progress indicators for long operations
 - Some rare/proprietary disk-image containers are not yet recognized
+- In the disk map, clicking a file highlights its sectors using straight
+  logical-block math; on volumes with sector interleave or skew (RT-11
+  physical images, skewed CP/M layouts) the highlight is approximate — the
+  per-sector usage coloring itself is always exact
+- After attaching the next volume of a split Apollo wbak backup set, the
+  file browser does not refresh automatically (reopen or refresh to see the
+  stitched results)
+- An AEGIS volume that is recognized but structurally damaged browses as an
+  empty volume rather than reporting the damage
+- TD0 is always a read-only container, even for filesystems marked writable
+  in the table above (convert to IMG to edit such a disk)
 
 ## Contributing
 
