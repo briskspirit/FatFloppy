@@ -165,8 +165,10 @@ class ApolloWbakFilesystem(Filesystem):
         are uniquified deterministically in entry order against every
         path already indexed -- so a recovered name colliding with its
         clean earlier copy lists as ``name~1`` and both stay reachable.
-        Genuine duplicate paths are kept as-is (FIRST match wins on
-        lookup)."""
+        (If a recovered entry ever preceded its clean twin in entry
+        order, neither is renamed and the pair degrades to the genuine-
+        duplicate policy below.)  Genuine duplicate paths are kept as-is
+        (FIRST match wins on lookup)."""
         self._index = []
         taken: set[str] = set()
         for tree in self._catalog.trees:

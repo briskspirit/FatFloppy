@@ -80,8 +80,8 @@ DEFAULT_FONT_SIZE = _get_platform_font_size()
 PARTIAL_ROW_COLOR = QColor(200, 120, 0)
 DMG_ROW_COLOR = QColor(200, 60, 60)
 PARTIAL_TOOLTIP = (
-    "Cut at end of volume — extracting will prompt for the next volume "
-    "of the backup set."
+    "Cut at end of volume — only the readable prefix is stored here; "
+    "extracting from an image-backed set prompts for the next volume."
 )
 DMG_TOOLTIP = "Damaged on the medium — unreadable parts are zero-filled on extraction."
 

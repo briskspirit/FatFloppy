@@ -838,6 +838,10 @@ def _recover_clipped_name(junk: bytes, uid: bytes) -> Optional[bytes]:
     repeated-byte UID resolves to the most-evidence split.  A single
     trailing NUL is tolerated and stripped (the writer pads odd-length
     records to even).  Returns the raw path bytes, or None (no proof).
+
+    Scope: recovery is intra-block only -- a remnant at the end of one
+    wbak block followed by a FILE record opening the next block is never
+    attempted (the junk bookkeeping is per ``feed_block`` call).
     """
     for tail_len in range(7, 3, -1):  # 7..4, longest (strongest) first
         if len(junk) < tail_len + 4 + 1:
