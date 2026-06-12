@@ -198,8 +198,9 @@ def test_factory_does_not_claim_below_fs_own_threshold(monkeypatch):
         pytest.skip(f"resource missing: {FAT12_RES_144M}")
 
     # Force FAT12 (validity_threshold=40) into the gap above the old global
-    # floor (30) but below its own threshold. Every other filesystem scores 0
-    # on this image, so any claim can only be the sub-threshold FAT12.
+    # floor (30) but below its own threshold. Every other filesystem scores
+    # below its threshold on this image, so any claim can only be the
+    # sub-threshold FAT12.
     monkeypatch.setattr(FATFilesystem, "get_validity_score", lambda _self: 35)
 
     driver = IMGImageDriver(str(FAT12_RES_144M))

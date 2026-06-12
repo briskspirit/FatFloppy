@@ -9,6 +9,9 @@ from ...format_profile import FormatProfile
 from ...physical_format import PhysicalFormat, TrackFormat
 from ...utils.logging_config import get_logger
 
+# Deliberately retained detector-level claim floor (also imported by test_28).
+# Asymmetry by design: detectors enforce max(30, fs threshold), while
+# filesystem_factory.create_filesystem enforces each fs's own threshold only.
 MINIMUM_VALIDITY_SCORE = 30
 EXCELLENT_MATCH_SCORE = 95
 SIZE_TOLERANCE_BYTES = 1024
@@ -381,6 +384,9 @@ class IMGFormatDetector(FormatDetector):
                     logger.debug(f"Profile {profile.name} failed: {e}")
                     continue
 
+        # Redundant today (every shipped fs threshold >= 30, so any surviving
+        # best_score already cleared it); kept as the detector-level floor for
+        # hypothetical low-threshold plugins.
         if best_score >= MINIMUM_VALIDITY_SCORE:
             logger.info(f"Best match: {best_match[0]} (score={best_score})")
             return best_match

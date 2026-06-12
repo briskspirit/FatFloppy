@@ -522,8 +522,8 @@ class ApolloAegisFilesystem(Filesystem):
         carries the standard directory header.  Never raises.
 
         wbak media (magic at offset 0) score 0 here; bare APOLLO containers
-        with garbage stop at 25, below both this threshold (40) and the
-        global auto-detection floor (30).  SR10+ volumes (LV label version
+        with garbage stop at 25, below this filesystem's own
+        validity_threshold (40).  SR10+ volumes (LV label version
         != 0; different VTOCE layout, apollofs ``logical_volume.go``) are
         capped at 25 with a warning -- never claimed (spec section 6).
         """

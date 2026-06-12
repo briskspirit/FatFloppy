@@ -15,9 +15,11 @@ class ApolloDetector(MetadataBasedDetector):
       carry a parseable wbak tape stream are claimed by
       ``ApolloWbakFilesystem`` (validity score >= its validity_threshold).
     - Bare AEGIS-native containers (PV label present but no wbak stream)
-      score below that threshold and yield
-      ``(None, None, physical_format)`` — the controller opens them with
-      geometry only, leaving filesystem access undefined.
+      score at most 25 as wbak, below ``ApolloWbakFilesystem``'s threshold
+      of 40, and are instead claimed by ``ApolloAegisFilesystem``
+      (threshold 40) through the same scoring path: SR9 volumes are
+      claimed; SR10+ volumes are recognized but deliberately not claimed
+      (score capped at 25). Pinned by tests/software/test_54_aegis_fs.py.
     """
 
     detector_for_driver = "ApolloFloppyDriver"

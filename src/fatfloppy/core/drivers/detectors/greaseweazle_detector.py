@@ -331,6 +331,8 @@ class GreaseweazleFormatDetector(FormatDetector):
                     logger.debug(f"Profile {profile.name}: score={score}")
 
                     if score < fs.validity_threshold:
+                        # A filesystem is only claimable at its OWN threshold;
+                        # the global floor alone is not sufficient.
                         continue
 
                     if profile.filesystem_config and hasattr(fs_class, "configs_match"):
