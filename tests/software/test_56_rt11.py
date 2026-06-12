@@ -41,6 +41,7 @@ from unittest.mock import MagicMock
 # Must be set before any Qt import (GUI smoke tests at the bottom).
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import crcmod.predefined  # noqa: E402
 import pytest  # noqa: E402
 
 from fatfloppy.core.controller import DiskController  # noqa: E402
@@ -1333,6 +1334,71 @@ class TestIMDPath:
             cfg = controller.filesystem.get_specific_config()
             assert (cfg.view, cfg.total_blocks) == ("rx01", 494)
             assert controller.filesystem.list_directory("/")
+        finally:
+            controller.close_disk()
+
+
+# ---------------------------------------------------------------------------
+# TD0 container path: the README claims RT-11 works inside Teledisk archives
+# ("RT-11 ... IMG, IMD, TD0").  No real RT-11 TD0 is committed, so one is
+# SYNTHESIZED here -- a normal-compression archive (layout per the TD0
+# driver's parser, td0notes.txt sections 3-7) wrapped around the committed
+# raw RX01 -- and must detect and read identically to the raw image.
+# ---------------------------------------------------------------------------
+
+_TD0_CRC16 = crcmod.predefined.mkCrcFun("crc-16-teledisk")
+
+
+def _synthesize_rt11_td0(raw_rx01: bytes, out_path: Path) -> None:
+    """Wraps a raw RX01 image (77x1x26x128, physical order) in a normal TD0.
+
+    Header: 'TD' signature (uncompressed body), sequence 0, version 0x15,
+    data-rate byte 0x80 (250 kbps | FM bit -- 8" single density), drive
+    type 5 (8"), stepping 0 (bit 7 clear: no comment block), single-sided;
+    CRC-16-teledisk over bytes 0..9 stored little-endian at bytes 10-11.
+    Per track: sector count / cylinder / head plus the low CRC byte over
+    those three bytes.  Per sector: id-cyl / id-head / 1-based sector ID /
+    size code 0 (128 bytes) / flags 0 / low CRC byte over the decoded
+    data, then the data block (LE16 length = data + method byte, method 0
+    = raw).  The track list ends with the 0xFF terminator.
+    """
+    header = struct.pack("<2sBBBBBBBB", b"TD", 0, 0, 0x15, 0x80, 5, 0, 0, 1)
+    header += struct.pack("<H", _TD0_CRC16(header))
+
+    body = bytearray()
+    for cyl in range(77):
+        track = struct.pack("<BBB", 26, cyl, 0)
+        body += track + bytes([_TD0_CRC16(track) & 0xFF])
+        for sector_id in range(1, 27):
+            offset = (cyl * 26 + sector_id - 1) * 128
+            data = raw_rx01[offset : offset + 128]
+            scrc = _TD0_CRC16(data) & 0xFF
+            body += struct.pack("<BBBBBB", cyl, 0, sector_id, 0, 0, scrc)
+            body += struct.pack("<HB", len(data) + 1, 0) + data
+    body += b"\xff"  # track-list terminator
+    out_path.write_bytes(header + bytes(body))
+
+
+class TestTD0Path:
+    def test_synthesized_td0_rx01_detects_rt11(self, tmp_path):
+        td0 = tmp_path / "rt11_v03b.td0"
+        _synthesize_rt11_td0(RX01_V03B.read_bytes(), td0)
+        controller = _open(td0)
+        try:
+            assert controller.driver.driver_type == "TD0"
+            assert isinstance(controller.filesystem, RT11Filesystem)
+            assert controller.filesystem.filesystem_type == "RT11"
+            cfg = controller.filesystem.get_specific_config()
+            assert (cfg.view, cfg.total_blocks) == ("rx01", 494)
+            items = controller.filesystem.list_directory("/")
+            assert len(items) == 33  # all permanent, matching the raw RX01
+            swap_sha = next(
+                sha
+                for path, name, _blocks, sha in READ_ORACLES
+                if path == RX01_V03B and name == "SWAP.SYS"
+            )
+            data = controller.filesystem.read_file("SWAP.SYS")
+            assert hashlib.sha256(data).hexdigest() == swap_sha
         finally:
             controller.close_disk()
 
