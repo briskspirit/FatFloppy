@@ -42,9 +42,9 @@ from .test_49_apollo_wbak_parser import (
 
 RESOURCES = Path(__file__).parent.parent / "resources" / "APOLLO"
 CBM_RESOURCES = Path(__file__).parent.parent / "resources" / "CBM"
-REAL_VOLUMES = Path(
-    "/Volumes/EXTERNAL/BACKUPS/ZED/VINTAGE_STUFF_70s/Disk_Images/APOLLO"
-)
+# Local, gitignored copies of the external-volume Apollo images (the volume
+# is removable); populated from /Volumes/EXTERNAL/BACKUPS/ZED/VINTAGE_STUFF_70s/.
+REAL_VOLUMES = Path(__file__).parent.parent.parent / "local_images" / "APOLLO"
 
 CLEANUP_SHA256 = "3e4f699d17b9b08936e1f1d501bec3c3a56c4d2e978eb64134a32ac4186539e1"
 # Stitched-content pins, derived from the reference cross-volume extraction

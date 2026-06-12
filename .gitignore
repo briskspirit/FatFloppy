@@ -206,3 +206,9 @@ target/
 # IPython
 profile_default/
 ipython_config.py
+
+# ============================================================================
+# Local copies of removable-volume disk images (real vintage media, not
+# committed; tests skip when absent)
+# ============================================================================
+local_images/
