@@ -562,11 +562,13 @@ def name_rec(path: bytes) -> bytes:
     return obj_rec(2, 1, b"\x01" * 8 + bytes(4) + path)
 
 
-def file_rec(size: int, blocks: int = 1, mtime: int = SYN_TIME) -> bytes:
+def file_rec(
+    size: int, blocks: int = 1, mtime: int = SYN_TIME, uid: bytes = b"\x02" * 8
+) -> bytes:
     """SR9.5 FILE record: layout per the reference's decode_file_header."""
     body = (
         b"\x00\x00\x90\x00"  # magic 0x00009000
-        + b"\x02" * 8  # object uid
+        + uid  # object uid
         + struct.pack(">8I", 0x311, 0, 0x1800F, 0, size, blocks, mtime, mtime)
         + b"\x03" * 8  # parent uid
         + bytes(12)  # 3 x u32 spare
@@ -963,14 +965,52 @@ class TestCatalogReal:
         motd = next(e for e in files if e.path == "motd")
         assert motd.damaged is True
         assert motd.damage_notes == [("hole", 24, 1040, 186)]
-        # the file whose NAME record was destroyed keeps the placeholder
-        assert sum(1 for e in files if e.path == "?") == 1
+        # DELIBERATE update (was: one "?" placeholder): the clipped NAME
+        # remnant before block 25's FILE record proves the real name via
+        # UID overlap -- see test_disk2_clipped_name_recovered
+        assert sum(1 for e in files if e.path == "?") == 0
+        assert sum(1 for e in files if e.path == "fix_cache") == 2
 
         # an intact file reads fully: RELEASELOG, 74 - 32 = 42 bytes
         releaselog = next(e for e in files if e.path == "releaselog")
         assert releaselog.size == 42
         assert not releaselog.damaged
         assert len(cat.read(releaselog)) == 42
+
+    def test_disk2_clipped_name_recovered(self):
+        # Forensically proven (block seq=25 at image offset 0x03041C): a
+        # NAME record lost its first 8 bytes (6-byte header + 2 UID bytes);
+        # the tiler junk-skips the 28-byte remnant
+        #   a8 35 90 00 59 a4 | 00 00 00 00 | "SYS5/ETC/FIX_CACHE"
+        # whose leading 6 bytes equal the LAST 6 bytes of the following
+        # FILE record's UID 31 b4 a8 35 90 00 59 a4.  The name is
+        # recovered; size, damage semantics and CONTENT stay exactly what
+        # the "?" placeholder entry read before recovery (hashes captured
+        # pre-change).
+        data = (RESOURCES / "disk2.img").read_bytes()
+        cat = build_catalog(data)
+        (tree,) = cat.trees
+        copies = [e for e in tree.entries if e.path == "fix_cache"]
+        assert len(copies) == 2
+        clean, recovered = copies
+
+        assert recovered.raw_name == b"SYS5/ETC/FIX_CACHE"
+        assert recovered.name_recovered is True
+        assert recovered.size == 2344
+        assert recovered.damaged is True  # damage semantics keep
+        assert recovered.damage_notes == [("zerofill", 25, 1462, 1610)]
+        assert (
+            hashlib.sha256(cat.read(recovered)).hexdigest()
+            == "37c6a763f95c766d392dcf7b918b7944b80bc0e3b5b134d896dd4375c3e86e3e"
+        )
+
+        # the earlier, normally-NAMEd copy is untouched
+        assert clean.name_recovered is False
+        assert clean.size == 2344
+        assert (
+            hashlib.sha256(cat.read(clean)).hexdigest()
+            == "30d446e5bf59404ef934bf777ba11c30b5c0a0fd848914e4d28fe89d58eef282"
+        )
 
     def test_disk8_inventory_and_extraction(self):
         # Pinned against the reference implementation, re-run 2026-06-11:
@@ -1035,7 +1075,11 @@ class TestCatalogReal:
         assert com.block_count == 85
         assert len(com.entries) == 2
         orphan, ftn = com.entries
+        # stays "?": the NAME header survived but the zero word and path
+        # were overwritten by file text (junk starts 00 02 00 13 00 01 ...
+        # 00 00 7f 12), so the UID-overlap recovery rule must NOT fire
         assert orphan.path == "?"  # NAME record lost to in-block junk
+        assert orphan.name_recovered is False
         assert orphan.damaged is True
         assert ftn.path == "ftn_sr9.2"
         assert ftn.partial is True  # cut by EOV
@@ -1044,6 +1088,126 @@ class TestCatalogReal:
         assert ftn.size == 439276 - 32
         prefix = cat.read(ftn)
         assert len(prefix) == 130218 - 32  # available prefix only
+
+
+# --------------------------------------------- clipped-NAME recovery (L4)
+
+# Disk2's real FILE-record UID for the proven recovery case; the remnant's
+# leading bytes must equal this UID's tail.
+RECOV_UID = b"\x31\xb4\xa8\x35\x90\x00\x59\xa4"
+
+
+def build_clipped_name_image(remnant: bytes, *, file_uid: bytes = RECOV_UID) -> bytes:
+    """One tree: a clean first file, then a FILE record whose NAME record
+    was clipped -- only ``remnant`` (junk to the tiler) survives between
+    the closing MARK and the FILE record.  ``remnant`` must be even-length
+    (the tiler resyncs on even offsets only, like the real stream)."""
+    assert len(remnant) % 2 == 0
+    b = StreamBuilder()
+    b.add_record(label80("VOL1", volume_id="SYNR01", owner="APOLLO"))
+    b.add_record(label80("UVL1", text="31F49BD4.200071FA"))
+    b.add_record(label80("HDR1", file_id="TREER", section=1, sequence=1))
+    b.add_record(label80("HDR2"))
+    b.add_record(label80("UHL1", text="31F49BD4.200071FA"))
+    b.add_tapemark()
+    records = (
+        sub_rec()
+        + mark_rec()
+        + name_rec(b"TREER/FIRST")
+        + file_rec(5 + 32)
+        + data_rec(storage_header(5 + 32) + b"first")
+        + mark_rec()
+        + remnant
+        + file_rec(6 + 32, uid=file_uid)
+        + data_rec(storage_header(6 + 32) + b"second")
+    )
+    b.add_record(build_block(1, SYN_UID, records))
+    b.add_tapemark()
+    b.add_record(label80("EOF1", file_id="TREER", section=1, sequence=1))
+    b.add_record(label80("EOF2"))
+    b.add_tapemark()
+    return b.finish()
+
+
+class TestClippedNameRecovery:
+    """UID-overlap recovery of names from clipped NAME records.
+
+    The matching rule (proven on disk2 block 25): the junk run directly
+    preceding a FILE record, with no NAME pending, reads
+    ``[uid tail (>= 4 bytes)] [u32 zero] [printable path]`` where the uid
+    tail equals the last bytes of the FILE record's own UID.  Anything
+    less stays the reference placeholder "?".
+    """
+
+    @staticmethod
+    def second_entry(img: bytes) -> "WbakEntry":
+        cat = build_catalog(img)
+        (tree,) = cat.trees
+        files = [e for e in tree.entries if not e.is_dir and e.link_target is None]
+        assert files[0].path == "first"  # the clean sibling is untouched
+        assert files[0].name_recovered is False
+        assert len(files) == 2
+        return files[1]
+
+    def test_uid_tail6_recovers_name(self):
+        # the proven disk2 shape: 6-byte uid tail + zero word + path
+        remnant = RECOV_UID[2:] + bytes(4) + b"TREER/SECOND"
+        img = build_clipped_name_image(remnant)
+        entry = self.second_entry(img)
+        assert entry.path == "second"
+        assert entry.raw_name == b"TREER/SECOND"
+        assert entry.name_recovered is True
+        cat = build_catalog(img)
+        assert cat.read(entry) == b"second"
+
+    def test_uid_tail4_minimum_recovers(self):
+        remnant = RECOV_UID[4:] + bytes(4) + b"TREER/SECOND"
+        entry = self.second_entry(build_clipped_name_image(remnant))
+        assert entry.path == "second"
+        assert entry.name_recovered is True
+
+    def test_uid_tail3_stays_placeholder(self):
+        # 24 matching bits are below the proof threshold
+        remnant = RECOV_UID[5:] + bytes(4) + b"TREER/SECOND2"
+        entry = self.second_entry(build_clipped_name_image(remnant))
+        assert entry.path == "?"
+        assert entry.raw_name == b"?"
+        assert entry.name_recovered is False
+
+    def test_wrong_zero_word_stays_placeholder(self):
+        # disk8's real damage class: zero word overwritten by file text
+        remnant = RECOV_UID[2:] + b"\x00\x00\x7f\x12" + b"TREER/SECOND"
+        entry = self.second_entry(build_clipped_name_image(remnant))
+        assert entry.path == "?"
+        assert entry.name_recovered is False
+
+    def test_nonprintable_path_stays_placeholder(self):
+        remnant = RECOV_UID[2:] + bytes(4) + b"TREER/SECON\x01"
+        entry = self.second_entry(build_clipped_name_image(remnant))
+        assert entry.path == "?"
+        assert entry.name_recovered is False
+
+    def test_uid_tail_mismatch_stays_placeholder(self):
+        remnant = b"\xde\xad\xbe\xef\xca\xfe" + bytes(4) + b"TREER/SECOND"
+        entry = self.second_entry(build_clipped_name_image(remnant))
+        assert entry.path == "?"
+        assert entry.name_recovered is False
+
+    def test_odd_path_pad_byte_stripped(self):
+        # odd-length path: the writer pads records to even with one NUL
+        remnant = RECOV_UID[2:] + bytes(4) + b"TREER/SEVEN7S" + b"\x00"
+        entry = self.second_entry(build_clipped_name_image(remnant))
+        assert entry.path == "seven7s"
+        assert entry.raw_name == b"TREER/SEVEN7S"
+        assert entry.name_recovered is True
+
+    def test_pending_name_wins_over_junk(self):
+        # a parsed NAME record always beats the junk heuristic, even when
+        # the remnant would match
+        remnant = name_rec(b"TREER/NAMED") + RECOV_UID[2:] + bytes(4) + b"TREER/SECOND"
+        entry = self.second_entry(build_clipped_name_image(remnant))
+        assert entry.path == "named"
+        assert entry.name_recovered is False
 
 
 # ----------------------------------------------- cross-volume set builders

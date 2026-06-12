@@ -15,7 +15,12 @@ directory hierarchy (spec section 4):
   ``?~1``, ``?~2`` ... in entry order.  A file legitimately named ``?``
   is indistinguishable from a placeholder (the marker IS the literal name
   byte) and would be uniquified the same way -- harmless, since ``?`` is
-  a shell wildcard on AEGIS and never appears as a real name.
+  a shell wildcard on AEGIS and never appears as a real name.  Entries
+  whose clipped NAME the parser recovered via UID overlap
+  (``WbakEntry.name_recovered``, surfaced as ``extra_data
+  ["name_recovered"]``) are uniquified the same way against earlier
+  paths, so a recovered name colliding with a clean copy lists as
+  ``name~1`` and both stay reachable.
 - ``FileInfo.datetime`` carries the genuine Apollo mtime as a NAIVE UTC
   datetime (``tzinfo`` stripped) -- the shipped filesystems all use naive
   datetimes (FAT12 stores naive local time); entries without an mtime
@@ -155,11 +160,15 @@ class ApolloWbakFilesystem(Filesystem):
     def _build_index(self) -> None:
         """Adapt the catalog into the ordered full-path index.
 
-        Colliding "?" placeholders (NAME record destroyed) are uniquified
-        deterministically in entry order; genuine duplicate paths are kept
-        as-is (FIRST match wins on lookup)."""
+        Colliding "?" placeholders (NAME record destroyed) and recovered
+        names (clipped NAME proven via UID overlap, ``name_recovered``)
+        are uniquified deterministically in entry order against every
+        path already indexed -- so a recovered name colliding with its
+        clean earlier copy lists as ``name~1`` and both stay reachable.
+        Genuine duplicate paths are kept as-is (FIRST match wins on
+        lookup)."""
         self._index = []
-        placeholders: set[str] = set()
+        taken: set[str] = set()
         for tree in self._catalog.trees:
             mount = decode_wbak_name(tree.file_id.encode("ascii", "replace"))
             for entry in tree.entries:
@@ -169,13 +178,13 @@ class ApolloWbakFilesystem(Filesystem):
                     full = f"{mount}/{entry.path}"
                 else:
                     full = entry.path
-                if entry.raw_name == b"?":
+                if entry.raw_name == b"?" or entry.name_recovered:
                     candidate, counter = full, 0
-                    while candidate.lower() in placeholders:
+                    while candidate.lower() in taken:
                         counter += 1
                         candidate = f"{full}~{counter}"
                     full = candidate
-                    placeholders.add(full.lower())
+                taken.add(full.lower())
                 self._index.append((full, tree, entry))
 
     # ------------------------------------------------------------------
@@ -285,6 +294,7 @@ class ApolloWbakFilesystem(Filesystem):
             starting_cluster=entry.extents[0][0] // SECTOR if entry.extents else 0,
             extra_data={
                 "raw_name": entry.raw_name,
+                "name_recovered": entry.name_recovered,
                 "link_target": entry.link_target,
                 "damage_notes": list(entry.damage_notes),
                 "partial": entry.partial,

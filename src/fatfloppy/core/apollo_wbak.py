@@ -813,6 +813,47 @@ def _resync(payload: bytes, pos: int, lim: int, want_data: int = 0) -> Optional[
     return None
 
 
+def _recover_clipped_name(junk: bytes, uid: bytes) -> Optional[bytes]:
+    """Recover a NAME record's path from a clipped-NAME junk remnant.
+
+    One damage class is mechanically recoverable (proven on disk2, block
+    seq 25 at image offset 0x03041C): a NAME record lost its leading
+    bytes -- the 6-byte record header plus the first bytes of its 8-byte
+    object UID -- so the tiler junk-skips the surviving remnant and
+    resyncs on the very next FILE record.  The remnant then reads
+
+        [uid tail (1..7 bytes)] [u32 zero] [printable path]
+
+    where the uid tail equals the LAST bytes of the FILE record's UID
+    (``uid``): the NAME and FILE records of one object carry the same
+    UID, so the overlap proves the remnant is that object's clipped NAME.
+
+    Tails shorter than 4 bytes are rejected: a 4-byte tail already pins
+    32 exact bits against the adjacent FILE record's UID, and with the
+    mandatory 32-bit zero word and the printable-path requirement the
+    accidental-match chance on arbitrary junk is negligible (>= 64 exact
+    bits) -- while 1..3-byte tails are plausible by chance in the
+    zero-heavy junk real disks carry (68k code, zero-padded text debris:
+    disk3/disk4/disk8).  Tails are tried longest first so an ambiguous
+    repeated-byte UID resolves to the most-evidence split.  A single
+    trailing NUL is tolerated and stripped (the writer pads odd-length
+    records to even).  Returns the raw path bytes, or None (no proof).
+    """
+    for tail_len in range(7, 3, -1):  # 7..4, longest (strongest) first
+        if len(junk) < tail_len + 4 + 1:
+            continue
+        if junk[:tail_len] != uid[8 - tail_len :]:
+            continue
+        if junk[tail_len : tail_len + 4] != bytes(4):
+            continue
+        path = junk[tail_len + 4 :]
+        if path.endswith(b"\x00"):
+            path = path[:-1]  # the even-length pad byte
+        if path and _printable(path):
+            return bytes(path)
+    return None
+
+
 def _embedded_object_start(
     payload: bytes, body_off: int, body: bytes, lim: int
 ) -> Optional[int]:
@@ -946,7 +987,11 @@ class WbakEntry:
     to the tree: the stored path's leading ``file_id`` component is
     stripped when present and the tree root directory itself gets path
     "".  Objects whose NAME record was destroyed keep the reference
-    implementation's placeholder "?".
+    implementation's placeholder "?" -- unless the junk remnant directly
+    preceding the FILE record proves the clipped NAME's path via UID
+    overlap (:func:`_recover_clipped_name`); ``name_recovered`` marks
+    such entries, whose size, damage semantics and content are untouched
+    by the recovery.
 
     ``size`` is the content size in bytes: the FILE header's size minus
     the 32-byte storage header, floored at 0.
@@ -980,6 +1025,7 @@ class WbakEntry:
     partial: bool = False
     link_target: Optional[str] = None
     raw_name: bytes = b""
+    name_recovered: bool = False
     extents: list[tuple[int, int]] = field(default_factory=list)
     damage_notes: list[tuple] = field(default_factory=list)
     raw_data: bytes = field(default=b"", repr=False)
@@ -1210,10 +1256,22 @@ class _TreeAccumulator:
         self.tree.last_block_seq = block_seq
         irregular = event.damage == ((0, 0),)
         damage = () if irregular else event.damage
+        prev_junk: Optional[tuple[int, int]] = None
         for item in _tile_block(payload, self.want_data):
             if item[0] != "rec":
-                continue  # junk run: already skipped by the tiler
+                # junk run: skipped by the tiler, but remembered -- a run
+                # ending exactly at a FILE record may be a clipped NAME
+                prev_junk = (item[1], item[2])
+                continue
             _kind, off, type1, type2, body, claimed = item
+            junk_before = b""
+            if (
+                prev_junk is not None
+                and (type1, type2) == REC_FILE
+                and prev_junk[0] + prev_junk[1] == off
+            ):
+                junk_before = bytes(payload[prev_junk[0] : off])
+            prev_junk = None
             self._feed(
                 block_seq,
                 off,
@@ -1224,6 +1282,7 @@ class _TreeAccumulator:
                 event.spans,
                 damage,
                 irregular,
+                junk_before=junk_before,
             )
 
     def _feed(
@@ -1237,6 +1296,7 @@ class _TreeAccumulator:
         spans: tuple[tuple[int, int, int], ...],
         damage: tuple[tuple[int, int], ...],
         irregular: bool,
+        junk_before: bytes = b"",
     ) -> None:
         kind = (type1, type2)
         if kind == REC_SUB:
@@ -1255,7 +1315,22 @@ class _TreeAccumulator:
             self._object_seen()
             self.close()
             header = _decode_object_header(body)
-            raw_name = self.pending_name if self.pending_name is not None else b"?"
+            raw_name = self.pending_name
+            name_recovered = False
+            if raw_name is None and junk_before and len(body) >= 12:
+                # no NAME arrived and junk directly precedes this FILE
+                # record: it may be the clipped NAME's remnant, provable
+                # via UID overlap (see _recover_clipped_name)
+                raw_name = _recover_clipped_name(junk_before, bytes(body[4:12]))
+                name_recovered = raw_name is not None
+                if name_recovered:
+                    logger.info(
+                        "wbak block %d: recovered clipped NAME %r via UID overlap",
+                        block_seq,
+                        raw_name,
+                    )
+            if raw_name is None:
+                raw_name = b"?"
             raw_size = header.size if header else 0
             self.cur = WbakEntry(
                 path=self._relative_path(raw_name),
@@ -1263,6 +1338,7 @@ class _TreeAccumulator:
                 mtime=apollo_time_to_datetime(header.mtime_raw) if header else None,
                 atime=apollo_time_to_datetime(header.atime_raw) if header else None,
                 raw_name=raw_name,
+                name_recovered=name_recovered,
             )
             self.cur_buf = bytearray()
             self.cur_size = raw_size

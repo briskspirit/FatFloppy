@@ -163,12 +163,16 @@ class TestListing:
         fs = disk2.filesystem
         assert [i.name for i in fs.list_directory("/sys5")] == ["etc"]
         infos = fs.list_directory("/sys5/etc")
-        # 37 direct children (33 files incl. the "?" placeholder, the net
-        # dir, 3 links) + the synthesized "templates" intermediate (its
-        # entries appear under templates/ but no DIR record names it here)
+        # 37 direct children (33 files incl. the recovered "fix_cache~1",
+        # the net dir, 3 links) + the synthesized "templates" intermediate
+        # (its entries appear under templates/ but no DIR record names it
+        # here).  DELIBERATE update: the former "?" placeholder is now the
+        # UID-overlap-recovered "fix_cache", uniquified against the
+        # earlier clean copy as "fix_cache~1".
         assert len(infos) == 38
         names = {i.name for i in infos}
-        assert {"releaselog", "motd", "rc", "net", "templates", "?"} <= names
+        assert {"releaselog", "motd", "rc", "net", "templates", "fix_cache~1"} <= names
+        assert "?" not in names
         net = next(i for i in infos if i.name == "net")
         assert net.is_dir
         templates = next(i for i in infos if i.name == "templates")
@@ -192,13 +196,43 @@ class TestListing:
         assert rc.extra_data["link_target"] == "`node_data/etc.rc"
         assert rc.extra_data["tree_id"] == "SYS5/ETC"
 
+    def test_disk2_recovered_name_listing_and_content(self, disk2):
+        # The clipped-NAME entry (formerly "?") lists under its recovered
+        # name, uniquified against the earlier clean copy; its size, DMG
+        # attribute and CONTENT are exactly what "?" read before recovery
+        # (sha256 pins captured pre-change).
+        fs = disk2.filesystem
+        infos = fs.list_directory("/sys5/etc")
+        recovered = next(i for i in infos if i.name == "fix_cache~1")
+        assert recovered.size == 2344
+        assert "DMG" in recovered.attributes
+        assert recovered.extra_data["name_recovered"] is True
+        assert recovered.extra_data["raw_name"] == b"SYS5/ETC/FIX_CACHE"
+        content = fs.read_file("/sys5/etc/fix_cache~1")
+        assert (
+            hashlib.sha256(content).hexdigest()
+            == "37c6a763f95c766d392dcf7b918b7944b80bc0e3b5b134d896dd4375c3e86e3e"
+        )
+        # the clean copy keeps its name, content and a False marker
+        clean = next(i for i in infos if i.name == "fix_cache")
+        assert clean.extra_data["name_recovered"] is False
+        assert (
+            hashlib.sha256(fs.read_file("/sys5/etc/fix_cache")).hexdigest()
+            == "30d446e5bf59404ef934bf777ba11c30b5c0a0fd848914e4d28fe89d58eef282"
+        )
+
     def test_disk8_root_merges_trees(self, disk8):
         names = {i.name for i in disk8.filesystem.list_directory("/")}
         assert names == {"install", "com"}
 
     def test_disk8_partial_file_attribute(self, disk8):
         infos = disk8.filesystem.list_directory("/com")
+        # com/? STAYS the placeholder: its NAME record's zero word and
+        # path were overwritten by file text, so the UID-overlap recovery
+        # has no proof to act on
         assert [i.name for i in infos] == ["?", "ftn_sr9.2"]
+        orphan = next(i for i in infos if i.name == "?")
+        assert orphan.extra_data["name_recovered"] is False
         ftn = next(i for i in infos if i.name == "ftn_sr9.2")
         assert "PARTIAL" in ftn.attributes
         assert "DMG" in ftn.attributes
@@ -504,9 +538,36 @@ class TestPlaceholderUniquification:
         assert fs is not None and fs.filesystem_type == "APOLLO_WBAK"
         infos = fs.list_directory("/treeq")
         assert [i.name for i in infos] == ["?", "?~1"]
+        # no junk remnant precedes these FILE records: nothing to recover
+        assert all(i.extra_data["name_recovered"] is False for i in infos)
         assert fs.read_file("/treeq/?") == b"one"
         assert fs.read_file("/treeq/?~1") == b"two"
         controller.close_disk()
+
+    def test_real_volumes_placeholders_stay(self):
+        # Skip-guarded sweep over the local real images whose "?" names
+        # are genuinely destroyed: the UID-overlap rule must not fire.
+        # disk3: NAME overwritten by 68k code; disk4: zero word wrong
+        # (junk reads 00 02 00 19 00 01 00 00 7c ff ...); disk6: three
+        # remnants that keep their NAME headers / path fragments but
+        # never present a uid-tail + zero-word + path shape.
+        expected = {
+            "disk3.img": ("SYS5/BIN", [("?", 3572, True)]),
+            "disk4.img": ("SYS5/BIN", [("?", 6028, True)]),
+            "disk6.img": (
+                "DOMAIN_EXAMPLES",
+                [("?", 91, False), ("?", 0, False), ("?", 26592, False)],
+            ),
+        }
+        for name, (tree_id, placeholders) in expected.items():
+            data = real_volume_bytes(name)
+            cat = build_catalog(data)
+            tree = next(t for t in cat.trees if t.file_id == tree_id)
+            got = [
+                (e.path, e.size, e.damaged) for e in tree.entries if e.raw_name == b"?"
+            ]
+            assert got == placeholders, name
+            assert not any(e.name_recovered for t in cat.trees for e in t.entries), name
 
 
 class TestAttachVolume:
