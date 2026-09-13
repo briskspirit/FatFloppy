@@ -55,6 +55,23 @@ class MyFilesystem(Filesystem):
 - **Implement all abstract methods** defined in the `Filesystem` base class.
 - **Place the file in** `src/fatfloppy/core/filesystems/`.
 
+### Optional hooks worth overriding
+- `check() -> bool`: consistency check surfaced by the GUI's *Check Filesystem*
+  action (default: a basic pass). Shipped filesystems implement VALIDATE-style
+  walks here.
+- **Name policy** (defaults implement classic 8.3 rules):
+  - `suggest_import_name(host_name, existing_names, is_dir=False) -> str` — derive a
+    valid, unique on-disk name for a host file; must never raise on the content
+    of `host_name`.
+  - `suggest_host_name(name) -> str` — make an on-disk name safe for the host.
+  - `name_hint() -> str` — one-line description of the naming rules for dialogs.
+
+  Write paths should validate names strictly (raise `ValueError`), while lookups
+  stay lenient so existing on-disk oddities remain addressable.
+- **Error contract**: `ValueError` for bad names/inputs, `OSError` for disk-full
+  or read-only, `PermissionError` for protected entries, `FileNotFoundError` for
+  missing paths. Read-only filesystems raise `OSError` from their mutators.
+
 ### Auto‑Discovery
 Your filesystem plugin is automatically:
 - **Discovered** on import.
@@ -80,6 +97,9 @@ class MyCustomDriver(DiskIODriver):
     driver_file_extensions = [".myd", ".myformat"]
     driver_category = "raw"  # Can be "raw", "metadata_based", or "physical"
     driver_description = "My custom disk format driver"
+    # Auto-detection tries file drivers highest priority first; raw IMG is 10
+    # (the fallback), so anything content-gated should sit above it.
+    driver_priority = 50
 
     def __init__(self, file_path: str):
         super().__init__()
@@ -92,6 +112,14 @@ class MyCustomDriver(DiskIODriver):
 
     def write_sector(self, cylinder: int, head: int, sector: int, data: bytes) -> None:
         pass
+
+    def validate_for_opening(self, source: str, **_kwargs):
+        # Cheap, content-based: this is what "auto" detection calls on every
+        # candidate driver, so check magic/size, not just the extension.
+        with open(source, "rb") as fh:
+            if fh.read(4) != b"MYD\x00":
+                return False, "not a MYFORMAT image"
+        return True, None
 ```
 
 ### Requirements
@@ -99,8 +127,10 @@ class MyCustomDriver(DiskIODriver):
 - **Set class variables:**
   - `driver_type` *(str)*: The unique identifier used in `DriverFactory.create()`.
   - `driver_category` *(str)*: Must be one of `"metadata_based"`, `"raw"`, or `"physical"`.
-  - `driver_file_extensions` *(List[str])*: A list of file extensions this driver handles.
+  - `driver_file_extensions` *(List[str])*: A list of file extensions this driver handles. With `disk_type="auto"` (the default) the extension is only a hint.
+  - `driver_priority` *(int, default 50)*: order in which `DriverFactory` tries file drivers during content-based auto-detection (highest first). Raw IMG is the lowest-priority fallback at 10; magic- or size-gated drivers should sit above it.
 - **Implement all abstract methods** from the `DiskIODriver` base class.
+- **Override `validate_for_opening(source, **kwargs) -> (bool, error)`** with a cheap content check (magic bytes, CRC, exact file size). Auto-detection selects the first driver, in priority order, whose `validate_for_opening` accepts the file — a driver that accepts everything would shadow every lower-priority driver.
 - **Place the file in** `src/fatfloppy/core/drivers/`.
 
 ### Constructor Signatures

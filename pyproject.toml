@@ -18,6 +18,7 @@ dependencies = [
 
 # Optional, but keeps your trove classifiers
 classifiers = [
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: Public Domain",
   "Operating System :: MacOS",

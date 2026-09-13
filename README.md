@@ -39,10 +39,12 @@ TD0 is a read-only container: any filesystem that fits in a Teledisk archive
 (FAT12, CP/M, and others) is auto-detected and browsable in the same way as
 an IMG or IMD of the same disk.
 
-Physical disks: FAT12, CP/M, and HDOS media (FM/MFM) can be read and written
-directly through Greaseweazle hardware. Commodore 5.25" GCR media, Apollo
-floppies, and RT-11 media are currently image-only. New blank images can be
-created and formatted for the writable filesystems' profiles.
+Physical disks: FAT12, CP/M, and HDOS media (soft-sectored FM/MFM) can be read
+and written directly through Greaseweazle hardware. Hard-sectored Heath H17
+disks are not readable from hardware yet (use an `.h17disk` image). Commodore
+5.25" GCR media, Apollo floppies, and RT-11 media are currently image-only.
+New blank images can be created and formatted for the writable filesystems'
+profiles.
 
 ## Installation
 
@@ -121,7 +123,7 @@ pip install -e ".[dev]"
 fatfloppy
 ```
 
-- **Open Disk**: Use `File > Open Disk Image File` for `.img/.ima` files or `File > Open Physical Floppy` for Greaseweazle-connected drives.
+- **Open Disk**: Use `File > Open Disk Image File` for any supported image (`.img/.ima`, `.imd`, `.td0`, `.h17disk`, `.dsk`, `.d64/.d71/.d81`, ...; the container and format are detected from the file's contents) or `File > Open Physical Floppy` for Greaseweazle-connected drives.
 - **Navigate**: Use the directory tree and file list to browse.
 - **Manage Files**: Extract, add, delete, or create folders via toolbar buttons or drag-and-drop.
 - **View Disk Map**: See sector usage, toggle heads if double-sided.
