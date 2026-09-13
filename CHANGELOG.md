@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-13
+
 ### Added
 - DEC RT-11 filesystem support (RX01/RX02/RX50 floppy volumes; raw images,
   IMD, and TD0 containers):
@@ -199,5 +201,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Known Issues
 - No progress indicators for long operations
 
+[0.2.0]: https://github.com/briskspirit/FatFloppy/releases/tag/v0.2.0
 [0.1.1]: https://github.com/briskspirit/FatFloppy/releases/tag/v0.1.1
 [0.1.0]: https://github.com/briskspirit/FatFloppy/releases/tag/v0.1.0
