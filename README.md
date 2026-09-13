@@ -4,6 +4,11 @@ FatFloppy is a PyQt6-based graphical utility for browsing and managing vintage f
 
 [![License: Unlicense](https://img.shields.io/badge/License-Unlicense-yellow.svg)](https://unlicense.org)
 
+![FatFloppy browsing a Heathkit H17 CP/M disk image, with MOVCPM17.COM selected and its blocks highlighted in green on the logical disk map.](assets/screenshots/fatfloppy-disk-map.png)
+
+*A CP/M disk in a Heathkit H17 image: files and disk information on the left,
+with a color-coded logical disk map on the right.*
+
 ## Key Features
 
 - **Multiple Filesystems**: FAT12, CP/M, HDOS, CBM DOS, DEC RT-11, and
