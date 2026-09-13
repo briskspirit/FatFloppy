@@ -36,14 +36,9 @@ import pytest
 from fatfloppy.core.td0_compression import lzhuf_decompress
 
 LOCAL_TD0 = Path(__file__).parent.parent.parent / "local_images" / "TD0"
-LOCAL_DECODED = (
-    Path(__file__).parent.parent.parent
-    / "docs"
-    / "superpowers"
-    / "research"
-    / "td0"
-    / "decoded"
-)
+# greaseweazle-decoded twins (``<stem>.imd``) of the TD0s in LOCAL_TD0; kept
+# beside the corpus so the opt-in oracle tests depend on local_images/ only.
+LOCAL_DECODED = LOCAL_TD0 / "decoded"
 RES = Path(__file__).parent.parent / "resources"
 TD0_RES = RES / "TD0"
 

@@ -91,15 +91,19 @@ V0501_IMG = RES / "BA-P732B-BC.IMG"  # logical block order, same disk
 BASIC11_RX02 = RES / "BASIC-11_V2.1_RX02.img"
 
 LOCAL_RT11 = Path(__file__).parent.parent.parent / "local_images" / "RT11"
-CORPUS_INVENTORY = (
-    Path(__file__).parent.parent.parent
-    / "docs"
-    / "superpowers"
-    / "research"
-    / "rt11"
-    / "oracles"
-    / "corpus_inventory.json"
-)
+# Opt-in corpus oracles live beside the images they describe. Inventory and
+# manifest ``path`` fields are ``images/<relative path>``; ``images/`` is the
+# corpus root itself (LOCAL_RT11).
+CORPUS_INVENTORY = LOCAL_RT11 / "oracles" / "corpus_inventory.json"
+
+
+def _corpus_path(rel_path: str) -> Path:
+    """Resolve an inventory/manifest ``images/...`` path inside LOCAL_RT11."""
+    prefix = "images/"
+    if not rel_path.startswith(prefix):
+        raise ValueError(f"unexpected corpus path {rel_path!r}")
+    return LOCAL_RT11 / rel_path[len(prefix) :]
+
 
 BLOCK = 512
 
@@ -875,7 +879,7 @@ class TestCorpusSweep:
         "entry", _CORPUS, ids=[Path(e["path"]).name for e in _CORPUS]
     )
     def test_scorer_agrees_with_inventory_view(self, entry):
-        path = CORPUS_INVENTORY.parent.parent / entry["path"]
+        path = _corpus_path(entry["path"])
         if not path.is_file():
             pytest.skip(f"missing corpus file {path}")
         data = path.read_bytes()
@@ -901,7 +905,7 @@ class TestCorpusSweep:
         # Full-stack detection over the same inventory: every image must
         # auto-open as RT-11 with the inventory's view, permanent-file
         # count, and volume id.
-        path = CORPUS_INVENTORY.parent.parent / entry["path"]
+        path = _corpus_path(entry["path"])
         if not path.is_file():
             pytest.skip(f"missing corpus file {path}")
         controller = _open(path)
@@ -931,7 +935,7 @@ class TestCorpusSweep:
         # Content spot-check against the independent rt11probe extractor:
         # the full listing (names, sizes, real dates) and every file's
         # sha256 must match its manifest.
-        image = CORPUS_INVENTORY.parent.parent / rel_path
+        image = _corpus_path(rel_path)
         manifest_path = _MANIFEST_DIR / manifest_name
         if not (image.is_file() and manifest_path.is_file()):
             pytest.skip(f"missing corpus image or manifest for {manifest_name}")
