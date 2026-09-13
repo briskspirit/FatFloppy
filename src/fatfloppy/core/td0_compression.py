@@ -3,8 +3,7 @@
 Teledisk 2.x images whose signature is ``'td'`` (lower case) compress
 everything after the 12-byte file header as ONE continuous LZSS +
 adaptive-Huffman stream — an Okumura/Yoshizaki LZHUF derivative with
-Teledisk-specific parameters (see
-``docs/superpowers/specs/2026-06-12-td0-driver-design.md`` section 2):
+Teledisk-specific parameters:
 
 - LZSS: 4096-byte ring buffer preset to ``0x20`` (spaces), 60-byte
   look-ahead, match threshold 2, ring pointer starting at 4036 (= N - F);
@@ -19,8 +18,8 @@ Teledisk-specific parameters (see
 
 Ported mechanically from ``tdlzhuf.c`` in Will Kranz's wteledsk (itself
 derived from LZHUF.C by Haruhiko Okumura / Haruyasu Yoshizaki, English
-translation by Kenji Rikitake); preserved in
-``docs/superpowers/research/td0/refs/wteledsk-master/src/tdlzhuf.c``.
+translation by Kenji Rikitake); preserved as ``src/tdlzhuf.c`` in Will
+Kranz's public ``wteledsk`` decoder.
 
 End-of-input semantics follow Dave Dunfield's TD02IMD decoder (the same
 code greaseweazle ships as ``td0_lzss.c`` / ``optimised.td0_unpack``),

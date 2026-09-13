@@ -1,10 +1,12 @@
 """Apollo DOMAIN wbak backup floppy parser (pure byte-stream, no disk I/O).
 
 Parses the "floppy-as-tape" stream written by the Apollo AEGIS ``wbak``
-utility onto 77x2x8x1024 (1,261,568-byte) floppies.  The normative format
-description lives in ``docs/superpowers/specs/2026-06-11-apollo-wbak-design.md``
-section 2; the empirically proven reference implementation is
-``docs/superpowers/research/apollo/empirical/wbak_dump.py``.
+utility onto 77x2x8x1024 (1,261,568-byte) floppies.  No public format
+specification exists: the layout was reverse-engineered from real wbak
+volumes and pinned with an independent throwaway dumper (``wbak_dump.py``,
+not part of this repo) whose output the tests reproduce byte for byte.
+"Spec section N" below refers to the maintainer's private write-up of that
+reverse engineering.
 
 L1 grammar (spec section 2.2)::
 

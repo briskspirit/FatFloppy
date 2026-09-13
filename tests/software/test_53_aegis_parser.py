@@ -224,8 +224,8 @@ class TestFileMaps:
         # Every regular file hashes to the empirical oracle value.
         #
         # Derivation (throwaway script over the dissection artifacts): the 52
-        # files in docs/superpowers/research/apollo/aegis_empirical/extracted/
-        # were written by 04_walk.py via vtoclib.read_file, which returns the
+        # files extracted by the independent dissection scripts (not part of
+        # this repo) were written via vtoclib.read_file, which returns the
         # raw object content truncated to the VTOCE length -- storage headers
         # KEPT (verified: NODE_2FC2__SYS__SPM__STARTUP_TEMPLATES__STARTUP.SPM
         # begins 00 20 00 01 d7 df f8 b3).  cat.read strips the 32-byte

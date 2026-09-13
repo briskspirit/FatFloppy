@@ -2,8 +2,8 @@
 disk map, display info and the BAT-reconciling check() over the real disk5
 resource (plus synthetic volumes from the test_53 builder).
 
-All literals are pinned from the empirical dissection of disk5
-(docs/superpowers/research/apollo/aegis_empirical/) and from the established
+All literals are pinned from the independent empirical dissection of disk5
+(throwaway scripts, not part of this repo) and from the established
 test_53 pins (root names UPPERCASE, /SYS/DM/DM 242,406 bytes, SYSBOOT ==
 physical blocks 2..11, oracle sha256 values).
 """

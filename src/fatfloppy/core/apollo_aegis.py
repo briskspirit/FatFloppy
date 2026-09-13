@@ -3,14 +3,14 @@
 Parses the on-disk structures of AEGIS-native (SR9) Apollo floppies --
 77x2x8x1024 (1,261,568-byte) images such as bootable utility disks -- from
 the PV/LV labels through the VTOC/VTOCEs and directories up to the fully
-walked :class:`AegisCatalog` (:func:`build_catalog`).  The normative format
-description lives in
-``docs/superpowers/specs/2026-06-11-aegis-fs-design.md`` section 2; primary
-sources are the *Domain Engineering Handbook Rev 4* (``eng_handbook_rev4.pdf``,
-exact Pascal record layouts) and *AEGIS Internals and Data Structures*
-(``aegis_internals.pdf``, ch. 8 for directories), cross-checked against the
-empirical dissection of disk5 in
-``docs/superpowers/research/apollo/aegis_empirical/``.
+walked :class:`AegisCatalog` (:func:`build_catalog`).  Primary sources are
+the *Domain Engineering Handbook Rev 4* (``eng_handbook_rev4.pdf``, exact
+Pascal record layouts) and *AEGIS Internals and Data Structures*
+(``aegis_internals.pdf``, ch. 8 for directories), cross-checked against an
+empirical dissection of a real SR9 volume ("disk5" of the maintainer's eBay
+corpus).  "Spec section N" below refers to the maintainer's private
+format write-up distilled from those sources; the handbook is the public
+authority for every layout it cites.
 
 On-disk layout (all multi-byte fields big-endian; blocks are 1024 bytes;
 daddrs inside LV structures are LV-relative, absolute byte offset =

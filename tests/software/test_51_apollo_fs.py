@@ -65,8 +65,8 @@ REAL_VOLUME_PATHS = {
 }
 
 CLEANUP_SHA256 = "3e4f699d17b9b08936e1f1d501bec3c3a56c4d2e978eb64134a32ac4186539e1"
-# Stitched-content pins, derived from the reference cross-volume extraction
-# (docs/superpowers/research/apollo/empirical/extracted/): sha256 of the
+# Stitched-content pins, derived from the independent reference dumper's
+# cross-volume extraction (wbak_dump.py, not part of this repo): sha256 of the
 # reference file with its 32-byte storage header stripped.
 #   COM.seq2.31F49BD4/COM/FTN_SR9.2 -- 409,074 raw bytes (130,218 on disk8
 #   + 278,856 on disk1); 439,276 were declared, so 30,202 were never

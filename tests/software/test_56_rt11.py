@@ -6,7 +6,7 @@ Committed resources (tests/resources/RT11/, real DEC public-domain-era media):
   raw RX01 physical sector order, 77x26x128 = 256,256 bytes.
   sha256 bbbc11c527cd7d5fc25cf27a3047ee96cfc9627d75a6bfff81d55ee17dc4c38f.
   First directory entry: SWAP.SYS, 24 blocks, 27-Mar-1979 (per the disk's
-  DIR listing; see docs/superpowers/research/rt11/oracles/listings/).
+  DIR listing, captured on a real RT-11 system).
 - ``BA-P732B-BC.DSK`` / ``BA-P732B-BC.IMG`` -- RT-11 V5.01 AUTO distribution
   disk, the SAME physical floppy archived in BOTH conventions: .DSK is raw
   RX02 physical sector order, .IMG is logical block order. Both 512,512
@@ -20,8 +20,8 @@ Committed resources (tests/resources/RT11/, real DEC public-domain-era media):
   sha256 10461781d61f2aff4f7b22b9e14071a2590ea4be757007352080d9b4b415950a.
 
 The view-mapper expectation tables are derived INDEPENDENTLY in this file by
-transcribing the DEC driver formulas quoted in PUTR.ASM (see
-docs/superpowers/research/rt11/notes/putr_interleave_excerpts.txt), not by
+transcribing the DEC driver formulas quoted in John Wilson's public
+PUTR.ASM, not by
 importing the production module's mapping.
 """
 
@@ -1125,8 +1125,8 @@ class TestPhysicalLogicalPair:
 # read_file content oracles.
 #
 # Derivation: the sha256 literals below are pinned from the output of
-# docs/superpowers/research/rt11/oracles/rt11probe.py `extract` over the
-# committed images (manifests m_v03b1.json, m_dsk.json / m_img.json and
+# an independent prototype extractor (rt11probe.py, not part of this repo)
+# run over the committed images (manifests m_v03b1.json, m_dsk.json / m_img.json and
 # manifests/basic11_rx02_raw.manifest.json). rt11probe is an INDEPENDENT
 # reader written from the DEC V&FF manual (AA-PD6PA-TC), not from the
 # production module, so these are true content oracles. The corpus

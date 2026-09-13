@@ -3,9 +3,10 @@
 Opens Teledisk ``.td0`` archives — both "normal" (``'TD'`` signature,
 uncompressed body) and "advanced" (``'td'``, one continuous LZHUF stream
 after the 12-byte file header) — so every FatFloppy filesystem works on
-them transparently.  Format reference: ``docs/superpowers/refs``
-td0notes.txt (Dunfield) with the sector-CRC scope corrected by code
-evidence; design: ``docs/superpowers/specs/2026-06-12-td0-driver-design.md``.
+them transparently.  Format reference: Dave Dunfield's ``td0notes.txt``
+(published with his ImageDisk/TD02IMD tools) with the sector-CRC scope
+corrected by code evidence from the open-source decoders (greaseweazle,
+SAMdisk, HxC, libdsk, MAME).
 
 The driver deliberately mirrors the IMD driver's model (``imd.py``):
 

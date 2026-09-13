@@ -17,7 +17,7 @@ Synthetic tests pin the documented edge contracts:
   into the untouched ring buffer must yield 0x20 bytes.  The streams are
   built by an independent test-local encoder: it replicates only the
   *initial* LZHUF Huffman tree (a fixed constant of the format, per
-  ``docs/superpowers/refs`` tdlzhuf.c StartHuff()) to derive the bit code of
+  wteledsk's ``tdlzhuf.c`` StartHuff()) to derive the bit code of
   the first symbol, and uses the d_code/d_len definition for the position
   bits (upper 6 bits 0 -> 3-bit prefix ``000`` + 6 verbatim bits).
 """
@@ -213,11 +213,12 @@ class TestLzhufSynthetic:
 # TD0ImageDriver tests
 # ===========================================================================
 #
-# Oracle: docs/superpowers/research/td0/samples/INVENTORY.tsv — every
-# geometry/hash literal below is copied from the named row of that file plus
-# the per-track table produced by docs/superpowers/research/td0/imd_flatten.py
-# over the gw-decoded IMD twins.  imd_flatten.py flattens tracks sorted by
-# (cyl, head) and sectors sorted by ascending sector ID within each track;
+# Oracle: an inventory built at authoring time from greaseweazle's own TD0
+# decoder — every geometry/hash literal below is copied from that inventory
+# plus the per-track table produced by a throwaway flattener (imd_flatten.py,
+# not part of this repo) over the gw-decoded IMD twins.  It flattens tracks
+# sorted by (cyl, head) and sectors sorted by ascending sector ID within each
+# track;
 # the driver maps logical index n to the n-th smallest sector ID (mirroring
 # the IMD driver), so concatenating read_sector(cyl, head, logical) in
 # (cyl, head, logical) order reproduces exactly that flattening.
@@ -685,7 +686,7 @@ class TestTD0AutoDetection:
 # ===========================================================================
 #
 # For every local TD0 sample whose greaseweazle-decoded IMD twin exists in
-# docs/superpowers/research/td0/decoded/, open both files with
+# local_images/TD0/decoded/, open both files with
 # DiskController.open_disk (auto-detection) and assert:
 #   - both containers open successfully;
 #   - same filesystem type detected (or both None);
@@ -821,7 +822,7 @@ def test_td0_matches_imd_twin_through_full_stack(td0: Path, imd: Path) -> None:
 # These are committed pins against the resources/ copies (no local_images
 # guard needed) ensuring the two most important samples never regress.
 # Content hashes are derived from the greaseweazle-decoded IMD twin at
-# test-authoring time (see docs/superpowers/research/td0/decoded/cpm22dri.imd)
+# test-authoring time (local_images/TD0/decoded/cpm22dri.imd)
 # and verified to match the TD0 side — both sides were identical at pin time.
 
 

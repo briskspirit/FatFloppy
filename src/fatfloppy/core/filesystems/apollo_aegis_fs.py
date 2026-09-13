@@ -1,7 +1,8 @@
 """Read-only Apollo AEGIS native filesystem (SR9 floppies).
 
-Serves the object tree parsed by :mod:`fatfloppy.core.apollo_aegis` (spec
-``docs/superpowers/specs/2026-06-11-aegis-fs-design.md`` section 4):
+Serves the object tree parsed by :mod:`fatfloppy.core.apollo_aegis`
+("spec section N" here and below: the maintainer's private AEGIS write-up,
+see that module's docstring for the public sources):
 
 - The root is the volume entry directory (``vtoc_hdr.root_dir_vtocx``); the
   network-root wrapper (``//NODE_xxxx``) is display-info metadata ("Node"),

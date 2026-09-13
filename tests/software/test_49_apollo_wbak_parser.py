@@ -924,9 +924,9 @@ class TestReviewBatch:
 
 class TestCatalogReal:
     def test_disk2_inventory(self):
-        # Pinned against the reference implementation, re-run 2026-06-11:
-        #   python3 docs/superpowers/research/apollo/empirical/wbak_dump.py \
-        #       list tests/resources/APOLLO/disk2.img
+        # Pinned against the independent reference dumper (wbak_dump.py,
+        # not part of this repo), re-run 2026-06-11 over
+        # tests/resources/APOLLO/disk2.img:
         # -> SYS5/ETC (seq 1, uid 32A339B6.F00071FA) EOF, 25 blocks,
         #    36 files, 2 dirs, 3 links; link SYS5/ETC/RC -> '`node_data/etc.rc';
         #    9 files carry DAMAGE annotations; MOTD's is
@@ -1014,9 +1014,9 @@ class TestCatalogReal:
         )
 
     def test_disk8_inventory_and_extraction(self):
-        # Pinned against the reference implementation, re-run 2026-06-11:
-        #   python3 docs/superpowers/research/apollo/empirical/wbak_dump.py \
-        #       list tests/resources/APOLLO/disk8.img
+        # Pinned against the independent reference dumper (wbak_dump.py,
+        # not part of this repo), re-run 2026-06-11 over
+        # tests/resources/APOLLO/disk8.img:
         # -> INSTALL (seq 1) EOF, 65 blocks, 72 files + 5 dirs;
         #    COM (seq 2, section 1) EOV, 85 blocks, 2 files, the open one
         #    cut at [SHORT 130218/439276] with [('hole', 85, 128246, 1012)].
