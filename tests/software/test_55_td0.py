@@ -22,6 +22,8 @@ Synthetic tests pin the documented edge contracts:
   bits (upper 6 bits 0 -> 3-bit prefix ``000`` + 6 verbatim bits).
 """
 
+from __future__ import annotations
+
 import datetime
 import hashlib
 import shutil

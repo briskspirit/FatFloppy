@@ -10,10 +10,9 @@ These parsers consume untrusted images downloaded from the internet. Covers:
   * file_manager.py:698 - path traversal when extracting untrusted names
 """
 
-import signal
 import struct
 import sys
-from contextlib import contextmanager
+import threading
 from pathlib import Path
 
 import pytest
@@ -34,20 +33,30 @@ from fatfloppy.gui.managers.file_manager import (  # noqa: E402
 )
 
 
-@contextmanager
-def time_limit(seconds):
-    """Raises TimeoutError if the wrapped block runs longer than `seconds`."""
+def run_with_time_limit(seconds, fn, *args, **kwargs):
+    """Run ``fn`` on a worker thread; fail the test if it has not returned.
 
-    def handler(_signum, _frame):
-        raise TimeoutError("operation timed out")
+    Thread-based rather than ``signal.alarm`` so it works on Windows, which
+    has no SIGALRM.  A runaway worker is left as a daemon thread (it cannot be
+    interrupted), which is acceptable: the test has already failed loudly.
+    Returns ``fn``'s result, or re-raises whatever it raised.
+    """
+    outcome = {}
 
-    old = signal.signal(signal.SIGALRM, handler)
-    signal.alarm(seconds)
-    try:
-        yield
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old)
+    def target():
+        try:
+            outcome["result"] = fn(*args, **kwargs)
+        except BaseException as exc:  # re-raised on the calling thread
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        pytest.fail(f"operation did not finish within {seconds}s (hang)")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["result"]
 
 
 # --------------------------------------------------------------------------- #
@@ -69,8 +78,8 @@ def test_h17_draft_parser_does_not_hang_on_bad_track_length(tmp_path):
         + b"\x00" * 20
     )
 
-    with time_limit(5):
-        driver._parse_draft_data_block(data, 0)  # must return, not hang
+    # must return, not hang
+    run_with_time_limit(5, driver._parse_draft_data_block, data, 0)
 
 
 # --------------------------------------------------------------------------- #

@@ -13,6 +13,7 @@ The **fatfloppy** library supports plugins for **filesystems**, **drivers**, and
 from typing import List
 from .fs_base import Filesystem, FileInfo
 
+
 class MyFilesystem(Filesystem):
     # Required metadata
     filesystem_type = "MYFS"
@@ -29,7 +30,7 @@ class MyFilesystem(Filesystem):
             # Check for specific signatures or structures on the disk
             # For example, reading a magic number from a specific sector
             magic = self.disk.read_sector(0, 0, 1)[0:4]
-            if magic == b'MYFS':
+            if magic == b"MYFS":
                 return 95  # High confidence
             return 0
         except Exception:
@@ -71,6 +72,7 @@ Your filesystem plugin is automatically:
 # src/fatfloppy/core/drivers/my_driver.py
 from typing import List
 from .base_driver import DiskIODriver
+
 
 class MyCustomDriver(DiskIODriver):
     # Required metadata
@@ -136,6 +138,7 @@ from typing import Optional, Any, Tuple
 from ...format_detection import FormatDetector
 from ...physical_format import PhysicalFormat
 
+
 class MyDriverFormatDetector(FormatDetector):
     # This string MUST match the class name of your driver
     detector_for_driver = "MyCustomDriver"
@@ -171,17 +174,14 @@ from .my_driver import ExternalDriver, ExternalDetector
 from .my_fs import ExternalFilesystem
 
 # 1. Register your filesystem
-FilesystemRegistry.register_external(
-    fs_type="MYFS", fs_class=ExternalFilesystem
-)
+FilesystemRegistry.register_external(fs_type="MYFS", fs_class=ExternalFilesystem)
 
 # 2. Register your driver
 DriverFactory.register_external(driver_class=ExternalDriver)
 
 # 3. Register the custom detector for your driver
 DetectorRegistry.register_external(
-    driver_class_name="ExternalDriver",
-    detector_class=ExternalDetector
+    driver_class_name="ExternalDriver", detector_class=ExternalDetector
 )
 ```
 
@@ -194,12 +194,14 @@ from fatfloppy.core.controller import DiskController
 from fatfloppy.core.filesystem_registry import FilesystemRegistry
 from fatfloppy.core.driver_factory import DriverFactory
 
+
 def test_my_plugin_discovery():
     # Your driver should be available by its 'driver_type'
     assert "MYFORMAT" in DriverFactory.list_registered_types()
 
     # Your filesystem should be available by its 'filesystem_type'
     assert FilesystemRegistry.get_by_name("MYFS") is not None
+
 
 def test_my_plugin_usage(tmp_path):
     controller = DiskController()
